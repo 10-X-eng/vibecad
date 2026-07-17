@@ -87,6 +87,7 @@ class VibeCADSettings:
     build123d_enabled: bool = False
     openscad_enabled: bool = False
     vibescript_enabled: bool = True
+    vibescript_on_bim_enabled: bool = False
     openscad_executable: str = ""
     openscad_library_paths: str = ""
     scripted_timeout_seconds: float = DEFAULT_SCRIPTED_TIMEOUT_SECONDS
@@ -212,6 +213,7 @@ def load_settings() -> VibeCADSettings:
         build123d_enabled=pref.GetBool("Build123dEnabled", False),
         openscad_enabled=pref.GetBool("OpenSCADEnabled", False),
         vibescript_enabled=pref.GetBool("VibeScriptEnabled", True),
+        vibescript_on_bim_enabled=pref.GetBool("VibeScriptOnBIMEnabled", False),
         openscad_executable=pref.GetString("OpenSCADExecutable", ""),
         openscad_library_paths=pref.GetString("OpenSCADLibraryPaths", ""),
         scripted_timeout_seconds=_positive_float(
@@ -264,6 +266,7 @@ def save_settings(settings: VibeCADSettings) -> None:
     pref.SetBool("Build123dEnabled", bool(settings.build123d_enabled))
     pref.SetBool("OpenSCADEnabled", bool(settings.openscad_enabled))
     pref.SetBool("VibeScriptEnabled", bool(settings.vibescript_enabled))
+    pref.SetBool("VibeScriptOnBIMEnabled", bool(settings.vibescript_on_bim_enabled))
     pref.SetString("OpenSCADExecutable", settings.openscad_executable.strip())
     pref.SetString("OpenSCADLibraryPaths", settings.openscad_library_paths.strip())
     pref.SetFloat(
@@ -307,6 +310,7 @@ def reset_settings() -> None:
     pref.RemBool("Build123dEnabled")
     pref.RemBool("OpenSCADEnabled")
     pref.RemBool("VibeScriptEnabled")
+    pref.RemBool("VibeScriptOnBIMEnabled")
     pref.RemString("OpenSCADExecutable")
     pref.RemString("OpenSCADLibraryPaths")
     pref.RemFloat("ScriptedTimeoutSeconds")
@@ -520,6 +524,17 @@ class VibeCADPreferencesPage:
             "required."
         )
         layout.addRow("Enable VibeScript", self.vibescript_enabled)
+
+        self.vibescript_on_bim_enabled = QtWidgets.QCheckBox(self.form)
+        self.vibescript_on_bim_enabled.setObjectName(
+            "VibeCADPrefVibeScriptOnBIMEnabled"
+        )
+        self.vibescript_on_bim_enabled.setToolTip(
+            "Also surface VibeScript tools in the BIM workbench when VibeScript "
+            "is the selected Part Design engine. Disabled by default because BIM "
+            "models buildings top-down through its own native tool pack."
+        )
+        layout.addRow("Enable VibeScript in BIM", self.vibescript_on_bim_enabled)
 
         self.intent_memory_enabled = QtWidgets.QCheckBox(self.form)
         self.intent_memory_enabled.setObjectName("VibeCADPrefIntentMemoryEnabled")
@@ -1124,6 +1139,7 @@ class VibeCADPreferencesPage:
             build123d_enabled=self.build123d_enabled.isChecked(),
             openscad_enabled=self.openscad_enabled.isChecked(),
             vibescript_enabled=self.vibescript_enabled.isChecked(),
+            vibescript_on_bim_enabled=self.vibescript_on_bim_enabled.isChecked(),
             openscad_executable=self.openscad_executable.text().strip(),
             openscad_library_paths=self.openscad_library_paths.toPlainText().strip(),
             scripted_timeout_seconds=persisted.scripted_timeout_seconds,
@@ -1210,6 +1226,7 @@ class VibeCADPreferencesPage:
         self._refresh_build123d_status()
         self.openscad_enabled.setChecked(settings.openscad_enabled)
         self.vibescript_enabled.setChecked(settings.vibescript_enabled)
+        self.vibescript_on_bim_enabled.setChecked(settings.vibescript_on_bim_enabled)
         self.openscad_executable.setText(settings.openscad_executable)
         self.openscad_library_paths.setPlainText(settings.openscad_library_paths)
         self._refresh_openscad_status()

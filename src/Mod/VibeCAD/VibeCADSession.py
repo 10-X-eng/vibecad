@@ -23,6 +23,7 @@ from VibeCADProvider import (
     OfflineProvider,
     OpenAIProvider,
     ProviderUnavailable,
+    provider_tool_schema_digest,
 )
 from VibeCADIntentMemoryCompiler import compile_intent_memory_update
 from VibeCADTools import (
@@ -459,6 +460,26 @@ def _active_document_exists(service: VibeCADService) -> bool:
     return service._active_document() is not None
 
 
+def _vibescript_tools_allowed_on(
+    service: VibeCADService,
+    workbench: str | None,
+) -> bool:
+    """True when selected VibeScript may join this workbench's native pack.
+
+    BIM models buildings top-down through its own pack; scripted component
+    modeling there is opt-in via the VibeScriptOnBIMEnabled preference.
+    Test, no-workbench, and unknown surfaces are not user modeling surfaces.
+    """
+    if service.partdesign_engine() != "vibescript":
+        return False
+    pack = get_tool_pack(workbench)
+    if pack is None or workbench in {"NoneWorkbench", "TestWorkbench"}:
+        return False
+    if workbench == "BIMWorkbench":
+        return service.vibescript_on_bim_enabled()
+    return True
+
+
 def _surface_tool_names(
     service: VibeCADService,
     workbench: str | None,
@@ -466,26 +487,20 @@ def _surface_tool_names(
     engine_surface = SCRIPTED_ENGINE_PROVIDER_TOOLS.get(service.partdesign_engine())
     if workbench == "PartDesignWorkbench" and engine_surface is not None:
         names = set(engine_surface)
-        if not _active_document_exists(service):
-            names = {
-                name
-                for name in names
-                if service.registry.get(name).safety
-                in {SafetyLevel.READ, SafetyLevel.VIEW}
-            }
     else:
         names = set(CORE_PROVIDER_TOOLS)
         pack = get_tool_pack(workbench)
         if pack is not None:
             names.update(pack.tool_names)
             names.update(pack.required_adjacent_tool_names)
-        if not _active_document_exists(service):
-            names = {
-                name
-                for name in names
-                if service.registry.get(name).safety
-                in {SafetyLevel.READ, SafetyLevel.VIEW}
-            }
+        if _vibescript_tools_allowed_on(service, workbench):
+            names.update(VIBESCRIPT_PROVIDER_TOOLS)
+    if not _active_document_exists(service):
+        names = {
+            name
+            for name in names
+            if service.registry.get(name).safety in {SafetyLevel.READ, SafetyLevel.VIEW}
+        }
     if not service.design_review_enabled():
         names.discard("conversation.review_design")
     return names
@@ -529,41 +544,48 @@ def provider_tool_schemas(
     ]
 
 
-def _fixed_scripted_surface(
+def _scripted_engines_in_tool_names(names: list[str]) -> list[str]:
+    return [
+        engine
+        for engine in SCRIPTED_ENGINE_PROVIDER_TOOLS
+        if any(name.startswith(f"{engine}.") for name in names)
+    ]
+
+
+def _turn_start_tool_surface(
     workbench: str | None,
     schemas: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Describe a stable scripted surface without coupling it to a workbench.
+) -> dict[str, Any]:
+    """Validate and freeze the complete provider surface for one turn.
 
-    Subscription turns cannot replace their dynamic tool definitions in the
-    middle of a turn. A surface qualifies only when exactly one scripted engine
-    is present. This remains valid when VibeScript is added to more workbenches.
+    ChatGPT dynamic tool declarations cannot change after the app-server thread
+    starts. Native workbench tools may coexist with at most one scripted engine;
+    every attempted call is still authorized against the live surface by the
+    session tool runner.
     """
-
-    engine_prefixes = {
-        "vibescript": "vibescript.",
-        "build123d": "build123d.",
-        "openscad": "openscad.",
-    }
-    names = [str(schema.get("name") or "") for schema in schemas]
-    if not names or any(not name for name in names) or len(names) != len(set(names)):
-        return None
-    engines = [
-        engine
-        for engine, prefix in engine_prefixes.items()
-        if any(name.startswith(prefix) for name in names)
-    ]
-    if len(engines) != 1:
-        return None
-    engine = engines[0]
-    if any(name not in SCRIPTED_ENGINE_PROVIDER_TOOLS[engine] for name in names):
-        return None
+    if not schemas:
+        raise ValueError("The turn-start provider surface has no tools.")
+    if any(not isinstance(schema, dict) for schema in schemas):
+        raise ValueError("Every turn-start provider tool schema must be an object.")
+    names = [str(schema.get("name") or "").strip() for schema in schemas]
+    if any(not name for name in names):
+        raise ValueError("Every turn-start provider tool schema must have a name.")
+    if len(names) != len(set(names)):
+        raise ValueError("The turn-start provider surface contains duplicate tools.")
+    engines = _scripted_engines_in_tool_names(names)
+    if len(engines) > 1:
+        raise ValueError(
+            "The turn-start provider surface contains multiple scripted engines: "
+            + ", ".join(sorted(engines))
+        )
     return {
-        "kind": "scripted",
-        "fixed": True,
-        "engine": engine,
+        "kind": "turn_start_snapshot",
+        "frozen": True,
+        "scripted_engine": engines[0] if engines else None,
         "workbench": str(workbench or ""),
         "tool_names": names,
+        "schema_count": len(schemas),
+        "schema_sha256": provider_tool_schema_digest(schemas),
     }
 
 
@@ -618,19 +640,34 @@ def _context_for_provider(
     if not isinstance(context.get("cad_state"), dict):
         context["cad_state"] = _runtime_state(service)
     schemas = provider_tool_schemas(service, workbench)
-    scripted_surface = _fixed_scripted_surface(workbench, schemas)
-    if service.provider_name() == "chatgpt" and scripted_surface is None:
-        context["provider_tool_schemas"] = []
+    context["provider_tool_schemas"] = schemas
+    if any(
+        str(schema.get("name") or "").startswith("vibescript.") for schema in schemas
+    ):
+        if workbench == "PartDesignWorkbench":
+            if "partdesign" not in context:
+                context["partdesign"] = service.vibescript_context()
+        else:
+            vibescript = dict(service.vibescript_context())
+            vibescript["regeneration_warning"] = (
+                "Successful VibeScript regeneration replaces the model's owned "
+                "native objects. Downstream assembly, drawing, FEM, material, and "
+                "manufacturing references are not automatically reconciled."
+            )
+            context["vibescript"] = vibescript
+    try:
+        turn_surface = _turn_start_tool_surface(workbench, schemas)
+    except ValueError as exc:
+        if service.provider_name() != "chatgpt":
+            raise
         context["provider_tool_surface"] = {
             "kind": "unavailable",
-            "fixed": True,
+            "frozen": True,
             "workbench": str(workbench or ""),
-            "reason": "ChatGPT subscription mode requires a scripted engine surface.",
+            "reason": str(exc),
         }
     else:
-        context["provider_tool_schemas"] = schemas
-    if scripted_surface is not None:
-        context["provider_tool_surface"] = scripted_surface
+        context["provider_tool_surface"] = turn_surface
     memory = service.intent_memory_snapshot()
     context["intent_memory_enabled"] = bool(memory.get("enabled"))
     if memory.get("enabled"):

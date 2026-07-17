@@ -9,6 +9,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import VibeCADProvider as provider
+import VibeCADSession as session
 
 
 class _DelayedPipeMessage:
@@ -179,6 +180,111 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
         assert foreign_term not in text, (
             f"VibeScript guidance must stay CAD-only; found {foreign_term!r}"
         )
+
+
+class _ProviderContextService:
+    def __init__(self, workbench: str, base_context: dict[str, object]) -> None:
+        self.workbench = workbench
+        self.base_context = base_context
+        self.vibescript_context_calls = 0
+
+    def provider_context_summary(self) -> dict[str, object]:
+        return dict(self.base_context)
+
+    def active_workbench_name(self) -> str:
+        return self.workbench
+
+    def provider_debug_config(self) -> dict[str, object]:
+        return {"enabled": False}
+
+    def provider_name(self) -> str:
+        return "openai"
+
+    def intent_memory_snapshot(self) -> dict[str, object]:
+        return {"enabled": False}
+
+    def vibescript_context(self) -> dict[str, object]:
+        self.vibescript_context_calls += 1
+        return {"models": [{"model_id": "a" * 32, "name": "Impeller"}]}
+
+
+def _context_schema(name: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "description": f"Call {name}.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    }
+
+
+def test_vibescript_model_context_follows_its_surfaced_tools(
+    monkeypatch,
+) -> None:
+    schemas = [
+        _context_schema("assembly.solve"),
+        _context_schema("vibescript.inspect_model"),
+    ]
+    monkeypatch.setattr(session, "provider_tool_schemas", lambda _service, _wb: schemas)
+    service = _ProviderContextService(
+        "AssemblyWorkbench",
+        {"cad_state": {}, "assembly": {"assemblies": []}},
+    )
+
+    context = session._context_for_provider(service)
+
+    assert context["vibescript"]["models"] == [
+        {"model_id": "a" * 32, "name": "Impeller"}
+    ]
+    assert (
+        "not automatically reconciled" in context["vibescript"]["regeneration_warning"]
+    )
+    assert service.vibescript_context_calls == 1
+    assert (
+        provider._model_visible_context(context)["vibescript"] == context["vibescript"]
+    )
+
+
+def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb: [_context_schema("bim.list_structure")],
+    )
+    service = _ProviderContextService(
+        "BIMWorkbench",
+        {"cad_state": {}, "bim": {"buildings": []}},
+    )
+
+    context = session._context_for_provider(service)
+
+    assert "vibescript" not in context
+    assert service.vibescript_context_calls == 0
+
+
+def test_partdesign_keeps_one_vibescript_model_context_without_duplication(
+    monkeypatch,
+) -> None:
+    models = [{"model_id": "b" * 32, "name": "Rotor"}]
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb: [_context_schema("vibescript.inspect_model")],
+    )
+    service = _ProviderContextService(
+        "PartDesignWorkbench",
+        {"cad_state": {}, "partdesign": {"models": models}},
+    )
+
+    context = session._context_for_provider(service)
+
+    assert context["partdesign"] == {"models": models}
+    assert "vibescript" not in context
+    assert service.vibescript_context_calls == 0
 
 
 class _ResponsesItem:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import multiprocessing
 import os
@@ -251,45 +252,138 @@ class OpenAIProvider(BaseProvider):
             raise
 
 
+def provider_tool_schema_digest(schemas: list[dict[str, Any]]) -> str:
+    """Return a deterministic digest for one ordered provider schema list."""
+    try:
+        encoded = json.dumps(
+            schemas,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Provider tool schemas are not JSON serializable: {exc}"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _codex_dynamic_tool_surface(
     context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str]]:
-    """Build namespace-grouped app-server tools from the fixed VibeCAD surface."""
+    """Build app-server tools from the frozen turn-start VibeCAD surface."""
 
     surface = context.get("provider_tool_surface")
     if not (
         isinstance(surface, dict)
-        and surface.get("kind") == "scripted"
-        and surface.get("fixed") is True
+        and surface.get("kind") == "turn_start_snapshot"
+        and surface.get("frozen") is True
+    ):
+        reason = str(surface.get("reason") or "") if isinstance(surface, dict) else ""
+        raise ProviderUnavailable(
+            "ChatGPT subscription mode requires a valid frozen turn-start VibeCAD "
+            "tool surface." + (f" {reason}" if reason else "")
+        )
+    expected_surface_fields = {
+        "kind",
+        "frozen",
+        "scripted_engine",
+        "workbench",
+        "tool_names",
+        "schema_count",
+        "schema_sha256",
+    }
+    if set(surface) != expected_surface_fields:
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface has missing or unexpected fields."
+        )
+    schemas = context.get("provider_tool_schemas")
+    if not isinstance(schemas, list) or not schemas:
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface has no provider tool schemas."
+        )
+    if any(not isinstance(schema, dict) for schema in schemas):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains a non-object schema."
+        )
+    schema_names = [str(schema.get("name") or "").strip() for schema in schemas]
+    declared = surface.get("tool_names")
+    if not isinstance(declared, list):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface has no declared tool-name list."
+        )
+    declared_names = [str(name).strip() for name in declared]
+    if any(not name for name in schema_names + declared_names):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains an empty tool name."
+        )
+    if any(
+        not separator or not domain or not operation
+        for name in schema_names
+        for domain, separator, operation in (name.partition("."),)
     ):
         raise ProviderUnavailable(
-            "ChatGPT subscription mode requires a fixed VibeCAD scripted surface. "
-            "Select VibeScript, build123d, or OpenSCAD for this workbench."
+            "Every frozen VibeCAD tool name must use the domain.operation form."
         )
-    schemas = context.get("provider_tool_schemas") or []
-    schema_names = [
-        str(schema.get("name") or "") for schema in schemas if isinstance(schema, dict)
-    ]
-    declared_names = [str(name) for name in surface.get("tool_names") or []]
+    if len(schema_names) != len(set(schema_names)):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains duplicate tool schemas."
+        )
     if schema_names != declared_names:
         raise ProviderUnavailable(
-            "The VibeCAD scripted tool surface changed while the provider context "
-            "was being assembled. Start a new turn from the current surface."
+            "The VibeCAD tool declarations do not match the frozen turn-start "
+            "surface. Start a new turn from the current surface."
+        )
+    if surface.get("schema_count") != len(schemas):
+        raise ProviderUnavailable(
+            "The VibeCAD schema count does not match the frozen turn-start surface."
+        )
+    try:
+        schema_digest = provider_tool_schema_digest(schemas)
+    except ValueError as exc:
+        raise ProviderUnavailable(str(exc)) from exc
+    if surface.get("schema_sha256") != schema_digest:
+        raise ProviderUnavailable(
+            "The VibeCAD tool schemas changed after the turn-start surface was frozen."
+        )
+    engine_prefixes = {
+        "build123d": "build123d.",
+        "openscad": "openscad.",
+        "vibescript": "vibescript.",
+    }
+    engines = [
+        engine
+        for engine, prefix in engine_prefixes.items()
+        if any(name.startswith(prefix) for name in schema_names)
+    ]
+    if len(engines) > 1:
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains multiple scripted engines: "
+            + ", ".join(sorted(engines))
+        )
+    declared_engine = surface.get("scripted_engine")
+    actual_engine = engines[0] if engines else None
+    if declared_engine != actual_engine:
+        raise ProviderUnavailable(
+            "The scripted-engine declaration does not match the frozen VibeCAD "
+            "tool schemas."
         )
     namespaces: dict[str, dict[str, Any]] = {}
     names: dict[tuple[str, str], str] = {}
-    for index, schema in enumerate(schemas):
-        if not isinstance(schema, dict):
-            raise ValueError(f"Provider tool schema {index} must be an object.")
+    for schema in schemas:
         tool_name = str(schema.get("name") or "").strip()
-        if not tool_name:
-            raise ValueError(f"Provider tool schema {index} is missing name.")
-        domain, separator, operation = tool_name.partition(".")
-        namespace_name = _provider_function_name(domain if separator else "vibecad")
-        function_name = _provider_function_name(operation if separator else tool_name)
+        domain, _, operation = tool_name.partition(".")
+        try:
+            namespace_name = _provider_function_name(domain)
+            function_name = _provider_function_name(operation)
+            input_schema = _provider_tool_parameters(schema)
+        except ValueError as exc:
+            raise ProviderUnavailable(
+                f"Invalid frozen schema for VibeCAD tool {tool_name!r}: {exc}"
+            ) from exc
         key = (namespace_name, function_name)
         if key in names:
-            raise RuntimeError(
+            raise ProviderUnavailable(
                 f"Duplicate Codex dynamic tool name: {namespace_name}.{function_name}"
             )
         names[key] = tool_name
@@ -308,7 +402,7 @@ def _codex_dynamic_tool_surface(
                 "name": function_name,
                 "description": str(schema.get("description") or ""),
                 "deferLoading": False,
-                "inputSchema": _provider_tool_parameters(schema),
+                "inputSchema": input_schema,
             }
         )
     return [namespaces[name] for name in sorted(namespaces)], names
@@ -430,8 +524,8 @@ class ChatGPTSubscriptionProvider(BaseProvider):
         dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(live_context)
         if not dynamic_tools:
             raise ProviderUnavailable(
-                "ChatGPT subscription mode has no scripted VibeCAD tools for the "
-                "current workbench and modeling engine."
+                "ChatGPT subscription mode has no declared VibeCAD tools for the "
+                "current workbench."
             )
 
         state_lock = threading.RLock()
@@ -710,7 +804,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
             if not self.web_search_enabled:
                 forbidden_capabilities.append("web")
             developer_instructions = (
-                "Operate only through the supplied VibeCAD scripted tools. Do not "
+                "Operate only through the supplied VibeCAD tools. Do not "
                 f"use {', '.join(forbidden_capabilities)} tools."
             )
             if self.skills_enabled and skill_catalog:
@@ -1406,6 +1500,7 @@ def _model_visible_context(
         "reference_images",
         "conversation",
         "partdesign",
+        "vibescript",
         "sketcher",
         "part",
         "assembly",

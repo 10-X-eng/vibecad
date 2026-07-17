@@ -2129,6 +2129,47 @@ class _UnsetPreferences:
         return default
 
 
+class _RecordingPreferences(_UnsetPreferences):
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+
+    def GetBool(self, name: str, default: bool = False) -> bool:
+        return bool(self.values.get(name, default))
+
+    def GetString(self, name: str, default: str = "") -> str:
+        return str(self.values.get(name, default))
+
+    def GetFloat(self, name: str, default: float = 0.0) -> float:
+        return float(self.values.get(name, default))
+
+    def GetInt(self, name: str, default: int = 0) -> int:
+        return int(self.values.get(name, default))
+
+    def SetBool(self, name: str, value: bool) -> None:
+        self.values[name] = bool(value)
+
+    def SetString(self, name: str, value: str) -> None:
+        self.values[name] = str(value)
+
+    def SetFloat(self, name: str, value: float) -> None:
+        self.values[name] = float(value)
+
+    def SetInt(self, name: str, value: int) -> None:
+        self.values[name] = int(value)
+
+    def RemBool(self, name: str) -> None:
+        self.values.pop(name, None)
+
+    def RemString(self, name: str) -> None:
+        self.values.pop(name, None)
+
+    def RemFloat(self, name: str) -> None:
+        self.values.pop(name, None)
+
+    def RemInt(self, name: str) -> None:
+        self.values.pop(name, None)
+
+
 class TestVibeScriptDefaults:
     """Lock the out-of-box defaults: the VibeScript preference is enabled and
     vibescript is the default PartDesign engine. These tests fail if either
@@ -2140,6 +2181,7 @@ class TestVibeScriptDefaults:
         import VibeCADPreferences as prefs
 
         assert prefs.VibeCADSettings().vibescript_enabled is True
+        assert prefs.VibeCADSettings().vibescript_on_bim_enabled is False
 
     def test_load_settings_with_unset_key_enables_vibescript(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2147,7 +2189,24 @@ class TestVibeScriptDefaults:
         import VibeCADPreferences as prefs
 
         monkeypatch.setattr(prefs, "preferences", lambda: _UnsetPreferences())
-        assert prefs.load_settings().vibescript_enabled is True
+        settings = prefs.load_settings()
+        assert settings.vibescript_enabled is True
+        assert settings.vibescript_on_bim_enabled is False
+
+    def test_bim_opt_in_uses_the_normal_preference_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import VibeCADPreferences as prefs
+
+        stored = _RecordingPreferences()
+        monkeypatch.setattr(prefs, "preferences", lambda: stored)
+        prefs.save_settings(prefs.VibeCADSettings(vibescript_on_bim_enabled=True))
+        assert stored.values["VibeScriptOnBIMEnabled"] is True
+        assert prefs.load_settings().vibescript_on_bim_enabled is True
+
+        prefs.reset_settings()
+        assert "VibeScriptOnBIMEnabled" not in stored.values
+        assert prefs.load_settings().vibescript_on_bim_enabled is False
 
     def test_default_engine_constant_is_vibescript_and_valid(self) -> None:
         from VibeCADProject import DEFAULT_PARTDESIGN_ENGINE, PARTDESIGN_ENGINES

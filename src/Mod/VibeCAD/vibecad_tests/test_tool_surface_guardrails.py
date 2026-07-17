@@ -319,6 +319,150 @@ def test_runner_dispatch_covers_exactly_the_runner_tool_sets() -> None:
     assert set(session._SCRIPTED_RUNNER_BY_TOOL) == expected
 
 
+class _SurfaceService:
+    def __init__(
+        self,
+        engine: str,
+        *,
+        vibescript_on_bim: bool = False,
+    ) -> None:
+        self.engine = engine
+        self.vibescript_on_bim = vibescript_on_bim
+
+    def partdesign_engine(self) -> str:
+        return self.engine
+
+    def vibescript_on_bim_enabled(self) -> bool:
+        return self.vibescript_on_bim
+
+    def _active_document(self) -> object:
+        return object()
+
+    def design_review_enabled(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    "workbench",
+    ("AssemblyWorkbench", "FemWorkbench", "TechDrawWorkbench"),
+)
+def test_selected_vibescript_joins_representative_workbench_surfaces(
+    workbench: str,
+) -> None:
+    import VibeCADSession as session
+    from VibeCADWorkbenchTools import get_tool_pack
+
+    service = _SurfaceService("vibescript")
+    names = session._surface_tool_names(service, workbench)
+    pack = get_tool_pack(workbench)
+
+    assert pack is not None
+    assert set(pack.provider_tool_names()) <= names
+    assert session.VIBESCRIPT_PROVIDER_TOOLS <= names
+
+
+def test_vibescript_is_excluded_from_bim_until_its_preference_is_enabled() -> None:
+    import VibeCADSession as session
+    from VibeCADWorkbenchTools import get_tool_pack
+
+    pack = get_tool_pack("BIMWorkbench")
+    assert pack is not None
+    native_names = set(session.CORE_PROVIDER_TOOLS) | set(pack.provider_tool_names())
+
+    default_names = session._surface_tool_names(
+        _SurfaceService("vibescript"), "BIMWorkbench"
+    )
+    assert default_names == native_names
+    assert not any(name.startswith("vibescript.") for name in default_names)
+
+    enabled_names = session._surface_tool_names(
+        _SurfaceService("vibescript", vibescript_on_bim=True),
+        "BIMWorkbench",
+    )
+    assert native_names <= enabled_names
+    assert session.VIBESCRIPT_PROVIDER_TOOLS <= enabled_names
+
+
+@pytest.mark.parametrize("engine", ("native", "build123d", "openscad"))
+def test_vibescript_does_not_follow_a_different_selected_engine(engine: str) -> None:
+    import VibeCADSession as session
+
+    names = session._surface_tool_names(
+        _SurfaceService(engine, vibescript_on_bim=True),
+        "AssemblyWorkbench",
+    )
+    assert not any(name.startswith("vibescript.") for name in names)
+
+
+def test_partdesign_vibescript_surface_is_unchanged() -> None:
+    import VibeCADSession as session
+
+    names = session._surface_tool_names(
+        _SurfaceService("vibescript"), "PartDesignWorkbench"
+    )
+    assert names == session.VIBESCRIPT_PROVIDER_TOOLS
+
+
+def test_non_user_workbenches_do_not_gain_vibescript() -> None:
+    import VibeCADSession as session
+
+    service = _SurfaceService("vibescript", vibescript_on_bim=True)
+    for workbench in (None, "NoneWorkbench", "TestWorkbench", "UnknownWorkbench"):
+        names = session._surface_tool_names(service, workbench)
+        assert not any(name.startswith("vibescript.") for name in names)
+
+
+def test_every_constructed_surface_contains_at_most_one_scripted_engine() -> None:
+    import VibeCADSession as session
+    from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
+
+    prefixes = tuple(f"{engine}." for engine in session.SCRIPTED_ENGINE_PROVIDER_TOOLS)
+    for engine in ("native", *session.SCRIPTED_ENGINE_PROVIDER_TOOLS):
+        service = _SurfaceService(engine, vibescript_on_bim=True)
+        for workbench in WORKBENCH_TOOL_PACKS:
+            names = session._surface_tool_names(service, workbench)
+            surfaced_engines = {
+                prefix
+                for prefix in prefixes
+                if any(name.startswith(prefix) for name in names)
+            }
+            assert len(surfaced_engines) <= 1, (
+                f"{workbench} with {engine} surfaced {sorted(surfaced_engines)}"
+            )
+
+
+def test_real_vibescript_workbench_schemas_form_valid_codex_snapshots(specs) -> None:
+    """Every extended native pack must survive the subscription wire format."""
+    import VibeCADProvider as provider
+    import VibeCADSession as session
+    from VibeCADWorkbenchTools import WORKBENCH_TOOL_PACKS
+
+    service = _SurfaceService("vibescript", vibescript_on_bim=True)
+    for workbench in WORKBENCH_TOOL_PACKS:
+        if workbench in {"NoneWorkbench", "TestWorkbench"}:
+            continue
+        names = session._surface_tool_names(service, workbench)
+        schemas = [
+            session._provider_schema_copy(
+                specs[name][0].to_schema(active_workbench=workbench)
+            )
+            for name in sorted(names)
+            if specs[name][0].supports_edit_mode("none")
+        ]
+        snapshot = session._turn_start_tool_surface(workbench, schemas)
+        dynamic_tools, dynamic_names = provider._codex_dynamic_tool_surface(
+            {
+                "provider_tool_schemas": schemas,
+                "provider_tool_surface": snapshot,
+            }
+        )
+
+        assert dynamic_tools, workbench
+        assert set(dynamic_names.values()) == {
+            str(schema["name"]) for schema in schemas
+        }, workbench
+
+
 def test_existing_engine_surfaces_did_not_regress() -> None:
     """Adding VibeScript must leave the other engine surfaces byte-identical."""
     import VibeCADSession as session

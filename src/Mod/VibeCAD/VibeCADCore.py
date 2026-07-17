@@ -256,6 +256,10 @@ class VibeCADService:
     def vibescript_enabled(self) -> bool:
         return bool(load_settings().vibescript_enabled)
 
+    def vibescript_on_bim_enabled(self) -> bool:
+        """True when the scripted engine surface may extend into BIM."""
+        return bool(load_settings().vibescript_on_bim_enabled)
+
     def partdesign_engine(self) -> str:
         return self._project_store.partdesign_engine()
 
