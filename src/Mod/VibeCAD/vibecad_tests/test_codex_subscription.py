@@ -211,13 +211,12 @@ def test_tool_runner_revalidates_each_call_against_the_live_surface(
     service = _Service()
     monkeypatch.setattr(
         session,
-        "provider_tool_schemas",
-        lambda _service, _workbench: [_tool_schema("assembly.solve")],
-    )
-    monkeypatch.setattr(
-        session,
-        "_runtime_state",
-        lambda _service: {"edit_mode": "none"},
+        "_live_provider_surface_state",
+        lambda _service: {
+            "workbench": "AssemblyWorkbench",
+            "runtime_state": {"edit_mode": "none"},
+            "tool_names": ["assembly.solve"],
+        },
     )
     runner = session.make_provider_tool_runner(
         service,

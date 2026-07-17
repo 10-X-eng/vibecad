@@ -117,3 +117,63 @@ TEST_F(AsyncRecomputeTest, WorkerSafetyIsCheckedFromRequest)
         App::GetApplication().canRecomputeRequestOnWorker(App::RecomputeRequest::fromDocument(*_doc))
     );
 }
+
+TEST_F(AsyncRecomputeTest, StrictBatchQueueRejectsAtomically)
+{
+    auto* safeObject = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        _doc->addObject("App::FeatureTestAsyncBlocker", "SafeFeature")
+    );
+    auto* unsafeObject = dynamic_cast<App::FeatureTestAttribute*>(
+        _doc->addObject("App::FeatureTestAttribute", "UnsafeFeature")
+    );
+    ASSERT_NE(safeObject, nullptr);
+    ASSERT_NE(unsafeObject, nullptr);
+
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    BOOST_SCOPE_EXIT_ALL(&)
+    {
+        App::FeatureTestAsyncBlocker::releaseBlocker();
+    };
+
+    safeObject->touch();
+    unsafeObject->touch();
+    std::vector<App::RecomputeRequest> requests;
+    requests.push_back(App::RecomputeRequest::fromDocumentObject(*safeObject));
+    requests.push_back(App::RecomputeRequest::fromDocumentObject(*unsafeObject));
+
+    EXPECT_FALSE(App::GetApplication().tryQueueRecomputeRequests(std::move(requests)));
+    EXPECT_FALSE(App::GetApplication().hasPendingRecomputeRequest(_docName));
+    EXPECT_FALSE(App::FeatureTestAsyncBlocker::waitUntilStarted(50ms));
+}
+
+TEST_F(AsyncRecomputeTest, PendingStateCoversQueuedAndInFlightWork)
+{
+    auto* object = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        _doc->addObject("App::FeatureTestAsyncBlocker", "BlockingFeature")
+    );
+    ASSERT_NE(object, nullptr);
+
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    BOOST_SCOPE_EXIT_ALL(&)
+    {
+        App::FeatureTestAsyncBlocker::releaseBlocker();
+    };
+
+    object->touch();
+    ASSERT_TRUE(App::GetApplication().tryQueueRecomputeRequest(
+        App::RecomputeRequest::fromDocumentObject(*object)
+    ));
+    EXPECT_TRUE(App::GetApplication().hasPendingRecomputeRequest(_docName));
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(2s));
+    EXPECT_TRUE(App::GetApplication().hasPendingRecomputeRequest(_docName));
+
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (
+        App::GetApplication().hasPendingRecomputeRequest(_docName)
+        && std::chrono::steady_clock::now() < deadline
+    ) {
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_FALSE(App::GetApplication().hasPendingRecomputeRequest(_docName));
+}

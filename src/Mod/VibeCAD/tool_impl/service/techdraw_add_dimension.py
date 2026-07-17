@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 from VibeCADTransactions import run_freecad_transaction
+import VibeCADReferenceContracts as reference_contracts
 
 from . import domain_runtime
 from .techdraw_add_view import _projected_element_inventory
@@ -45,11 +46,17 @@ def _references_schema(
     return {
         "type": "array",
         "items": {
-            "type": "string",
-            "description": (
-                "Exact projected element name within the view, e.g. 'Edge0' "
-                "or 'Vertex3'."
-            ),
+            "oneOf": [
+                {
+                    "type": "string",
+                    "pattern": "^(Edge|Vertex)[0-9]+$",
+                    "description": (
+                        "Exact projected element name for a non-scripted view, "
+                        "e.g. 'Edge0' or 'Vertex3'."
+                    ),
+                },
+                reference_contracts.interface_selection_schema(),
+            ]
         },
         "minItems": min_items,
         "maxItems": max_items,
@@ -195,13 +202,6 @@ def run(
     references = dimension.get("references")
     if not isinstance(references, list) or not references:
         return _invalid("dimension.references must be a non-empty array.")
-    elements = [str(item or "").strip() for item in references]
-    for element in elements:
-        if not (element.startswith("Edge") or element.startswith("Vertex")):
-            return _invalid(
-                f"Unsupported reference element: {element!r}. Use projected "
-                "element names like 'Edge0' or 'Vertex3'."
-            )
     doc = service._active_document()
     if doc is None:
         return _invalid("No active document.")
@@ -233,6 +233,15 @@ def run(
             "The projected view has no usable native geometry inventory.",
             projection=projection,
         )
+    resolved_input = _resolve_dimension_references(
+        service,
+        view,
+        references,
+        projection,
+    )
+    if not resolved_input.get("ok"):
+        return resolved_input
+    elements = list(resolved_input["elements"])
     compatibility = _validate_reference_contract(kind, elements, projection)
     if not compatibility.get("ok"):
         return _invalid(
@@ -262,6 +271,17 @@ def run(
         dim.Type = native_type
         dim.MeasureType = "Projected"
         dim.References2D = [(target_view, element) for element in elements]
+        managed_references = list(resolved_input.get("managed_references") or [])
+        if managed_references:
+            reference_contracts.set_contract(
+                dim,
+                "techdraw_dimension",
+                {
+                    "view_name": target_view.Name,
+                    "dimension_type": kind,
+                    "references": managed_references,
+                },
+            )
         active.recompute()
         value = None
         text = None
@@ -352,6 +372,151 @@ def run(
         ),
     )
     return envelope
+
+
+def _resolve_dimension_references(
+    service: Any,
+    view: Any,
+    references: list[Any],
+    projection: dict[str, Any],
+) -> dict[str, Any]:
+    sources = list(getattr(view, "Source", []) or [])
+    has_published_source = any(
+        reference_contracts.published_object(source) is not None for source in sources
+    )
+    elements: list[str] = []
+    managed: list[dict[str, Any]] = []
+    inventory = list(projection.get("edges") or []) + list(
+        projection.get("vertices") or []
+    )
+    for raw in references:
+        if isinstance(raw, str):
+            element = raw.strip()
+            if not (element.startswith("Edge") or element.startswith("Vertex")):
+                return _invalid(
+                    f"Unsupported projected element: {element!r}."
+                )
+            if has_published_source:
+                return _invalid(
+                    "A dimension on a regenerating scripted view must use "
+                    "published semantic interfaces, not transient projected "
+                    "EdgeN/VertexN indices.",
+                    view=view.Name,
+                )
+            elements.append(element)
+            continue
+        if not isinstance(raw, dict) or raw.get("type") != "published_interface":
+            return _invalid(
+                "Each dimension reference must be a projected element name or "
+                "a published_interface selection."
+            )
+        interface_name = str(raw.get("interface_name") or "").strip()
+        candidates: list[dict[str, Any]] = []
+        for source in sources:
+            if reference_contracts.published_object(source) is None:
+                continue
+            try:
+                candidates.append(
+                    reference_contracts.resolve_interface(
+                        service, source, interface_name
+                    )
+                )
+            except reference_contracts.ReferenceContractError:
+                continue
+        if len(candidates) != 1:
+            return _invalid(
+                f"Published interface {interface_name!r} must resolve on "
+                "exactly one source object in the view.",
+                view=view.Name,
+                source_candidates=[getattr(item, "Name", "") for item in sources],
+                matching_source_count=len(candidates),
+            )
+        interface = candidates[0]
+        subelements = list(interface.get("subelements") or [])
+        if len(subelements) != 1:
+            return _invalid(
+                f"TechDraw interface {interface_name!r} must resolve to exactly "
+                "one source edge or vertex.",
+                resolved_subelements=subelements,
+            )
+        source_pair = (interface["publication_name"], subelements[0])
+        projected_matches = []
+        for descriptor in inventory:
+            mapping = descriptor.get("source_mapping") or {}
+            candidates_raw = list(mapping.get("candidates") or [])
+            if any(
+                (
+                    str(candidate.get("object_name") or ""),
+                    str(candidate.get("subelement") or ""),
+                )
+                == source_pair
+                for candidate in candidates_raw
+                if isinstance(candidate, dict)
+            ):
+                projected_matches.append(str(descriptor.get("name") or ""))
+        if len(projected_matches) != 1:
+            return _invalid(
+                f"Published interface {interface_name!r} does not map to one "
+                "unambiguous projected element in this view.",
+                source_object=source_pair[0],
+                source_subelement=source_pair[1],
+                projected_matches=projected_matches,
+                projection_mapping_summary=projection.get("mapping_summary"),
+            )
+        elements.append(projected_matches[0])
+        managed.append(
+            {
+                "type": "published_interface",
+                "interface_name": interface_name,
+                "model_id": interface["model_id"],
+                "publication_name": interface["publication_name"],
+                "output_key": interface["output_key"],
+            }
+        )
+    return {"ok": True, "elements": elements, "managed_references": managed}
+
+
+def rebind_scripted_reference(
+    service: Any,
+    dimension_obj: Any,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    doc = service._active_document()
+    view_name = str(contract.get("view_name") or "")
+    view = doc.getObject(view_name) if doc is not None else None
+    if view is None:
+        return _invalid("The TechDraw view recorded by the dimension no longer exists.")
+    references = contract.get("references")
+    if not isinstance(references, list) or not references:
+        return _invalid("The TechDraw reference contract contains no references.")
+    try:
+        view.touch()
+        dimension_obj.touch()
+        revision = str(contract.get("source_revision") or "")
+        reference_contracts.mark_stale(
+            view,
+            revision,
+            "A referenced scripted model changed; regenerate this drawing view.",
+        )
+        reference_contracts.mark_stale(
+            dimension_obj,
+            revision,
+            "The source view changed; regenerate and verify this dimension.",
+        )
+    except Exception as exc:
+        return _invalid(
+            "FreeCAD could not invalidate the affected TechDraw dimension.",
+            native_error=str(exc),
+        )
+    return {
+        "ok": True,
+        "domain": "techdraw_dimension",
+        "object": dimension_obj.Name,
+        "view": view.Name,
+        "rebind_deferred": True,
+        "derived_state": "stale",
+        "projection_recompute_deferred": True,
+    }
 
 
 def _invalid(message: str, **details: Any) -> dict[str, Any]:

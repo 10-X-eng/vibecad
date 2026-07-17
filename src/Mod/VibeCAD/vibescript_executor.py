@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""In-process VibeScript executor.
+"""Transaction-scoped VibeScript executor for a caller-owned document.
 
-Runs VibeScript model source against the live FreeCAD document, wrapped in a
-document transaction so any failure rolls the document back to its exact
-prior state::
+Runs VibeScript model source against the document supplied by its caller,
+wrapped in a transaction so any failure restores that document's prior state::
 
     openTransaction -> exec source -> enforce contract -> commitTransaction
                                    \\-> any failure     -> abortTransaction
 
-This module never imports FreeCAD. The caller passes the live document (or a
-stub in tests), so every path is testable under plain pytest.
+This module never imports FreeCAD. Production calls supply the temporary
+document owned by the isolated ``FreeCADCmd`` worker; tests may supply a stub.
+The executor does not receive the user's live GUI document.
 
 The execution budget is a trace-based guard: a runaway Python loop in model
-source raises ``ExecutionBudgetExceeded`` instead of hanging the UI thread.
+source raises ``ExecutionBudgetExceeded`` instead of hanging its worker.
 ``ExecutionBudgetExceeded`` derives from ``BaseException`` so model-source
 ``except Exception`` blocks cannot swallow it, and the tracer's tripped flag
 is re-checked after exec as a second line of defense against bare handlers.
@@ -435,6 +435,214 @@ def _object_names(document: Any) -> set[str]:
     return {str(getattr(item, "Name", "")) for item in objects}
 
 
+def _rollback_snapshot(
+    document: Any,
+    *,
+    shape_names: set[str] | None = None,
+    copy_shapes: bool = True,
+    detailed_shape_facts: bool = True,
+    scoped_metadata: bool = False,
+    only_names: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Capture rollback evidence, retaining geometry only inside the mutation scope.
+
+    ``None`` preserves the executor's strict whole-document behavior.  A name
+    set is used by isolated-engine commits, where untrusted source never sees
+    the live document and trusted publication code has an explicit dependency
+    closure. ``copy_shapes=False`` retains immutable TopoShape handles rather
+    than deep-copying geometry. ``scoped_metadata=True`` records only identity
+    outside that closure, which still detects unrelated additions/removals
+    without walking every property in a large document. ``only_names`` avoids
+    enumerating unrelated objects for trusted publication commits.
+    """
+    records: list[dict[str, Any]] = []
+    objects = (
+        list(getattr(document, "Objects", []) or [])
+        if only_names is None
+        else [
+            obj
+            for obj in (
+                document.getObject(name) for name in sorted(only_names)
+            )
+            if obj is not None
+        ]
+    )
+    for obj in objects:
+        object_name = str(getattr(obj, "Name", "") or "")
+        capture_shape = shape_names is None or object_name in shape_names
+        capture_metadata = not scoped_metadata or capture_shape
+        record: dict[str, Any] = {
+            "name": object_name,
+            "type": str(getattr(obj, "TypeId", "") or ""),
+        }
+        if capture_metadata:
+            record.update(
+                {
+                    "label": str(getattr(obj, "Label", "") or ""),
+                    "state": sorted(
+                        str(value)
+                        for value in list(getattr(obj, "State", []) or [])
+                    ),
+                }
+            )
+        shape = getattr(obj, "Shape", None)
+        if shape is not None and capture_shape:
+            try:
+                if detailed_shape_facts:
+                    is_null = bool(shape.isNull())
+                    record["shape"] = {
+                        "null": is_null,
+                        "type": None if is_null else str(shape.ShapeType),
+                        "solids": len(list(getattr(shape, "Solids", []) or [])),
+                        "faces": len(list(getattr(shape, "Faces", []) or [])),
+                        "edges": len(list(getattr(shape, "Edges", []) or [])),
+                        "vertices": len(list(getattr(shape, "Vertexes", []) or [])),
+                        "volume": round(float(getattr(shape, "Volume", 0.0)), 12),
+                        "area": round(float(getattr(shape, "Area", 0.0)), 12),
+                        "length": round(float(getattr(shape, "Length", 0.0)), 12),
+                    }
+                    if not is_null:
+                        bounds = shape.BoundBox
+                        record["shape"]["bounds"] = [
+                            round(float(value), 12)
+                            for value in (
+                                bounds.XMin,
+                                bounds.YMin,
+                                bounds.ZMin,
+                                bounds.XMax,
+                                bounds.YMax,
+                                bounds.ZMax,
+                            )
+                        ]
+                record["_shape_restore"] = shape.copy() if copy_shapes else shape
+            except Exception:
+                record["shape"] = "unavailable"
+        placement = getattr(obj, "Placement", None) if capture_metadata else None
+        if placement is not None:
+            try:
+                matrix = placement.toMatrix()
+                record["placement"] = [
+                    round(float(getattr(matrix, name)), 12)
+                    for name in (
+                        "A11", "A12", "A13", "A14",
+                        "A21", "A22", "A23", "A24",
+                        "A31", "A32", "A33", "A34",
+                    )
+                ]
+            except Exception:
+                pass
+        for property_name in (
+            list(getattr(obj, "PropertiesList", []) or [])
+            if capture_metadata
+            else []
+        ):
+            if not str(property_name).startswith("VibeCAD"):
+                continue
+            try:
+                value = getattr(obj, property_name)
+            except Exception:
+                continue
+            if isinstance(value, (str, bool, int, float)):
+                record.setdefault("vibecad_properties", {})[property_name] = value
+        records.append(record)
+    return {item["name"]: item for item in records}
+
+
+def _rollback_difference(
+    before: dict[str, dict[str, Any]],
+    after: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    before_names = set(before)
+    after_names = set(after)
+    return {
+        "added": sorted(after_names - before_names),
+        "removed": sorted(before_names - after_names),
+        "changed": sorted(
+            name
+            for name in before_names & after_names
+            if not _rollback_records_equal(before[name], after[name])
+        ),
+    }
+
+
+def _rollback_records_equal(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    before_public = {
+        key: value for key, value in before.items() if not key.startswith("_")
+    }
+    after_public = {
+        key: value for key, value in after.items() if not key.startswith("_")
+    }
+    if before_public != after_public:
+        return False
+    if before_public.get("type") in {"App::Line", "App::Plane"}:
+        # Origin axes and planes are infinite construction geometry. OCCT
+        # boolean/sample equivalence is undefined for them, while their exact
+        # native type, placement, label, and state were compared above.
+        return True
+    shape_facts = before_public.get("shape")
+    if isinstance(shape_facts, dict) and any(
+        abs(float(value)) >= 1.0e90
+        for value in list(shape_facts.get("bounds") or [])
+    ):
+        # FreeCAD origin axes and planes are represented by artificial infinite
+        # shapes. Boolean equivalence checks are undefined for those carriers;
+        # their exact type, placement, topology, and bounds were compared above.
+        return True
+    before_shape = before.get("_shape_restore")
+    after_shape = after.get("_shape_restore")
+    if before_shape is None or after_shape is None:
+        return before_shape is after_shape
+    return _shapes_geometrically_equivalent(before_shape, after_shape)
+
+
+def _shapes_geometrically_equivalent(before: Any, after: Any) -> bool:
+    try:
+        before_null = bool(before.isNull())
+        after_null = bool(after.isNull())
+        if before_null or after_null:
+            return before_null == after_null
+        if before.isSame(after):
+            return True
+        volume = max(abs(float(before.Volume)), abs(float(after.Volume)), 1.0)
+        if list(getattr(before, "Solids", []) or []) or list(
+            getattr(after, "Solids", []) or []
+        ):
+            tolerance = max(1.0e-7, volume * 1.0e-9)
+            return (
+                float(before.cut(after).Volume) <= tolerance
+                and float(after.cut(before).Volume) <= tolerance
+            )
+        area = max(abs(float(before.Area)), abs(float(after.Area)), 1.0)
+        if list(getattr(before, "Faces", []) or []) or list(
+            getattr(after, "Faces", []) or []
+        ):
+            tolerance = max(1.0e-7, area * 1.0e-9)
+            return (
+                float(before.cut(after).Area) <= tolerance
+                and float(after.cut(before).Area) <= tolerance
+            )
+        return _edge_samples_lie_on_shape(before, after) and _edge_samples_lie_on_shape(
+            after, before
+        )
+    except Exception:
+        return False
+
+
+def _edge_samples_lie_on_shape(source: Any, target: Any) -> bool:
+    import Part
+
+    bounds = source.BoundBox
+    tolerance = max(1.0e-7, float(bounds.DiagonalLength) * 1.0e-9)
+    for edge in list(getattr(source, "Edges", []) or []):
+        for point in list(edge.discretize(Number=9) or []):
+            if float(Part.Vertex(point).distToShape(target)[0]) > tolerance:
+                return False
+    for vertex in list(getattr(source, "Vertexes", []) or []):
+        if float(vertex.distToShape(target)[0]) > tolerance:
+            return False
+    return True
+
+
 def _new_objects(document: Any, before_names: set[str]) -> list[Any]:
     objects = getattr(document, "Objects", None) or []
     return [
@@ -522,6 +730,102 @@ def _enforce_contract(
             }
         )
     return outputs
+
+
+def _declared_interfaces(
+    namespace: dict[str, Any], result: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    raw = namespace.get("interfaces", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ContractViolation(
+            "interfaces must be a dict mapping stable interface names to "
+            "published-output selection contracts."
+        )
+    allowed_query_fields = {
+        "type",
+        "element_type",
+        "expected_count",
+        "geometry_type",
+        "normal",
+        "normal_tolerance_degrees",
+        "direction",
+        "direction_tolerance_degrees",
+        "radius",
+        "radius_tolerance",
+        "min_area",
+        "max_area",
+        "min_length",
+        "max_length",
+        "near_point",
+        "max_distance",
+    }
+    interfaces: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_definition in raw.items():
+        name = str(raw_name or "").strip()
+        if not name or not name.replace("_", "").isalnum() or not name[0].isalpha():
+            raise ContractViolation(
+                f"Interface name {raw_name!r} must start with a letter and "
+                "contain only letters, numbers, and underscores."
+            )
+        if not isinstance(raw_definition, dict):
+            raise ContractViolation(f"interfaces[{name!r}] must be an object.")
+        unexpected = set(raw_definition) - {"output", "selection", "description"}
+        if unexpected:
+            raise ContractViolation(
+                f"interfaces[{name!r}] has unsupported fields: "
+                + ", ".join(sorted(unexpected))
+            )
+        output = str(raw_definition.get("output") or "")
+        if output not in result:
+            raise ContractViolation(
+                f"interfaces[{name!r}].output must name one result output; "
+                f"received {output!r}."
+            )
+        selection = raw_definition.get("selection")
+        if not isinstance(selection, dict):
+            raise ContractViolation(
+                f"interfaces[{name!r}].selection must be an object."
+            )
+        mode = str(selection.get("type") or "")
+        if mode == "origin":
+            if set(selection) != {"type"}:
+                raise ContractViolation(
+                    f"interfaces[{name!r}] origin selection accepts only type."
+                )
+        elif mode == "query":
+            unexpected_query = set(selection) - allowed_query_fields
+            if unexpected_query:
+                raise ContractViolation(
+                    f"interfaces[{name!r}].selection has unsupported fields: "
+                    + ", ".join(sorted(unexpected_query))
+                )
+            element_type = str(selection.get("element_type") or "")
+            if element_type not in {"edge", "face"}:
+                raise ContractViolation(
+                    f"interfaces[{name!r}].selection.element_type must be "
+                    "'edge' or 'face'."
+                )
+            count = selection.get("expected_count")
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                raise ContractViolation(
+                    f"interfaces[{name!r}].selection.expected_count must be "
+                    "an integer of at least 1."
+                )
+        else:
+            raise ContractViolation(
+                f"interfaces[{name!r}].selection.type must be 'origin' or "
+                "the topology-stable 'query' mode. Exact FaceN/EdgeN names "
+                "are not valid published interfaces."
+            )
+        description = str(raw_definition.get("description") or "").strip()
+        interfaces[name] = {
+            "output": output,
+            "selection": dict(selection),
+            **({"description": description} if description else {}),
+        }
+    return interfaces
 
 
 # --------------------------------------------------------------------------
@@ -750,7 +1054,39 @@ def execute_model(
         }
 
     before_names: set[str] | None = None
+    rollback_before = _rollback_snapshot(document)
+    original_undo_mode = getattr(document, "UndoMode", None)
+    enabled_undo = False
+    if isinstance(original_undo_mode, int) and original_undo_mode == 0:
+        try:
+            document.UndoMode = 1
+            enabled_undo = True
+        except Exception as exc:
+            return _failure_payload(
+                RuntimeError(
+                    "VibeScript cannot guarantee atomic execution because "
+                    f"FreeCAD undo transactions could not be enabled: {exc}"
+                ),
+                source,
+                opened=False,
+                aborted=False,
+                stdout=stdout.getvalue(),
+            )
     document.openTransaction(transaction_name)
+    booked_transaction = getattr(document, "getBookedTransactionID", None)
+    if callable(booked_transaction) and int(booked_transaction() or 0) == 0:
+        if enabled_undo:
+            document.UndoMode = original_undo_mode
+        return _failure_payload(
+            RuntimeError(
+                "FreeCAD refused the VibeScript document transaction; no "
+                "source was executed."
+            ),
+            source,
+            opened=False,
+            aborted=False,
+            stdout=stdout.getvalue(),
+        )
     try:
         if before_exec is not None:
             before_exec(document)
@@ -764,20 +1100,28 @@ def execute_model(
         if tracer.tripped is not None:
             raise ExecutionBudgetExceeded(tracer.tripped)
         new_objects = _new_objects(document, before_names)
+        created_object_names = [
+            str(getattr(item, "Name", "")) for item in new_objects
+        ]
         outputs = _enforce_contract(document, namespace, expected, new_objects)
+        declared_interfaces = _declared_interfaces(namespace, namespace["result"])
         if after_contract is not None:
             after_contract(
                 {
                     "result": dict(namespace["result"]),
                     "new_objects": list(new_objects),
                     "outputs": outputs,
+                    "interfaces": declared_interfaces,
                 }
             )
         document.commitTransaction()
+        if enabled_undo:
+            document.UndoMode = original_undo_mode
         return {
             "ok": True,
             "outputs": outputs,
-            "created_objects": [str(getattr(item, "Name", "")) for item in new_objects],
+            "interfaces": declared_interfaces,
+            "created_objects": created_object_names,
             "stdout": stdout.getvalue(),
             "transaction": {"opened": True, "committed": True, "aborted": False},
             "budget": _budget(),
@@ -790,16 +1134,48 @@ def execute_model(
             if before_names is not None
             else None
         )
-        document.abortTransaction()
-        return _failure_payload(
+        rollback_error = None
+        try:
+            document.abortTransaction()
+            document.recompute()
+            rollback_after = _rollback_snapshot(document)
+            difference = _rollback_difference(rollback_before, rollback_after)
+            if any(difference.values()):
+                rollback_error = (
+                    "FreeCAD transaction rollback did not restore the pre-run "
+                    "document state: "
+                    f"added={difference['added']}, "
+                    f"removed={difference['removed']}, "
+                    f"changed={difference['changed']}."
+                )
+        except Exception as rollback_exc:
+            rollback_error = f"FreeCAD transaction rollback raised: {rollback_exc}"
+        finally:
+            if enabled_undo:
+                try:
+                    document.UndoMode = original_undo_mode
+                except Exception as mode_exc:
+                    rollback_error = (
+                        f"{rollback_error + '; ' if rollback_error else ''}"
+                        f"undo mode restoration failed: {mode_exc}"
+                    )
+        payload = _failure_payload(
             exc,
             source,
             opened=True,
-            aborted=True,
+            aborted=rollback_error is None,
             budget=_budget(),
             stdout=stdout.getvalue(),
             feature_report=feature_report,
         )
+        if rollback_error is not None:
+            payload["rollback_error"] = rollback_error
+            payload["error"] = (
+                f"{payload['error']} Rollback failure: {rollback_error}"
+            )
+        return payload
     except BaseException:
         document.abortTransaction()
+        if enabled_undo:
+            document.UndoMode = original_undo_mode
         raise

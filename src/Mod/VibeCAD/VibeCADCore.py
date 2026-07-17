@@ -57,6 +57,9 @@ _REFERENCE_ENCODE_FORMATS = {
     "png": "PNG",
     "webp": "WEBP",
 }
+_PRIVATE_SCRIPTED_ROLES = frozenset(
+    {"implementation", "publication_target", "parameters"}
+)
 
 
 def _slug_filename(value: str) -> str:
@@ -415,17 +418,59 @@ class VibeCADService:
         )
         return {"models": models}
 
-    def vibescript_context(self) -> dict[str, Any]:
-        from VibeCADVibeScript import model_summaries
+    def vibescript_context_snapshot(self) -> dict[str, Any]:
+        """Capture VibeScript document metadata without filesystem access."""
+
+        from VibeCADVibeScript import capture_model_summaries
 
         doc = self._active_document()
-        project_root = str(self.project_context().get("root") or "").strip()
-        models = (
-            model_summaries(doc, project_root)
-            if doc is not None and project_root
-            else []
+        project_root = str(self.project_scope_snapshot().get("root") or "").strip()
+        return {
+            "_vibecad_deferred_vibescript_context": True,
+            "project_root": project_root,
+            "native_models": capture_model_summaries(doc) if doc is not None else [],
+        }
+
+    def complete_vibescript_context(
+        self, snapshot: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge VibeScript artifacts away from FreeCAD's owner thread."""
+
+        from VibeCADVibeScript import merge_model_summaries
+
+        if snapshot.get("_vibecad_deferred_vibescript_context") is not True:
+            raise RuntimeError("Invalid deferred VibeScript context snapshot.")
+        project_root = str(snapshot.get("project_root") or "").strip()
+        models = merge_model_summaries(
+            list(snapshot.get("native_models") or []), project_root
         )
-        return {"models": models}
+        compact_models = []
+        for model in models:
+            item = dict(model)
+            interfaces = item.get("interfaces")
+            if isinstance(interfaces, dict):
+                item["interfaces"] = {
+                    name: {
+                        "output": definition.get("output"),
+                        "description": definition.get("description"),
+                        "selection": definition.get("selection"),
+                        "resolved_object": (
+                            definition.get("resolved") or {}
+                        ).get("object"),
+                        "resolved_subelements": (
+                            definition.get("resolved") or {}
+                        ).get("subelements", []),
+                    }
+                    for name, definition in interfaces.items()
+                    if isinstance(definition, dict)
+                }
+            compact_models.append(item)
+        return {"models": compact_models}
+
+    def vibescript_context(self) -> dict[str, Any]:
+        """Return complete context for non-interactive/headless callers."""
+
+        return self.complete_vibescript_context(self.vibescript_context_snapshot())
 
     def provider_debug_config(self) -> dict[str, Any]:
         settings = load_debug_settings()
@@ -474,15 +519,21 @@ class VibeCADService:
         doc = self._active_document()
         if doc is None:
             return {"document": None, "object_count": 0, "objects": []}
-        objects = [self._object_summary(obj) for obj in doc.Objects]
-        visible_objects, bounds = self._bounded_items(objects, MAX_CONTEXT_OBJECTS)
+        visible_objects: list[dict[str, Any]] = []
+        object_count = 0
+        for obj in doc.Objects:
+            if self._is_private_scripted_object(obj):
+                continue
+            object_count += 1
+            if len(visible_objects) < MAX_CONTEXT_OBJECTS:
+                visible_objects.append(self._object_summary(obj))
         return {
             "document": doc.Name,
             "label": getattr(doc, "Label", doc.Name),
             "file_name": str(getattr(doc, "FileName", "") or ""),
-            "object_count": len(objects),
-            "objects_truncated": bounds["truncated"],
-            "objects_omitted": bounds["omitted"],
+            "object_count": object_count,
+            "objects_truncated": object_count > len(visible_objects),
+            "objects_omitted": max(0, object_count - len(visible_objects)),
             "objects": visible_objects,
         }
 
@@ -539,6 +590,50 @@ class VibeCADService:
         payload = {
             "document_uid": str(getattr(doc, "Uid", "") or ""),
             "objects": objects,
+        }
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def provider_document_revision(
+        self,
+        native_diagnostics: dict[str, Any] | None = None,
+        *,
+        object_count: int | None = None,
+    ) -> str:
+        """Return a topology-free turn token from bounded document metadata."""
+
+        doc = self._active_document()
+        if doc is None:
+            return hashlib.sha256(b"no-document").hexdigest()
+        booked_transaction = getattr(doc, "getBookedTransactionID", None)
+        payload = {
+            "document_uid": str(getattr(doc, "Uid", "") or ""),
+            "object_count": (
+                int(object_count)
+                if object_count is not None
+                else len(getattr(doc, "Objects", []) or [])
+            ),
+            "undo_count": int(getattr(doc, "UndoCount", 0) or 0),
+            "redo_count": int(getattr(doc, "RedoCount", 0) or 0),
+            "booked_transaction_id": (
+                int(booked_transaction()) if callable(booked_transaction) else 0
+            ),
+            "has_pending_transaction": bool(
+                getattr(doc, "HasPendingTransaction", False)
+            ),
+            "recomputing": bool(getattr(doc, "Recomputing", False)),
+            "recompute_pending": bool(getattr(doc, "RecomputePending", False)),
+            "recompute_generation": (
+                native_diagnostics.get("generation")
+                if isinstance(native_diagnostics, dict)
+                else None
+            ),
         }
         return hashlib.sha256(
             json.dumps(
@@ -724,6 +819,14 @@ class VibeCADService:
 
     @staticmethod
     def _object_matches_pack(obj: Any, pack: Any) -> bool:
+        if VibeCADService._is_private_scripted_object(obj):
+            return False
+        if (
+            getattr(pack, "workbench", "") == "PartWorkbench"
+            and str(getattr(obj, "VibeCADScriptedRole", "") or "")
+            == "publication"
+        ):
+            return True
         object_types = getattr(pack, "object_types", ()) if pack else ()
         if not object_types:
             return False
@@ -739,11 +842,33 @@ class VibeCADService:
 
     @staticmethod
     def _object_summary(obj: Any) -> dict[str, Any]:
-        return {
+        summary = {
             "name": obj.Name,
             "label": getattr(obj, "Label", obj.Name),
             "type": obj.TypeId,
         }
+        role = str(getattr(obj, "VibeCADScriptedRole", "") or "")
+        if role:
+            summary["scripted_role"] = role
+            summary["scripted_engine"] = str(
+                getattr(obj, "VibeCADScriptedEngine", "") or ""
+            )
+            summary["scripted_model_id"] = str(
+                getattr(obj, "VibeCADScriptedModelId", "") or ""
+            )
+            output_key = str(
+                getattr(obj, "VibeCADScriptedOutputKey", "") or ""
+            )
+            if output_key:
+                summary["published_output_key"] = output_key
+        return summary
+
+    @staticmethod
+    def _is_private_scripted_object(obj: Any) -> bool:
+        return (
+            str(getattr(obj, "VibeCADScriptedRole", "") or "")
+            in _PRIVATE_SCRIPTED_ROLES
+        )
 
     @staticmethod
     def _linked_object_summary(obj: Any) -> dict[str, Any] | None:
@@ -3512,6 +3637,11 @@ class VibeCADService:
     def project_context(self) -> dict[str, Any]:
         return self._project_store.context()
 
+    def project_scope_snapshot(self) -> dict[str, Any]:
+        """Return document-derived project identity without artifact I/O."""
+
+        return self._project_store.project_scope()
+
     def intent_memory(self) -> dict[str, Any]:
         return self._project_store.intent_memory()
 
@@ -3897,14 +4027,10 @@ class VibeCADService:
         return recompute_diagnostic_summary(self._active_document())
 
     def provider_tool_surface(self, workbench: str | None = None) -> dict[str, Any]:
-        from VibeCADSession import is_provider_safe_tool
+        from VibeCADSession import provider_tool_schemas
 
         active = workbench or self.active_workbench_name()
-        tools = [
-            self._registry.get(name).to_schema(active_workbench=active)
-            for name in self._registry.names()
-            if is_provider_safe_tool(self, name, active)
-        ]
+        tools = provider_tool_schemas(self, active)
         return {
             "active_workbench": active,
             "tool_count": len(tools),
@@ -4139,7 +4265,12 @@ class VibeCADService:
         return [
             obj
             for obj in doc.Objects
-            if getattr(obj, "TypeId", "").startswith("Part::")
+            if not self._is_private_scripted_object(obj)
+            and (
+                getattr(obj, "TypeId", "").startswith("Part::")
+                or str(getattr(obj, "VibeCADScriptedRole", "") or "")
+                == "publication"
+            )
         ]
 
     def _get_document_object(self, object_name: str | None):
@@ -4180,6 +4311,21 @@ class VibeCADService:
             "document": doc.Name if doc else None,
             "object_count": len(objects),
             "objects": objects[:80],
+        }
+
+    def provider_part_summary(self) -> dict[str, Any]:
+        """Return bounded Part identity without broad owner-thread topology work."""
+
+        objects = self._part_objects()
+        visible = objects[:MAX_CONTEXT_WORKBENCH_OBJECTS]
+        doc = self._active_document()
+        return {
+            "document": doc.Name if doc else None,
+            "object_count": len(objects),
+            "object_limit": MAX_CONTEXT_WORKBENCH_OBJECTS,
+            "objects_truncated": len(objects) > len(visible),
+            "objects_omitted": max(0, len(objects) - len(visible)),
+            "objects": [self._object_summary(obj) for obj in visible],
         }
 
     def _mesh_objects(self) -> list[Any]:
@@ -4483,14 +4629,19 @@ class VibeCADService:
         """
         active_workbench = self.active_workbench_name()
         task_panel = self.task_panel_summary()
+        native_diagnostics = self.recompute_diagnostics()
+        document_summary = self.provider_document_summary()
         project_context = dict(self.project_context())
         project_context.pop("partdesign_engine", None)
         context: dict[str, Any] = {
             "workbench": active_workbench,
             "vibecad_project": project_context,
             "human_steering": self.steering_state(),
-            "document": self.provider_document_summary(),
-            "cad_revision": self.structural_document_revision(),
+            "document": document_summary,
+            "cad_revision": self.provider_document_revision(
+                native_diagnostics,
+                object_count=int(document_summary.get("object_count") or 0),
+            ),
             "working_set": self.provider_working_set(),
             "selection": self.selection_summary(),
             "view": self.view_state(),
@@ -4499,7 +4650,6 @@ class VibeCADService:
             "conversation": self.conversation_history(),
         }
         context.update(self._provider_domain_context(active_workbench))
-        native_diagnostics = self.recompute_diagnostics()
         context["cad_state"] = self.cad_state_summary(
             native_diagnostics=native_diagnostics,
             task_panel=task_panel,
@@ -4513,21 +4663,21 @@ class VibeCADService:
             if self.partdesign_engine() == "openscad":
                 return {"partdesign": self.openscad_context()}
             if self.partdesign_engine() == "vibescript":
-                return {"partdesign": self.vibescript_context()}
+                return {"partdesign": self.vibescript_context_snapshot()}
             return {"partdesign": self.provider_partdesign_summary()}
         if workbench == "SketcherWorkbench":
             return {}
         if workbench == "PartWorkbench":
             return {
-                "part": self.part_summary(),
+                "part": self.provider_part_summary(),
                 "material": self.material_summary(),
                 "assembly": self.assembly_summary(),
             }
         if workbench == "AssemblyWorkbench":
             return {
                 "assembly": self.assembly_summary(),
-                "partdesign": self.partdesign_summary(),
-                "part": self.part_summary(),
+                "partdesign": self.provider_partdesign_summary(),
+                "part": self.provider_part_summary(),
             }
         if workbench == "DraftWorkbench":
             return {"draft": self.draft_summary()}
@@ -4536,7 +4686,7 @@ class VibeCADService:
         if workbench == "TechDrawWorkbench":
             return {
                 "techdraw": self.techdraw_summary(),
-                "document": self.document_summary(),
+                "document": self.provider_document_summary(),
             }
         if workbench == "MeshWorkbench":
             return {"mesh": self.mesh_summary()}
@@ -4544,7 +4694,7 @@ class VibeCADService:
             return {
                 "meshpart": self.meshpart_summary(),
                 "mesh": self.mesh_summary(),
-                "part": self.part_summary(),
+                "part": self.provider_part_summary(),
             }
         if workbench == "PointsWorkbench":
             return {"points": self.points_summary()}

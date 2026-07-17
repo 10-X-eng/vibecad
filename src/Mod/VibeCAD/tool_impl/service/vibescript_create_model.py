@@ -8,20 +8,29 @@ from __future__ import annotations
 TOOL_SPEC = {
     "name": "vibescript.create_model",
     "description": (
-        "Create one new persisted VibeScript model whose named outputs are native "
-        "parametric PartDesign feature trees, editable in the FreeCAD GUI "
-        "afterward. Call vibescript.describe_api once before writing the first "
+        "Create one persisted, source-parametric VibeScript component model. "
+        "Call vibescript.describe_api once before writing the first "
         "source to learn every available helper, the execution namespace, the "
-        "import policy, and the budget. Source executes in-process against the "
-        "live document inside "
-        "one transaction, uses millimetres, receives doc and params, and must "
+        "import policy, and the budget. Source executes in an isolated FreeCADCmd "
+        "worker against a temporary document, uses millimetres, receives doc and "
+        "params, and must "
         "assign result to an ordered dict whose keys exactly match "
         "expected_outputs and whose values are document objects each owning "
-        "exactly one valid solid. Use one model for one independently editable "
+        "exactly one valid solid. Accepted solids are transferred as exact BREP "
+        "and exposed in the user's document through stable published objects; "
+        "the worker's PartDesign feature history is not copied into the live "
+        "document. Source and parameters remain the editable model authority, so "
+        "iterate with edit_source or set_parameters and regenerate. Use one model "
+        "for one independently editable "
         "component or coherent subassembly; do not put an entire complex product "
         "in one program. A failed candidate is persisted under its returned "
         "model id so it can be inspected and repaired without recreating the "
         "program."
+        " Declare stable functional interfaces in an optional top-level "
+        "interfaces dict whenever assemblies, drawings, FEM, or CAM will "
+        "reference the output. Each interface names a result output and uses "
+        "an origin or expected-count geometric query; exact FaceN/EdgeN names "
+        "are forbidden because implementation history is replaceable."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -40,7 +49,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512000,
-                "description": "Complete initial VibeScript Python source assigning the final output dictionary to result. Build every sketch with SketchBuilder so it is fully constrained through named dimensions instead of raw constraint index tuples. Select dress-up edges with EdgeQuery geometric predicates immediately from the feature that creates them and keep them in named variables instead of rediscovering final-shape edge indices. Drive dimensions from params so the algebra persists as live expressions in the document. Imports are limited to FreeCAD, Part, PartDesign, Sketcher, vibescript_api, and safe stdlib modules.",
+                "description": "Complete initial VibeScript Python source assigning the final output dictionary to result. Build every sketch with SketchBuilder so it is fully constrained through named dimensions instead of raw constraint index tuples. Select dress-up edges with EdgeQuery geometric predicates immediately from the feature that creates them and keep them in named variables instead of rediscovering final-shape edge indices. Drive dimensions from params so the same source regenerates deterministically when parameters change. For every functional mating, datum, load, drawing, or machining reference, also assign interfaces = {name: {output, selection, description}} using selection type origin or a unique expected-count geometric query. Imports are limited to FreeCAD, Part, PartDesign, Sketcher, vibescript_api, and safe stdlib modules.",
             },
             "parameters": {
                 "type": "object",

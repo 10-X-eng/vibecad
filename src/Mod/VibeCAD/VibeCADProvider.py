@@ -65,13 +65,13 @@ A failed or ineffective feature is a stop condition. Diagnose and repair its ups
 
 
 VIBESCRIPT_AUTHORING_INSTRUCTIONS = """VIBESCRIPT AUTHORING
-The active PartDesign engine is VibeScript: each model is a parametric Python script executed against the live document inside a transaction. A failed run rolls back completely; a successful run commits real PartDesign features.
+The selected scripted engine is VibeScript. Each model is a source-parametric component generator executed in an isolated FreeCADCmd worker against a temporary document. A failed candidate cannot mutate the accepted live model. A successful candidate transfers exact validated BREP solids into stable published objects in the user's document. The worker's Body, Sketch, and PartDesign feature history is not copied into the live document; persisted source and parameters are the editable model authority.
 
 Before writing the first script of a session, call vibescript.describe_api and author against the returned reference. Do not guess at the API and do not probe the sandbox by provoking exceptions: print() output is captured and returned as stdout, and policy failures already explain themselves.
 
 The parameters argument is a flat map whose every value is one finite number. Strings, booleans, arrays, and nested objects are rejected. Compute derived values, tables, and interpolation inside source from those numbers.
 
-Scripts receive doc (the live document), params (the validated parameters), and every helper in the API reference. Create bodies and features through the helpers (new_body, new_sketch, SketchBuilder, pad, pocket, revolve, groove, loft, polar_pattern, mirror, fillet) rather than raw document calls; the helpers keep the feature tree ordered and validated. Every new sketch must be fully constrained; for computed geometry use SketchBuilder.apply(fixed=True). Assign result as a dict mapping each expected output name, in order, to a document object owning a shape.
+Scripts receive doc (the temporary worker document), params (the validated parameters), and every helper in the API reference. Create bodies and features through the helpers (new_body, new_sketch, SketchBuilder, pad, pocket, revolve, groove, loft, polar_pattern, mirror, fillet) rather than raw document calls; the helpers keep the candidate feature history ordered and validated. Every new sketch must be fully constrained; for computed geometry use SketchBuilder.apply(fixed=True). Assign result as a dict mapping each expected output name, in order, to a document object owning exactly one valid solid. Iterate accepted geometry by editing source or parameters and regenerating; do not assume direct edits to a published BREP object alter the persisted model program.
 
 Boolean hygiene: fused solids must never merely touch. Sink or overlap joined geometry by at least 0.5mm so unions meet face-on-face; tangent contact and coincident faces produce defective shells that recompute "successfully" and break the next feature instead. Never pierce a loft's spline surface with a plane face: attach adjoining geometry at the loft's own end-cap section so the shared boundary is planar.
 

@@ -203,9 +203,17 @@ class _ProviderContextService:
     def intent_memory_snapshot(self) -> dict[str, object]:
         return {"enabled": False}
 
-    def vibescript_context(self) -> dict[str, object]:
+    def vibescript_context_snapshot(self) -> dict[str, object]:
         self.vibescript_context_calls += 1
-        return {"models": [{"model_id": "a" * 32, "name": "Impeller"}]}
+        return {
+            "_vibecad_deferred_vibescript_context": True,
+            "models": [{"model_id": "a" * 32, "name": "Impeller"}],
+        }
+
+    def complete_vibescript_context(
+        self, snapshot: dict[str, object]
+    ) -> dict[str, object]:
+        return {"models": list(snapshot.get("models") or [])}
 
 
 def _context_schema(name: str) -> dict[str, object]:
@@ -227,20 +235,29 @@ def test_vibescript_model_context_follows_its_surfaced_tools(
         _context_schema("assembly.solve"),
         _context_schema("vibescript.inspect_model"),
     ]
-    monkeypatch.setattr(session, "provider_tool_schemas", lambda _service, _wb: schemas)
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb, **_kwargs: schemas,
+    )
     service = _ProviderContextService(
         "AssemblyWorkbench",
         {"cad_state": {}, "assembly": {"assemblies": []}},
     )
 
-    context = session._context_for_provider(service)
+    context = session._complete_vibescript_provider_context(
+        service, session._context_for_provider(service)
+    )
 
     assert context["vibescript"]["models"] == [
         {"model_id": "a" * 32, "name": "Impeller"}
     ]
-    assert (
-        "not automatically reconciled" in context["vibescript"]["regeneration_warning"]
-    )
+    assert context["vibescript"]["regeneration_contract"] == {
+        "published_output_identity": "stable",
+        "managed_semantic_references": "rebound_or_explicitly_deferred",
+        "derived_analysis_and_manufacturing_results": "marked_stale",
+        "unmanaged_subelement_references": "regeneration_rejected",
+    }
     assert service.vibescript_context_calls == 1
     assert (
         provider._model_visible_context(context)["vibescript"] == context["vibescript"]
@@ -253,7 +270,7 @@ def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
-        lambda _service, _wb: [_context_schema("bim.list_structure")],
+        lambda _service, _wb, **_kwargs: [_context_schema("bim.list_structure")],
     )
     service = _ProviderContextService(
         "BIMWorkbench",
@@ -273,7 +290,9 @@ def test_partdesign_keeps_one_vibescript_model_context_without_duplication(
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
-        lambda _service, _wb: [_context_schema("vibescript.inspect_model")],
+        lambda _service, _wb, **_kwargs: [
+            _context_schema("vibescript.inspect_model")
+        ],
     )
     service = _ProviderContextService(
         "PartDesignWorkbench",

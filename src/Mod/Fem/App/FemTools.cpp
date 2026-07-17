@@ -33,6 +33,7 @@
 #include <Geom_BezierSurface.hxx>
 #include <Geom_Line.hxx>
 #include <Precision.hxx>
+#include <Standard_Failure.hxx>
 #include <TColgp_Array2OfPnt.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
@@ -45,6 +46,7 @@
 #include <gp_Vec.hxx>
 
 #include <App/Application.h>
+#include <Base/Exception.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/App/Tools.h>
 
@@ -352,22 +354,33 @@ void Fem::Tools::setSubShapeGlobalLocation(const Part::Feature* feat, TopoDS_Sha
 }
 
 
-TopoDS_Shape Fem::Tools::getFeatureSubShape(const Part::Feature* feat, const char* subName, bool silent)
+TopoDS_Shape Fem::Tools::getFeatureSubShape(
+    const App::DocumentObject* object,
+    const char* subName,
+    bool silent
+)
 {
-    TopoDS_Shape sh;
-    const Part::TopoShape& toposhape = feat->Shape.getShape();
-    if (toposhape.isNull()) {
-        return sh;
+    if (!object) {
+        return {};
     }
-
-    sh = toposhape.getSubShape(subName, silent);
-    if (sh.IsNull()) {
-        return sh;
+    try {
+        return Part::Feature::getShape(
+            object,
+            Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
+            subName
+        );
     }
-
-    setSubShapeGlobalLocation(feat, sh);
-
-    return sh;
+    catch (const Base::Exception&) {
+        if (!silent) {
+            throw;
+        }
+    }
+    catch (const Standard_Failure&) {
+        if (!silent) {
+            throw;
+        }
+    }
+    return {};
 }
 
 bool Fem::Tools::getCylinderParams(

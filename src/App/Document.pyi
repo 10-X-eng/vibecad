@@ -78,6 +78,9 @@ class Document(PropertyContainer):
     Recomputing: Final[bool] = False
     """Indicate if the document is recomputing"""
 
+    RecomputePending: Final[bool] = False
+    """Indicate if an asynchronous recompute is queued or executing"""
+
     Transacting: Final[bool] = False
     """Indicate whether the document is undoing/redoing"""
 
@@ -416,6 +419,20 @@ class Document(PropertyContainer):
     ) -> int:
         """
         Recompute the document and returns the amount of recomputed features.
+        """
+        ...
+
+    def recomputeAsync(
+        self,
+        objs: Sequence[DocumentObject] = None,
+        recursive: bool = False,
+        /,
+    ) -> int:
+        """
+        Queue worker-safe recompute work and return the number of queued requests.
+
+        This method never falls back to the caller or GUI thread. It raises when
+        any requested object has a thread-affine recompute implementation.
         """
         ...
 

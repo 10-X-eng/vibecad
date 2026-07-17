@@ -13,9 +13,13 @@ TOOL_SPEC = {
         "component architecture or interface must change; use edit_source or "
         "set_parameters for ordinary iteration, and consult "
         "vibescript.describe_api for the authoring helpers available in "
-        "source. The replacement is persisted as "
-        "the working revision and executed inside one document transaction "
-        "before it replaces the accepted FreeCAD output."
+        "source. The replacement is persisted as the working revision, executed "
+        "and validated in an isolated FreeCADCmd worker, then published through "
+        "one bounded live-document transaction before it replaces the accepted "
+        "FreeCAD output."
+        " Existing published outputs and interfaces that have downstream "
+        "consumers cannot be removed; the transaction fails with the exact "
+        "consumers instead of breaking them."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -38,7 +42,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512000,
-                "description": "Complete replacement VibeScript source assigning the new output dictionary to result. Build every sketch with SketchBuilder so it is fully constrained through named dimensions instead of raw constraint index tuples. Select dress-up edges with EdgeQuery geometric predicates immediately from the feature that creates them and keep them in named variables instead of rediscovering final-shape edge indices. Drive dimensions from params so the algebra persists as live expressions in the document.",
+                "description": "Complete replacement VibeScript source assigning the new output dictionary to result and preserving or deliberately revising its top-level interfaces dict. Build every sketch with SketchBuilder so it is fully constrained through named dimensions instead of raw constraint index tuples. Select dress-up edges with EdgeQuery geometric predicates immediately from the feature that creates them and keep them in named variables instead of rediscovering final-shape edge indices. Drive dimensions from params so the same source regenerates deterministically when parameters change.",
             },
             "parameters": {
                 "type": "object",

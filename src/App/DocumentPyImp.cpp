@@ -22,10 +22,13 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <sstream>
+
 #include <Base/FileInfo.h>
 #include <Base/Interpreter.h>
 #include <Base/Stream.h>
 
+#include "Application.h"
 #include "Document.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
@@ -762,6 +765,89 @@ PyObject* DocumentPy::recompute(PyObject* args)
     PY_CATCH;
 }
 
+PyObject* DocumentPy::recomputeAsync(PyObject* args)
+{
+    PyObject* pyobjs = Py_None;
+    PyObject* recursive = Py_False;
+    if (!PyArg_ParseTuple(args, "|OO!", &pyobjs, &PyBool_Type, &recursive)) {
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        Document* document = getDocumentPtr();
+        std::vector<RecomputeRequest> requests;
+        if (pyobjs == Py_None) {
+            requests.push_back(RecomputeRequest::fromDocument(*document));
+        }
+        else {
+            if (!PySequence_Check(pyobjs)) {
+                PyErr_SetString(PyExc_TypeError, "expect input of sequence of document objects");
+                return nullptr;
+            }
+            Py::Sequence sequence(pyobjs);
+            requests.reserve(sequence.size());
+            for (Py_ssize_t index = 0; index < sequence.size(); ++index) {
+                if (!PyObject_TypeCheck(sequence[index].ptr(), &DocumentObjectPy::Type)) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "Expect element in sequence to be of type document object"
+                    );
+                    return nullptr;
+                }
+                auto* object = static_cast<DocumentObjectPy*>(sequence[index].ptr())
+                                   ->getDocumentObjectPtr();
+                if (!object || object->getDocument() != document) {
+                    PyErr_SetString(
+                        PyExc_ValueError,
+                        "Every asynchronous recompute object must belong to this document"
+                    );
+                    return nullptr;
+                }
+                requests.push_back(RecomputeRequest::fromDocumentObject(
+                    *object,
+                    Base::asBoolean(recursive)
+                ));
+            }
+        }
+
+        Application& application = GetApplication();
+        std::vector<std::string> unsafeObjects;
+        for (const auto& request : requests) {
+            if (!application.canRecomputeRequestOnWorker(request)) {
+                unsafeObjects.push_back(
+                    request.documentObjectName.empty() ? std::string("<document>")
+                                                       : request.documentObjectName
+                );
+            }
+        }
+        if (!unsafeObjects.empty()) {
+            std::ostringstream message;
+            message << "Asynchronous recompute rejected thread-affine target";
+            if (unsafeObjects.size() != 1) {
+                message << 's';
+            }
+            message << ": ";
+            for (std::size_t index = 0; index < unsafeObjects.size(); ++index) {
+                if (index != 0) {
+                    message << ", ";
+                }
+                message << unsafeObjects[index];
+            }
+            throw Base::RuntimeError(message.str());
+        }
+
+        const auto requestCount = requests.size();
+        if (!application.tryQueueRecomputeRequests(std::move(requests))) {
+            throw Base::RuntimeError(
+                "Asynchronous recompute targets became worker-unsafe before they were queued"
+            );
+        }
+        return Py::new_reference_to(Py::Long(requestCount));
+    }
+    PY_CATCH;
+}
+
 PyObject* DocumentPy::getRecomputeDiagnostics(PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {
@@ -1252,6 +1338,12 @@ Py::Boolean DocumentPy::getImporting() const
 Py::Boolean DocumentPy::getRecomputing() const
 {
     return {getDocumentPtr()->testStatus(Document::Status::Recomputing)};
+}
+
+Py::Boolean DocumentPy::getRecomputePending() const
+{
+    const auto* document = getDocumentPtr();
+    return {GetApplication().hasPendingRecomputeRequest(document->getName())};
 }
 
 Py::Boolean DocumentPy::getTransacting() const

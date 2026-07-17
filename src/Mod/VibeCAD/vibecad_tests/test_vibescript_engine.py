@@ -5,20 +5,21 @@
 VibeCADVibeScript exposes the same runner API surface as the build123d and
 OpenSCAD engines (prepare_execution, execute_prepared, record_failed_attempt,
 cleanup_prepared, inspect_model, delete_model, model_summaries, editor
-staging) but with a synchronous lifecycle: ``execute_prepared`` runs the
-source in-process inside one document transaction and always returns a
-terminal payload.
+staging). Source execution is isolated from the GUI process; candidate import,
+publication, and asynchronous native recompute are separate host stages.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import VibeCADReferenceContracts as reference_contracts
 import VibeCADVibeScript as vibescript
 
 MODEL_ID = "b" * 32
@@ -26,6 +27,23 @@ MODEL_ID = "b" * 32
 SOURCE_OK = (
     'body = doc.addObject("PartDesign::Body", "Body")\nresult = {"Body": body}\n'
 )
+
+
+@pytest.fixture(autouse=True)
+def _bounded_sidecar_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests independent from a running FreeCAD preference service."""
+
+    monkeypatch.setattr(
+        vibescript,
+        "_scripted_budgets",
+        lambda: (30.0, 512 * 1024 * 1024),
+    )
+    monkeypatch.setattr(
+        vibescript,
+        "_freecadcmd_executable",
+        lambda _freecad_home: Path(sys.executable),
+    )
+    monkeypatch.setattr(vibescript, "_freecad_home_path", lambda: str(Path(sys.executable).parent))
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +94,13 @@ class _StubObject:
             self.PropertiesList.append(name)
             setattr(self, name, "")
 
+    def removeProperty(self, name: str) -> bool:
+        if name not in self.PropertiesList:
+            return False
+        self.PropertiesList.remove(name)
+        delattr(self, name)
+        return True
+
     def addObject(self, obj: Any) -> None:
         self.Group.append(obj)
         self.OutListRecursive.append(obj)
@@ -117,10 +142,18 @@ class _StubDocument:
     def getObject(self, name: str) -> Any | None:
         return next((obj for obj in self.Objects if obj.Name == name), None)
 
+    def findObjects(self, *, Type: str) -> list[Any]:
+        return [obj for obj in self.Objects if obj.TypeId == Type]
+
     def removeObject(self, name: str) -> None:
         obj = self.getObject(name)
         if obj is not None:
             self.Objects.remove(obj)
+            for owner in self.Objects:
+                owner.Group = [item for item in owner.Group if item is not obj]
+                owner.OutListRecursive = [
+                    item for item in owner.OutListRecursive if item is not obj
+                ]
 
     def recompute(self) -> None:
         pass
@@ -134,6 +167,7 @@ def _stub_service(
     return SimpleNamespace(
         _active_document=lambda: doc,
         project_context=lambda: {"root": str(project_root)},
+        project_scope_snapshot=lambda: {"root": str(project_root)},
         recompute_diagnostics=lambda: {
             "captured": True,
             "diagnostics": list(diagnostics or []),
@@ -243,6 +277,25 @@ class TestVibeScriptSourcePolicy:
         assert payload["failure_code"] == "SOURCE_POLICY_VIOLATION"
         assert any(
             "__class__" in item["reason"] for item in payload["observed"]["violations"]
+        )
+
+    @pytest.mark.parametrize(
+        "source, method",
+        (
+            ("import FreeCAD\nFreeCAD.newDocument('Other')\n", "newDocument"),
+            ("import FreeCAD\nFreeCAD.openDocument('/tmp/other.FCStd')\n", "openDocument"),
+            ("doc.saveAs('/tmp/output.FCStd')\n", "saveAs"),
+        ),
+    )
+    def test_document_lifecycle_calls_rejected(
+        self, source: str, method: str
+    ) -> None:
+        with pytest.raises(vibescript.VibeScriptFailure) as excinfo:
+            vibescript.validate_source(source)
+        payload = excinfo.value.payload
+        assert payload["failure_code"] == "SOURCE_POLICY_VIOLATION"
+        assert any(
+            method in item["reason"] for item in payload["observed"]["violations"]
         )
 
     def test_builtins_name_read_rejected(self) -> None:
@@ -589,410 +642,233 @@ class TestPrepareExecution:
 
 
 # ---------------------------------------------------------------------------
-# execute_prepared: synchronous lifecycle
+# execute_prepared: isolated worker lifecycle
 # ---------------------------------------------------------------------------
+
+
+def _worker_process_result(**overrides: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "started": True,
+        "cancelled": False,
+        "memory_exceeded": False,
+        "timed_out": False,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+        "elapsed_seconds": 0.125,
+        "observed_memory_bytes": 32 * 1024 * 1024,
+    }
+    result.update(overrides)
+    return result
 
 
 class TestExecutePrepared:
-    def test_success_is_terminal_and_commits_one_transaction(
-        self, tmp_path: Path
+    def test_success_returns_detached_worker_report_without_document_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        import VibeCADScriptedProcess as process_module
+
         doc = _StubDocument()
         prepared = _prepare_create(tmp_path, doc=doc)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is True
-        # Terminal payload: no pending/wait markers of any kind.
-        assert "status" not in payload
-        assert "pending" not in payload
-        assert doc.transaction_log == ["open:VibeScript model", "commit"]
-        assert payload["created"] is True
-        assert payload["model"]["model_id"] == prepared["model_id"]
-        assert payload["outputs"][0]["key"] == "Body"
-        assert payload["outputs"][0]["shape"]["solid_count"] == 1
-        assert payload["execution"]["vibescript_version"]
-        assert payload["cad_revision"] == "cad-revision-1"
-        assert payload["stdout"] == ""
+        captured: dict[str, Any] = {}
 
-    def test_print_output_surfaces_in_success_payload(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        source = (
-            'print("blade count", 12)\n'
-            'body = doc.addObject("PartDesign::Body", "Body")\n'
-            'result = {"Body": body}\n'
-        )
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is True
-        assert payload["stdout"] == "blade count 12\n"
-
-    def test_print_output_surfaces_in_failure_payload(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        source = 'print("progress marker")\nraise RuntimeError("boom")\n'
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["observed"]["stdout"] == "progress marker\n"
-
-    def test_banned_builtin_failure_carries_policy_hint(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        # A conditionally-bound shadow must pass the static excluded-builtin
-        # gate (scope-insensitive suppression), but the branch never runs so
-        # the read still raises NameError at runtime — exercising the
-        # runtime policy-hint path that backstops static validation.
-        source = 'if False:\n    memoryview = None\nvalues = memoryview(b"x")\n'
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "VIBESCRIPT_EXECUTION_FAILED"
-        assert "excludes" in payload["error"]
-        assert "excludes" in payload["observed"]["policy_hint"]
-
-    def test_success_creates_tagged_container_and_mirror(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        payload = vibescript.execute_prepared(prepared)
-        containers = [
-            obj for obj in doc.Objects if getattr(obj, "TypeId", "") == "App::Part"
-        ]
-        assert len(containers) == 1
-        container = containers[0]
-        assert getattr(container, vibescript.PROP_MODEL_ID) == prepared["model_id"]
-        assert getattr(container, vibescript.PROP_REVISION) == prepared["revision"]
-        assert getattr(container, vibescript.PROP_SOURCE) == SOURCE_OK
-        mirror = payload["mirror"]
-        assert Path(mirror["source"]).read_text(encoding="utf-8") == SOURCE_OK
-        assert Path(mirror["revision_source"]).is_file()
-        manifest = Path(mirror["manifest"]).read_text(encoding="utf-8")
-        assert '"state": "accepted"' in manifest
-
-    def test_script_failure_aborts_and_rolls_back(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        source = (
-            'body = doc.addObject("PartDesign::Body", "Body")\n'
-            'raise RuntimeError("boom")\n'
-        )
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "VIBESCRIPT_EXECUTION_FAILED"
-        assert payload["failure_stage"] == "native_call"
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
-        assert doc.Objects == []
-        location = payload["observed"]["failure_location"]
-        assert location["line"] == 2
-        assert "boom" in payload["error"]
-
-    def test_runtime_import_error_is_execution_failure(self, tmp_path: Path) -> None:
-        """A runtime ImportError (e.g. FreeCAD internals or an allowlisted
-        module missing at runtime) is an execution failure, never a source
-        policy violation: import policy is enforced statically.
-        """
-        doc = _StubDocument()
-        source = (
-            'import functools\nraise ImportError("runtime import machinery failed")\n'
-        )
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "VIBESCRIPT_EXECUTION_FAILED"
-        assert payload["failure_stage"] == "native_call"
-        assert payload["observed"]["exception_kind"] == "python_execution_failure"
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
-
-    def test_contract_violation_maps_to_postcondition(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        source = 'body = doc.addObject("PartDesign::Body", "Body")\nresult = {}\n'
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "VIBESCRIPT_CONTRACT_VIOLATION"
-        assert payload["failure_stage"] == "postcondition"
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
-
-    def test_budget_trip_maps_to_budget_failure(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        source = (
-            "total = 0\n"
-            "for index in range(1000000):\n"
-            "    total = total + index\n"
-            'result = {"Body": doc.addObject("PartDesign::Body", "Body")}\n'
-        )
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared, max_operations=500)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "VIBESCRIPT_BUDGET_EXCEEDED"
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
-        assert doc.Objects == []
-
-    def test_preexisting_object_as_output_rejected(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        existing = doc.addObject("PartDesign::Body", "Existing")
-        source = f'result = {{"Body": doc.getObject("{existing.Name}")}}\n'
-        prepared = _prepare_create(tmp_path, doc=doc, source=source)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "OUTPUT_NOT_CREATED_BY_SCRIPT"
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
-        assert doc.Objects == [existing]
-
-    def test_recompute_errors_abort_commit(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        errors = [
-            {
-                "severity": "error",
-                "code": "RECOMPUTE_FAILED",
-                "object": "Body",
-                "message": "failed to rebuild",
+        def run_process(command: list[str], **kwargs: Any) -> dict[str, Any]:
+            captured["command"] = list(command)
+            captured.update(kwargs)
+            report = {
+                "ok": True,
+                "outputs": [{"key": "Body", "brep_path": "Body.brep"}],
+                "interfaces": {},
+                "stdout": "worker output\n",
             }
-        ]
-        prepared = _prepare_create(tmp_path, doc=doc)
-        prepared["service"] = _stub_service(doc, tmp_path, diagnostics=errors)
+            (Path(prepared["staging"]) / "result.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            return _worker_process_result()
+
+        monkeypatch.setattr(process_module, "run_process", run_process)
         payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "VIBESCRIPT_COMMIT_FAILED"
-        assert payload["failure_stage"] == "postcondition"
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
+
+        assert payload["ok"] is True
+        assert payload["stdout"] == "worker output\n"
+        assert payload["elapsed_seconds"] == pytest.approx(0.125)
+        assert captured["command"][1] == "--safe-mode"
+        assert captured["cwd"] == Path(prepared["staging"])
+        assert captured["memory_limit_bytes"] == 512 * 1024 * 1024
         assert doc.Objects == []
-
-    def test_document_change_fails_before_transaction(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        other = _StubDocument(name="Other")
-        prepared["service"] = _stub_service(other, tmp_path)
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "DOCUMENT_CHANGED"
-        assert other.transaction_log == []
-
-    def test_cancellation_honored_before_execution(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        payload = vibescript.execute_prepared(prepared, cancellation_check=lambda: True)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "RUN_CANCELLED"
         assert doc.transaction_log == []
 
-    def test_update_deletes_prior_owned_objects(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        created = _prepare_create(tmp_path, doc=doc)
-        first = vibescript.execute_prepared(created)
-        assert first["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        prepared = vibescript.prepare_execution(
-            service,
-            "vibescript.edit_source",
-            {
-                "model_id": created["model_id"],
-                "expected_revision": created["revision"],
-                "edits": [
-                    {
-                        "old_text": '"PartDesign::Body", "Body"',
-                        "new_text": '"PartDesign::Body", "Plate"',
-                    }
-                ],
-            },
-        )
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is True
-        assert payload["updated"] is True
-        assert payload["removed_objects"]
-        containers = [
-            obj for obj in doc.Objects if getattr(obj, "TypeId", "") == "App::Part"
-        ]
-        assert len(containers) == 1
-        assert getattr(containers[0], vibescript.PROP_REVISION) == prepared["revision"]
-
-    def test_edit_source_with_parameter_patch_executes_atomically(
-        self, tmp_path: Path
+    def test_worker_contract_failure_is_structured_and_non_mutating(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One call edits source, adds a param, retires another — one commit."""
+        import VibeCADScriptedProcess as process_module
+
         doc = _StubDocument()
-        created = _prepare_create(
-            tmp_path,
-            doc=doc,
-            source=(
-                'angle = params["old_angle"]\n'
-                'body = doc.addObject("PartDesign::Body", "Body")\n'
-                'result = {"Body": body}\n'
+        prepared = _prepare_create(tmp_path, doc=doc)
+
+        def run_process(_command: list[str], **_kwargs: Any) -> dict[str, Any]:
+            report = {
+                "ok": False,
+                "exception_kind": "contract_violation",
+                "exception_type": "ContractViolation",
+                "error": "result must contain Body",
+                "stdout": "diagnostic\n",
+                "failure_location": {"line": 4},
+            }
+            (Path(prepared["staging"]) / "result.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            return _worker_process_result(returncode=1)
+
+        monkeypatch.setattr(process_module, "run_process", run_process)
+        payload = vibescript.execute_prepared(prepared)
+
+        assert payload["failure_code"] == "VIBESCRIPT_CONTRACT_VIOLATION"
+        assert payload["failure_stage"] == "postcondition"
+        assert payload["engine_stage"] == "contract"
+        assert payload["observed"]["stdout"] == "diagnostic\n"
+        assert payload["observed"]["failure_location"] == {"line": 4}
+        assert doc.Objects == []
+        assert doc.transaction_log == []
+
+    def test_cancellation_terminates_before_publication(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import VibeCADScriptedProcess as process_module
+
+        doc = _StubDocument()
+        prepared = _prepare_create(tmp_path, doc=doc)
+        monkeypatch.setattr(
+            process_module,
+            "run_process",
+            lambda *_args, **_kwargs: _worker_process_result(
+                cancelled=True, returncode=-15
             ),
-            parameters={"width": 10.0, "old_angle": 15.0},
         )
-        first = vibescript.execute_prepared(created)
-        assert first["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        prepared = vibescript.prepare_execution(
-            service,
-            "vibescript.edit_source",
-            {
-                "model_id": created["model_id"],
-                "expected_revision": created["revision"],
-                "edits": [
-                    {
-                        "old_text": 'params["old_angle"]',
-                        "new_text": 'params["splitter_count"]',
-                    }
-                ],
-                "parameter_patch": {"splitter_count": 4.0, "old_angle": None},
-            },
-        )
+
         payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is True
-        assert payload["updated"] is True
-        # The edited source reads the new parameter, so success proves the
-        # patched params reached the executor in the same run.
-        containers = [
-            obj for obj in doc.Objects if getattr(obj, "TypeId", "") == "App::Part"
-        ]
-        assert len(containers) == 1
-        persisted = json.loads(getattr(containers[0], vibescript.PROP_PARAMETERS))
-        assert persisted == {"splitter_count": 4.0, "width": 10.0}
-        # Exactly one transaction per run: create commit, then edit commit.
-        assert doc.transaction_log == [
-            "open:VibeScript model",
-            "commit",
-            "open:VibeScript model",
-            "commit",
-        ]
+        assert payload["failure_code"] == "RUN_CANCELLED"
+        assert payload["cancelled"] is True
+        assert doc.Objects == []
+        assert doc.transaction_log == []
+
+    def test_missing_worker_result_is_not_guessed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import VibeCADScriptedProcess as process_module
+
+        prepared = _prepare_create(tmp_path)
+        monkeypatch.setattr(
+            process_module,
+            "run_process",
+            lambda *_args, **_kwargs: _worker_process_result(returncode=7),
+        )
+
+        payload = vibescript.execute_prepared(prepared)
+        assert payload["failure_code"] == "RUNNER_NO_RESULT"
+        assert payload["observed"]["exit_code"] == 7
 
 
 # ---------------------------------------------------------------------------
-# record_failed_attempt / cleanup
+# Failed attempts, cleanup, and working-source artifacts
 # ---------------------------------------------------------------------------
 
 
-class TestFailedAttempts:
+class TestWorkingArtifacts:
     def test_failed_attempt_persists_failure_artifacts(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(
-            tmp_path, doc=doc, source='raise RuntimeError("boom")\n'
-        )
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        candidate = vibescript.record_failed_attempt(prepared, payload)
+        prepared = _prepare_create(tmp_path, source='raise RuntimeError("boom")\n')
+        failure = {
+            "ok": False,
+            "failure_code": "VIBESCRIPT_EXECUTION_FAILED",
+            "failure_stage": "execution",
+            "error": "boom",
+        }
+        candidate = vibescript.record_failed_attempt(prepared, failure)
         assert candidate["state"] == "draft_failed"
         attempt = Path(candidate["attempt_directory"])
         assert (attempt / "failure.json").is_file()
-        assert (attempt / "model.py").is_file()
-        manifest = (attempt / "manifest.json").read_text(encoding="utf-8")
-        assert '"status": "failed"' in manifest
+        assert '"status": "failed"' in (
+            attempt / "manifest.json"
+        ).read_text(encoding="utf-8")
 
-    def test_cleanup_prepared_is_safe_and_idempotent(self, tmp_path: Path) -> None:
+    def test_cleanup_prepared_removes_only_worker_staging(self, tmp_path: Path) -> None:
         prepared = _prepare_create(tmp_path)
+        artifact_directory = Path(prepared["artifacts"]["artifact_directory"])
+        staging = Path(prepared["staging"])
+
         vibescript.cleanup_prepared(prepared)
         vibescript.cleanup_prepared(prepared)
+
+        assert not staging.exists()
+        assert artifact_directory.exists()
         assert "service" not in prepared
 
-
-# ---------------------------------------------------------------------------
-# inspect / delete / summaries
-# ---------------------------------------------------------------------------
-
-
-class TestInspectDelete:
-    def test_inspect_after_accept_returns_model_and_outputs(
-        self, tmp_path: Path
-    ) -> None:
+    def test_editor_stages_a_new_working_revision(self, tmp_path: Path) -> None:
         doc = _StubDocument()
         prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
         service = _stub_service(doc, tmp_path)
-        result = vibescript.inspect_model(service, prepared["model_id"])
-        assert result["ok"] is True
-        model = result["model"]
-        assert model["model_id"] == prepared["model_id"]
-        assert model["source"] == SOURCE_OK
-        assert model["state"] == "accepted"
-        assert model["accepted_outputs"][0]["key"] == "Body"
+        new_source = SOURCE_OK + "# edited\n"
 
-    def test_inspect_unknown_model_lists_available(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        service = _stub_service(doc, tmp_path)
-        payload = vibescript.inspect_model(service, MODEL_ID)
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "MODEL_NOT_FOUND"
-        assert payload["observed"]["available_models"] == []
-
-    def test_delete_requires_current_revision(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        payload = vibescript.delete_model(
-            service, prepared["model_id"], "stale", "obsolete"
-        )
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "STALE_MODEL_REVISION"
-
-    def test_delete_removes_objects_and_artifacts(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        payload = vibescript.delete_model(
-            service, prepared["model_id"], prepared["revision"], "obsolete"
-        )
-        assert payload["ok"] is True
-        assert payload["deleted_objects"]
-        assert doc.Objects == []
-        assert not Path(payload["artifact_directory"]).exists()
-
-    def test_model_summaries_merge_document_and_artifacts(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
-        summaries = vibescript.model_summaries(doc, tmp_path)
-        assert len(summaries) == 1
-        summary = summaries[0]
-        assert summary["model_id"] == prepared["model_id"]
-        assert summary["state"] == "accepted"
-        assert summary["object_name"]
-
-
-# ---------------------------------------------------------------------------
-# Editor staging
-# ---------------------------------------------------------------------------
-
-
-class TestEditorStaging:
-    def test_stage_editor_source_creates_working_revision(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        new_source = SOURCE_OK + "# tweaked\n"
         staged = vibescript.stage_editor_source(
             service, prepared["model_id"], prepared["revision"], new_source
         )
-        assert staged["ok"] is True and staged["changed"] is True
+
+        assert staged["ok"] is True
+        assert staged["changed"] is True
+        assert staged["working_revision"] != prepared["revision"]
         directory = vibescript._model_directory(tmp_path, prepared["model_id"])
         assert (directory / "model.py").read_text(encoding="utf-8") == new_source
 
-    def test_revert_working_to_accepted_restores_source(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        vibescript.stage_editor_source(
-            service, prepared["model_id"], prepared["revision"], SOURCE_OK + "# x\n"
-        )
-        reverted = vibescript.revert_working_to_accepted(service, prepared["model_id"])
-        assert reverted["ok"] is True
-        assert reverted["source"] == SOURCE_OK
-        assert reverted["working_revision"] == prepared["revision"]
-
-    def test_stage_editor_source_rejects_stale_revision(self, tmp_path: Path) -> None:
-        doc = _StubDocument()
-        prepared = _prepare_create(tmp_path, doc=doc)
-        assert vibescript.execute_prepared(prepared)["ok"] is True
-        service = _stub_service(doc, tmp_path)
-        with pytest.raises(vibescript.VibeScriptFailure) as excinfo:
-            vibescript.stage_editor_source(
-                service, prepared["model_id"], "stale", SOURCE_OK + "# x\n"
-            )
-        assert excinfo.value.payload["failure_code"] == "STALE_MODEL_REVISION"
+    def test_unknown_model_inspection_lists_no_models(self, tmp_path: Path) -> None:
+        service = _stub_service(_StubDocument(), tmp_path)
+        payload = vibescript.inspect_model(service, MODEL_ID)
+        assert payload["failure_code"] == "MODEL_NOT_FOUND"
+        assert payload["observed"]["available_models"] == []
 
 
 # ---------------------------------------------------------------------------
+# Published-reference resolution
+# ---------------------------------------------------------------------------
+
+
+def test_published_object_dereferences_native_link_before_forwarded_role() -> None:
+    publication = SimpleNamespace(
+        Name="PublishedBody",
+        VibeCADScriptedRole="publication",
+    )
+    occurrence = SimpleNamespace(
+        Name="PublishedBody001",
+        LinkedObject=publication,
+        # App::Link forwards this property from LinkedObject in FreeCAD.
+        VibeCADScriptedRole="publication",
+    )
+
+    assert reference_contracts.published_object(occurrence) is publication
+    assert reference_contracts.published_object(publication) is publication
+
+
+def test_rollback_comparison_does_not_boolean_infinite_origin_geometry() -> None:
+    import vibescript_executor
+
+    class _InfiniteShape:
+        def isNull(self):
+            raise AssertionError("infinite construction geometry must not be sampled")
+
+    public = {
+        "name": "X_Axis",
+        "type": "App::Line",
+        "label": "X-axis",
+        "state": ["Up-to-date"],
+        "placement": [1.0, 0.0, 0.0, 0.0] * 3,
+    }
+    before = {**public, "_shape_restore": _InfiniteShape()}
+    after = {**public, "_shape_restore": _InfiniteShape()}
+
+    assert vibescript_executor._rollback_records_equal(before, after) is True
+
+
+# ---------------------------------------------------------------------------
+
 # Runner API surface parity
 # ---------------------------------------------------------------------------
 
@@ -1002,6 +878,14 @@ class TestRunnerApiSurface:
         for name in (
             "prepare_execution",
             "execute_prepared",
+            "import_validated_outputs",
+            "commit_outputs",
+            "continue_commit",
+            "resolve_commit_rebind",
+            "finish_commit_rebind",
+            "validate_commit",
+            "finish_commit_validation",
+            "cancel_commit",
             "record_failed_attempt",
             "cleanup_prepared",
             "inspect_model",
@@ -1030,3 +914,18 @@ class TestRunnerApiSurface:
             elif isinstance(node, ast_module.ImportFrom):
                 top_level_imports.add(str(node.module or "").split(".")[0])
         assert not top_level_imports & {"FreeCAD", "FreeCADGui", "Part", "Sketcher"}
+
+    def test_vibescript_never_calls_synchronous_document_recompute(self) -> None:
+        import ast as ast_module
+        import inspect
+
+        tree = ast_module.parse(inspect.getsource(vibescript))
+        synchronous_calls = [
+            node
+            for node in ast_module.walk(tree)
+            if isinstance(node, ast_module.Call)
+            and isinstance(node.func, ast_module.Attribute)
+            and node.func.attr == "recompute"
+        ]
+
+        assert synchronous_calls == []

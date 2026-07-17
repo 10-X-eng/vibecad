@@ -128,8 +128,10 @@ def run(service: Any) -> dict[str, Any]:
         "namespace": {
             "injected": sorted({"doc", "params", *vibescript_api.__all__}),
             "doc": (
-                "The live FreeCAD document. Create bodies with new_body(doc); "
-                "never call FreeCAD.newDocument()."
+                "The temporary document owned by the isolated FreeCADCmd worker. "
+                "Create bodies with new_body(doc); never create, open, close, "
+                "save, restore, or replace a document. Accepted output solids are "
+                "published into the user's live document after validation."
             ),
             "params": (
                 "Validated flat numeric parameters (vibescript_api.Params) "
@@ -140,6 +142,15 @@ def run(service: Any) -> dict[str, Any]:
                 "expected_outputs and whose values are document objects each "
                 "owning exactly one valid solid. All lengths are millimetres; "
                 "angles are degrees."
+            ),
+            "interface_contract": (
+                "Optionally assign interfaces to a dict keyed by stable semantic "
+                "names. Each value is {output: <result key>, selection: "
+                "{type: 'origin'}} or {output: <result key>, selection: "
+                "{type: 'query', element_type: 'face'|'edge', expected_count: N, "
+                "...geometric predicates...}, description: <purpose>}. Declare "
+                "every mating, datum, load, drawing, and machining reference. "
+                "Exact FaceN/EdgeN names are rejected."
             ),
             "stdout": (
                 "print() output is captured (bounded) and returned as stdout "
@@ -162,7 +173,7 @@ def run(service: Any) -> dict[str, Any]:
             "max_stdout_chars": vibescript_executor.MAX_STDOUT_CHARS,
             "note": (
                 "The wall-clock budget includes native FreeCAD recompute time "
-                "inside the transaction."
+                "inside the isolated worker transaction."
             ),
         },
     }

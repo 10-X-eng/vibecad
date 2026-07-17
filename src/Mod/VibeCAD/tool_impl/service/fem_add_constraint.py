@@ -7,31 +7,47 @@ from __future__ import annotations
 from typing import Any
 
 from VibeCADTransactions import run_freecad_transaction
+import VibeCADReferenceContracts as reference_contracts
 
 from . import domain_runtime
 
 
+_OBJECT_NAME_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Exact internal name of the shaped model object the constraint acts "
+        "on (the object being analyzed, not the FEM mesh)."
+    ),
+}
+
 _REFERENCE_ITEM_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "object_name": {
-            "type": "string",
-            "description": (
-                "Exact internal name of the shaped model object the "
-                "constraint acts on (the object being analyzed, not the "
-                "FEM mesh)."
-            ),
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "object_name": _OBJECT_NAME_SCHEMA,
+                "element": {
+                    "type": "string",
+                    "pattern": "^(Face|Edge|Vertex)[1-9][0-9]*$",
+                    "description": (
+                        "Exact native subelement. Use only for a non-scripted "
+                        "object whose topology is not regenerated."
+                    ),
+                },
+            },
+            "required": ["object_name", "element"],
+            "additionalProperties": False,
         },
-        "element": {
-            "type": "string",
-            "description": (
-                "Exact subelement to constrain, e.g. 'Face1', 'Edge3', or "
-                "'Vertex2' from part.find_subelements."
-            ),
+        {
+            "type": "object",
+            "properties": {
+                "object_name": _OBJECT_NAME_SCHEMA,
+                "selection": reference_contracts.interface_selection_schema(),
+            },
+            "required": ["object_name", "selection"],
+            "additionalProperties": False,
         },
-    },
-    "required": ["object_name", "element"],
-    "additionalProperties": False,
+    ]
 }
 
 
@@ -124,7 +140,6 @@ TOOL_SPEC = {
                                     "to act along each referenced face's "
                                     "normal."
                                 ),
-                                "required": ["object_name", "element"],
                             },
                             "reversed": {
                                 "type": "boolean",
@@ -251,6 +266,48 @@ def _validate_references(
         shape = getattr(obj, "Shape", None)
         if shape is None or shape.isNull():
             return [], f"Object has no shape geometry: {object_name}"
+        selection = entry.get("selection")
+        if reference_contracts.published_object(obj) is not None and not isinstance(
+            selection, dict
+        ):
+            return [], (
+                f"{object_name} is a regenerating scripted output. Reference a "
+                "published semantic interface instead of an exact FaceN/EdgeN/VertexN."
+            )
+        if isinstance(selection, dict):
+            if selection.get("type") != "published_interface":
+                return [], "references selection.type must be published_interface."
+            interface_name = str(selection.get("interface_name") or "").strip()
+            try:
+                interface = reference_contracts.resolve_interface(
+                    service, obj, interface_name
+                )
+            except reference_contracts.ReferenceContractError as exc:
+                return [], f"{object_name}: {exc}"
+            names = list(interface.get("subelements") or [])
+            geometry = list(interface.get("geometry") or [])
+            if not names or len(names) != len(geometry):
+                return [], (
+                    f"Published FEM interface {interface_name!r} must resolve "
+                    "to one or more faces, edges, or vertices."
+                )
+            managed_selection = {
+                "type": "published_interface",
+                "interface_name": interface_name,
+                "model_id": interface["model_id"],
+                "publication_name": interface["publication_name"],
+                "output_key": interface["output_key"],
+            }
+            for name, descriptor in zip(names, geometry):
+                refs.append(
+                    {
+                        "object_name": object_name,
+                        "element": name,
+                        "geometry": descriptor,
+                        "managed_selection": managed_selection,
+                    }
+                )
+            continue
         if not element.startswith(_ELEMENT_PREFIXES):
             return [], (
                 f"Element names must look like Face1, Edge3, or Vertex2; got: {element}"
@@ -427,6 +484,21 @@ def run(
             con.Temperature = f"{float(constraint['temperature_k'])} K"
         con.Label = clean_label
         target.addObject(con)
+        contract_references = _contract_reference_entries(refs)
+        contract_direction = (
+            _contract_reference_entries([direction_ref])
+            if direction_ref is not None
+            else []
+        )
+        if any(item.get("selection") for item in contract_references + contract_direction):
+            reference_contracts.set_contract(
+                con,
+                "fem_constraint",
+                {
+                    "references": contract_references,
+                    "direction": contract_direction[0] if contract_direction else None,
+                },
+            )
         active.recompute()
         group_members = [obj.Name for obj in list(target.Group or [])]
         return {
@@ -506,6 +578,91 @@ def run(
             "fem.mesh_analysis and run fem.solve."
         ),
     )
+
+
+def _contract_reference_entries(refs: list[dict[str, Any] | None]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in refs:
+        if not isinstance(item, dict):
+            continue
+        selection = item.get("managed_selection")
+        if not isinstance(selection, dict):
+            key = (
+                str(item.get("object_name") or ""),
+                "exact",
+                str(item.get("element") or ""),
+            )
+            if key not in seen:
+                seen.add(key)
+                entries.append({"object_name": key[0], "element": key[2]})
+            continue
+        key = (
+            str(item.get("object_name") or ""),
+            str(selection.get("model_id") or ""),
+            str(selection.get("interface_name") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            {
+                "object_name": key[0],
+                "selection": dict(selection),
+            }
+        )
+    return entries
+
+
+def rebind_scripted_reference(
+    service: Any,
+    constraint_obj: Any,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    raw_references = contract.get("references")
+    if not isinstance(raw_references, list) or not raw_references:
+        return _invalid("The FEM reference contract contains no model references.")
+    refs, error = _validate_references(service, raw_references)
+    if error is not None:
+        return _invalid(error)
+    direction_ref = None
+    raw_direction = contract.get("direction")
+    if isinstance(raw_direction, dict):
+        direction_refs, error = _validate_references(service, [raw_direction])
+        if error is not None or len(direction_refs) != 1:
+            return _invalid(error or "The FEM direction interface did not resolve once.")
+        direction_ref = direction_refs[0]
+    doc = service._active_document()
+    try:
+        constraint_obj.References = [
+            (doc.getObject(item["object_name"]), item["element"]) for item in refs
+        ]
+        if direction_ref is not None and hasattr(constraint_obj, "Direction"):
+            constraint_obj.Direction = (
+                doc.getObject(direction_ref["object_name"]),
+                [direction_ref["element"]],
+            )
+        constraint_obj.touch()
+        reference_contracts.mark_stale(
+            constraint_obj,
+            str(contract.get("source_revision") or ""),
+            "A referenced scripted model changed; regenerate the FEM analysis before solving.",
+        )
+    except Exception as exc:
+        return _invalid(
+            "FreeCAD could not rebind the FEM constraint.",
+            native_error=str(exc),
+        )
+    return {
+        "ok": True,
+        "domain": "fem_constraint",
+        "object": constraint_obj.Name,
+        "resolved_references": [
+            {"object_name": item["object_name"], "element": item["element"]}
+            for item in refs
+        ],
+        "analysis_recompute_deferred": True,
+    }
 
 
 def _invalid(message: str, **details: Any) -> dict[str, Any]:

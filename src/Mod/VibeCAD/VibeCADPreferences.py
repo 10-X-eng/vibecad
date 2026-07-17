@@ -518,10 +518,11 @@ class VibeCADPreferencesPage:
         self.vibescript_enabled = QtWidgets.QCheckBox(self.form)
         self.vibescript_enabled.setObjectName("VibeCADPrefVibeScriptEnabled")
         self.vibescript_enabled.setToolTip(
-            "Make the VibeScript native-modeling engine available in PartDesign "
-            "(enabled by default). Scripts run in-process against the live "
-            "document inside a single transaction; no external runtime is "
-            "required."
+            "Make the source-parametric VibeScript engine available (enabled by "
+            "default). When selected as the Part Design engine, its tools follow "
+            "the user across supported workbenches. Candidates run in an isolated "
+            "headless worker, and only validated BREP outputs are published into "
+            "the live document."
         )
         layout.addRow("Enable VibeScript", self.vibescript_enabled)
 

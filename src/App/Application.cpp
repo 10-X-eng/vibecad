@@ -836,12 +836,53 @@ bool Application::isFineGrainedRecomputeEnabled()
 
 bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 {
-    if (DocumentObject* documentObject = req.resolveDocumentObject()) {
-        return documentObject->canRecomputeOnWorker();
+    if (!req.documentObjectName.empty()) {
+        DocumentObject* documentObject = req.resolveDocumentObject();
+        return documentObject && documentObject->canRecomputeOnWorker();
     }
 
     Document* document = req.resolveDocument();
-    return !document || documentCanRecomputeOnWorker(*document);
+    return document && documentCanRecomputeOnWorker(*document);
+}
+
+bool Application::tryQueueRecomputeRequest(RecomputeRequest req)
+{
+    std::vector<RecomputeRequest> requests;
+    requests.push_back(std::move(req));
+    return tryQueueRecomputeRequests(std::move(requests));
+}
+
+bool Application::tryQueueRecomputeRequests(std::vector<RecomputeRequest> requests)
+{
+    const bool hasRequests = !requests.empty();
+    {
+        std::lock_guard<std::mutex> lock(_recomputeMutex);
+        if (!std::ranges::all_of(requests, [this](const RecomputeRequest& request) {
+                return canRecomputeRequestOnWorker(request);
+            })) {
+            return false;
+        }
+        std::ranges::move(requests, std::back_inserter(_recomputeRequests));
+    }
+    if (hasRequests) {
+        notifyRecomputeWorker();
+    }
+    return true;
+}
+
+bool Application::hasPendingRecomputeRequest(const std::string& documentName)
+{
+    if (documentName.empty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(_recomputeMutex);
+    if (_recomputeDocumentsInProgress.contains(documentName)) {
+        return true;
+    }
+    return std::ranges::any_of(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
+        return requestTargetsDocument(request, documentName);
+    });
 }
 
 void Application::queueRecomputeRequest(RecomputeRequest req)

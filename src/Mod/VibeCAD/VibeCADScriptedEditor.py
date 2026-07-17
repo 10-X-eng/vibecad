@@ -773,6 +773,9 @@ class ScriptedEditorController:
                 "Select build123d, OpenSCAD, or VibeScript as the PartDesign modeling engine."
             )
             return
+        if self.engine == "vibescript":
+            self._start_vibescript_model_refresh(preferred_model_id)
+            return
         context = service.project_context()
         root = str(context.get("root") or "").strip()
         doc = service._active_document()
@@ -781,6 +784,11 @@ class ScriptedEditorController:
             if doc is not None and root
             else []
         )
+        self._apply_model_list(models, preferred_model_id)
+
+    def _apply_model_list(
+        self, models: list[dict[str, Any]], preferred_model_id: str = ""
+    ) -> None:
         target = preferred_model_id or self.model_id
         self.loading = True
         self.selector.clear()
@@ -803,6 +811,41 @@ class ScriptedEditorController:
             self._deselect_model(update_selector=False)
         self._update_actions()
 
+    def _start_vibescript_model_refresh(self, preferred_model_id: str = "") -> None:
+        """Load VibeScript artifacts off-thread from a bounded native snapshot."""
+
+        service = get_service()
+        snapshot = service.vibescript_context_snapshot()
+        self.generation += 1
+        generation = self.generation
+        self.status.setText("Loading VibeScript models...")
+
+        def work():
+            try:
+                completed = service.complete_vibescript_context(snapshot)
+                result = {"ok": True, "models": list(completed.get("models") or [])}
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "error": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            self.root._vibecad_bridge.completed.emit(
+                {
+                    "event_kind": "vibescript_model_list",
+                    "engine": "vibescript",
+                    "generation": generation,
+                    "preferred_model_id": preferred_model_id,
+                    "result": result,
+                }
+            )
+
+        threading.Thread(
+            target=work,
+            name="VibeCAD VibeScript model list",
+            daemon=True,
+        ).start()
+
     def _select_model(self, index: int):
         if self.loading or index < 0:
             return
@@ -817,10 +860,16 @@ class ScriptedEditorController:
             return
         if self.model_id and model_id != self.model_id:
             self._cancel_preview(restore_accepted=True)
+        if self.engine == "vibescript":
+            self._start_vibescript_model_inspection(model_id)
+            return
         result = _engine_api(self.engine).inspect_model(get_service(), model_id)
         if not result.get("ok"):
             self._show_failure(result)
             return
+        self._apply_loaded_model(model_id, result)
+
+    def _apply_loaded_model(self, model_id: str, result: dict[str, Any]) -> None:
         self.model = dict(result["model"])
         self.model_id = model_id
         self.working_revision = str(self.model.get("working_revision") or "")
@@ -918,8 +967,8 @@ class ScriptedEditorController:
         self.source_files[self.current_source_file] = self.source.toPlainText()
         self._invalidate_preview_for_edit()
         if self.engine == "vibescript":
-            # In-process builds run synchronously and commit accepted geometry;
-            # they must stay explicit instead of firing on a typing debounce.
+            # VibeScript builds are explicit because Render atomically replaces
+            # accepted native geometry after isolated validation.
             self.status.setText("Working source changed. Press Render to build it.")
         else:
             self.status.setText("Working source changed. Rendering preview...")
@@ -999,6 +1048,47 @@ class ScriptedEditorController:
         self._watch_source()
         self._update_actions()
 
+    def _start_vibescript_model_inspection(self, model_id: str) -> None:
+        """Inspect VibeScript artifacts and legacy geometry away from the GUI."""
+
+        import VibeCADVibeScript as vibescript
+
+        try:
+            captured = vibescript.capture_model_inspection(get_service(), model_id)
+        except vibescript.VibeScriptFailure as exc:
+            self._show_failure(exc.payload)
+            return
+        self.generation += 1
+        generation = self.generation
+        self.status.setText("Loading VibeScript source and model metadata...")
+
+        def work():
+            try:
+                result = vibescript.complete_model_inspection(captured)
+            except vibescript.VibeScriptFailure as exc:
+                result = exc.payload
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "error": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            self.root._vibecad_bridge.completed.emit(
+                {
+                    "event_kind": "vibescript_model_inspection",
+                    "engine": "vibescript",
+                    "generation": generation,
+                    "model_id": model_id,
+                    "result": result,
+                }
+            )
+
+        threading.Thread(
+            target=work,
+            name="VibeCAD VibeScript model inspection",
+            daemon=True,
+        ).start()
+
     def _parse_parameters(self) -> dict[str, Any] | None:
         try:
             value = json.loads(self.parameters.toPlainText() or "{}")
@@ -1024,8 +1114,25 @@ class ScriptedEditorController:
         if parameters is None:
             return
         api = _engine_api(self.engine)
+        self.source_files[self.current_source_file] = self.source.toPlainText()
+        if self.engine == "vibescript":
+            expected_outputs = list(self.model.get("expected_outputs") or [])
+            if not expected_outputs:
+                expected_outputs = list((self.model.get("outputs") or {}).keys())
+            self._start_vibescript_operation(
+                "vibescript.editor_rebuild",
+                {
+                    "model_id": self.model_id,
+                    "expected_revision": self.working_revision,
+                    "source": self.source_files.get(
+                        "model.py", self.source.toPlainText()
+                    ),
+                    "parameters": parameters,
+                    "expected_outputs": expected_outputs,
+                },
+            )
+            return
         try:
-            self.source_files[self.current_source_file] = self.source.toPlainText()
             if self.engine == "openscad":
                 source_stage = api.stage_editor_files(
                     get_service(),
@@ -1082,10 +1189,6 @@ class ScriptedEditorController:
             f"Rendering {self.engine} preview {self.working_revision[:10]}..."
         )
         self.button("VibeScriptedRender").setEnabled(False)
-        if self.engine == "vibescript":
-            self._execute_in_process(prepared)
-            return
-
         def work():
             execution = api.execute_prepared(
                 prepared,
@@ -1106,6 +1209,74 @@ class ScriptedEditorController:
 
     def _preview_completed(self, event: dict[str, Any]):
         event_engine = str(event.get("engine") or "")
+        event_kind = str(event.get("event_kind") or "")
+        if event_kind in {
+            "vibescript_model_list",
+            "vibescript_model_inspection",
+            "vibescript_revert",
+        }:
+            if (
+                not self.editor_active
+                or self.engine != "vibescript"
+                or event_engine != "vibescript"
+                or int(event.get("generation") or 0) != self.generation
+            ):
+                return
+            result = event.get("result")
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                self._show_failure(
+                    result
+                    if isinstance(result, dict)
+                    else {"error": "VibeScript returned no structured result."}
+                )
+                return
+            if event_kind == "vibescript_model_list":
+                self._apply_model_list(
+                    list(result.get("models") or []),
+                    str(event.get("preferred_model_id") or ""),
+                )
+            elif event_kind == "vibescript_model_inspection":
+                self._apply_loaded_model(str(event.get("model_id") or ""), result)
+            else:
+                self.status.setText(
+                    f"Restored accepted revision "
+                    f"{str(result.get('working_revision') or '')[:10]}."
+                )
+                self.refresh(str(result.get("model_id") or self.model_id))
+            return
+        if bool(event.get("direct_commit")):
+            if (
+                not self.editor_active
+                or int(event.get("generation") or 0) != self.generation
+                or event_engine != "vibescript"
+                or self.engine != "vibescript"
+            ):
+                return
+            self.button("VibeScriptedRender").setEnabled(True)
+            result = event.get("result")
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                self._show_failure(
+                    result
+                    if isinstance(result, dict)
+                    else {"error": "VibeScript returned no structured result."}
+                )
+                return
+            model = result.get("model")
+            if not isinstance(model, dict):
+                self._show_failure(
+                    {"error": "VibeScript accepted geometry without model metadata."}
+                )
+                return
+            model_id = str(model.get("model_id") or "")
+            revision = str(model.get("revision") or "")
+            self.accepted_revision = revision
+            self.preview_revision = ""
+            self.diagnostics.clear()
+            self.status.setText(
+                f"Accepted VibeScript revision {revision[:10]} | native BREP outputs"
+            )
+            self.refresh(model_id)
+            return
         prepared = event["prepared"]
         if (
             not self.editor_active
@@ -1208,6 +1379,43 @@ class ScriptedEditorController:
         self.timer.stop()
         self._clear_source_watch()
         api = _engine_api(self.engine)
+        if self.engine == "vibescript":
+            project_root = str(
+                get_service().project_scope_snapshot().get("root") or ""
+            ).strip()
+            generation = self.generation
+            model_id = self.model_id
+            self.status.setText("Restoring accepted VibeScript source...")
+
+            def work():
+                try:
+                    result = api.revert_artifact_to_accepted(project_root, model_id)
+                except Exception as exc:
+                    payload = getattr(exc, "payload", None)
+                    result = (
+                        payload
+                        if isinstance(payload, dict)
+                        else {
+                            "ok": False,
+                            "error": str(exc),
+                            "exception_type": type(exc).__name__,
+                        }
+                    )
+                self.root._vibecad_bridge.completed.emit(
+                    {
+                        "event_kind": "vibescript_revert",
+                        "engine": "vibescript",
+                        "generation": generation,
+                        "result": result,
+                    }
+                )
+
+            threading.Thread(
+                target=work,
+                name="VibeCAD VibeScript source revert",
+                daemon=True,
+            ).start()
+            return
         try:
             result = api.revert_working_to_accepted(get_service(), self.model_id)
         except Exception as exc:
@@ -1232,41 +1440,46 @@ class ScriptedEditorController:
         )
         self.refresh(self.model_id)
 
-    def _execute_in_process(self, prepared: dict[str, Any]):
-        """Run an in-process engine build synchronously on the document thread.
+    def _start_vibescript_operation(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> None:
+        """Run VibeScript through the same non-blocking lifecycle as AI tools."""
 
-        In-process engines (VibeScript) return a terminal payload from
-        ``execute_prepared`` and commit accepted geometry inside one document
-        transaction, so there is no separate preview/import/accept lifecycle.
-        """
-        api = _engine_api(self.engine)
-        try:
-            execution = api.execute_prepared(prepared)
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            api.cleanup_prepared(prepared)
-            self._show_failure(
-                payload if isinstance(payload, dict) else {"error": str(exc)}
-            )
-            return
-        if not execution.get("ok"):
-            try:
-                api.record_failed_attempt(prepared, execution)
-            except Exception as exc:
-                _warn(f"Could not record failed build: {exc}")
-            self._show_failure(execution)
-            api.cleanup_prepared(prepared)
-            return
-        api.cleanup_prepared(prepared)
-        model_id = str(prepared.get("model_id") or self.model_id)
-        revision = str(prepared.get("revision") or "")
-        self.accepted_revision = revision
-        self.preview_revision = ""
-        self.diagnostics.clear()
-        self.status.setText(
-            f"Accepted {self.engine} revision {revision[:10]} | native features"
+        from VibeCADGui import (
+            _dispatch_to_document_thread,
+            _ensure_document_thread_invoker,
         )
-        self.refresh(model_id)
+        from VibeCADSession import run_scripted_engine_operation
+
+        _ensure_document_thread_invoker()
+        self.generation += 1
+        generation = self.generation
+        self.timer.stop()
+        self.status.setText("Building VibeScript model in the isolated worker...")
+        self.button("VibeScriptedRender").setEnabled(False)
+
+        def work():
+            result = run_scripted_engine_operation(
+                get_service(),
+                tool_name,
+                arguments,
+                document_thread_dispatch=_dispatch_to_document_thread,
+                cancellation_check=lambda: generation != self.generation,
+            )
+            self.root._vibecad_bridge.completed.emit(
+                {
+                    "generation": generation,
+                    "engine": "vibescript",
+                    "direct_commit": True,
+                    "result": result,
+                }
+            )
+
+        threading.Thread(
+            target=work,
+            name="VibeCAD VibeScript editor build",
+            daemon=True,
+        ).start()
 
     def new_model(self):
         name, accepted = self.QtWidgets.QInputDialog.getText(
@@ -1324,6 +1537,9 @@ class ScriptedEditorController:
                 "input_objects": {},
                 "expected_outputs": ["Part"],
             }
+        if self.engine == "vibescript":
+            self._start_vibescript_operation("vibescript.create_model", arguments)
+            return
         try:
             prepared = _engine_api(self.engine).prepare_execution(
                 get_service(), f"{self.engine}.create_model", arguments
@@ -1340,16 +1556,16 @@ class ScriptedEditorController:
 
     def _start_prepared_preview(self, prepared: dict[str, Any]):
         engine = self.engine
+        if engine == "vibescript":
+            raise RuntimeError(
+                "VibeScript must use the isolated editor operation lifecycle."
+            )
         api = _engine_api(engine)
         self.generation += 1
         generation = self.generation
         self.status.setText(
             f"Rendering {self.engine} preview {prepared['revision'][:10]}..."
         )
-        if engine == "vibescript":
-            self._execute_in_process(prepared)
-            return
-
         def work():
             execution = api.execute_prepared(
                 prepared, cancellation_check=lambda: generation != self.generation

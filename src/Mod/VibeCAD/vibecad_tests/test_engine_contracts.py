@@ -4,10 +4,9 @@
 
 These tests exercise the pure-Python contract layer of the scripted engines
 without requiring a running FreeCAD, an OpenSCAD binary, or the isolated
-build123d runtime.  Subprocess-facing paths are exercised with stub
-executables so the real process-management and failure-payload code runs end
-to end; the in-process VibeScript engine is exercised against the same stub
-document used for the transactional commit/delete contracts.
+build123d runtime. Subprocess-facing paths are exercised with stub executables
+so the real process-management and failure-payload code runs end to end;
+VibeScript worker generation is likewise isolated from the stub live document.
 """
 
 from __future__ import annotations
@@ -790,9 +789,12 @@ class TestBuild123dExecutionFailures:
 class _StubObject:
     """Minimal stand-in for a FreeCAD document object."""
 
-    def __init__(self, name: str, type_id: str) -> None:
+    def __init__(
+        self, name: str, type_id: str, document: "_StubDocument | None" = None
+    ) -> None:
         self.Name = name
         self.TypeId = type_id
+        self.Document = document
         self.Label = name
         self.PropertiesList: list[str] = []
         self.Group: list[Any] = []
@@ -808,7 +810,9 @@ class _StubObject:
         self.OutListRecursive.append(obj)
 
     def newObject(self, type_id: str, name: str) -> "_StubObject":
-        child = _StubObject(name, type_id)
+        child = _StubObject(name, type_id, self.Document)
+        if self.Document is not None:
+            self.Document.Objects.append(child)
         self.Group.append(child)
         self.OutListRecursive.append(child)
         return child
@@ -848,12 +852,15 @@ class _StubDocument:
 
     def addObject(self, type_id: str, name: str) -> _StubObject:
         self._sequence += 1
-        obj = _StubObject(f"{name}{self._sequence:03d}", type_id)
+        obj = _StubObject(f"{name}{self._sequence:03d}", type_id, self)
         self.Objects.append(obj)
         return obj
 
     def getObject(self, name: str) -> Any | None:
         return next((obj for obj in self.Objects if obj.Name == name), None)
+
+    def findObjects(self, *, Type: str) -> list[Any]:
+        return [obj for obj in self.Objects if obj.TypeId == Type]
 
     def removeObject(self, name: str) -> None:
         if self.fail_remove:
@@ -875,6 +882,7 @@ def _stub_service(
     return SimpleNamespace(
         _active_document=lambda: doc,
         project_context=lambda: {"root": str(project_root)},
+        project_scope_snapshot=lambda: {"root": str(project_root)},
         recompute_diagnostics=lambda: {
             "captured": True,
             "diagnostics": list(diagnostics or []),
@@ -2014,15 +2022,29 @@ class TestVibeScriptStaticBuiltinPolicy:
 
 
 class TestVibeScriptFeatureReportPassThrough:
-    def test_execution_failure_surfaces_feature_report(self, tmp_path: Path) -> None:
-        """The executor's per-feature evidence reaches the engine payload.
+    def test_execution_failure_surfaces_feature_report(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Worker feature evidence crosses the boundary without live mutation."""
+        import VibeCADScriptedProcess as process_module
 
-        The report is collected before the transaction abort (objects still
-        exist), then the rollback restores the document; both facts are
-        asserted so the pass-through and the ordering cannot regress.
-        """
         doc = _StubDocument()
         service = _stub_service(doc, tmp_path)
+        monkeypatch.setattr(
+            vibescript,
+            "_scripted_budgets",
+            lambda: (30.0, 512 * 1024 * 1024),
+        )
+        monkeypatch.setattr(
+            vibescript,
+            "_freecadcmd_executable",
+            lambda _freecad_home: Path(sys.executable),
+        )
+        monkeypatch.setattr(
+            vibescript,
+            "_freecad_home_path",
+            lambda: str(Path(sys.executable).parent),
+        )
         prepared = vibescript.prepare_execution(
             service,
             "vibescript.create_model",
@@ -2036,13 +2058,39 @@ class TestVibeScriptFeatureReportPassThrough:
                 "expected_outputs": ["Body"],
             },
         )
+
+        def run_process(_command: list[str], **_kwargs: Any) -> dict[str, Any]:
+            report = {
+                "ok": False,
+                "exception_kind": "worker_failure",
+                "exception_type": "RuntimeError",
+                "error": "downstream victim",
+                "feature_report": {
+                    "features": [{"object_name": "Body", "type": "PartDesign::Body"}]
+                },
+            }
+            (Path(prepared["staging"]) / "result.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            return {
+                "started": True,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "",
+                "cancelled": False,
+                "timed_out": False,
+                "memory_exceeded": False,
+                "observed_memory_bytes": 0,
+                "elapsed_seconds": 0.1,
+            }
+
+        monkeypatch.setattr(process_module, "run_process", run_process)
         payload = vibescript.execute_prepared(prepared)
         assert payload["ok"] is False
         report = payload["observed"]["feature_report"]
         names = [entry["object_name"] for entry in report["features"]]
-        assert names and names[0].startswith("Body")
-        # Rollback still ran after evidence collection.
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
+        assert names == ["Body"]
+        assert doc.transaction_log == []
         assert doc.Objects == []
 
 
@@ -2106,9 +2154,293 @@ class TestScriptedEngineParity:
             assert payload["tool"] == tool
 
 
+def test_vibescript_preparation_runs_outside_document_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    owner_call_active = False
+    phases: list[tuple[str, bool]] = []
+
+    def dispatch(operation):
+        nonlocal owner_call_active
+        assert owner_call_active is False
+        owner_call_active = True
+        try:
+            return operation()
+        finally:
+            owner_call_active = False
+
+    monkeypatch.setattr(
+        vibescript,
+        "capture_execution_state",
+        lambda _service, _tool, _args: phases.append(
+            ("capture", owner_call_active)
+        )
+        or {"captured": True},
+    )
+    monkeypatch.setattr(
+        vibescript,
+        "prepare_execution_from_state",
+        lambda _captured, _tool, _args: phases.append(
+            ("prepare", owner_call_active)
+        )
+        or {
+            "document_name": "Doc",
+            "model_id": MODEL_ID,
+            "model_name": "Thread Contract",
+            "revision": "r1",
+            "expected_outputs": ["Body"],
+        },
+    )
+    monkeypatch.setattr(
+        vibescript,
+        "execute_prepared",
+        lambda _prepared, cancellation_check=None: {
+            "ok": False,
+            "failure_code": "EXPECTED_TEST_FAILURE",
+            "failure_stage": "execution",
+            "error": "stop before publication",
+        },
+    )
+    monkeypatch.setattr(vibescript, "record_failed_attempt", lambda *_args: {})
+    monkeypatch.setattr(vibescript, "cleanup_prepared", lambda _prepared: None)
+
+    runner = next(
+        item
+        for item in session._SCRIPTED_ENGINE_RUNNERS
+        if item.engine == "vibescript"
+    )
+    payload = session._run_scripted_engine_tool(
+        runner,
+        SimpleNamespace(),
+        "vibescript.create_model",
+        {},
+        document_thread_dispatch=dispatch,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert payload["failure_code"] == "EXPECTED_TEST_FAILURE"
+    assert phases == [("capture", True), ("prepare", False)]
+
+
+def test_vibescript_success_lifecycle_keeps_heavy_work_off_document_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    owner_call_active = False
+    phases: list[tuple[str, bool]] = []
+
+    def record(name: str, value: Any) -> Any:
+        phases.append((name, owner_call_active))
+        return value
+
+    def dispatch(operation):
+        nonlocal owner_call_active
+        assert owner_call_active is False
+        owner_call_active = True
+        try:
+            return operation()
+        finally:
+            owner_call_active = False
+
+    prepared = {
+        "document_name": "Doc",
+        "model_id": MODEL_ID,
+        "model_name": "Thread Contract",
+        "revision": "r1",
+        "expected_outputs": ["Body"],
+    }
+    monkeypatch.setattr(
+        vibescript,
+        "capture_execution_state",
+        lambda _service, _tool, _args: record("capture", {"captured": True}),
+    )
+    monkeypatch.setattr(
+        vibescript,
+        "prepare_execution_from_state",
+        lambda _captured, _tool, _args: record("prepare", prepared),
+    )
+    monkeypatch.setattr(
+        vibescript,
+        "execute_prepared",
+        lambda _prepared, cancellation_check=None: record(
+            "execute", {"ok": True}
+        ),
+    )
+    monkeypatch.setattr(
+        vibescript,
+        "import_validated_outputs",
+        lambda _prepared, _execution: record("import", [{"key": "Body"}]),
+    )
+
+    def commit(_service, _prepared, _execution, _imported):
+        return record(
+            "commit",
+            {
+                "ok": True,
+                "outputs": [{"key": "Body"}],
+                "publication": {"reference_refresh": {}},
+                "_vibecad_async_artifact": {"request": True},
+                "_vibecad_async_commit": {"phase": 0},
+            },
+        )
+
+    def continue_commit(_service, payload):
+        state = dict(payload.pop("_vibecad_async_commit"))
+        record("continue_commit", None)
+        if state["phase"] == 0:
+            payload["_vibecad_async_rebind"] = {"phase": 0}
+        else:
+            payload["_vibecad_async_validation"] = {"phase": 1}
+        return payload
+
+    def finish_rebind(_service, payload, _resolved):
+        record("finish_rebind", None)
+        payload.pop("_vibecad_async_rebind")
+        payload["_vibecad_async_commit"] = {"phase": 1}
+        return payload
+
+    def finish_validation(_service, payload, _validation):
+        record("finish_validation", None)
+        return payload
+
+    def finish_artifacts(_service, payload, _result):
+        record("finish_artifacts", None)
+        payload.pop("_vibecad_async_artifact")
+        payload.pop("_vibecad_async_validation")
+        return payload
+
+    monkeypatch.setattr(vibescript, "commit_outputs", commit)
+    monkeypatch.setattr(vibescript, "continue_commit", continue_commit)
+    monkeypatch.setattr(
+        vibescript,
+        "resolve_commit_rebind",
+        lambda _payload: record("resolve_rebind", {"ok": True}),
+    )
+    monkeypatch.setattr(vibescript, "finish_commit_rebind", finish_rebind)
+    monkeypatch.setattr(
+        vibescript,
+        "validate_commit",
+        lambda _payload: record("validate", {"ok": True}),
+    )
+    monkeypatch.setattr(vibescript, "finish_commit_validation", finish_validation)
+    monkeypatch.setattr(
+        vibescript,
+        "persist_commit_artifacts",
+        lambda _payload: record("persist_artifacts", {"ok": True}),
+    )
+    monkeypatch.setattr(vibescript, "finish_commit_artifacts", finish_artifacts)
+    monkeypatch.setattr(vibescript, "record_failed_attempt", lambda *_args: {})
+    monkeypatch.setattr(
+        vibescript,
+        "cleanup_prepared",
+        lambda _prepared: record("cleanup", None),
+    )
+    monkeypatch.setattr(
+        session,
+        "_wait_for_document_idle",
+        lambda *_args, **_kwargs: record("wait", {"ok": True}),
+    )
+
+    runner = next(
+        item
+        for item in session._SCRIPTED_ENGINE_RUNNERS
+        if item.engine == "vibescript"
+    )
+    payload = session._run_scripted_engine_tool(
+        runner,
+        SimpleNamespace(),
+        "vibescript.create_model",
+        {},
+        document_thread_dispatch=dispatch,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert payload["ok"] is True
+    assert phases == [
+        ("capture", True),
+        ("prepare", False),
+        ("execute", False),
+        ("wait", False),
+        ("import", False),
+        ("commit", True),
+        ("wait", False),
+        ("continue_commit", True),
+        ("resolve_rebind", False),
+        ("finish_rebind", True),
+        ("wait", False),
+        ("continue_commit", True),
+        ("validate", False),
+        ("finish_validation", True),
+        ("persist_artifacts", False),
+        ("finish_artifacts", True),
+        ("cleanup", False),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # VibeScript defaults: enabled by default, default PartDesign engine
 # ---------------------------------------------------------------------------
+
+
+def test_private_vibescript_carriers_are_not_provider_document_objects() -> None:
+    from VibeCADCore import VibeCADService
+    from VibeCADWorkbenchTools import get_tool_pack
+
+    for role in ("implementation", "publication_target", "parameters"):
+        assert VibeCADService._is_private_scripted_object(
+            SimpleNamespace(VibeCADScriptedRole=role)
+        )
+    for role in ("model", "publication", ""):
+        assert not VibeCADService._is_private_scripted_object(
+            SimpleNamespace(VibeCADScriptedRole=role)
+        )
+    part_pack = get_tool_pack("PartWorkbench")
+    assert part_pack is not None
+    assert VibeCADService._object_matches_pack(
+        SimpleNamespace(VibeCADScriptedRole="publication", TypeId="App::Link"),
+        part_pack,
+    )
+    assert not VibeCADService._object_matches_pack(
+        SimpleNamespace(
+            VibeCADScriptedRole="publication_target",
+            TypeId="Part::Feature",
+        ),
+        part_pack,
+    )
+    native = SimpleNamespace(Name="Native", Label="Native", TypeId="Part::Box")
+    published = SimpleNamespace(
+        Name="Published",
+        Label="Published",
+        TypeId="App::Link",
+        VibeCADScriptedRole="publication",
+        VibeCADScriptedEngine="vibescript",
+        VibeCADScriptedModelId="a" * 32,
+        VibeCADScriptedOutputKey="Housing",
+    )
+    private_target = SimpleNamespace(
+        Name="PrivateTarget",
+        Label="Private Target",
+        TypeId="Part::Feature",
+        VibeCADScriptedRole="publication_target",
+    )
+    service = object.__new__(VibeCADService)
+    service._active_document = lambda: SimpleNamespace(
+        Name="ContextDoc",
+        Objects=[native, published, private_target],
+    )
+
+    summary = service.provider_part_summary()
+
+    assert [item["name"] for item in summary["objects"]] == [
+        "Native",
+        "Published",
+    ]
+    assert summary["objects"][1]["published_output_key"] == "Housing"
 
 
 class _UnsetPreferences:

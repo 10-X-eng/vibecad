@@ -18,10 +18,13 @@ set(VibeCAD_Scripts
     VibeCADPreferences.py
     VibeCADPromptStarters.py
     VibeCADProvider.py
+    VibeCADReferenceContracts.py
     VibeCADProject.py
     VibeCADSession.py
     VibeCADScriptedEditor.py
     VibeCADScriptedOwnership.py
+    VibeCADScriptedProcess.py
+    VibeCADScriptedPublication.py
     VibeCADTools.py
     VibeCADTransactions.py
     VibeCADVibeScript.py
@@ -30,6 +33,7 @@ set(VibeCAD_Scripts
     openscad_freecad_worker.py
     vibescript_api.py
     vibescript_executor.py
+    vibescript_worker.py
     build123d-requirements.txt
     requirements.txt
 )

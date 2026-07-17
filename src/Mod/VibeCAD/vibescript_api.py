@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""VibeScript authoring library: ergonomic native PartDesign scripting.
+"""VibeScript authoring library for source-backed native PartDesign geometry.
 
 This module is injected into the scope of VibeScript model sources. It wraps
 the raw FreeCAD document API with three layers that remove its sharp edges:
@@ -12,10 +12,11 @@ the raw FreeCAD document API with three layers that remove its sharp edges:
   (direction, length, position) immediately after the creating feature, so
   scripts never hardcode ``"Edge7"`` style topological names.
 - ``Params``: validated named parameters that can be bound to an
-  ``App::VarSet`` and referenced through the expression engine, so the
-  algebra a script writes persists in the document.
+  ``App::VarSet`` inside the current execution document and referenced through
+  its expression engine. VibeCAD separately persists the accepted source and
+  parameter values for deterministic regeneration.
 
-All FreeCAD imports are deferred into the methods that touch a live
+All FreeCAD imports are deferred into methods that touch the current execution
 document; every pure-logic piece is importable and testable without FreeCAD.
 """
 
@@ -140,17 +141,19 @@ def _vector3(value: Any) -> tuple[float, float, float] | None:
 class Params(Mapping[str, float]):
     """Validated named model parameters.
 
-    Behaves as a read-only mapping with attribute access. ``bind`` persists
-    the values into an ``App::VarSet`` document object so features can
-    reference them through the expression engine and stay live-editable.
+    Behaves as a read-only mapping with attribute access. ``bind`` creates or
+    updates an ``App::VarSet`` in the current execution document so features in
+    that run can reference named expressions. VibeCAD persists the accepted
+    numeric values separately and regenerates the source when they change.
     """
 
-    def __init__(self, **values: Any) -> None:
+    def __init__(self, *, _binding_name: str = "Params", **values: Any) -> None:
         parsed: dict[str, float] = {}
         for name, value in values.items():
             self._check_name(name)
             parsed[name] = _finite(f"parameter {name!r}", value)
         object.__setattr__(self, "_values", parsed)
+        object.__setattr__(self, "_binding_name", str(_binding_name or "Params"))
 
     @staticmethod
     def _check_name(name: str) -> None:
@@ -192,20 +195,21 @@ class Params(Mapping[str, float]):
         inner = ", ".join(f"{k}={v:g}" for k, v in self._values.items())
         return f"Params({inner})"
 
-    def expression(self, name: str, *, object_name: str = "Params") -> str:
+    def expression(self, name: str, *, object_name: str | None = None) -> str:
         """Expression-engine reference for a bound parameter."""
         self[name]  # validate the parameter exists
-        return f"{object_name}.{name}"
+        return f"{object_name or self._binding_name}.{name}"
 
-    def bind(self, document: Any, *, object_name: str = "Params") -> Any:
-        """Persist parameters into an ``App::VarSet`` in ``document``.
+    def bind(self, document: Any, *, object_name: str | None = None) -> Any:
+        """Bind parameters to an ``App::VarSet`` in the execution document.
 
         Creates the VarSet if missing, adds one ``App::PropertyFloat`` per
         parameter, and returns the VarSet object.
         """
-        varset = document.getObject(object_name)
+        resolved_name = str(object_name or self._binding_name)
+        varset = document.getObject(resolved_name)
         if varset is None:
-            varset = document.addObject("App::VarSet", object_name)
+            varset = document.addObject("App::VarSet", resolved_name)
         for name, value in self._values.items():
             if not hasattr(varset, name):
                 varset.addProperty("App::PropertyFloat", name, "Parameters")

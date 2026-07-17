@@ -8,6 +8,7 @@ from copy import deepcopy
 from typing import Any
 
 from VibeCADTransactions import run_freecad_transaction
+import VibeCADReferenceContracts as reference_contracts
 
 from . import domain_runtime, partdesign_dressup_feature
 
@@ -110,6 +111,9 @@ _REFERENCE_SELECTION_SCHEMA["oneOf"].append(
         "required": ["type", "subelement"],
         "additionalProperties": False,
     }
+)
+_REFERENCE_SELECTION_SCHEMA["oneOf"].append(
+    reference_contracts.interface_selection_schema()
 )
 
 
@@ -282,6 +286,25 @@ def run(
         joint_obj.Label = clean_label
         _apply_joint_parameters(joint_obj, kind, joint)
         joint_obj.Proxy.setJointConnectors(joint_obj, refs)
+        managed_references = [
+            {
+                "component_name": parsed["component_name"],
+                "selection": dict(parsed["selection"]),
+            }
+            for parsed in parsed_refs
+        ]
+        if any(
+            item["selection"].get("type") == "published_interface"
+            for item in managed_references
+        ):
+            reference_contracts.set_contract(
+                joint_obj,
+                "assembly_joint",
+                {
+                    "assembly_name": target_assembly.Name,
+                    "references": managed_references,
+                },
+            )
         connectors = []
         for index in (1, 2):
             reference_value = getattr(joint_obj, f"Reference{index}")
@@ -403,6 +426,68 @@ def _resolve_reference(
     if not isinstance(selection, dict):
         return _invalid(f"{parameter_name}.selection must be an object.")
     mode = str(selection.get("type") or "")
+    linked_publication = reference_contracts.published_object(component)
+    if linked_publication is not None and mode != "published_interface":
+        return _invalid(
+            f"{parameter_name} targets a regenerating scripted component. "
+            "Select one of its published semantic interfaces instead of a "
+            "transient FaceN/EdgeN/VertexN name.",
+            parameter=parameter_name,
+            component=component_name,
+            available_interface_selection_type="published_interface",
+        )
+    if mode == "published_interface":
+        interface_name = str(selection.get("interface_name") or "").strip()
+        try:
+            interface = reference_contracts.resolve_interface(
+                service, component, interface_name
+            )
+        except reference_contracts.ReferenceContractError as exc:
+            return _invalid(str(exc), parameter=parameter_name, **exc.details)
+        names = list(interface.get("subelements") or [])
+        geometry = list(interface.get("geometry") or [])
+        if len(names) > 1 or len(geometry) > 1:
+            return _invalid(
+                f"{parameter_name} published interface must resolve to one "
+                "connector subelement or the component origin.",
+                interface=interface_name,
+                resolved_subelements=names,
+                resolved_geometry=geometry,
+            )
+        element = names[0] if names else ""
+        geometry_item = geometry[0] if geometry else {
+            "local_placement": domain_runtime.placement_summary(component),
+            "global_placement": domain_runtime.global_placement_summary(component),
+        }
+        managed_selection = {
+            "type": "published_interface",
+            "interface_name": interface_name,
+            "model_id": interface["model_id"],
+            "publication_name": interface["publication_name"],
+            "output_key": interface["output_key"],
+        }
+        geometry_type = (
+            geometry_item.get("geometry_type")
+            if geometry
+            else "component_origin"
+        )
+        return {
+            "ok": True,
+            "parameter": parameter_name,
+            "component_name": component_name,
+            "component": component,
+            "selection": managed_selection,
+            "element": element,
+            "element_type": (
+                "face"
+                if element.startswith("Face")
+                else "edge"
+                if element.startswith("Edge")
+                else "origin"
+            ),
+            "geometry_type": geometry_type,
+            "geometry": geometry_item,
+        }
     if mode == "component_origin":
         return {
             "ok": True,
@@ -474,6 +559,66 @@ def _resolve_reference(
         "element_type": "face" if name.startswith("Face") else "edge",
         "geometry_type": geometry[0].get("geometry_type"),
         "geometry": geometry[0],
+    }
+
+
+def rebind_scripted_reference(
+    service: Any,
+    joint_obj: Any,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    doc = service._active_document()
+    assembly_name = str(contract.get("assembly_name") or "")
+    assembly = doc.getObject(assembly_name) if doc is not None else None
+    if assembly is None:
+        return _invalid(
+            "The assembly recorded by the joint reference contract no longer exists.",
+            assembly_name=assembly_name,
+        )
+    raw_references = contract.get("references")
+    if not isinstance(raw_references, list) or len(raw_references) != 2:
+        return _invalid("The assembly joint reference contract must contain two references.")
+    resolved: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_references, start=1):
+        item = _resolve_reference(service, assembly, raw, f"reference{index}")
+        if not item.get("ok"):
+            return item
+        resolved.append(item)
+    refs = []
+    for item in resolved:
+        component = doc.getObject(item["component_name"])
+        if component is None:
+            return _invalid("A joint component disappeared during rebinding.")
+        element = item["element"]
+        refs.append([component, [element, element]])
+    try:
+        joint_obj.Proxy.setJointConnectors(joint_obj, refs)
+        joint_obj.touch()
+        assembly.touch()
+        reference_contracts.mark_stale(
+            assembly,
+            str(contract.get("source_revision") or ""),
+            "A referenced scripted model changed; solve and verify this assembly.",
+        )
+    except Exception as exc:
+        return _invalid(
+            "FreeCAD could not rebind the assembly joint.",
+            native_error=str(exc),
+        )
+    return {
+        "ok": True,
+        "domain": "assembly_joint",
+        "object": joint_obj.Name,
+        "assembly": assembly.Name,
+        "resolved_references": [
+            {
+                "component_name": item["component_name"],
+                "selection": item["selection"],
+                "element": item["element"],
+            }
+            for item in resolved
+        ],
+        "solver_deferred": True,
     }
 
 

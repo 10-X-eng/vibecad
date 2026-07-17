@@ -30,7 +30,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from VibeCADTools import SafetyLevel, ToolSpec
+from VibeCADTools import SafetyLevel, ToolSpec, VibeCADTool
 
 TOOL_PACKAGES = ("tool_impl.service", "tool_impl.sketcher")
 
@@ -342,9 +342,70 @@ class _SurfaceService:
         return True
 
 
+class _SpecRegistry:
+    def __init__(self, specs: dict[str, tuple[ToolSpec, Path, str]]) -> None:
+        self._specs = specs
+
+    def get(self, name: str) -> VibeCADTool:
+        return VibeCADTool(self._specs[name][0], None)
+
+
+def test_provider_schema_build_captures_runtime_state_once(
+    monkeypatch,
+    specs: dict[str, tuple[ToolSpec, Path, str]],
+) -> None:
+    """Mixed surfaces must not rebuild CAD state once per visible tool."""
+    import VibeCADSession as session
+
+    service = _SurfaceService("vibescript")
+    service.registry = _SpecRegistry(specs)
+    calls: list[str] = []
+
+    def runtime_state(_service: object) -> dict[str, Any]:
+        calls.append("runtime")
+        return {"edit_mode": None}
+
+    monkeypatch.setattr(session, "_runtime_state", runtime_state)
+
+    schemas = session.provider_tool_schemas(service, "PartWorkbench")
+
+    assert calls == ["runtime"]
+    assert any(schema["name"] == "part.boolean" for schema in schemas)
+    assert any(schema["name"] == "vibescript.create_model" for schema in schemas)
+
+
+def test_provider_schema_build_reuses_turn_context_runtime_state(
+    monkeypatch,
+    specs: dict[str, tuple[ToolSpec, Path, str]],
+) -> None:
+    """Turn-start context may provide its already captured edit state."""
+    import VibeCADSession as session
+
+    service = _SurfaceService("vibescript")
+    service.registry = _SpecRegistry(specs)
+
+    def unexpected_runtime_state(_service: object) -> dict[str, Any]:
+        raise AssertionError("runtime state was captured twice")
+
+    monkeypatch.setattr(session, "_runtime_state", unexpected_runtime_state)
+
+    schemas = session.provider_tool_schemas(
+        service,
+        "PartWorkbench",
+        runtime_state={"edit_mode": None},
+    )
+
+    assert schemas
+
+
 @pytest.mark.parametrize(
     "workbench",
-    ("AssemblyWorkbench", "FemWorkbench", "TechDrawWorkbench"),
+    (
+        "PartWorkbench",
+        "AssemblyWorkbench",
+        "FemWorkbench",
+        "TechDrawWorkbench",
+    ),
 )
 def test_selected_vibescript_joins_representative_workbench_surfaces(
     workbench: str,
