@@ -1380,6 +1380,25 @@ QToolButton#VibeNewConversation:hover {
   background-color: #1d242d;
   border-color: #4dabf7; }
 
+QToolButton#VibePromptStarters {
+  min-width: 30px;
+  max-width: 30px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0px;
+  background-color: #171c23;
+  border: 1px solid #39434f;
+  border-radius: 7px; }
+
+QToolButton#VibePromptStarters:hover,
+QToolButton#VibePromptStarters:pressed {
+  background-color: #1d242d;
+  border-color: #4dabf7; }
+
+QToolButton#VibePromptStarters:disabled {
+  background-color: #171c23;
+  border-color: #29313c; }
+
 QTextBrowser#VibeConversation,
 QPlainTextEdit#VibeThinking,
 QPlainTextEdit#VibePrompt,

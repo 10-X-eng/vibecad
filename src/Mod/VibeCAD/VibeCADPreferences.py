@@ -27,6 +27,15 @@ from VibeCADAuth import (
     validate_configured_auth,
 )
 from VibeCADDebug import default_capture_directory, resolve_capture_directory
+from VibeCADPromptStarters import (
+    BUILTIN_PROMPT_STARTERS,
+    CATEGORY_ORDER,
+    PromptStarter,
+    create_custom_prompt_starter,
+    load_custom_prompt_starters,
+    prompt_starters_path,
+    save_custom_prompt_starters,
+)
 
 PREFERENCE_GROUP = "User parameter:BaseApp/Preferences/Mod/VibeCAD"
 DEFAULT_MODEL = "gpt-5.5"
@@ -1207,6 +1216,318 @@ class VibeCADPreferencesPage:
         self.api_key.clear()
         self._update_provider_visibility()
         self._refresh_status()
+
+
+class VibeCADPromptStartersPreferencesPage:
+    """Global prompt-starter library management."""
+
+    _NEW_STARTER_CONTENT = """Outcome:
+[describe what should be made or changed]
+
+Driving requirements:
+- Dimensions and units: [values]
+- Interfaces and critical geometry: [details]
+- Material and manufacturing process: [details]
+- Loads, tolerances, and clearances: [details]
+- Must preserve or avoid: [details]
+- Completion criteria: [how the result should be verified]
+"""
+
+    def __init__(self, parent=None):
+        from PySide import QtCore, QtWidgets
+
+        self.form = QtWidgets.QWidget(parent)
+        self.form.setObjectName("VibeCADPromptStartersPreferencesPage")
+        self.form.setWindowTitle("Prompt Starters")
+        layout = QtWidgets.QVBoxLayout(self.form)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self.form)
+        splitter.setObjectName("VibeCADPrefPromptStarterSplitter")
+        layout.addWidget(splitter, 1)
+
+        self.tree = QtWidgets.QTreeWidget(splitter)
+        self.tree.setObjectName("VibeCADPrefPromptStarterTree")
+        self.tree.setHeaderHidden(True)
+        self.tree.setMinimumWidth(220)
+        self.tree.setUniformRowHeights(True)
+        self.tree.currentItemChanged.connect(self._selection_changed)
+        splitter.addWidget(self.tree)
+
+        editor = QtWidgets.QWidget(splitter)
+        editor.setObjectName("VibeCADPrefPromptStarterEditor")
+        editor_layout = QtWidgets.QFormLayout(editor)
+        editor_layout.setContentsMargins(8, 0, 0, 0)
+        editor_layout.setSpacing(8)
+
+        self.source = QtWidgets.QLabel(editor)
+        self.source.setObjectName("VibeCADPrefPromptStarterSource")
+        editor_layout.addRow("Source", self.source)
+
+        self.name = QtWidgets.QLineEdit(editor)
+        self.name.setObjectName("VibeCADPrefPromptStarterName")
+        self.name.setMaxLength(80)
+        self.name.textChanged.connect(self._name_changed)
+        editor_layout.addRow("Name", self.name)
+
+        self.category = QtWidgets.QComboBox(editor)
+        self.category.setObjectName("VibeCADPrefPromptStarterCategory")
+        self.category.addItems(CATEGORY_ORDER)
+        self.category.currentTextChanged.connect(self._category_changed)
+        editor_layout.addRow("Category", self.category)
+
+        self.content = QtWidgets.QPlainTextEdit(editor)
+        self.content.setObjectName("VibeCADPrefPromptStarterContent")
+        self.content.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.content.textChanged.connect(self._content_changed)
+        editor_layout.addRow("Prompt", self.content)
+
+        actions = QtWidgets.QWidget(editor)
+        actions.setObjectName("VibeCADPrefPromptStarterActions")
+        actions_layout = QtWidgets.QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(6)
+
+        self.new_button = QtWidgets.QPushButton("New", actions)
+        self.new_button.setObjectName("VibeCADPrefPromptStarterNew")
+        self.new_button.clicked.connect(self._new_custom)
+        actions_layout.addWidget(self.new_button)
+
+        self.duplicate_button = QtWidgets.QPushButton("Duplicate", actions)
+        self.duplicate_button.setObjectName("VibeCADPrefPromptStarterDuplicate")
+        self.duplicate_button.clicked.connect(self._duplicate_selected)
+        actions_layout.addWidget(self.duplicate_button)
+
+        self.delete_button = QtWidgets.QPushButton("Delete", actions)
+        self.delete_button.setObjectName("VibeCADPrefPromptStarterDelete")
+        self.delete_button.clicked.connect(self._delete_selected)
+        actions_layout.addWidget(self.delete_button)
+        actions_layout.addStretch(1)
+        editor_layout.addRow("", actions)
+
+        splitter.addWidget(editor)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([250, 520])
+
+        self.status = QtWidgets.QLabel(self.form)
+        self.status.setObjectName("VibeCADPrefPromptStarterStatus")
+        self.status.setWordWrap(True)
+        self.status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(self.status)
+
+        item_data_role = getattr(QtCore.Qt, "ItemDataRole", QtCore.Qt)
+        self._user_role = item_data_role.UserRole
+        self._starters: dict[str, PromptStarter] = {}
+        self._selected_id = ""
+        self._loading_editor = False
+        self._custom_load_error = ""
+
+    def _selected_starter(self) -> PromptStarter | None:
+        return self._starters.get(self._selected_id)
+
+    def _tree_item_for(self, starter_id: str):
+        from PySide import QtWidgets
+
+        iterator = QtWidgets.QTreeWidgetItemIterator(self.tree)
+        while iterator.value() is not None:
+            item = iterator.value()
+            if str(item.data(0, self._user_role) or "") == starter_id:
+                return item
+            iterator += 1
+        return None
+
+    def _reload_tree(self, selected_id: str = "") -> None:
+        from PySide import QtWidgets
+
+        self.tree.blockSignals(True)
+        try:
+            self.tree.clear()
+            selected_item = None
+            first_item = None
+            for category in CATEGORY_ORDER:
+                starters = sorted(
+                    (
+                        starter
+                        for starter in self._starters.values()
+                        if starter.category == category
+                    ),
+                    key=lambda starter: (not starter.builtin, starter.name.casefold()),
+                )
+                if not starters:
+                    continue
+                group = QtWidgets.QTreeWidgetItem([category])
+                group.setData(0, self._user_role, "")
+                self.tree.addTopLevelItem(group)
+                for starter in starters:
+                    item = QtWidgets.QTreeWidgetItem([starter.name])
+                    item.setData(0, self._user_role, starter.starter_id)
+                    item.setToolTip(
+                        0,
+                        "Built in" if starter.builtin else "Custom prompt starter",
+                    )
+                    group.addChild(item)
+                    if first_item is None:
+                        first_item = item
+                    if starter.starter_id == selected_id:
+                        selected_item = item
+                group.setExpanded(True)
+            self.tree.setCurrentItem(selected_item or first_item)
+        finally:
+            self.tree.blockSignals(False)
+        current = self.tree.currentItem()
+        starter_id = (
+            str(current.data(0, self._user_role) or "") if current is not None else ""
+        )
+        self._show_starter(starter_id)
+
+    def _selection_changed(self, current, _previous) -> None:
+        starter_id = (
+            str(current.data(0, self._user_role) or "") if current is not None else ""
+        )
+        self._show_starter(starter_id)
+
+    def _show_starter(self, starter_id: str) -> None:
+        starter = self._starters.get(starter_id)
+        self._selected_id = starter_id if starter is not None else ""
+        self._loading_editor = True
+        try:
+            self.source.setText(
+                "Built in (read only)"
+                if starter is not None and starter.builtin
+                else ("Custom" if starter is not None else "")
+            )
+            self.name.setText(starter.name if starter is not None else "")
+            category_index = (
+                self.category.findText(starter.category) if starter is not None else -1
+            )
+            self.category.setCurrentIndex(category_index if category_index >= 0 else 0)
+            self.content.setPlainText(starter.content if starter is not None else "")
+        finally:
+            self._loading_editor = False
+
+        editable = (
+            starter is not None
+            and not starter.builtin
+            and not self._custom_load_error
+        )
+        self.name.setReadOnly(not editable)
+        self.category.setEnabled(editable)
+        self.content.setReadOnly(not editable)
+        self.duplicate_button.setEnabled(
+            starter is not None and not self._custom_load_error
+        )
+        self.delete_button.setEnabled(editable)
+
+    def _replace_selected(self, *, name=None, category=None, content=None) -> None:
+        starter = self._selected_starter()
+        if starter is None or starter.builtin or self._loading_editor:
+            return
+        self._starters[starter.starter_id] = PromptStarter(
+            starter_id=starter.starter_id,
+            name=starter.name if name is None else name,
+            category=starter.category if category is None else category,
+            content=starter.content if content is None else content,
+            builtin=False,
+        )
+
+    def _name_changed(self, text: str) -> None:
+        self._replace_selected(name=text)
+        item = self._tree_item_for(self._selected_id)
+        if item is not None and not self._loading_editor:
+            item.setText(0, text.strip() or "Untitled prompt starter")
+
+    def _category_changed(self, category: str) -> None:
+        if self._loading_editor or not self._selected_id:
+            return
+        starter = self._selected_starter()
+        if starter is None or starter.builtin:
+            return
+        self._replace_selected(category=category)
+        self._reload_tree(self._selected_id)
+
+    def _content_changed(self) -> None:
+        self._replace_selected(content=self.content.toPlainText())
+
+    def _unique_name(self, base: str) -> str:
+        existing = {starter.name.casefold() for starter in self._starters.values()}
+        if base.casefold() not in existing:
+            return base
+        index = 2
+        while f"{base} {index}".casefold() in existing:
+            index += 1
+        return f"{base} {index}"
+
+    def _new_custom(self) -> None:
+        if self._custom_load_error:
+            return
+        starter = create_custom_prompt_starter(
+            name=self._unique_name("New prompt starter"),
+            category="General",
+            content=self._NEW_STARTER_CONTENT,
+        )
+        self._starters[starter.starter_id] = starter
+        self._reload_tree(starter.starter_id)
+        self.name.setFocus()
+        self.name.selectAll()
+
+    def _duplicate_selected(self) -> None:
+        if self._custom_load_error:
+            return
+        source = self._selected_starter()
+        if source is None:
+            return
+        starter = create_custom_prompt_starter(
+            name=self._unique_name(f"Copy of {source.name}"),
+            category=source.category,
+            content=source.content,
+        )
+        self._starters[starter.starter_id] = starter
+        self._reload_tree(starter.starter_id)
+        self.name.setFocus()
+        self.name.selectAll()
+
+    def _delete_selected(self) -> None:
+        starter = self._selected_starter()
+        if starter is None or starter.builtin or self._custom_load_error:
+            return
+        del self._starters[starter.starter_id]
+        self._reload_tree()
+
+    def saveSettings(self) -> None:
+        if self._custom_load_error:
+            App.Console.PrintWarning(
+                "VibeCAD prompt starters were not saved because the existing "
+                f"library could not be loaded: {self._custom_load_error}\n"
+            )
+            return
+        custom = [starter for starter in self._starters.values() if not starter.builtin]
+        try:
+            path = save_custom_prompt_starters(custom)
+        except Exception as exc:
+            self.status.setText(f"Not saved | {exc}")
+            App.Console.PrintWarning(f"VibeCAD prompt starter save failed: {exc}\n")
+            return
+        self.status.setText(f"{len(custom)} custom | {path}")
+
+    def loadSettings(self) -> None:
+        self._custom_load_error = ""
+        try:
+            custom = load_custom_prompt_starters()
+        except Exception as exc:
+            custom = ()
+            self._custom_load_error = str(exc)
+        self._starters = {
+            starter.starter_id: starter
+            for starter in (*BUILTIN_PROMPT_STARTERS, *custom)
+        }
+        self.new_button.setEnabled(not self._custom_load_error)
+        self._reload_tree(self._selected_id)
+        if self._custom_load_error:
+            self.status.setText(f"Custom library unavailable | {self._custom_load_error}")
+        else:
+            self.status.setText(f"{len(custom)} custom | {prompt_starters_path()}")
 
 
 class VibeCADDebugPreferencesPage:

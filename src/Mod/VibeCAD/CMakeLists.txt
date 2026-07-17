@@ -16,6 +16,7 @@ set(VibeCAD_Scripts
     VibeCADIntentMemoryCompiler.py
     VibeCADOpenSCAD.py
     VibeCADPreferences.py
+    VibeCADPromptStarters.py
     VibeCADProvider.py
     VibeCADProject.py
     VibeCADSession.py
@@ -40,6 +41,7 @@ set(VibeCAD_Resources
     vibecad-stop.svg
     vibecad-activity.svg
     vibecad-new-conversation.svg
+    vibecad-prompt-starters.svg
 )
 
 file(GLOB_RECURSE VibeCAD_ToolImplScripts

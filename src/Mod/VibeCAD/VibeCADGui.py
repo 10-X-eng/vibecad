@@ -25,6 +25,11 @@ import FreeCADGui as Gui
 from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
 from VibeCADProject import DEFAULT_PARTDESIGN_ENGINE
+from VibeCADPromptStarters import (
+    BUILTIN_PROMPT_STARTERS,
+    CATEGORY_ORDER,
+    load_custom_prompt_starters,
+)
 from VibeCADSession import (
     _format_document_delta,
     rebuild_intent_memory,
@@ -45,6 +50,7 @@ ICON_SEND = "vibecad-send.svg"
 ICON_STOP = "vibecad-stop.svg"
 ICON_ACTIVITY = "vibecad-activity.svg"
 ICON_NEW_CONVERSATION = "vibecad-new-conversation.svg"
+ICON_PROMPT_STARTERS = "vibecad-prompt-starters.svg"
 
 _commands_registered = False
 _preferences_registered = False
@@ -1994,6 +2000,90 @@ def _install_prompt_paste_filter(prompt: Any) -> None:
     prompt.setProperty("VibePasteFilterInstalled", True)
 
 
+def _insert_prompt_starter(prompt: Any, content: str) -> None:
+    """Insert editable starter text at the current composer selection."""
+    from PySide import QtGui
+
+    if prompt is None or prompt.isReadOnly():
+        return
+    clean = str(content or "").strip()
+    if not clean:
+        return
+
+    cursor = prompt.textCursor()
+    existing = prompt.toPlainText()
+    selection_start = cursor.selectionStart()
+    selection_end = cursor.selectionEnd()
+    before = existing[:selection_start]
+    after = existing[selection_end:]
+    if not before or before.endswith("\n\n"):
+        prefix = ""
+    elif before.endswith("\n"):
+        prefix = "\n"
+    else:
+        prefix = "\n\n"
+    if not after or after.startswith("\n\n"):
+        suffix = ""
+    elif after.startswith("\n"):
+        suffix = "\n"
+    else:
+        suffix = "\n\n"
+
+    inserted_start = selection_start + len(prefix)
+    cursor.insertText(f"{prefix}{clean}{suffix}")
+    placeholder = re.search(r"\[[^\]\n]+\]", clean)
+    if placeholder is not None:
+        cursor.setPosition(inserted_start + placeholder.start())
+        cursor.setPosition(
+            inserted_start + placeholder.end(),
+            QtGui.QTextCursor.MoveMode.KeepAnchor,
+        )
+    prompt.setTextCursor(cursor)
+    prompt.setFocus()
+
+
+def _show_prompt_starter_preferences() -> None:
+    Gui.showPreferencesByName("VibeCAD", "Prompt Starters")
+
+
+def _populate_prompt_starter_menu(menu: Any, prompt: Any) -> None:
+    menu.clear()
+    starters = list(BUILTIN_PROMPT_STARTERS)
+    custom_error = ""
+    try:
+        starters.extend(load_custom_prompt_starters())
+    except Exception as exc:
+        custom_error = str(exc)
+
+    for category in CATEGORY_ORDER:
+        category_starters = sorted(
+            (starter for starter in starters if starter.category == category),
+            key=lambda starter: (not starter.builtin, starter.name.casefold()),
+        )
+        if not category_starters:
+            continue
+        category_menu = menu.addMenu(category)
+        for starter in category_starters:
+            action = category_menu.addAction(starter.name)
+            action.setToolTip(
+                "Built-in prompt starter" if starter.builtin else "Custom prompt starter"
+            )
+            action.triggered.connect(
+                lambda _checked=False, text=starter.content: _insert_prompt_starter(
+                    prompt, text
+                )
+            )
+
+    if custom_error:
+        menu.addSeparator()
+        error_action = menu.addAction("Custom starters unavailable")
+        error_action.setEnabled(False)
+        error_action.setToolTip(custom_error)
+    menu.addSeparator()
+    manage_action = menu.addAction("Manage Prompt Starters...")
+    manage_action.triggered.connect(_show_prompt_starter_preferences)
+
+
 # ---------------------------------------------------------------------------
 # Run / stop / steering
 # ---------------------------------------------------------------------------
@@ -2085,6 +2175,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     reference_chips = _find_child("QWidget", "VibeReferenceChips", dock)
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
+    prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
     engine_selector = _find_child("QComboBox", "VibePartDesignEngine", dock)
 
     if send_button is not None:
@@ -2102,6 +2193,8 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         conversation_selector.setEnabled(document_ready and not busy)
     if new_conversation is not None:
         new_conversation.setEnabled(document_ready and not busy)
+    if prompt_starters is not None:
+        prompt_starters.setEnabled(document_ready and not busy)
     if engine_selector is not None:
         engine_selector.setEnabled(document_ready and not busy)
     if prompt_box is not None:
@@ -2854,6 +2947,21 @@ def _build_panel_widget():
     )
     attach_image_button.clicked.connect(_attach_image_from_panel)
 
+    prompt_starters = QtWidgets.QToolButton(composer_buttons)
+    prompt_starters.setObjectName("VibePromptStarters")
+    prompt_starters.setIcon(QtGui.QIcon(_icon_path(ICON_PROMPT_STARTERS)))
+    prompt_starters.setIconSize(icon_size)
+    prompt_starters.setToolTip("Insert an editable prompt starter")
+    prompt_starters.setPopupMode(
+        QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+    )
+    prompt_starter_menu = QtWidgets.QMenu(prompt_starters)
+    prompt_starter_menu.setObjectName("VibePromptStarterMenu")
+    prompt_starter_menu.aboutToShow.connect(
+        lambda: _populate_prompt_starter_menu(prompt_starter_menu, prompt)
+    )
+    prompt_starters.setMenu(prompt_starter_menu)
+
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
@@ -2868,6 +2976,7 @@ def _build_panel_widget():
     stop_button.setEnabled(False)
     stop_button.clicked.connect(_stop_prompt_from_panel)
 
+    buttons_layout.addWidget(prompt_starters)
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
@@ -3152,6 +3261,9 @@ def ensure_preferences_registered() -> None:
 
     Gui.addIconPath(str(Path(__file__).resolve().parent))
     Gui.addPreferencePage(VibeCADPreferences.VibeCADPreferencesPage, "VibeCAD")
+    Gui.addPreferencePage(
+        VibeCADPreferences.VibeCADPromptStartersPreferencesPage, "VibeCAD"
+    )
     Gui.addPreferencePage(VibeCADPreferences.VibeCADDebugPreferencesPage, "VibeCAD")
     _preferences_registered = True
 
