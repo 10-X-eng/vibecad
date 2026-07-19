@@ -143,9 +143,7 @@ def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> No
     other_blocks = provider._anthropic_system_blocks(
         {"provider_tool_schemas": [{"name": "build123d.create_model"}]}
     )
-    assert [block["text"] for block in other_blocks] == [
-        provider.VIBECAD_SYSTEM_INSTRUCTIONS
-    ]
+    assert [block["text"] for block in other_blocks] == [provider.VIBECAD_SYSTEM_INSTRUCTIONS]
 
 
 def test_both_wire_formats_order_vibescript_guidance_before_intent_memory() -> None:
@@ -154,9 +152,9 @@ def test_both_wire_formats_order_vibescript_guidance_before_intent_memory() -> N
     context["intent_memory"] = {"revision": "r1"}
 
     instructions = provider._provider_instructions(context)
-    assert instructions.index(
-        provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS
-    ) < instructions.index("VIBECAD INTENT MEMORY")
+    assert instructions.index(provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS) < instructions.index(
+        "VIBECAD INTENT MEMORY"
+    )
 
     blocks = provider._anthropic_system_blocks(context)
     assert len(blocks) == 3
@@ -183,9 +181,16 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
 
 
 class _ProviderContextService:
-    def __init__(self, workbench: str, base_context: dict[str, object]) -> None:
+    def __init__(
+        self,
+        workbench: str,
+        base_context: dict[str, object],
+        *,
+        engine: str = "vibescript",
+    ) -> None:
         self.workbench = workbench
         self.base_context = base_context
+        self.engine = engine
         self.vibescript_context_calls = 0
 
     def provider_context_summary(self) -> dict[str, object]:
@@ -193,6 +198,9 @@ class _ProviderContextService:
 
     def active_workbench_name(self) -> str:
         return self.workbench
+
+    def modeling_engine(self) -> str:
+        return self.engine
 
     def provider_debug_config(self) -> dict[str, object]:
         return {"enabled": False}
@@ -210,9 +218,7 @@ class _ProviderContextService:
             "models": [{"model_id": "a" * 32, "name": "Impeller"}],
         }
 
-    def complete_vibescript_context(
-        self, snapshot: dict[str, object]
-    ) -> dict[str, object]:
+    def complete_vibescript_context(self, snapshot: dict[str, object]) -> dict[str, object]:
         return {"models": list(snapshot.get("models") or [])}
 
 
@@ -231,36 +237,47 @@ def _context_schema(name: str) -> dict[str, object]:
 def test_vibescript_model_context_follows_its_surfaced_tools(
     monkeypatch,
 ) -> None:
-    schemas = [
-        _context_schema("assembly.solve"),
-        _context_schema("vibescript.inspect_model"),
-    ]
+    schemas = [_context_schema("vibescript.part.inspect_program")]
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
         lambda _service, _wb, **_kwargs: schemas,
     )
     service = _ProviderContextService(
-        "AssemblyWorkbench",
-        {"cad_state": {}, "assembly": {"assemblies": []}},
+        "PartWorkbench",
+        {"cad_state": {}},
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "domain_context_snapshot",
+        lambda _service, domain: {
+            "_vibecad_deferred_vibescript_domain_context": True,
+            "domain": domain,
+            "programs": [{"program_id": "a" * 32, "label": "Fixture"}],
+        },
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "complete_domain_context",
+        lambda snapshot: {
+            "domain": snapshot["domain"],
+            "programs": list(snapshot["programs"]),
+        },
     )
 
     context = session._complete_vibescript_provider_context(
         service, session._context_for_provider(service)
     )
 
-    assert context["vibescript"]["models"] == [
-        {"model_id": "a" * 32, "name": "Impeller"}
-    ]
-    assert context["vibescript"]["regeneration_contract"] == {
-        "published_output_identity": "stable",
-        "managed_semantic_references": "rebound_or_explicitly_deferred",
-        "derived_analysis_and_manufacturing_results": "marked_stale",
-        "unmanaged_subelement_references": "regeneration_rejected",
+    assert context["vibescript_domain"] == {
+        "domain": "part",
+        "programs": [{"program_id": "a" * 32, "label": "Fixture"}],
     }
-    assert service.vibescript_context_calls == 1
+    assert "part" not in context
+    assert service.vibescript_context_calls == 0
     assert (
-        provider._model_visible_context(context)["vibescript"] == context["vibescript"]
+        provider._model_visible_context(context)["vibescript_domain"]
+        == context["vibescript_domain"]
     )
 
 
@@ -275,6 +292,7 @@ def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
     service = _ProviderContextService(
         "BIMWorkbench",
         {"cad_state": {}, "bim": {"buildings": []}},
+        engine="native",
     )
 
     context = session._context_for_provider(service)
@@ -290,9 +308,7 @@ def test_partdesign_keeps_one_vibescript_model_context_without_duplication(
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
-        lambda _service, _wb, **_kwargs: [
-            _context_schema("vibescript.inspect_model")
-        ],
+        lambda _service, _wb, **_kwargs: [_context_schema("vibescript.inspect_model")],
     )
     service = _ProviderContextService(
         "PartDesignWorkbench",
@@ -390,9 +406,7 @@ class _FakeResponses:
             ],
             output_text="finished",
         )
-        return _ResponsesStream(
-            [SimpleNamespace(type="response.completed", response=completed)]
-        )
+        return _ResponsesStream([SimpleNamespace(type="response.completed", response=completed)])
 
 
 class _FakeOpenAI:
@@ -461,9 +475,7 @@ def test_openai_tool_loop_manages_response_history_without_response_ids(
     assert len(requests) == 2
     assert all("previous_response_id" not in request for request in requests)
     assert all(request["instructions"] for request in requests)
-    assert all(
-        request["include"] == ["reasoning.encrypted_content"] for request in requests
-    )
+    assert all(request["include"] == ["reasoning.encrypted_content"] for request in requests)
     second_input = requests[1]["input"]
     assert [item["type"] for item in second_input[1:]] == [
         "reasoning",

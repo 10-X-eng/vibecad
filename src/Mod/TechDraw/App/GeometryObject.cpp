@@ -46,6 +46,7 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -528,7 +529,6 @@ void GeometryObject::addGeomFromCompound(TopoDS_Shape edgeCompound, EdgeClass ca
         cleanShape = edgeCompound;
     }
 
-    BaseGeomPtr base;
     TopExp_Explorer edges(cleanShape, TopAbs_EDGE);
     int i = 1;
     for (; edges.More(); edges.Next(), i++) {
@@ -543,73 +543,176 @@ void GeometryObject::addGeomFromCompound(TopoDS_Shape edgeCompound, EdgeClass ca
             continue;
         }
 
-        base = BaseGeom::baseFactory(edge);
-        if (!base) {
-            continue;
-        }
-
-        base->source(SourceType::GEOMETRY);
-        base->sourceIndex(i - 1);
-        base->setClassOfEdge(category);
-        base->setHlrVisible(hlrVisible);
-        edgeGeom.push_back(base);
-
-        //add vertices of new edge if not already in list
-        // note that if a vertex belongs to both a hidden and a visible edge, it will be treated as
-        // a visible vertex.
-        BaseGeomPtr lastAdded = edgeGeom.back();
-        bool v1Add = true, v2Add = true;
-        bool c1Add = true;
-        TechDraw::VertexPtr v1 = std::make_shared<TechDraw::Vertex>(lastAdded->getStartPoint());
-        TechDraw::VertexPtr v2 = std::make_shared<TechDraw::Vertex>(lastAdded->getEndPoint());
-        TechDraw::CirclePtr circle = std::dynamic_pointer_cast<TechDraw::Circle>(lastAdded);
-        TechDraw::VertexPtr c1;
-        if (circle) {
-            c1 = std::make_shared<TechDraw::Vertex>(circle->center);
-            c1->isCenter(true);
-            c1->setHlrVisible(hlrVisible);
-        }
-
-        std::vector<VertexPtr>::iterator itVertex = vertexGeom.begin();
-        for (; itVertex != vertexGeom.end(); itVertex++) {
-            if ((*itVertex)->isEqual(*v1, Precision::Confusion())) {
-                v1Add = false;
-            }
-            if ((*itVertex)->isEqual(*v2, Precision::Confusion())) {
-                v2Add = false;
-            }
-            if (circle) {
-                if ((*itVertex)->isEqual(*c1, Precision::Confusion())) {
-                    c1Add = false;
-                }
-            }
-        }
-        if (v1Add) {
-            vertexGeom.push_back(v1);
-            v1->setHlrVisible(hlrVisible);
-        }
-        else {
-            //    delete v1;
-        }
-        if (v2Add) {
-            vertexGeom.push_back(v2);
-            v2->setHlrVisible(hlrVisible);
-        }
-        else {
-            //    delete v2;
-        }
-
-        if (circle) {
-            if (c1Add) {
-                vertexGeom.push_back(c1);
-                c1->setHlrVisible(hlrVisible);
-            }
-            else {
-                //    delete c1;
-            }
-        }
+        appendProjectedEdge(edge, category, hlrVisible, i - 1);
     // }
     }//end TopExp
+}
+
+void GeometryObject::appendProjectedEdge(const TopoDS_Edge& edge,
+                                         EdgeClass category,
+                                         bool visible,
+                                         int sourceIndex)
+{
+    BaseGeomPtr base = BaseGeom::baseFactory(edge);
+    if (!base) {
+        return;
+    }
+
+    base->source(SourceType::GEOMETRY);
+    base->sourceIndex(sourceIndex);
+    base->setClassOfEdge(category);
+    base->setHlrVisible(visible);
+    edgeGeom.push_back(base);
+
+    // If a vertex belongs to both a hidden and a visible edge, the visible
+    // edge wins, matching the native HLR extraction path.
+    BaseGeomPtr lastAdded = edgeGeom.back();
+    bool addStart = true;
+    bool addEnd = true;
+    bool addCenter = true;
+    TechDraw::VertexPtr start =
+        std::make_shared<TechDraw::Vertex>(lastAdded->getStartPoint());
+    TechDraw::VertexPtr end =
+        std::make_shared<TechDraw::Vertex>(lastAdded->getEndPoint());
+    TechDraw::CirclePtr circle = std::dynamic_pointer_cast<TechDraw::Circle>(lastAdded);
+    TechDraw::VertexPtr center;
+    if (circle) {
+        center = std::make_shared<TechDraw::Vertex>(circle->center);
+        center->isCenter(true);
+        center->setHlrVisible(visible);
+    }
+
+    for (const auto& vertex : vertexGeom) {
+        if (vertex->isEqual(*start, Precision::Confusion())) {
+            addStart = false;
+            if (visible) {
+                vertex->setHlrVisible(true);
+            }
+        }
+        if (vertex->isEqual(*end, Precision::Confusion())) {
+            addEnd = false;
+            if (visible) {
+                vertex->setHlrVisible(true);
+            }
+        }
+        if (circle && vertex->isEqual(*center, Precision::Confusion())) {
+            addCenter = false;
+            if (visible) {
+                vertex->setHlrVisible(true);
+            }
+        }
+    }
+    if (addStart) {
+        start->setHlrVisible(visible);
+        vertexGeom.push_back(start);
+    }
+    if (addEnd) {
+        end->setHlrVisible(visible);
+        vertexGeom.push_back(end);
+    }
+    if (circle && addCenter) {
+        center->setHlrVisible(visible);
+        vertexGeom.push_back(center);
+    }
+}
+
+void GeometryObject::setPrecomputedProjection(
+    const TopoDS_Shape& edges,
+    const std::vector<EdgeClass>& edgeClasses,
+    const std::vector<bool>& edgeVisibility,
+    const std::vector<int>& sourceIndices,
+    const TopoDS_Shape& faces)
+{
+    clear();
+
+    std::vector<TopoDS_Edge> projectedEdges;
+    for (TopExp_Explorer edgeExplorer(edges, TopAbs_EDGE); edgeExplorer.More();
+         edgeExplorer.Next()) {
+        projectedEdges.push_back(TopoDS::Edge(edgeExplorer.Current()));
+    }
+    const size_t edgeCount = projectedEdges.size();
+    if (edgeClasses.size() != edgeCount || edgeVisibility.size() != edgeCount
+        || sourceIndices.size() != edgeCount) {
+        throw Base::ValueError(
+            "Precomputed TechDraw edge metadata does not match the edge count");
+    }
+
+    BRep_Builder builder;
+    TopoDS_Compound visibleHard;
+    TopoDS_Compound visibleOutline;
+    TopoDS_Compound visibleSmooth;
+    TopoDS_Compound visibleSeam;
+    TopoDS_Compound visibleIso;
+    TopoDS_Compound hiddenHard;
+    TopoDS_Compound hiddenOutline;
+    TopoDS_Compound hiddenSmooth;
+    TopoDS_Compound hiddenSeam;
+    TopoDS_Compound hiddenIso;
+    builder.MakeCompound(visibleHard);
+    builder.MakeCompound(visibleOutline);
+    builder.MakeCompound(visibleSmooth);
+    builder.MakeCompound(visibleSeam);
+    builder.MakeCompound(visibleIso);
+    builder.MakeCompound(hiddenHard);
+    builder.MakeCompound(hiddenOutline);
+    builder.MakeCompound(hiddenSmooth);
+    builder.MakeCompound(hiddenSeam);
+    builder.MakeCompound(hiddenIso);
+
+    for (size_t index = 0; index < edgeCount; ++index) {
+        const TopoDS_Edge& edge = projectedEdges[index];
+        const EdgeClass category = edgeClasses[index];
+        const bool visible = edgeVisibility[index];
+        TopoDS_Compound* bucket = nullptr;
+        switch (category) {
+            case EdgeClass::HARD:
+                bucket = visible ? &visibleHard : &hiddenHard;
+                break;
+            case EdgeClass::OUTLINE:
+                bucket = visible ? &visibleOutline : &hiddenOutline;
+                break;
+            case EdgeClass::SMOOTH:
+                bucket = visible ? &visibleSmooth : &hiddenSmooth;
+                break;
+            case EdgeClass::SEAM:
+                bucket = visible ? &visibleSeam : &hiddenSeam;
+                break;
+            case EdgeClass::UVISO:
+                bucket = visible ? &visibleIso : &hiddenIso;
+                break;
+            case EdgeClass::NONE:
+                throw Base::ValueError(
+                    "Precomputed TechDraw edges require an HLR edge class");
+        }
+        builder.Add(*bucket, edge);
+        appendProjectedEdge(edge, category, visible, sourceIndices[index]);
+    }
+
+    visHard = visibleHard;
+    visOutline = visibleOutline;
+    visSmooth = visibleSmooth;
+    visSeam = visibleSeam;
+    visIso = visibleIso;
+    hidHard = hiddenHard;
+    hidOutline = hiddenOutline;
+    hidSmooth = hiddenSmooth;
+    hidSeam = hiddenSeam;
+    hidIso = hiddenIso;
+
+    if (!faces.IsNull()) {
+        TopExp_Explorer faceExplorer(faces, TopAbs_FACE);
+        for (; faceExplorer.More(); faceExplorer.Next()) {
+            const TopoDS_Face faceShape = TopoDS::Face(faceExplorer.Current());
+            FacePtr face = std::make_shared<Face>();
+            TopExp_Explorer wireExplorer(faceShape, TopAbs_WIRE);
+            for (; wireExplorer.More(); wireExplorer.Next()) {
+                face->wires.push_back(new Wire(TopoDS::Wire(wireExplorer.Current())));
+            }
+            if (!face->wires.empty()) {
+                faceGeom.push_back(face);
+            }
+        }
+    }
 }
 
 void GeometryObject::addVertex(TechDraw::VertexPtr v) { vertexGeom.push_back(v); }
@@ -845,4 +948,3 @@ bool GeometryObject::findVertex(Base::Vector3d v)
     }
     return false;
 }
-

@@ -24,3 +24,12 @@ class RobotObject(DocumentObject):
         """Returns a copy of the robot. Be aware, the robot behaves the same
         like the robot of the object but is a copy!"""
         ...
+
+    def setKinematic(self, axes: list[list[float]]) -> None:
+        """Set six Denavit-Hartenberg axis rows in memory.
+
+        Each row is ``[a, alpha, d, theta, rotation_direction,
+        maximum_angle, minimum_angle, maximum_velocity]``. Lengths are
+        millimetres, angles are degrees, and velocity is degrees per second.
+        """
+        ...

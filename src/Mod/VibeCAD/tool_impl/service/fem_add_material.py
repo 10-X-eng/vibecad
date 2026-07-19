@@ -25,7 +25,7 @@ TOOL_SPEC = {
     "name": "fem.add_material",
     "description": (
         "Add one solid material to an exact FEM analysis from the material "
-        "library by exact UUID (find UUIDs with material.list_materials). "
+        "library by exact UUID supplied in the active FEM context or by the human. "
         "The solver reads mechanical values (Young's modulus, Poisson "
         "ratio, density) from this material; a solve without a material "
         "fails. One material covering the whole model is the common case."
@@ -46,8 +46,7 @@ TOOL_SPEC = {
             "material_uuid": {
                 "type": "string",
                 "description": (
-                    "Exact UUID of the material card from "
-                    "material.list_materials; pick a card with mechanical "
+                    "Exact UUID of a material card with mechanical "
                     "properties (e.g. a steel or aluminium alloy) for "
                     "structural analyses."
                 ),
@@ -100,13 +99,13 @@ def run(
         card = manager.getMaterial(clean_uuid)
     except Exception as exc:
         return _invalid(
-            f"Material not found by UUID {clean_uuid}: {exc}. Use "
-            "material.list_materials to find valid UUIDs."
+            f"Material not found by UUID {clean_uuid}: {exc}. Provide an exact "
+            "valid material-card UUID."
         )
     if card is None:
         return _invalid(
-            f"Material not found by UUID: {clean_uuid}. Use "
-            "material.list_materials to find valid UUIDs."
+            f"Material not found by UUID: {clean_uuid}. Provide an exact valid "
+            "material-card UUID."
         )
     solver = _analysis_solver(analysis)
     if solver is None:

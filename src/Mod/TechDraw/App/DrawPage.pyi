@@ -24,6 +24,10 @@ class DrawPage(DocumentObject):
         """addView(DrawView) - Add a View to this Page"""
         ...
 
+    def addPrecomputedView(self) -> Any:
+        """addPrecomputedView(DrawView) - Add validated state without fit evaluation"""
+        ...
+
     def removeView(self) -> Any:
         """removeView(DrawView) - Remove a View to this Page"""
         ...

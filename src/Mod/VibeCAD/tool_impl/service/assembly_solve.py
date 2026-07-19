@@ -128,7 +128,7 @@ def run(service: Any, assembly_name: str) -> dict[str, Any]:
         transaction,
         extra={"operation": "solve", "mutation": mutation},
         next_action=(
-            "Verify component placements with part.measure or a screenshot; "
+            "Verify the returned component placements or capture a screenshot; "
             "if the verdict is not 'solved', fix the reported joint problem "
             "before adding more joints."
         ),

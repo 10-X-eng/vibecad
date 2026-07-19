@@ -57,8 +57,8 @@ TOOL_SPEC = {
     "description": (
         "Create one native Surface filling patch that covers a closed loop of "
         "exact boundary edges. The referenced edges must connect end-to-end "
-        "into one closed loop or the patch fails. Resolve edge names with "
-        "part.find_subelements first - never guess them."
+        "into one closed loop or the patch fails. Use exact edge names from "
+        "the active Surface context; never guess them."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

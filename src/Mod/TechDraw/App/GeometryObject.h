@@ -79,6 +79,19 @@ public:
     void setVertexGeometry(std::vector<VertexPtr> newVerts) { vertexGeom = newVerts; }
     void setEdgeGeometry(BaseGeomPtrVector newGeoms) { edgeGeom = newGeoms; }
 
+    /** Adopt geometry projected and validated by an isolated worker.
+     *
+     * Unlike projectShape(), this performs no hidden-line removal, source
+     * projection, meshing, or face discovery.  It only reconstructs the
+     * bounded TechDraw representation from exact projected edge and face
+     * shapes supplied by the caller.
+     */
+    void setPrecomputedProjection(const TopoDS_Shape& edges,
+                                  const std::vector<EdgeClass>& edgeClasses,
+                                  const std::vector<bool>& edgeVisibility,
+                                  const std::vector<int>& sourceIndices,
+                                  const TopoDS_Shape& faces);
+
     void projectShape(const TopoDS_Shape& input, const gp_Ax2& viewAxis);
     void projectShapeWithPolygonAlgo(const TopoDS_Shape& input, const gp_Ax2& viewAxis);
     static TopoDS_Shape projectSimpleShape(const TopoDS_Shape& shape, const gp_Ax2& CS, bool invertYRequired = true);
@@ -141,6 +154,10 @@ protected:
     TopoDS_Shape hidIso;
 
     void addGeomFromCompound(TopoDS_Shape edgeCompound, EdgeClass category, bool visible);
+    void appendProjectedEdge(const TopoDS_Edge& edge,
+                             EdgeClass category,
+                             bool visible,
+                             int sourceIndex);
     TechDraw::DrawViewDetail* isParentDetail();
 
     //similar function in Geometry?

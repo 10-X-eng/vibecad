@@ -43,6 +43,21 @@ class DrawViewPart(DrawView):
         """
         ...
 
+    def getPrecomputedProjection(self) -> Any:
+        """
+        Return the exact projected edge/face shapes and HLR metadata needed to
+        reproduce this view without projecting its source again.
+        """
+        ...
+
+    def setPrecomputedProjection(self) -> Any:
+        """
+        Adopt a bounded projection snapshot returned by
+        getPrecomputedProjection(). No source projection or face discovery is
+        performed by this operation.
+        """
+        ...
+
     def getHiddenEdges(self) -> Any:
         """
         getHiddenEdges([conventionalCoords]) - get the hidden edges in the View as Part::TopoShapeEdges.  Edges are returned

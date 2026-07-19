@@ -17,8 +17,8 @@ TOOL_SPEC = {
         "Create one native Surface extension that enlarges an exact named face "
         "beyond its current boundary by a percentage of its size in each "
         "parametric direction. Useful to make a surface big enough for a "
-        "boolean or section. Resolve face names with part.find_subelements "
-        "first - never guess them."
+        "later operation. Use exact face names from the active Surface context; "
+        "never guess them."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

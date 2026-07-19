@@ -7,8 +7,57 @@ from __future__ import annotations
 import FreeCAD as App
 
 
+_WORKBENCH_PREFERENCES = "User parameter:BaseApp/Preferences/Workbenches"
+_LEGACY_DISABLED_WORKBENCH_SETS = (
+    frozenset(
+        {
+            "InspectionWorkbench",
+            "MaterialWorkbench",
+            "OpenSCADWorkbench",
+            "PointsWorkbench",
+            "ReverseEngineeringWorkbench",
+            "RobotWorkbench",
+            "TestWorkbench",
+            "NoneWorkbench",
+        }
+    ),
+    frozenset(
+        {
+            "InspectionWorkbench",
+            "MaterialWorkbench",
+            "PointsWorkbench",
+            "ReverseEngineeringWorkbench",
+            "RobotWorkbench",
+            "TestWorkbench",
+            "NoneWorkbench",
+        }
+    ),
+)
+
+
 def _warn(message: str) -> None:
     App.Console.PrintWarning(f"{message}\n")
+
+
+def _restore_legacy_disabled_workbenches() -> bool:
+    """Undo only the exact disabled lists shipped by old VibeCAD packs."""
+
+    preferences = App.ParamGet(_WORKBENCH_PREFERENCES)
+    disabled = frozenset(
+        item.strip()
+        for item in preferences.GetString("Disabled", "").split(",")
+        if item.strip()
+    )
+    if disabled not in _LEGACY_DISABLED_WORKBENCH_SETS:
+        return False
+    preferences.SetString("Disabled", "TestWorkbench,NoneWorkbench")
+    return True
+
+
+try:
+    _restore_legacy_disabled_workbenches()
+except Exception as exc:
+    _warn(f"VibeCAD workbench preference migration failed: {exc}")
 
 
 try:

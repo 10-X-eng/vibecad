@@ -169,7 +169,10 @@ void DrawProjGroupItem::autoPosition()
 void DrawProjGroupItem::onDocumentRestored()
 {
 //    Base::Console().message("DPGI::onDocumentRestored() - %s\n", getNameInDocument());
-    DrawView::onDocumentRestored();
+    DrawViewPart::onDocumentRestored();
+    if (isFreezed()) {
+        return;
+    }
     App::DocumentObjectExecReturn* rc = DrawProjGroupItem::execute();
     if (rc) {
         delete rc;

@@ -56,6 +56,9 @@ public:
 
     Trajectory& operator=(const Trajectory&);
 
+    /// Exchange two already-generated trajectories without rebuilding either path.
+    void swap(Trajectory&) noexcept;
+
     // from base class
     unsigned int getMemSize() const override;
     void Save(Base::Writer& /*writer*/) const override;

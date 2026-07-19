@@ -19,6 +19,10 @@ TOOL_SPEC = {
         "object left invalid after recompute."
     ),
     "contextual": True,
+    # Compatibility entry point for existing internal callers. Exact modeling
+    # surfaces intentionally expose deletion only through their owning pack or
+    # VibeScript lifecycle, never as a cross-workbench provider tool.
+    "provider_visible": False,
     "safety": "SAFE_WRITE",
     "edit_modes": ["none"],
     "parameters": {

@@ -25,6 +25,13 @@ class DrawProjGroup(DrawViewCollection):
         """addProjection(string projectionType) - Add a new Projection Item to this Group. Returns DocObj."""
         ...
 
+    def addPrecomputedProjection(self) -> Any:
+        """
+        Add a projection item without projecting its source. The caller must
+        install a validated precomputed projection snapshot before use.
+        """
+        ...
+
     def removeProjection(self) -> Any:
         """removeProjection(string projectionType) - Remove specified Projection Item from this Group. Returns int number of views in Group."""
         ...

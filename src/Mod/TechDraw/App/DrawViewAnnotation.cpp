@@ -39,6 +39,11 @@ const char* DrawViewAnnotation::TextStyleEnums[]= {"Normal",
                                       "Bold-Italic",
                                       nullptr};
 
+const char* DrawViewAnnotation::TextAlignmentEnums[] = {"Left",
+                                                        "Center",
+                                                        "Right",
+                                                        nullptr};
+
 DrawViewAnnotation::DrawViewAnnotation()
 {
     static const char *vgroup = "Annotation";
@@ -54,6 +59,13 @@ DrawViewAnnotation::DrawViewAnnotation()
 
     TextStyle.setEnums(TextStyleEnums);
     ADD_PROPERTY_TYPE(TextStyle, ((long)0), vgroup, App::Prop_None, "Text style");
+
+    TextAlignment.setEnums(TextAlignmentEnums);
+    ADD_PROPERTY_TYPE(TextAlignment,
+                      ((long)0),
+                      vgroup,
+                      App::Prop_None,
+                      "Horizontal alignment of annotation text");
 
     ADD_PROPERTY_TYPE(Owner, (nullptr), vgroup, (App::PropertyType)(App::Prop_None),
                       "Feature to which this annotation is attached, if any");
@@ -71,6 +83,7 @@ void DrawViewAnnotation::onChanged(const App::Property* prop)
             prop == &TextSize ||
             prop == &LineSpace ||
             prop == &TextStyle ||
+            prop == &TextAlignment ||
             prop == &MaxWidth) {
             requestPaint();
         }

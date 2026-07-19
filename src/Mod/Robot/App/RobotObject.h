@@ -63,6 +63,9 @@ public:
         return robot;
     }
 
+    /// Replace the six-axis kinematic definition without reading a file.
+    void setKinematic(const AxisDefinition definitions[6]);
+
     App::PropertyFileIncluded RobotVrmlFile;
     App::PropertyFileIncluded RobotKinematicFile;
 

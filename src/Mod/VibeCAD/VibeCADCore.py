@@ -30,6 +30,7 @@ from VibeCADIntentMemory import (
     empty_memory,
     uncovered_turns,
 )
+from VibeCADModelingSurface import resolve_modeling_surface
 from VibeCADProject import (
     DEFAULT_CONVERSATION_TITLE,
     VibeCADConversationStore,
@@ -39,6 +40,7 @@ from VibeCADProject import (
 )
 from VibeCADTools import ToolRegistry
 from VibeCADWorkbenchTools import get_tool_pack, list_tool_packs
+import VibeCADVibeScriptDomains as vibescript_domains
 from tool_impl import service as service_tools
 from tool_impl import sketcher as sketcher_tools
 
@@ -260,13 +262,14 @@ class VibeCADService:
         return bool(load_settings().vibescript_enabled)
 
     def vibescript_on_bim_enabled(self) -> bool:
-        """True when the scripted engine surface may extend into BIM."""
-        return bool(load_settings().vibescript_on_bim_enabled)
+        """Compatibility accessor; BIM VibeScript no longer requires an opt-in."""
 
-    def partdesign_engine(self) -> str:
-        return self._project_store.partdesign_engine()
+        return True
 
-    def partdesign_engine_state(self) -> dict[str, Any]:
+    def modeling_engine(self) -> str:
+        return self._project_store.modeling_engine()
+
+    def modeling_engine_state(self, workbench: str | None = None) -> dict[str, Any]:
         from VibeCADBuild123d import BUILD123D_VERSION, runtime_health
         from VibeCADOpenSCAD import OPENSCAD_VERSION, runtime_health as openscad_health
         from VibeCADVibeScript import VIBESCRIPT_VERSION
@@ -304,8 +307,12 @@ class VibeCADService:
                 "version": VIBESCRIPT_VERSION,
                 "error": "VibeScript is disabled in VibeCAD Preferences.",
             }
+        active_workbench = workbench or self.active_workbench_name()
+        partdesign_active = active_workbench == "PartDesignWorkbench"
         return {
-            "selected": self.partdesign_engine(),
+            "selected": self.modeling_engine(),
+            "global": True,
+            "workbench": active_workbench,
             "build123d_preference_enabled": build123d_enabled,
             "openscad_preference_enabled": openscad_enabled,
             "vibescript_preference_enabled": vibescript_enabled,
@@ -313,12 +320,12 @@ class VibeCADService:
                 "native",
                 *(
                     ["build123d"]
-                    if build123d_enabled and build123d_state.get("ready")
+                    if partdesign_active and build123d_enabled and build123d_state.get("ready")
                     else []
                 ),
                 *(
                     ["openscad"]
-                    if openscad_enabled and openscad_state.get("ready")
+                    if partdesign_active and openscad_enabled and openscad_state.get("ready")
                     else []
                 ),
                 *(["vibescript"] if vibescript_enabled else []),
@@ -328,12 +335,10 @@ class VibeCADService:
             "vibescript": vibescript_state,
         }
 
-    def set_partdesign_engine(self, engine: str) -> dict[str, Any]:
+    def set_modeling_engine(self, engine: str) -> dict[str, Any]:
         clean = str(engine or "").strip().lower()
         if clean not in {"native", "build123d", "openscad", "vibescript"}:
-            raise ValueError(
-                "PartDesign engine must be native, build123d, OpenSCAD, or VibeScript."
-            )
+            raise ValueError("Modeling engine must be native, build123d, OpenSCAD, or VibeScript.")
         persistence = self.document_persistence_state()
         if not persistence.get("enabled"):
             raise RuntimeError(
@@ -342,21 +347,13 @@ class VibeCADService:
                     or "Save the active document before selecting a modeling engine."
                 )
             )
-        try:
-            import FreeCADGui as Gui
-
-            gui_document = getattr(Gui, "ActiveDocument", None)
-            get_in_edit = getattr(gui_document, "getInEdit", None)
-            if callable(get_in_edit) and get_in_edit() is not None:
-                raise RuntimeError(
-                    "Close the active edit session before changing the PartDesign engine."
-                )
-        except RuntimeError:
-            raise
-        except Exception as exc:
+        self._ensure_modeling_engine_change_allowed()
+        active_workbench = self.active_workbench_name()
+        if clean in {"build123d", "openscad"} and active_workbench != "PartDesignWorkbench":
             raise RuntimeError(
-                f"FreeCAD edit state could not be verified: {exc}"
-            ) from exc
+                f"{clean} is available only while Part Design is active. Select "
+                "VibeScript or Native for this workbench."
+            )
         if clean == "build123d":
             if not self.build123d_enabled():
                 raise RuntimeError(
@@ -382,12 +379,59 @@ class VibeCADService:
                     f"OpenSCAD runtime is unavailable: {health.get('error')}"
                 )
         if clean == "vibescript" and not self.vibescript_enabled():
-            raise RuntimeError(
-                "Enable VibeScript in VibeCAD Preferences before selecting it."
-            )
-        result = self._project_store.set_partdesign_engine(clean)
+            raise RuntimeError("Enable VibeScript in VibeCAD Preferences before selecting it.")
+        result = self._project_store.set_modeling_engine(clean)
         self._provider_working_object_names = []
-        return {"ok": True, **result, "state": self.partdesign_engine_state()}
+        return {"ok": True, **result, "state": self.modeling_engine_state()}
+
+    @staticmethod
+    def _ensure_modeling_engine_change_allowed() -> None:
+        try:
+            import FreeCADGui as Gui
+
+            gui_document = getattr(Gui, "ActiveDocument", None)
+            get_in_edit = getattr(gui_document, "getInEdit", None)
+            if callable(get_in_edit) and get_in_edit() is not None:
+                raise RuntimeError(
+                    "Close the active edit session before changing the modeling engine."
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"FreeCAD edit state could not be verified: {exc}") from exc
+
+    def coerce_modeling_engine_for_workbench(self, workbench: str | None) -> dict[str, Any]:
+        """Persist the required Part Design-only engine transition."""
+
+        selected = self.modeling_engine()
+        if str(workbench or "") != "PartDesignWorkbench" and selected in {"build123d", "openscad"}:
+            self._ensure_modeling_engine_change_allowed()
+            result = self._project_store.set_modeling_engine("vibescript")
+            self._provider_working_object_names = []
+            return {
+                "ok": True,
+                "changed": True,
+                "previous_engine": selected,
+                "engine": "vibescript",
+                "reason": f"{selected} is Part Design-only.",
+                **result,
+            }
+        return {"ok": True, "changed": False, "engine": selected}
+
+    def partdesign_engine(self) -> str:
+        """Compatibility alias for the former project-scoped accessor."""
+
+        return self.modeling_engine()
+
+    def partdesign_engine_state(self) -> dict[str, Any]:
+        """Compatibility alias for callers of the former selector state."""
+
+        return self.modeling_engine_state()
+
+    def set_partdesign_engine(self, engine: str) -> dict[str, Any]:
+        """Compatibility alias for the former project-scoped setter."""
+
+        return self.set_modeling_engine(engine)
 
     def build123d_context(self) -> dict[str, Any]:
         from VibeCADBuild123d import model_summaries
@@ -3642,6 +3686,62 @@ class VibeCADService:
 
         return self._project_store.project_scope()
 
+    def _point_artifact_project_root(
+        self,
+        project_root: str | Path | None = None,
+    ) -> str:
+        root = str(
+            project_root
+            if project_root is not None
+            else self.project_scope_snapshot().get("root") or ""
+        ).strip()
+        if not root:
+            raise RuntimeError(
+                "Save or initialize the active VibeCAD project before managing "
+                "point artifacts."
+            )
+        return root
+
+    def approve_point_artifact(
+        self,
+        source_path: str | Path,
+        *,
+        label: str = "",
+        project_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Approve a human-selected point file for stable-id VibeScript use."""
+
+        from VibeCADPointArtifacts import approve_point_artifact
+
+        root = self._point_artifact_project_root(project_root)
+        artifact = approve_point_artifact(root, source_path, label=label)
+        return {"ok": True, "artifact": artifact}
+
+    def point_artifacts(
+        self,
+        *,
+        project_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """List provider-safe point artifact metadata for the active project."""
+
+        from VibeCADPointArtifacts import point_artifacts_summary
+
+        root = self._point_artifact_project_root(project_root)
+        return {"ok": True, **point_artifacts_summary(root)}
+
+    def remove_point_artifact(
+        self,
+        artifact_id: str,
+        *,
+        project_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Remove one unreferenced point approval and its project-local copy."""
+
+        from VibeCADPointArtifacts import remove_point_artifact
+
+        root = self._point_artifact_project_root(project_root)
+        return {"ok": True, **remove_point_artifact(root, artifact_id)}
+
     def intent_memory(self) -> dict[str, Any]:
         return self._project_store.intent_memory()
 
@@ -4396,10 +4496,13 @@ class VibeCADService:
     def _points_object_summary(self, obj: Any) -> dict[str, Any]:
         item = self._object_summary(obj)
         points = getattr(obj, "Points", None)
+        count = int(getattr(points, "CountPoints", 0) or 0) if points is not None else 0
         point_list = (
-            list(getattr(points, "Points", []) or []) if points is not None else []
+            list(points.fromSegment(range(min(8, count))).Points)
+            if points is not None and count
+            else []
         )
-        item["point_count"] = len(point_list)
+        item["point_count"] = count
         item["bound_box"] = self._bound_box_summary(getattr(points, "BoundBox", None))
         item["sample"] = [
             [float(point.x), float(point.y), float(point.z)]
@@ -4628,13 +4731,16 @@ class VibeCADService:
         direct function tools carry the callable surface.
         """
         active_workbench = self.active_workbench_name()
+        modeling_surface = resolve_modeling_surface(active_workbench, self.modeling_engine())
         task_panel = self.task_panel_summary()
         native_diagnostics = self.recompute_diagnostics()
         document_summary = self.provider_document_summary()
         project_context = dict(self.project_context())
         project_context.pop("partdesign_engine", None)
+        project_context.pop("modeling_engine", None)
         context: dict[str, Any] = {
             "workbench": active_workbench,
+            "modeling_surface": modeling_surface.summary(),
             "vibecad_project": project_context,
             "human_steering": self.steering_state(),
             "document": document_summary,
@@ -4649,53 +4755,61 @@ class VibeCADService:
             "reference_images": self.reference_images_summary(),
             "conversation": self.conversation_history(),
         }
-        context.update(self._provider_domain_context(active_workbench))
+        context.update(
+            self._provider_domain_context(
+                active_workbench,
+                engine=modeling_surface.engine,
+                surface_available=modeling_surface.available,
+                domain=modeling_surface.domain,
+            )
+        )
         context["cad_state"] = self.cad_state_summary(
             native_diagnostics=native_diagnostics,
             task_panel=task_panel,
         )
         return context
 
-    def _provider_domain_context(self, workbench: str | None) -> dict[str, Any]:
-        if workbench == "PartDesignWorkbench":
-            if self.partdesign_engine() == "build123d":
-                return {"partdesign": self.build123d_context()}
-            if self.partdesign_engine() == "openscad":
-                return {"partdesign": self.openscad_context()}
-            if self.partdesign_engine() == "vibescript":
+    def _provider_domain_context(
+        self,
+        workbench: str | None,
+        *,
+        engine: str | None = None,
+        surface_available: bool | None = None,
+        domain: str | None = None,
+    ) -> dict[str, Any]:
+        selected_engine = str(engine or self.modeling_engine())
+        resolution = resolve_modeling_surface(workbench, selected_engine)
+        if surface_available is False or not resolution.available:
+            return {}
+        if selected_engine == "build123d":
+            return {"partdesign": self.build123d_context()}
+        if selected_engine == "openscad":
+            return {"partdesign": self.openscad_context()}
+        if selected_engine == "vibescript":
+            if workbench == "PartDesignWorkbench":
                 return {"partdesign": self.vibescript_context_snapshot()}
+            snapshot = vibescript_domains.domain_context_snapshot(
+                self, str(domain or resolution.domain or "")
+            )
+            return {"vibescript_domain": snapshot}
+        if workbench == "PartDesignWorkbench":
             return {"partdesign": self.provider_partdesign_summary()}
         if workbench == "SketcherWorkbench":
-            return {}
+            return {"sketcher": self.sketcher_summary()}
         if workbench == "PartWorkbench":
-            return {
-                "part": self.provider_part_summary(),
-                "material": self.material_summary(),
-                "assembly": self.assembly_summary(),
-            }
+            return {"part": self.provider_part_summary()}
         if workbench == "AssemblyWorkbench":
-            return {
-                "assembly": self.assembly_summary(),
-                "partdesign": self.provider_partdesign_summary(),
-                "part": self.provider_part_summary(),
-            }
+            return {"assembly": self.assembly_summary()}
         if workbench == "DraftWorkbench":
             return {"draft": self.draft_summary()}
         if workbench == "MaterialWorkbench":
             return {"material": self.material_summary()}
         if workbench == "TechDrawWorkbench":
-            return {
-                "techdraw": self.techdraw_summary(),
-                "document": self.provider_document_summary(),
-            }
+            return {"techdraw": self.techdraw_summary()}
         if workbench == "MeshWorkbench":
             return {"mesh": self.mesh_summary()}
         if workbench == "MeshPartWorkbench":
-            return {
-                "meshpart": self.meshpart_summary(),
-                "mesh": self.mesh_summary(),
-                "part": self.provider_part_summary(),
-            }
+            return {"meshpart": self.meshpart_summary()}
         if workbench == "PointsWorkbench":
             return {"points": self.points_summary()}
         if workbench == "SpreadsheetWorkbench":
@@ -4712,11 +4826,14 @@ class VibeCADService:
             return {"surface": self.surface_summary()}
         if workbench == "RobotWorkbench":
             return {"robot": self.robot_summary()}
+        if workbench == "ReverseEngineeringWorkbench":
+            return {"reverse_engineering": self.workbench_object_summary(workbench)}
         return {}
 
     def _register_core_tools(self) -> None:
         service_tools.register_tools(self._registry, self)
         sketcher_tools.register_tools(self._registry, self)
+        vibescript_domains.register_domain_tools(self._registry, self)
 
 
 _service: VibeCADService | None = None

@@ -3,8 +3,9 @@
 """Workbench-specific VibeCAD tool-surface metadata.
 
 A workbench lists provider tools only after that surface has a complete,
-native, exact-target implementation. Legacy FreeCAD-command wrappers are never
-exposed; every listed tool is an AI-native implementation. Long-tail
+native, exact-target implementation. Each pack owns its complete provider
+surface; tools from adjacent workbenches are never injected. Legacy
+FreeCAD-command wrappers are never exposed; every listed tool is an AI-native implementation. Long-tail
 workbenches expose a read tool only when native object identity is available.
 TestWorkbench and NoneWorkbench intentionally list no tools.
 """
@@ -71,9 +72,10 @@ PARTDESIGN_PACK_TOOL_NAMES: tuple[str, ...] = (
     "partdesign.set_tip",
 )
 
-# PartDesign owns its sketches, so it requires the Sketcher editing tools while
-# a Body sketch is active.
-PARTDESIGN_REQUIRED_ADJACENT_TOOL_NAMES: tuple[str, ...] = SKETCHER_PACK_TOOL_NAMES
+# Compatibility export retained for callers that imported the old metadata.
+# Exact surface resolution deliberately does not borrow the Sketcher pack:
+# entering Sketcher activates SketcherWorkbench and its own native surface.
+PARTDESIGN_REQUIRED_ADJACENT_TOOL_NAMES: tuple[str, ...] = ()
 
 PART_PACK_TOOL_NAMES: tuple[str, ...] = (
     "part.find_subelements",
@@ -184,6 +186,8 @@ class WorkbenchToolPack:
     object_types: tuple[str, ...] = ()
     object_templates: tuple[dict[str, str], ...] = ()
     tool_names: tuple[str, ...] = field(default=())
+    # Retained for additive metadata compatibility. Production packs must leave
+    # this empty: a provider surface is exactly the active workbench's own tools.
     required_adjacent_tool_names: tuple[str, ...] = field(default=())
 
     def provider_tool_names(self) -> tuple[str, ...]:
@@ -214,24 +218,24 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "Build assemblies from existing parts: create the container, insert "
         "components as links, ground the base component, then relate "
         "components with joints. The solver positions unfixed components; "
-        "check its verdict after every joint. Use part.find_subelements for "
-        "exact face/edge names to attach joint connectors to, and "
-        "part.measure to verify solved positions.",
+        "check its verdict after every joint. Use only exact component and "
+        "subelement names present in the active Assembly context, and verify "
+        "solved positions from the returned placements or a screenshot.",
         ("Assembly_",),
         ("Assembly::AssemblyObject",),
         ({"name": "assembly", "object_type": "Assembly::AssemblyObject"},),
         tool_names=ASSEMBLY_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=("part.find_subelements", "part.measure"),
     ),
     "BIMWorkbench": WorkbenchToolPack(
         "BIMWorkbench",
         "BIM",
         "Model buildings top-down: create the spatial structure (site, "
         "building, levels) first, then elements assigned to levels. Walls "
-        "follow Draft wire baselines and slabs extrude closed Draft "
-        "profiles, so draw those with the draft tools at the level's "
-        "elevation before creating the element. Windows and doors cut "
-        "their host wall automatically; verify openings with a screenshot.",
+        "follow existing wire baselines and slabs extrude existing closed "
+        "profiles, addressed by their exact active-document names. If a "
+        "required profile is absent, ask the human to prepare it in its owning "
+        "workbench before continuing. Openings cut their host wall "
+        "automatically; verify them with a screenshot.",
         ("BIM_", "Arch_", "Draft_"),
         ("Arch::", "BIM::"),
         (
@@ -239,34 +243,28 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
             {"name": "level", "object_type": "App::DocumentObjectGroup"},
         ),
         tool_names=BIM_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=(
-            "draft.list_objects",
-            "draft.create_wire",
-            "draft.create_rectangle",
-            "part.measure",
-        ),
     ),
     "CAMWorkbench": WorkbenchToolPack(
         "CAMWorkbench",
         "CAM",
         "Create a machining job for shaped model objects, add cutting "
         "tools, then add operations (profile, pocket, drilling, face). "
-        "Depths are absolute Z: measure the model with part.measure before "
-        "setting them. An operation reporting an empty toolpath cut "
-        "nothing; fix depths or faces before continuing. G-code "
+        "Depths are absolute Z and face references must be exact; derive both "
+        "from the bounded active-document context or ask the human to confirm "
+        "them. An operation reporting an empty toolpath cut nothing; fix "
+        "depths or faces before continuing. G-code "
         "postprocessing to files is left to the user in the FreeCAD GUI.",
         ("CAM_",),
         ("Path::FeaturePython",),
         ({"name": "job_container", "object_type": "App::DocumentObjectGroup"},),
         tool_names=CAM_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=("part.find_subelements", "part.measure"),
     ),
     "DraftWorkbench": WorkbenchToolPack(
         "DraftWorkbench",
         "drafting",
         "2D wires, circles, rectangles, splines on the global XY plane; "
-        "arrays and text annotations. Closed profiles with make_face=true "
-        "become extrusion profiles for part.extrude.",
+        "arrays and text annotations. Closed profiles with make_face=true are "
+        "native planar faces that other workbenches can consume later.",
         ("Draft_",),
         ("Part::Part2DObject",),
         (
@@ -274,15 +272,16 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
             {"name": "annotation_group", "object_type": "App::DocumentObjectGroup"},
         ),
         tool_names=DRAFT_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=("part.extrude", "part.measure"),
     ),
     "FemWorkbench": WorkbenchToolPack(
         "FemWorkbench",
         "FEA",
         "Finite element analysis on solid models: create an analysis with "
         "a CalculiX solver, add a library material, add fixed supports and "
-        "loads on exact model subelements (resolve names with "
-        "part.find_subelements first), generate a Gmsh mesh, then solve. "
+        "loads on exact model subelements from the active FEM context, "
+        "generate a Gmsh mesh, then solve. If an exact subelement name or "
+        "material UUID is unavailable, ask the human to provide it rather "
+        "than guessing or calling another workbench's tools. "
         "fem.solve reports peak von Mises stress and displacement; compare "
         "them against the material's yield strength. Solving requires the "
         "external Gmsh and CalculiX binaries and fails with instructions "
@@ -294,11 +293,6 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
             {"name": "constraint_group", "object_type": "App::DocumentObjectGroup"},
         ),
         tool_names=FEM_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=(
-            "part.find_subelements",
-            "part.measure",
-            "material.list_materials",
-        ),
     ),
     "InspectionWorkbench": WorkbenchToolPack(
         "InspectionWorkbench",
@@ -341,13 +335,14 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "mesh conversion",
         "Convert between meshes and BREP shapes. mesh_from_shape "
         "tessellates a shaped object into a triangle mesh; shape_from_mesh "
-        "sews a mesh into a faceted BREP shape (run mesh.analyze first — "
-        "solids require a watertight mesh). Sources are never modified.",
+        "sews a mesh into a faceted BREP shape. A solid result requires an "
+        "already validated watertight source mesh; ask the human to validate "
+        "it in the owning workbench if that state is not in context. Sources "
+        "are never modified.",
         ("MeshPart_",),
         ("Mesh::", "Part::"),
         ({"name": "mesh_from_shape", "object_type": "Mesh::Feature"},),
         tool_names=MESHPART_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=("mesh.analyze", "mesh.list_meshes"),
     ),
     "NoneWorkbench": WorkbenchToolPack(
         "NoneWorkbench",
@@ -368,7 +363,6 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
             {"name": "sketch", "object_type": "Sketcher::SketchObject"},
         ),
         tool_names=PARTDESIGN_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=PARTDESIGN_REQUIRED_ADJACENT_TOOL_NAMES,
     ),
     "PartWorkbench": WorkbenchToolPack(
         "PartWorkbench",
@@ -448,8 +442,9 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "SurfaceWorkbench",
         "surfaces",
         "Freeform surfacing: fill closed edge loops, loft through profiles, "
-        "blend between edges, extend faces, thicken into solids. Resolve edge "
-        "and face names with part.find_subelements before referencing them.",
+        "blend between edges, extend faces, thicken into solids. Reference "
+        "only exact edge and face names present in the active Surface context; "
+        "ask the human to identify missing prerequisites rather than guessing.",
         ("Surface_",),
         ("Surface::",),
         (
@@ -458,7 +453,6 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
             {"name": "sections", "object_type": "Surface::Sections"},
         ),
         tool_names=SURFACE_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=("part.find_subelements", "part.measure"),
     ),
     "TechDrawWorkbench": WorkbenchToolPack(
         "TechDrawWorkbench",
@@ -475,7 +469,6 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
             {"name": "dimension", "object_type": "TechDraw::DrawViewDimension"},
         ),
         tool_names=TECHDRAW_PACK_TOOL_NAMES,
-        required_adjacent_tool_names=("part.measure",),
     ),
     "TestWorkbench": WorkbenchToolPack(
         "TestWorkbench",

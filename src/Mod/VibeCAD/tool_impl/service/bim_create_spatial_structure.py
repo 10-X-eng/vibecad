@@ -206,8 +206,8 @@ def run(
         transaction,
         extra={"operation": "create_spatial_structure", **result},
         next_action=(
-            "Draw wall baselines with draft.create_wire, then create walls "
-            "with bim.create_wall assigned to the new levels."
+            "Create walls with bim.create_wall from exact baseline objects "
+            "already present in the document and assign them to the new levels."
         ),
     )
 

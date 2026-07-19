@@ -98,6 +98,10 @@ public:
      */
     App::DocumentObject * addProjection(const char *viewProjType);
 
+    //! Add a projection item without projecting its source.  The caller must
+    //! immediately install an authenticated precomputed projection snapshot.
+    App::DocumentObject* addPrecomputedProjection(const char* viewProjType);
+
     //! Removes a projection from the group
     /*!
      * \return number of projections remaining
@@ -167,6 +171,8 @@ protected:
      * \return true iff 'in' is a valid name for an orthographic/isometric view
      */
     bool checkViewProjType(const char *in);
+    App::DocumentObject* addProjectionImpl(const char* viewProjType,
+                                           bool recomputeProjection);
 
     void arrangeViewPointers(std::array<DrawProjGroupItem*, MAXPROJECTIONCOUNT>& viewPtrs) const;
 

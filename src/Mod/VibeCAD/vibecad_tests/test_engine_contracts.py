@@ -2504,7 +2504,7 @@ class _RecordingPreferences(_UnsetPreferences):
 
 class TestVibeScriptDefaults:
     """Lock the out-of-box defaults: the VibeScript preference is enabled and
-    vibescript is the default PartDesign engine. These tests fail if either
+    vibescript is the default global modeling engine. These tests fail if either
     default silently regresses."""
 
     _SCOPE = {"project_id": "f" * 32, "title": "Default Test", "document": {}}
@@ -2513,7 +2513,7 @@ class TestVibeScriptDefaults:
         import VibeCADPreferences as prefs
 
         assert prefs.VibeCADSettings().vibescript_enabled is True
-        assert prefs.VibeCADSettings().vibescript_on_bim_enabled is False
+        assert not hasattr(prefs.VibeCADSettings(), "vibescript_on_bim_enabled")
 
     def test_load_settings_with_unset_key_enables_vibescript(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2523,45 +2523,44 @@ class TestVibeScriptDefaults:
         monkeypatch.setattr(prefs, "preferences", lambda: _UnsetPreferences())
         settings = prefs.load_settings()
         assert settings.vibescript_enabled is True
-        assert settings.vibescript_on_bim_enabled is False
+        assert not hasattr(settings, "vibescript_on_bim_enabled")
 
-    def test_bim_opt_in_uses_the_normal_preference_round_trip(
+    def test_removed_bim_opt_in_is_not_written_or_reset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import VibeCADPreferences as prefs
 
         stored = _RecordingPreferences()
         monkeypatch.setattr(prefs, "preferences", lambda: stored)
-        prefs.save_settings(prefs.VibeCADSettings(vibescript_on_bim_enabled=True))
-        assert stored.values["VibeScriptOnBIMEnabled"] is True
-        assert prefs.load_settings().vibescript_on_bim_enabled is True
-
+        prefs.save_settings(prefs.VibeCADSettings())
+        assert "VibeScriptOnBIMEnabled" not in stored.values
         prefs.reset_settings()
         assert "VibeScriptOnBIMEnabled" not in stored.values
-        assert prefs.load_settings().vibescript_on_bim_enabled is False
 
     def test_default_engine_constant_is_vibescript_and_valid(self) -> None:
-        from VibeCADProject import DEFAULT_PARTDESIGN_ENGINE, PARTDESIGN_ENGINES
+        from VibeCADProject import DEFAULT_MODELING_ENGINE, MODELING_ENGINES
 
-        assert DEFAULT_PARTDESIGN_ENGINE == "vibescript"
-        assert DEFAULT_PARTDESIGN_ENGINE in PARTDESIGN_ENGINES
+        assert DEFAULT_MODELING_ENGINE == "vibescript"
+        assert DEFAULT_MODELING_ENGINE in MODELING_ENGINES
 
     def test_fresh_manifest_seeds_vibescript_engine(self, tmp_path: Path) -> None:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
         manifest = store._default_manifest(dict(self._SCOPE))
-        assert manifest["partdesign_engine"] == "vibescript"
+        assert manifest["modeling_engine"] == "vibescript"
+        assert "partdesign_engine" not in manifest
 
     def test_merge_preserves_explicit_engine_choices(self, tmp_path: Path) -> None:
-        from VibeCADProject import PARTDESIGN_ENGINES, VibeCADProjectStore
+        from VibeCADProject import MODELING_ENGINES, VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
-        for engine in sorted(PARTDESIGN_ENGINES):
+        for engine in sorted(MODELING_ENGINES):
             merged = store._merge_manifest_defaults(
                 {"partdesign_engine": engine}, dict(self._SCOPE)
             )
-            assert merged["partdesign_engine"] == engine
+            assert merged["modeling_engine"] == engine
+            assert "partdesign_engine" not in merged
 
     def test_merge_defaults_missing_or_none_engine_to_vibescript(
         self, tmp_path: Path
@@ -2569,15 +2568,16 @@ class TestVibeScriptDefaults:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
-        for manifest in ({}, {"partdesign_engine": None}):
+        for manifest in ({}, {"modeling_engine": None}, {"partdesign_engine": None}):
             merged = store._merge_manifest_defaults(dict(manifest), dict(self._SCOPE))
-            assert merged["partdesign_engine"] == "vibescript"
+            assert merged["modeling_engine"] == "vibescript"
 
-    def test_partdesign_engine_accessor_falls_back_to_vibescript(
+    def test_modeling_engine_accessor_falls_back_to_vibescript(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
         monkeypatch.setattr(store, "load_manifest", lambda: {})
+        assert store.modeling_engine() == "vibescript"
         assert store.partdesign_engine() == "vibescript"

@@ -67,7 +67,12 @@ Open **Preferences**, then select **VibeCAD > VibeCAD**.
 
 ChatGPT credentials are stored in a private VibeCAD Codex credential directory and refreshed by the bundled, version-pinned app-server. **Logout** asks that runtime to remove the account. VibeCAD never imports credentials from another Codex installation and never falls back to an ambient API key.
 
-ChatGPT subscription turns currently use fixed scripted tool surfaces. In PartDesign, select **VibeScript**, **build123d**, or **OpenSCAD** before sending a subscription-backed request. Native workbench tool stacks remain available through the API-key providers.
+ChatGPT subscription, OpenAI-compatible, Anthropic, and offline/debug turns all
+use the same global modeling-engine and active-workbench resolver. Select
+**Native** or **VibeScript** in any supported modeling workbench before sending
+a request. Part Design additionally offers **build123d** and **OpenSCAD** when
+those engines are enabled. A turn receives only the selected engine's exact
+active-workbench surface; VibeScript and native CAD tools are never combined.
 
 ### Save a Key in the OS Keyring
 
@@ -143,16 +148,42 @@ The conversation selector at the top of the assistant opens prior conversations 
 
 When **Intent Memory** is enabled in Preferences, VibeCAD compiles durable project intent after completed conversations. This preserves important requirements without replaying an unlimited chat transcript on every model call.
 
-## PartDesign Modeling Engines
+## Global Modeling Engine
 
-The modeling-engine selector appears in the VibeCAD panel while PartDesign is active. The human controls this selection for each saved CAD document.
+The modeling-engine selector appears in the VibeCAD panel in every supported user workbench. The human controls this global selection for each saved CAD document; AI tools cannot change it.
 
-- **Native:** editable sketches and PartDesign feature history.
-- **VibeScript:** VibeCAD's native scripted modeling engine; enabled by default.
-- **build123d:** optional Python-based scripted modeling, enabled in Preferences.
-- **OpenSCAD:** optional editable OpenSCAD source, enabled in Preferences.
+- **Native:** only the active workbench's native CAD tools.
+- **VibeScript:** only the active workbench's dedicated source-backed interface; selected by default.
+- **build123d:** optional Part Design-only Python modeling.
+- **OpenSCAD:** optional Part Design-only OpenSCAD modeling.
 
-Scripted engines keep source, parameters, diagnostics, and accepted outputs with the project. Their temporary preview is not the saved model; inspect it in the **Model Code Editor** and use **Accept** to commit the candidate result.
+Native and VibeScript authoring tools are never combined, and tools from different workbenches are never combined. Leaving Part Design while build123d or OpenSCAD is selected visibly changes and persists the global engine as VibeScript. Returning to Part Design does not restore the previous engine.
+
+Scripted engines keep source, inputs, diagnostics, revisions, and accepted outputs with the project. VibeScript runs in an isolated windowless worker and publishes only validated results. The **Model Code Editor** lists programs for the active workbench domain and opens with no program selected.
+
+All 18 supported user-workbench VibeScript interfaces are production-ready:
+Part Design, Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material,
+BIM, Mesh, MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM,
+and TechDraw. Each non-Part-Design domain exposes the same seven lifecycle
+tools, but `describe_api` and program source contain only that workbench's
+canonical runtime operations and typed outputs.
+
+Geometry, solver, mesh, reconstruction, projection, and toolpath work runs in
+the isolated worker. The live document receives only independently validated,
+precomputed native state under stable program/output identities. This includes
+native sketches and Draft/BIM proxies, Assembly links and joints, sheets and
+material assignments, meshes and point clouds, reconstruction and inspection
+records, Robot trajectories, FEM analyses/results, Path jobs/toolpaths, and
+TechDraw pages/views/dimensions. Failed candidates remain inspectable without
+replacing the accepted revision, and publication/deletion paths explicitly
+restore accepted state when FreeCAD transaction rollback is incomplete.
+
+Part, MeshPart, Points, CAM, and TechDraw deliberately collapse equivalent
+variants behind selectors or one ordered pipeline instead of advertising
+redundant operations. Compatibility wrappers can still read older Part source,
+but new `describe_api` output presents only the canonical methods. Startup,
+test, unknown, or future unimplemented workbenches resolve to an exact core-only
+unavailable surface; VibeCAD never substitutes another workbench's tools.
 
 ## Local Models
 
@@ -171,7 +202,7 @@ The local server must already be running and expose an OpenAI-compatible API. So
 
 - **`not_configured`:** VibeCAD could not find the selected provider's environment variable, a valid key in the selected `.env` file, or a keyring entry.
 - **No ChatGPT subscription is signed in:** open Preferences, select **ChatGPT subscription**, and complete browser or device-code sign-in.
-- **ChatGPT requires a fixed scripted surface:** select VibeScript, build123d, or OpenSCAD for the current workbench. Subscription mode does not expose the mutable native tool stack.
+- **No CAD authoring tools are shown:** select a supported modeling workbench and an engine implemented for it. build123d and OpenSCAD are available only in Part Design.
 - **`configured_unverified`:** a key was found but has not been checked against the configured endpoint. Click **Validate**.
 - **`invalid`:** the endpoint rejected the key. Confirm the selected provider, base URL, credential precedence, and account access.
 - **`offline`:** the key could not be verified because the configured endpoint could not be reached.

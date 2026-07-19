@@ -60,6 +60,8 @@ public:
                                    App::Property* prop) override;
 
     int addView(App::DocumentObject* docObj, bool setPosition = true);
+    /// Add validated precomputed state without positioning, fit checks, or scale evaluation.
+    int addPrecomputedView(App::DocumentObject* docObj);
     int removeView(App::DocumentObject* docObj);
     short mustExecute() const override;
     fastsignals::signal<void(const DrawPage*)> signalGuiPaint;
@@ -123,6 +125,7 @@ protected:
     bool m_forceRedraw;
 
 private:
+    int addViewImpl(App::DocumentObject* docObj, bool setPosition, bool evaluateFit);
     static const char* ProjectionTypeEnums[];
     bool nowUnsetting;
     static App::PropertyFloatConstraint::Constraints scaleRange;

@@ -57,6 +57,13 @@ class Sheet(DocumentObject):
         """Split a previously merged cell"""
         ...
 
+    def getCellMerge(self, address: str, /) -> tuple[str, int, int]:
+        """
+        Return the anchor address, row span, and column span for a cell. An unmerged
+        cell returns its own address and a 1 by 1 span.
+        """
+        ...
+
     def insertColumns(self) -> Any:
         """Insert a given number of columns into the spreadsheet."""
         ...

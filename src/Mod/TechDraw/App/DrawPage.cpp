@@ -231,6 +231,16 @@ int DrawPage::getOrientation() const
 
 int DrawPage::addView(App::DocumentObject* docObj, bool setPosition)
 {
+    return addViewImpl(docObj, setPosition, true);
+}
+
+int DrawPage::addPrecomputedView(App::DocumentObject* docObj)
+{
+    return addViewImpl(docObj, false, false);
+}
+
+int DrawPage::addViewImpl(App::DocumentObject* docObj, bool setPosition, bool evaluateFit)
+{
     if (!docObj->isDerivedFrom<DrawView>()
         && !docObj->isDerivedFrom<App::Link>()) {
         return -1;
@@ -265,14 +275,16 @@ int DrawPage::addView(App::DocumentObject* docObj, bool setPosition)
     Views.setValues(newViews);
 
 
-    //check if View fits on Page
-    if (!view->checkFit(this)) {
-        Base::Console().warning("%s is larger than page. Will be scaled.\n",
-                                view->getNameInDocument());
-        view->ScaleType.setValue("Automatic");
-    }
+    if (evaluateFit) {
+        //check if View fits on Page
+        if (!view->checkFit(this)) {
+            Base::Console().warning("%s is larger than page. Will be scaled.\n",
+                                    view->getNameInDocument());
+            view->ScaleType.setValue("Automatic");
+        }
 
-    view->checkScale();
+        view->checkScale();
+    }
 
     return Views.getSize();
 }
@@ -336,6 +348,9 @@ void DrawPage::updateAllViews()
 
     //first, make sure all the Parts have been executed so GeometryObjects exist
     for (auto& v : featViews) {
+        if (v->isFreezed()) {
+            continue;
+        }
         auto* part = freecad_cast<DrawViewPart*>(v);
         if (part) {
             //view, section, detail, dpgi
@@ -345,6 +360,9 @@ void DrawPage::updateAllViews()
     //second, do the rest of the views that may depend on a part view
     //TODO: check if we have 2 layers of dependency (ex. leader > weld > tile?)
     for (auto& v : featViews) {
+        if (v->isFreezed()) {
+            continue;
+        }
         auto* part = freecad_cast<DrawViewPart*>(v);
         if (part) {
             continue;

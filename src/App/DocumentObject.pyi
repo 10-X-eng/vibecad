@@ -119,6 +119,29 @@ class DocumentObject(ExtensionContainer):
         """
         ...
 
+    def freeze(self) -> None:
+        """
+        Exclude the object from recomputation and make its current properties read-only.
+        The frozen state is persisted with the document.
+        """
+        ...
+
+    def unfreeze(self, no_recompute: bool = False, /) -> None:
+        """
+        Re-enable object recomputation and restore property editability.
+
+        If no_recompute is true, the object is touched without enforcing an immediate
+        recompute.
+        """
+        ...
+
+    @constmethod
+    def isFrozen(self) -> bool:
+        """
+        Return true when the object is excluded from recomputation.
+        """
+        ...
+
     def enforceRecompute(self) -> None:
         """
         Mark the object for recompute

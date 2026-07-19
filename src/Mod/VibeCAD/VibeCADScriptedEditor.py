@@ -14,6 +14,7 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 from VibeCADCore import get_service
+from VibeCADModelingSurface import resolve_modeling_surface
 
 
 DOCK_NAME = "VibeCADScriptedModelPanel"
@@ -49,6 +50,43 @@ def _find_dock() -> Any | None:
 
 
 SCRIPTED_ENGINES = {"build123d", "openscad", "vibescript"}
+_DOMAIN_EDITOR_NEW_TYPES = {
+    "assembly": "assembly",
+    "bim": "site",
+    "cam": "job",
+    "fem": "analysis",
+    "inspection": "inspection_group",
+    "mesh": "mesh",
+    "part": "solid",
+    "points": "points",
+    "robot": "robot",
+    "sketcher": "sketch",
+    "spreadsheet": "sheet",
+    "techdraw": "page",
+}
+
+
+def _new_domain_program_template(domain: str, label: str) -> tuple[str, str] | None:
+    output_type = _DOMAIN_EDITOR_NEW_TYPES.get(str(domain or ""))
+    if output_type is None:
+        return None
+    if domain == "part":
+        source = "result = {'Result': api.box(10, 10, 10)}\n"
+    elif domain == "assembly":
+        source = f"result = {{'Result': api.assembly(label={label!r})}}\n"
+    elif domain == "sketcher":
+        source = (
+            f"result = {{'Result': api.sketch(label={label!r}, " "geometry=[], constraints=[])}}\n"
+        )
+    elif domain == "mesh":
+        source = "result = {'Result': api.mesh(triangles=[])}\n"
+    elif domain == "points":
+        source = (
+            f"result = {{'Result': api.point_cloud([[0, 0, 0]], label={label!r})}}\n"
+        )
+    else:
+        source = f"result = {{'Result': api.output({output_type!r}, label={label!r})}}\n"
+    return source, output_type
 
 
 def _engine_api(engine: str):
@@ -520,6 +558,38 @@ def _build_widget():
         )
         actions_layout.addWidget(button, index // 3, index % 3)
     toolbar_layout.addLayout(actions_layout)
+
+    point_artifact_row = QtWidgets.QWidget(toolbar)
+    point_artifact_row.setObjectName("VibeScriptedPointArtifactRow")
+    point_artifact_layout = QtWidgets.QHBoxLayout(point_artifact_row)
+    point_artifact_layout.setContentsMargins(0, 0, 0, 0)
+    point_artifact_layout.setSpacing(6)
+    point_artifact_label = QtWidgets.QLabel("Point data", point_artifact_row)
+    point_artifact_layout.addWidget(point_artifact_label)
+    point_artifact_selector = QtWidgets.QComboBox(point_artifact_row)
+    point_artifact_selector.setObjectName("VibeScriptedPointArtifactSelector")
+    point_artifact_selector.setToolTip(
+        "Human-approved point files available to Points VibeScript programs"
+    )
+    point_artifact_selector.setSizePolicy(
+        QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+    )
+    point_artifact_selector.addItem("No approved point data", "")
+    point_artifact_layout.addWidget(point_artifact_selector, 1)
+    point_artifact_add = QtWidgets.QPushButton("Add…", point_artifact_row)
+    point_artifact_add.setObjectName("VibeScriptedPointArtifactAdd")
+    point_artifact_add.setToolTip(
+        "Copy a human-selected point file into this VibeCAD project"
+    )
+    point_artifact_layout.addWidget(point_artifact_add)
+    point_artifact_remove = QtWidgets.QPushButton("Remove", point_artifact_row)
+    point_artifact_remove.setObjectName("VibeScriptedPointArtifactRemove")
+    point_artifact_remove.setToolTip(
+        "Remove the selected approval when no program still references it"
+    )
+    point_artifact_layout.addWidget(point_artifact_remove)
+    point_artifact_row.setVisible(False)
+    toolbar_layout.addWidget(point_artifact_row)
     layout.addWidget(toolbar)
 
     tabs = QtWidgets.QTabWidget(root)
@@ -580,6 +650,7 @@ class ScriptedEditorController:
         self.dock = dock
         self.root = dock.widget()
         self.engine = "native"
+        self.domain = ""
         self.model_id = ""
         self.working_revision = ""
         self.accepted_revision = ""
@@ -595,6 +666,9 @@ class ScriptedEditorController:
         self.active_engine = ""
         self.preview_revision = ""
         self.editor_active = False
+        self.point_artifact_generation = 0
+        self.point_artifact_busy = False
+        self.point_artifact_project_root = ""
         self._connect()
 
     def child(self, kind: Any, name: str):
@@ -623,6 +697,16 @@ class ScriptedEditorController:
     @property
     def status(self):
         return self.child(self.QtWidgets.QLabel, "VibeScriptedStatus")
+
+    @property
+    def point_artifact_selector(self):
+        return self.child(
+            self.QtWidgets.QComboBox, "VibeScriptedPointArtifactSelector"
+        )
+
+    @property
+    def point_artifact_row(self):
+        return self.child(self.QtWidgets.QWidget, "VibeScriptedPointArtifactRow")
 
     @property
     def diagnostics(self):
@@ -657,6 +741,15 @@ class ScriptedEditorController:
         self.button("VibeScriptedAccept").clicked.connect(self.accept)
         self.button("VibeScriptedRevert").clicked.connect(self.revert)
         self.button("VibeScriptedExport").clicked.connect(self.export)
+        self.button("VibeScriptedPointArtifactAdd").clicked.connect(
+            self.add_point_artifact
+        )
+        self.button("VibeScriptedPointArtifactRemove").clicked.connect(
+            self.remove_point_artifact
+        )
+        self.point_artifact_selector.currentIndexChanged.connect(
+            lambda _index: self._update_actions()
+        )
         self.diagnostics.itemActivated.connect(self._diagnostic_activated)
 
     def _visibility_changed(self, visible: bool):
@@ -747,14 +840,29 @@ class ScriptedEditorController:
         if not self.editor_active:
             return
         service = get_service()
-        next_engine = service.partdesign_engine()
-        if next_engine != self.engine:
+        next_engine = service.modeling_engine()
+        workbench = service.active_workbench_name()
+        resolution = resolve_modeling_surface(workbench, next_engine)
+        next_domain = str(resolution.domain or "")
+        if next_engine != self.engine or next_domain != self.domain:
             self._cancel_preview(restore_accepted=True)
             self._clear_source_watch()
             self._clear_model_fields()
         self.engine = next_engine
-        scripted = self.engine in SCRIPTED_ENGINES
+        self.domain = next_domain
+        scripted = self.engine in SCRIPTED_ENGINES and resolution.available
         self.root.setEnabled(scripted)
+        points_active = bool(
+            scripted and self.engine == "vibescript" and self.domain == "points"
+        )
+        self.point_artifact_row.setVisible(points_active)
+        if points_active:
+            self._start_point_artifact_refresh()
+        else:
+            self.point_artifact_generation += 1
+            self.point_artifact_busy = False
+            self.point_artifact_project_root = ""
+            self._set_point_artifact_items([], "Point data is available in Points.")
         self.button("VibeScriptedImport").setVisible(self.engine == "openscad")
         self.file_selector.setVisible(self.engine == "openscad")
         self.fidelity_selector.setVisible(self.engine == "openscad")
@@ -770,7 +878,8 @@ class ScriptedEditorController:
             self.source_files = {}
             self.loading = False
             self.status.setText(
-                "Select build123d, OpenSCAD, or VibeScript as the PartDesign modeling engine."
+                resolution.unavailable_reason
+                or "Select a scripted global modeling engine for this workbench."
             )
             return
         if self.engine == "vibescript":
@@ -785,6 +894,260 @@ class ScriptedEditorController:
             else []
         )
         self._apply_model_list(models, preferred_model_id)
+
+    def _set_point_artifact_items(
+        self,
+        artifacts: list[dict[str, Any]],
+        empty_text: str = "No approved point data",
+        preferred_artifact_id: str = "",
+    ) -> None:
+        selector = self.point_artifact_selector
+        previous = str(selector.currentData() or "")
+        target = preferred_artifact_id or previous
+        selector.blockSignals(True)
+        try:
+            selector.clear()
+            selector.addItem(empty_text, "")
+            for artifact in artifacts:
+                artifact_id = str(artifact.get("artifact_id") or "")
+                if not artifact_id:
+                    continue
+                title = str(artifact.get("label") or artifact.get("name") or "Point data")
+                selector.addItem(f"{title} — {artifact_id}", artifact_id)
+                index = selector.count() - 1
+                selector.setItemData(
+                    index,
+                    "\n".join(
+                        (
+                            f"Stable ID: {artifact_id}",
+                            f"Original name: {artifact.get('name') or ''}",
+                            f"Format: {artifact.get('format') or ''}",
+                            f"Bytes: {int(artifact.get('size_bytes') or 0)}",
+                            f"Available: {'yes' if artifact.get('available') else 'no'}",
+                        )
+                    ),
+                    self.QtCore.Qt.ToolTipRole,
+                )
+            index = selector.findData(target) if target else 0
+            selector.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            selector.blockSignals(False)
+        self._update_actions()
+
+    def _point_artifact_root_snapshot(self) -> str:
+        snapshot = get_service().project_scope_snapshot()
+        return str(snapshot.get("root") or "").strip()
+
+    def _start_point_artifact_refresh(self) -> None:
+        project_root = self._point_artifact_root_snapshot()
+        self.point_artifact_project_root = project_root
+        self.point_artifact_generation += 1
+        generation = self.point_artifact_generation
+        if not project_root:
+            self.point_artifact_busy = False
+            self._set_point_artifact_items(
+                [], "Save or initialize this project to approve point data."
+            )
+            return
+        self.point_artifact_busy = True
+        self._set_point_artifact_items([], "Loading approved point data…")
+        service = get_service()
+
+        def work() -> None:
+            try:
+                result = service.point_artifacts(project_root=project_root)
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "error": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            self.root._vibecad_bridge.completed.emit(
+                {
+                    "event_kind": "point_artifact_list",
+                    "engine": "vibescript",
+                    "domain": "points",
+                    "artifact_generation": generation,
+                    "result": result,
+                }
+            )
+
+        threading.Thread(
+            target=work,
+            name="VibeCAD point artifact list",
+            daemon=True,
+        ).start()
+
+    def add_point_artifact(self) -> None:
+        if (
+            self.engine != "vibescript"
+            or self.domain != "points"
+            or self.point_artifact_busy
+        ):
+            return
+        project_root = (
+            self.point_artifact_project_root or self._point_artifact_root_snapshot()
+        )
+        if not project_root:
+            self.status.setText(
+                "Save or initialize this project before approving point data."
+            )
+            return
+        selected, _selected_filter = self.QtWidgets.QFileDialog.getOpenFileName(
+            self.root,
+            "Approve point data",
+            "",
+            "Point data (*.asc *.xyz *.pcd *.ply *.e57)",
+        )
+        if not selected:
+            return
+        self._approve_point_artifact_path(selected, project_root)
+
+    def _approve_point_artifact_path(
+        self,
+        selected: str,
+        project_root: str = "",
+    ) -> None:
+        if (
+            self.engine != "vibescript"
+            or self.domain != "points"
+            or self.point_artifact_busy
+            or not selected
+        ):
+            return
+        project_root = project_root or self.point_artifact_project_root
+        if not project_root:
+            self.status.setText(
+                "Save or initialize this project before approving point data."
+            )
+            return
+        self.point_artifact_generation += 1
+        generation = self.point_artifact_generation
+        self.point_artifact_busy = True
+        self.status.setText("Copying and authenticating point data in the background…")
+        self._update_actions()
+        service = get_service()
+
+        def work() -> None:
+            try:
+                approved = service.approve_point_artifact(
+                    selected,
+                    label=Path(selected).stem,
+                    project_root=project_root,
+                )
+                summary = service.point_artifacts(project_root=project_root)
+                result = {
+                    "ok": True,
+                    "artifact": dict(approved.get("artifact") or {}),
+                    "summary": summary,
+                }
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "error": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            self.root._vibecad_bridge.completed.emit(
+                {
+                    "event_kind": "point_artifact_approved",
+                    "engine": "vibescript",
+                    "domain": "points",
+                    "artifact_generation": generation,
+                    "result": result,
+                }
+            )
+
+        threading.Thread(
+            target=work,
+            name="VibeCAD point artifact approval",
+            daemon=True,
+        ).start()
+
+    def remove_point_artifact(self) -> None:
+        artifact_id = str(self.point_artifact_selector.currentData() or "")
+        if (
+            self.engine != "vibescript"
+            or self.domain != "points"
+            or self.point_artifact_busy
+            or not artifact_id
+        ):
+            return
+        answer = self.QtWidgets.QMessageBox.question(
+            self.root,
+            "Remove approved point data",
+            "Remove this project-local point-data approval?\n\n"
+            f"{artifact_id}\n\n"
+            "Removal is rejected while a working or accepted program references it.",
+            self.QtWidgets.QMessageBox.Yes | self.QtWidgets.QMessageBox.No,
+            self.QtWidgets.QMessageBox.No,
+        )
+        if answer != self.QtWidgets.QMessageBox.Yes:
+            return
+        project_root = (
+            self.point_artifact_project_root or self._point_artifact_root_snapshot()
+        )
+        if not project_root:
+            self.status.setText("The active project has no point-artifact root.")
+            return
+        self._remove_point_artifact_id(artifact_id, project_root)
+
+    def _remove_point_artifact_id(
+        self,
+        artifact_id: str,
+        project_root: str = "",
+    ) -> None:
+        if (
+            self.engine != "vibescript"
+            or self.domain != "points"
+            or self.point_artifact_busy
+            or not artifact_id
+        ):
+            return
+        project_root = project_root or self.point_artifact_project_root
+        if not project_root:
+            self.status.setText("The active project has no point-artifact root.")
+            return
+        self.point_artifact_generation += 1
+        generation = self.point_artifact_generation
+        self.point_artifact_busy = True
+        self.status.setText("Removing the unreferenced point-data approval…")
+        self._update_actions()
+        service = get_service()
+
+        def work() -> None:
+            try:
+                removed = service.remove_point_artifact(
+                    artifact_id,
+                    project_root=project_root,
+                )
+                summary = service.point_artifacts(project_root=project_root)
+                result = {
+                    "ok": True,
+                    "removed": removed,
+                    "summary": summary,
+                }
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "error": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            self.root._vibecad_bridge.completed.emit(
+                {
+                    "event_kind": "point_artifact_removed",
+                    "engine": "vibescript",
+                    "domain": "points",
+                    "artifact_generation": generation,
+                    "artifact_id": artifact_id,
+                    "result": result,
+                }
+            )
+
+        threading.Thread(
+            target=work,
+            name="VibeCAD point artifact removal",
+            daemon=True,
+        ).start()
 
     def _apply_model_list(
         self, models: list[dict[str, Any]], preferred_model_id: str = ""
@@ -815,16 +1178,42 @@ class ScriptedEditorController:
         """Load VibeScript artifacts off-thread from a bounded native snapshot."""
 
         service = get_service()
-        snapshot = service.vibescript_context_snapshot()
+        active_domain = self.domain
+        if active_domain == "partdesign":
+            snapshot = service.vibescript_context_snapshot()
+        else:
+            import VibeCADVibeScriptDomains as domain_contracts
+
+            snapshot = domain_contracts.domain_context_snapshot(service, active_domain)
         self.generation += 1
         generation = self.generation
         self.status.setText("Loading VibeScript models...")
 
         def work():
             try:
-                completed = service.complete_vibescript_context(snapshot)
-                result = {"ok": True, "models": list(completed.get("models") or [])}
+                if active_domain == "partdesign":
+                    completed = service.complete_vibescript_context(snapshot)
+                    models = list(completed.get("models") or [])
+                    event_kind = "vibescript_model_list"
+                else:
+                    import VibeCADVibeScriptDomains as domain_contracts
+
+                    completed = domain_contracts.complete_domain_context(snapshot)
+                    models = [
+                        {
+                            **item,
+                            "model_id": str(item.get("program_id") or ""),
+                        }
+                        for item in list(completed.get("programs") or [])
+                    ]
+                    event_kind = "vibescript_domain_program_list"
+                result = {"ok": True, "models": models}
             except Exception as exc:
+                event_kind = (
+                    "vibescript_model_list"
+                    if active_domain == "partdesign"
+                    else "vibescript_domain_program_list"
+                )
                 result = {
                     "ok": False,
                     "error": str(exc),
@@ -832,7 +1221,7 @@ class ScriptedEditorController:
                 }
             self.root._vibecad_bridge.completed.emit(
                 {
-                    "event_kind": "vibescript_model_list",
+                    "event_kind": event_kind,
                     "engine": "vibescript",
                     "generation": generation,
                     "preferred_model_id": preferred_model_id,
@@ -1051,23 +1440,59 @@ class ScriptedEditorController:
     def _start_vibescript_model_inspection(self, model_id: str) -> None:
         """Inspect VibeScript artifacts and legacy geometry away from the GUI."""
 
-        import VibeCADVibeScript as vibescript
+        active_domain = self.domain
+        if active_domain == "partdesign":
+            import VibeCADVibeScript as vibescript
 
-        try:
-            captured = vibescript.capture_model_inspection(get_service(), model_id)
-        except vibescript.VibeScriptFailure as exc:
-            self._show_failure(exc.payload)
-            return
+            try:
+                captured = vibescript.capture_model_inspection(get_service(), model_id)
+            except vibescript.VibeScriptFailure as exc:
+                self._show_failure(exc.payload)
+                return
+        else:
+            from VibeCADVibeScriptDomainRuntime import capture_inspection_state
+
+            try:
+                captured = capture_inspection_state(
+                    get_service(),
+                    f"vibescript.{active_domain}.inspect_program",
+                    model_id,
+                )
+            except Exception as exc:
+                payload = getattr(exc, "payload", None)
+                self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
+                return
         self.generation += 1
         generation = self.generation
         self.status.setText("Loading VibeScript source and model metadata...")
 
         def work():
             try:
-                result = vibescript.complete_model_inspection(captured)
-            except vibescript.VibeScriptFailure as exc:
-                result = exc.payload
+                if active_domain == "partdesign":
+                    result = vibescript.complete_model_inspection(captured)
+                    event_kind = "vibescript_model_inspection"
+                else:
+                    from VibeCADVibeScriptDomainRuntime import complete_inspection
+
+                    result = complete_inspection(captured)
+                    if result.get("ok") is True:
+                        program = dict(result.get("program") or {})
+                        result = {
+                            "ok": True,
+                            "model": {
+                                **program,
+                                "model_id": str(program.get("program_id") or ""),
+                                "parameters": dict(program.get("inputs") or {}),
+                                "latest_attempt": dict(program.get("latest_candidate") or {}),
+                            },
+                        }
+                    event_kind = "vibescript_domain_program_inspection"
             except Exception as exc:
+                event_kind = (
+                    "vibescript_model_inspection"
+                    if active_domain == "partdesign"
+                    else "vibescript_domain_program_inspection"
+                )
                 result = {
                     "ok": False,
                     "error": str(exc),
@@ -1075,7 +1500,7 @@ class ScriptedEditorController:
                 }
             self.root._vibecad_bridge.completed.emit(
                 {
-                    "event_kind": "vibescript_model_inspection",
+                    "event_kind": event_kind,
                     "engine": "vibescript",
                     "generation": generation,
                     "model_id": model_id,
@@ -1116,6 +1541,19 @@ class ScriptedEditorController:
         api = _engine_api(self.engine)
         self.source_files[self.current_source_file] = self.source.toPlainText()
         if self.engine == "vibescript":
+            if self.domain != "partdesign":
+                self._start_vibescript_operation(
+                    f"vibescript.{self.domain}.reconfigure_program",
+                    {
+                        "program_id": self.model_id,
+                        "expected_revision": self.working_revision,
+                        "source": self.source_files.get("model.py", self.source.toPlainText()),
+                        "input_schema": dict(self.model.get("input_schema") or {}),
+                        "inputs": parameters,
+                        "expected_outputs": list(self.model.get("expected_outputs") or []),
+                    },
+                )
+                return
             expected_outputs = list(self.model.get("expected_outputs") or [])
             if not expected_outputs:
                 expected_outputs = list((self.model.get("outputs") or {}).keys())
@@ -1211,8 +1649,67 @@ class ScriptedEditorController:
         event_engine = str(event.get("engine") or "")
         event_kind = str(event.get("event_kind") or "")
         if event_kind in {
+            "point_artifact_list",
+            "point_artifact_approved",
+            "point_artifact_removed",
+        }:
+            if (
+                not self.editor_active
+                or self.engine != "vibescript"
+                or self.domain != "points"
+                or event_engine != "vibescript"
+                or str(event.get("domain") or "") != "points"
+                or int(event.get("artifact_generation") or 0)
+                != self.point_artifact_generation
+            ):
+                return
+            self.point_artifact_busy = False
+            result = event.get("result")
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                if event_kind == "point_artifact_list":
+                    self._set_point_artifact_items(
+                        [], "Could not load approved point data."
+                    )
+                self.status.setText(
+                    str(
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else "Point-artifact operation returned no structured result."
+                    )
+                )
+                self._update_actions()
+                return
+            summary = result if event_kind == "point_artifact_list" else result.get("summary")
+            if not isinstance(summary, dict) or summary.get("ok") is not True:
+                self.status.setText(
+                    "Point data changed, but its approved-artifact summary could not be read."
+                )
+                self._update_actions()
+                return
+            preferred_artifact_id = ""
+            if event_kind == "point_artifact_approved":
+                artifact = result.get("artifact")
+                if isinstance(artifact, dict):
+                    preferred_artifact_id = str(artifact.get("artifact_id") or "")
+            self._set_point_artifact_items(
+                list(summary.get("artifacts") or []),
+                preferred_artifact_id=preferred_artifact_id,
+            )
+            if event_kind == "point_artifact_approved":
+                self.status.setText(
+                    "Approved point data with stable reference "
+                    f"{{'artifact_id': '{preferred_artifact_id}'}}."
+                )
+            elif event_kind == "point_artifact_removed":
+                self.status.setText(
+                    f"Removed point-data approval {str(event.get('artifact_id') or '')}."
+                )
+            return
+        if event_kind in {
             "vibescript_model_list",
             "vibescript_model_inspection",
+            "vibescript_domain_program_list",
+            "vibescript_domain_program_inspection",
             "vibescript_revert",
         }:
             if (
@@ -1230,12 +1727,18 @@ class ScriptedEditorController:
                     else {"error": "VibeScript returned no structured result."}
                 )
                 return
-            if event_kind == "vibescript_model_list":
+            if event_kind in {
+                "vibescript_model_list",
+                "vibescript_domain_program_list",
+            }:
                 self._apply_model_list(
                     list(result.get("models") or []),
                     str(event.get("preferred_model_id") or ""),
                 )
-            elif event_kind == "vibescript_model_inspection":
+            elif event_kind in {
+                "vibescript_model_inspection",
+                "vibescript_domain_program_inspection",
+            }:
                 self._apply_loaded_model(str(event.get("model_id") or ""), result)
             else:
                 self.status.setText(
@@ -1262,18 +1765,22 @@ class ScriptedEditorController:
                 )
                 return
             model = result.get("model")
-            if not isinstance(model, dict):
+            if isinstance(model, dict):
+                model_id = str(model.get("model_id") or "")
+                revision = str(model.get("revision") or "")
+            else:
+                model_id = str(result.get("program_id") or "")
+                revision = str(result.get("accepted_revision") or "")
+            if not model_id or not revision:
                 self._show_failure(
-                    {"error": "VibeScript accepted geometry without model metadata."}
+                    {"error": "VibeScript accepted a result without stable program metadata."}
                 )
                 return
-            model_id = str(model.get("model_id") or "")
-            revision = str(model.get("revision") or "")
             self.accepted_revision = revision
             self.preview_revision = ""
             self.diagnostics.clear()
             self.status.setText(
-                f"Accepted VibeScript revision {revision[:10]} | native BREP outputs"
+                f"Accepted VibeScript revision {revision[:10]} | native typed outputs"
             )
             self.refresh(model_id)
             return
@@ -1378,6 +1885,24 @@ class ScriptedEditorController:
         self.generation += 1
         self.timer.stop()
         self._clear_source_watch()
+        if self.engine == "vibescript" and self.domain != "partdesign":
+            accepted = self.model.get("accepted_contract")
+            if not isinstance(accepted, dict):
+                self.status.setText("This program has no accepted revision to restore.")
+                self._update_actions()
+                return
+            self._start_vibescript_operation(
+                f"vibescript.{self.domain}.reconfigure_program",
+                {
+                    "program_id": self.model_id,
+                    "expected_revision": self.working_revision,
+                    "source": str(accepted.get("source") or ""),
+                    "input_schema": dict(accepted.get("input_schema") or {}),
+                    "inputs": dict(accepted.get("inputs") or {}),
+                    "expected_outputs": list(accepted.get("expected_outputs") or []),
+                },
+            )
+            return
         api = _engine_api(self.engine)
         if self.engine == "vibescript":
             project_root = str(
@@ -1449,7 +1974,10 @@ class ScriptedEditorController:
             _dispatch_to_document_thread,
             _ensure_document_thread_invoker,
         )
-        from VibeCADSession import run_scripted_engine_operation
+        from VibeCADSession import (
+            run_domain_vibescript_operation,
+            run_scripted_engine_operation,
+        )
 
         _ensure_document_thread_invoker()
         self.generation += 1
@@ -1459,7 +1987,12 @@ class ScriptedEditorController:
         self.button("VibeScriptedRender").setEnabled(False)
 
         def work():
-            result = run_scripted_engine_operation(
+            runner = (
+                run_scripted_engine_operation
+                if self.domain == "partdesign"
+                else run_domain_vibescript_operation
+            )
+            result = runner(
                 get_service(),
                 tool_name,
                 arguments,
@@ -1501,6 +2034,37 @@ class ScriptedEditorController:
                 "conversion_mode": self._conversion_mode(),
             }
         elif self.engine == "vibescript":
+            if self.domain != "partdesign":
+                import VibeCADVibeScriptDomains as domain_contracts
+
+                pack = domain_contracts.get_vibescript_pack(get_service().active_workbench_name())
+                if pack is None:
+                    self.status.setText("No active VibeScript domain is available.")
+                    return
+                template = _new_domain_program_template(self.domain, name.strip())
+                if template is None:
+                    self.status.setText(
+                        f"Create {pack.title} programs through its domain tools; "
+                        "the editor has no safe empty template for this output type."
+                    )
+                    return
+                source, output_type = template
+                output_name = "Result"
+                arguments = {
+                    "program_name": name.strip(),
+                    "source": source,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    "inputs": {},
+                    "expected_outputs": [{"name": output_name, "type": output_type}],
+                }
+                self._start_vibescript_operation(
+                    f"vibescript.{self.domain}.create_program", arguments
+                )
+                return
             source = (
                 "from vibescript_api import SketchBuilder, assert_fully_constrained, pad\n\n"
                 "width = params['width']\n"
@@ -1755,10 +2319,16 @@ class ScriptedEditorController:
 
     def _update_actions(self):
         scripted = self.editor_active and self.engine in SCRIPTED_ENGINES
-        self.button("VibeScriptedNew").setEnabled(scripted)
-        self.button("VibeScriptedImport").setEnabled(
-            scripted and self.engine == "openscad"
+        points_active = bool(
+            scripted and self.engine == "vibescript" and self.domain == "points"
         )
+        new_supported = (
+            self.engine != "vibescript"
+            or self.domain == "partdesign"
+            or self.domain in _DOMAIN_EDITOR_NEW_TYPES
+        )
+        self.button("VibeScriptedNew").setEnabled(scripted and new_supported)
+        self.button("VibeScriptedImport").setEnabled(scripted and self.engine == "openscad")
         self.button("VibeScriptedRender").setEnabled(bool(scripted and self.model_id))
         self.button("VibeScriptedAccept").setEnabled(
             scripted
@@ -1769,7 +2339,27 @@ class ScriptedEditorController:
             bool(scripted and self.model_id and self.accepted_revision)
         )
         self.button("VibeScriptedExport").setEnabled(
-            bool(scripted and self.model_id and self.accepted_revision)
+            bool(
+                scripted
+                and self.model_id
+                and self.accepted_revision
+                and not (self.engine == "vibescript" and self.domain != "partdesign")
+            )
+        )
+        self.button("VibeScriptedPointArtifactAdd").setEnabled(
+            bool(
+                points_active
+                and self.point_artifact_project_root
+                and not self.point_artifact_busy
+            )
+        )
+        self.button("VibeScriptedPointArtifactRemove").setEnabled(
+            bool(
+                points_active
+                and self.point_artifact_project_root
+                and not self.point_artifact_busy
+                and self.point_artifact_selector.currentData()
+            )
         )
 
 

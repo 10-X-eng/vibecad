@@ -206,6 +206,294 @@ def _radial_profile(tool, direction, position, axial_extension=0.0):
     )
 
 
+def _near_planar_motion(edge, start, end, tolerance):
+    """Project sub-tolerance line/arc tilt and return conservative Z growth."""
+
+    z_span = float(edge.BoundBox.ZLength)
+    if z_span > float(tolerance):
+        return edge, FreeCAD.Vector(start), FreeCAD.Vector(end), 0.0
+    base_z = min(float(start.z), float(end.z), float(edge.BoundBox.ZMin))
+    start_point = FreeCAD.Vector(start.x, start.y, base_z)
+    end_point = FreeCAD.Vector(end.x, end.y, base_z)
+    curve_type = type(edge.Curve).__name__
+    if curve_type in {"Line", "LineSegment"}:
+        if (end_point - start_point).Length <= 1.0e-12:
+            return edge, FreeCAD.Vector(start), FreeCAD.Vector(end), 0.0
+        return Part.makeLine(start_point, end_point), start_point, end_point, z_span
+    if curve_type != "Circle":
+        return edge, FreeCAD.Vector(start), FreeCAD.Vector(end), 0.0
+    first = float(edge.FirstParameter)
+    last = float(edge.LastParameter)
+    middle = edge.valueAt((first + last) / 2.0)
+    middle_point = FreeCAD.Vector(middle.x, middle.y, base_z)
+    span = abs(last - first)
+    endpoint_distance = float((end_point - start_point).Length)
+    if (
+        span >= math.pi
+        and abs(span - 2.0 * math.pi) <= 1.0e-6
+        and endpoint_distance <= float(tolerance)
+    ):
+        curve = edge.Curve
+        center = FreeCAD.Vector(curve.Center.x, curve.Center.y, base_z)
+        projected = Part.makeCircle(
+            float(curve.Radius),
+            center,
+            FreeCAD.Vector(0.0, 0.0, 1.0),
+        )
+        return projected, start_point, start_point, z_span
+    projected = Part.Edge(Part.Arc(start_point, middle_point, end_point))
+    return projected, start_point, end_point, z_span
+
+
+def _axisymmetric_tool_solid(
+    tool,
+    direction,
+    position,
+    *,
+    axial_extension=0.0,
+):
+    """Build one supported cutter at ``position`` from its exact radial profile."""
+
+    profile = _radial_profile(
+        tool,
+        direction,
+        position,
+        axial_extension=axial_extension,
+    )
+    vertices = list(profile.Vertexes)
+    if len(vertices) < 2:
+        raise RuntimeError(f"Tool profile for {tool.Name} has no boundary.")
+    closed_profile = Part.Wire(
+        list(profile.Edges)
+        + [Part.makeLine(vertices[-1].Point, vertices[0].Point)]
+    )
+    solid = Part.Face(closed_profile).revolve(
+        FreeCAD.Vector(position),
+        FreeCAD.Vector(0.0, 0.0, 1.0),
+        360.0,
+    ).removeSplitter()
+    if solid.isNull() or not solid.isValid() or len(solid.Solids) != 1:
+        raise RuntimeError(f"Tool profile for {tool.Name} is not one valid solid.")
+    return solid.Solids[0]
+
+
+def _circle_half_plane_roots(edge, center, radial):
+    """Return exact edge parameters where a profile circle meets radial zero."""
+
+    curve = edge.Curve
+    relative_center = FreeCAD.Vector(curve.Center) - center
+    offset = float(relative_center.dot(radial))
+    cosine = float(curve.Radius) * float(FreeCAD.Vector(curve.XAxis).dot(radial))
+    sine = float(curve.Radius) * float(FreeCAD.Vector(curve.YAxis).dot(radial))
+    amplitude = math.hypot(cosine, sine)
+    if amplitude <= 1.0e-15:
+        return []
+    target = -offset / amplitude
+    if target < -1.0 - 1.0e-12 or target > 1.0 + 1.0e-12:
+        return []
+    target = max(-1.0, min(1.0, target))
+    phase = math.atan2(sine, cosine)
+    delta = math.acos(target)
+    first = float(edge.FirstParameter)
+    last = float(edge.LastParameter)
+    lower = min(first, last)
+    upper = max(first, last)
+    roots = []
+    for base in (phase - delta, phase + delta):
+        minimum_turn = int(math.floor((lower - base) / (2.0 * math.pi))) - 1
+        maximum_turn = int(math.ceil((upper - base) / (2.0 * math.pi))) + 1
+        for turn in range(minimum_turn, maximum_turn + 1):
+            parameter = base + turn * 2.0 * math.pi
+            if lower - 1.0e-12 <= parameter <= upper + 1.0e-12:
+                roots.append(max(lower, min(upper, parameter)))
+    unique = []
+    for parameter in sorted(roots):
+        if not unique or abs(parameter - unique[-1]) > 1.0e-11:
+            unique.append(parameter)
+    return unique
+
+
+def _profile_edge_roots(edge, center, radial):
+    curve_type = type(edge.Curve).__name__
+    first = float(edge.FirstParameter)
+    last = float(edge.LastParameter)
+    first_value = float((edge.valueAt(first) - center).dot(radial))
+    last_value = float((edge.valueAt(last) - center).dot(radial))
+    if curve_type in {"Line", "LineSegment"}:
+        denominator = last_value - first_value
+        if abs(denominator) <= 1.0e-15:
+            return []
+        fraction = -first_value / denominator
+        if -1.0e-12 <= fraction <= 1.0 + 1.0e-12:
+            return [first + (last - first) * max(0.0, min(1.0, fraction))]
+        return []
+    if curve_type == "Circle":
+        return _circle_half_plane_roots(edge, center, radial)
+    raise RuntimeError(
+        f"Tool profile curve {curve_type} cannot be clipped for circular motion."
+    )
+
+
+def _trimmed_profile_edge(edge, first, last):
+    lower = min(float(first), float(last))
+    upper = max(float(first), float(last))
+    trimmed = edge.Curve.toShape(lower, upper)
+    if float(last) < float(first):
+        trimmed = trimmed.reversed()
+    return trimmed
+
+
+def _clipped_revolution_profile(start_profile, mirrored_profile, center, radial):
+    """Clip a cutter section at its revolution axis without tessellation."""
+
+    boundary = [
+        (edge, float(edge.FirstParameter), float(edge.LastParameter))
+        for edge in start_profile.Edges
+    ]
+    boundary.extend(
+        (edge, float(edge.LastParameter), float(edge.FirstParameter))
+        for edge in reversed(mirrored_profile.Edges)
+    )
+    kept = []
+    for edge, traversal_start, traversal_end in boundary:
+        roots = _profile_edge_roots(edge, center, radial)
+        if traversal_end < traversal_start:
+            roots.reverse()
+        parameters = [traversal_start]
+        parameters.extend(
+            parameter
+            for parameter in roots
+            if min(traversal_start, traversal_end) + 1.0e-12
+            < parameter
+            < max(traversal_start, traversal_end) - 1.0e-12
+        )
+        parameters.append(traversal_end)
+        for first, last in zip(parameters, parameters[1:]):
+            if abs(float(last) - float(first)) <= 1.0e-12:
+                continue
+            middle = (float(first) + float(last)) / 2.0
+            if float((edge.valueAt(middle) - center).dot(radial)) < -1.0e-12:
+                continue
+            kept.append(
+                (
+                    _trimmed_profile_edge(edge, first, last),
+                    FreeCAD.Vector(edge.valueAt(first)),
+                    FreeCAD.Vector(edge.valueAt(last)),
+                )
+            )
+    if not kept:
+        raise RuntimeError("Circular tool profile lies outside its revolution half-plane.")
+
+    wire_edges = []
+    join_tolerance = 1.0e-7
+    for index, (edge, start, _end) in enumerate(kept):
+        if index:
+            previous_end = kept[index - 1][2]
+            if float((start - previous_end).Length) > join_tolerance:
+                wire_edges.append(Part.makeLine(previous_end, start))
+        wire_edges.append(edge)
+    final_end = kept[-1][2]
+    initial_start = kept[0][1]
+    if float((final_end - initial_start).Length) > join_tolerance:
+        wire_edges.append(Part.makeLine(final_end, initial_start))
+    wire = Part.Wire(wire_edges)
+    if not wire.isClosed() or not wire.isValid():
+        raise RuntimeError("Clipped circular tool profile is not one valid closed wire.")
+    face = Part.Face(wire)
+    if face.isNull() or not face.isValid():
+        raise RuntimeError("Clipped circular tool profile is not one valid face.")
+    return face
+
+
+def _planar_circular_axisymmetric_sweep(
+    edge,
+    tool,
+    start,
+    end,
+    *,
+    axial_extension=0.0,
+):
+    """Build the exact planar sweep of a supported axisymmetric cutter.
+
+    Each horizontal cutter slice is a disk.  Its exact sweep along a circular
+    arc is an annular sector clipped at radius zero plus the two endpoint disks.
+    Constructing that solid explicitly also avoids OCC pipe/revolution failures
+    when the cutter radius numerically touches or crosses the arc axis.
+    """
+
+    curve = edge.Curve
+    center = FreeCAD.Vector(curve.Center)
+    center.z = float(start.z)
+    radial = FreeCAD.Vector(start) - center
+    radial.z = 0.0
+    if radial.Length <= 1.0e-12:
+        raise RuntimeError("Circular tool path starts at its revolution axis.")
+    radial.normalize()
+    start_direction = edge.tangentAt(edge.FirstParameter)
+    start_profile = _radial_profile(
+        tool,
+        start_direction,
+        start,
+        axial_extension=axial_extension,
+    )
+    rotation = FreeCAD.Matrix()
+    rotation.move(FreeCAD.Vector(start).negative())
+    rotation.rotateZ(math.pi)
+    rotation.move(FreeCAD.Vector(start))
+    mirrored_profile = start_profile.copy()
+    mirrored_profile.transformShape(rotation, False, True)
+    profile_face = _clipped_revolution_profile(
+        start_profile,
+        mirrored_profile,
+        center,
+        radial,
+    )
+    parameter_span = abs(float(edge.LastParameter) - float(edge.FirstParameter))
+    full_circle = edge.isClosed() or abs(parameter_span - 2.0 * math.pi) <= 1.0e-7
+    angle_degrees = 360.0 if full_circle else math.degrees(parameter_span)
+    sector = profile_face.revolve(
+        center,
+        FreeCAD.Vector(curve.Axis),
+        angle_degrees,
+    ).removeSplitter()
+    if sector.isNull() or not sector.isValid() or len(sector.Solids) != 1:
+        raise RuntimeError("Circular tool sector is not one valid solid.")
+    if full_circle:
+        return sector.Solids[0]
+
+    start_solid = _axisymmetric_tool_solid(
+        tool,
+        start_direction,
+        start,
+        axial_extension=axial_extension,
+    )
+    end_solid = _axisymmetric_tool_solid(
+        tool,
+        edge.tangentAt(edge.LastParameter),
+        end,
+        axial_extension=axial_extension,
+    )
+    caps = (start_solid, end_solid)
+    swept = sector.fuse(caps, noElementMap=True).removeSplitter()
+    if swept.isNull() or not swept.isValid() or len(swept.Solids) != 1:
+        # Projected Path edges can differ from their controller placements by
+        # a few nanometres.  OCC then occasionally leaves an empty compound at
+        # the otherwise coincident sector/cap boundaries.  Retry only this
+        # transient Boolean with a scale-bounded fuzzy tolerance; stock removal
+        # still uses the native cutter and the returned sweep remains within
+        # OpenCascade's modeling tolerance.
+        cutter_radius = _quantity(tool, "Diameter") / 2.0
+        boolean_tolerance = max(1.0e-7, cutter_radius * 1.0e-6)
+        swept = sector.fuse(
+            caps,
+            boolean_tolerance,
+            noElementMap=True,
+        ).removeSplitter()
+    if swept.isNull() or not swept.isValid() or len(swept.Solids) != 1:
+        raise RuntimeError("Circular tool sweep is not one valid solid.")
+    return swept.Solids[0]
+
+
 def _swept_tool(tool, command, start):
     edge = Path.Geom.edgeForCmd(command, start)
     if edge is None:
@@ -216,31 +504,45 @@ def _swept_tool(tool, command, start):
             f"{command.Name} targets {list(end)} but native edge construction failed."
         )
     end = edge.valueAt(edge.LastParameter)
-    if _tool_shape_id(tool) == "endmill" and edge.BoundBox.ZLength <= 1.0e-12:
+    if _tool_shape_id(tool) == "endmill":
         radius = _quantity(tool, "Diameter") / 2.0
         height = _quantity(tool, "CuttingEdgeHeight")
-        if type(edge.Curve).__name__ in {"Line", "LineSegment"}:
+        z_span = float(edge.BoundBox.ZLength)
+        # PathSimulator returns positions through single-precision placement
+        # state, so a native planar arc can acquire tens of nanometres of Z
+        # drift between consecutive commands.  Sending that near-planar edge
+        # through OCC's general pipe-shell builder creates unorientable cap
+        # slivers.  Project only sub-tolerance drift to one plane and enlarge
+        # the cutter extrusion by the same span, which conservatively contains
+        # the exact swept volume.  Real helical/ramping moves remain on the
+        # general path below.
+        planar_tolerance = max(1.0e-7, radius * 1.0e-8)
+        near_planar = z_span <= planar_tolerance
+        base_z = min(float(start.z), float(end.z), float(edge.BoundBox.ZMin))
+        sweep_height = height + z_span
+        if near_planar and type(edge.Curve).__name__ in {"Line", "LineSegment"}:
             direction = end - FreeCAD.Vector(start)
             direction.z = 0.0
             if direction.Length <= 1.0e-12:
                 raise RuntimeError(f"Linear move {command.Name} has zero XY length.")
             direction.normalize()
             normal = FreeCAD.Vector(-direction.y, direction.x, 0.0) * radius
-            start_point = FreeCAD.Vector(start)
+            start_point = FreeCAD.Vector(start.x, start.y, base_z)
+            end_point = FreeCAD.Vector(end.x, end.y, base_z)
             polygon = Part.makePolygon(
                 [
                     start_point + normal,
-                    end + normal,
-                    end - normal,
+                    end_point + normal,
+                    end_point - normal,
                     start_point - normal,
                     start_point + normal,
                 ]
             )
             center_prism = Part.Face(polygon).extrude(
-                FreeCAD.Vector(0.0, 0.0, height)
+                FreeCAD.Vector(0.0, 0.0, sweep_height)
             )
-            start_cap = Part.makeCylinder(radius, height, start_point)
-            end_cap = Part.makeCylinder(radius, height, end)
+            start_cap = Part.makeCylinder(radius, sweep_height, start_point)
+            end_cap = Part.makeCylinder(radius, sweep_height, end_point)
             swept_solid = center_prism.fuse([start_cap, end_cap]).removeSplitter()
             if (
                 swept_solid.isNull()
@@ -251,65 +553,88 @@ def _swept_tool(tool, command, start):
                     f"Exact linear endmill sweep for {command.Name} is not one valid solid."
                 )
             return swept_solid, end
-        if type(edge.Curve).__name__ == "Circle":
-            swept_solid = _planar_circular_endmill_sweep(edge, radius, height)
-            return swept_solid, end
-        edge_z = float(edge.Vertexes[0].Point.z)
-        planar_edge = edge.copy()
-        planar_edge.translate(FreeCAD.Vector(0.0, 0.0, -edge_z))
-        swept_area = Part.Wire(planar_edge).makeOffset2D(
-            radius,
-            join=0,
-            fill=True,
-            openResult=True,
-        )
-        swept_area.translate(FreeCAD.Vector(0.0, 0.0, edge_z))
-        swept_solid = swept_area.extrude(FreeCAD.Vector(0.0, 0.0, height))
-        if (
-            swept_solid.isNull()
-            or not swept_solid.isValid()
-            or len(swept_solid.Solids) != 1
-        ):
-            raise RuntimeError(
-                f"Exact planar endmill sweep for {command.Name} is not one valid solid."
+        if near_planar and type(edge.Curve).__name__ == "Circle":
+            swept_solid = _planar_circular_endmill_sweep(
+                edge,
+                radius,
+                sweep_height,
+                base_z=base_z,
             )
-        return swept_solid.removeSplitter(), end
-    delta = end - FreeCAD.Vector(start)
-    if math.hypot(float(delta.x), float(delta.y)) <= 1.0e-12:
-        lower = FreeCAD.Vector(start) if float(start.z) <= float(end.z) else FreeCAD.Vector(end)
-        profile = _radial_profile(
+            return swept_solid, end
+        if near_planar:
+            edge_z = float(edge.Vertexes[0].Point.z)
+            planar_edge = edge.copy()
+            planar_edge.translate(FreeCAD.Vector(0.0, 0.0, base_z - edge_z))
+            swept_area = Part.Wire(planar_edge).makeOffset2D(
+                radius,
+                join=0,
+                fill=True,
+                openResult=True,
+            )
+            swept_solid = swept_area.extrude(
+                FreeCAD.Vector(0.0, 0.0, sweep_height)
+            )
+            if (
+                swept_solid.isNull()
+                or not swept_solid.isValid()
+                or len(swept_solid.Solids) != 1
+            ):
+                raise RuntimeError(
+                    f"Exact planar endmill sweep for {command.Name} is not one valid solid."
+                )
+            return swept_solid.removeSplitter(), end
+    generic_radius = _quantity(tool, "Diameter") / 2.0
+    motion_edge, motion_start, motion_end, axial_extension = _near_planar_motion(
+        edge,
+        FreeCAD.Vector(start),
+        end,
+        max(1.0e-7, generic_radius * 1.0e-8),
+    )
+    delta = motion_end - motion_start
+    if (
+        not motion_edge.isClosed()
+        and math.hypot(float(delta.x), float(delta.y)) <= 1.0e-12
+    ):
+        lower = (
+            FreeCAD.Vector(start)
+            if float(start.z) <= float(end.z)
+            else FreeCAD.Vector(end)
+        )
+        solid = _axisymmetric_tool_solid(
             tool,
             FreeCAD.Vector(1.0, 0.0, 0.0),
             lower,
             axial_extension=abs(float(delta.z)),
         )
-        vertices = list(profile.Vertexes)
-        if len(vertices) < 2:
-            raise RuntimeError(f"Axial tool profile for {command.Name} has no boundary.")
-        closed_profile = Part.Wire(
-            list(profile.Edges)
-            + [Part.makeLine(vertices[-1].Point, vertices[0].Point)]
+        return solid, end
+    if type(motion_edge.Curve).__name__ == "Circle":
+        return (
+            _planar_circular_axisymmetric_sweep(
+                motion_edge,
+                tool,
+                motion_start,
+                motion_end,
+                axial_extension=axial_extension,
+            ),
+            end,
         )
-        profile_face = Part.Face(closed_profile)
-        solid = profile_face.revolve(
-            lower, FreeCAD.Vector(0.0, 0.0, 1.0), 360.0
-        )
-        if solid.isNull() or not solid.isValid() or len(solid.Solids) != 1:
-            raise RuntimeError(
-                f"Axial tool sweep for {command.Name} is not one valid solid."
-            )
-        return solid.removeSplitter(), end
-    start_direction = edge.tangentAt(edge.FirstParameter)
-    end_direction = edge.tangentAt(edge.LastParameter)
-    start_profile = _radial_profile(tool, start_direction, start)
+    start_direction = motion_edge.tangentAt(motion_edge.FirstParameter)
+    end_direction = motion_edge.tangentAt(motion_edge.LastParameter)
+    start_profile = _radial_profile(
+        tool,
+        start_direction,
+        motion_start,
+        axial_extension=axial_extension,
+    )
     rotation = FreeCAD.Matrix()
-    rotation.move(FreeCAD.Vector(start).negative())
+    rotation.move(motion_start.negative())
     rotation.rotateZ(math.pi)
-    rotation.move(FreeCAD.Vector(start))
-    mirrored_profile = start_profile.transformGeometry(rotation)
+    rotation.move(motion_start)
+    mirrored_profile = start_profile.copy()
+    mirrored_profile.transformShape(rotation, False, True)
     full_profile = Part.Wire([start_profile, mirrored_profile])
-    path_wire = Part.Wire(edge)
-    if edge.isClosed():
+    path_wire = Part.Wire(motion_edge)
+    if motion_edge.isClosed():
         solid = path_wire.makePipeShell([full_profile], True, True).removeSplitter()
         if solid.isNull() or not solid.isValid() or len(solid.Solids) != 1:
             raise RuntimeError(
@@ -317,9 +642,22 @@ def _swept_tool(tool, command, start):
             )
         return solid, end
     path_shell = path_wire.makePipeShell([full_profile], False, True)
-    start_cap = start_profile.revolve(start, FreeCAD.Vector(0.0, 0.0, 1.0), -180.0)
-    end_profile = _radial_profile(tool, end_direction, end)
-    end_cap = end_profile.revolve(end, FreeCAD.Vector(0.0, 0.0, 1.0), 180.0)
+    start_cap = start_profile.revolve(
+        motion_start,
+        FreeCAD.Vector(0.0, 0.0, 1.0),
+        -180.0,
+    )
+    end_profile = _radial_profile(
+        tool,
+        end_direction,
+        motion_end,
+        axial_extension=axial_extension,
+    )
+    end_cap = end_profile.revolve(
+        motion_end,
+        FreeCAD.Vector(0.0, 0.0, 1.0),
+        180.0,
+    )
     shell = Part.makeShell(start_cap.Faces + path_shell.Faces + end_cap.Faces)
     solid = Part.makeSolid(shell).removeSplitter()
     if solid.isNull() or not solid.isValid() or len(solid.Solids) != 1:
@@ -327,18 +665,55 @@ def _swept_tool(tool, command, start):
     return solid, end
 
 
-def _planar_circular_endmill_sweep(edge, tool_radius, tool_height):
+def _planar_circular_endmill_sweep(
+    edge,
+    tool_radius,
+    tool_height,
+    *,
+    base_z=None,
+):
     curve = edge.Curve
     path_radius = float(curve.Radius)
     if path_radius <= 0.0:
         raise RuntimeError("Circular tool path has nonpositive radius.")
     center = FreeCAD.Vector(curve.Center)
-    z = float(edge.valueAt(edge.FirstParameter).z)
+    z = (
+        float(edge.valueAt(edge.FirstParameter).z)
+        if base_z is None
+        else float(base_z)
+    )
     center.z = z
     outer_radius = path_radius + float(tool_radius)
     inner_radius = max(0.0, path_radius - float(tool_radius))
+    radial_tolerance = max(1.0e-7, outer_radius * 1.0e-9)
+    if inner_radius <= radial_tolerance:
+        # At the native modeling tolerance the swept disk reaches the arc
+        # center.  Keeping a sub-tolerance inner arc creates a needle-shaped
+        # face that OCC cannot orient reliably during the cap union.
+        inner_radius = 0.0
 
-    if edge.isClosed():
+    # OCC can retain a generated full-circle move as an open trimmed edge when
+    # its numerically reconstructed end point differs from the start by a few
+    # tenths of a micron.  Building that almost-closed move as a sector creates
+    # a sliver whose coincident caps are unorientable during fusion.  Require
+    # both a complete angular turn and coincident end points before using the
+    # exact annular sweep; a genuinely short arc with coincident points must not
+    # be promoted to a full circle.
+    first_parameter = float(edge.FirstParameter)
+    last_parameter = float(edge.LastParameter)
+    parameter_span = abs(last_parameter - first_parameter)
+    start_point = edge.valueAt(first_parameter)
+    end_point = edge.valueAt(last_parameter)
+    endpoint_tolerance = max(
+        radial_tolerance,
+        (path_radius + float(tool_radius)) * 1.0e-7,
+    )
+    complete_turn = (
+        parameter_span >= math.pi
+        and abs(parameter_span - 2.0 * math.pi) <= 1.0e-6
+        and float((end_point - start_point).Length) <= endpoint_tolerance
+    )
+    if edge.isClosed() or complete_turn:
         swept = Part.makeCylinder(outer_radius, tool_height, center)
         if inner_radius > 1.0e-12:
             swept = swept.cut(Part.makeCylinder(inner_radius, tool_height, center))
@@ -346,8 +721,6 @@ def _planar_circular_endmill_sweep(edge, tool_radius, tool_height):
             raise RuntimeError("Full-circle endmill sweep is not one valid solid.")
         return swept.removeSplitter()
 
-    first_parameter = float(edge.FirstParameter)
-    last_parameter = float(edge.LastParameter)
     middle_parameter = (first_parameter + last_parameter) / 2.0
 
     def radial_point(parameter, radius):
@@ -598,13 +971,35 @@ def analyze_operation(
             "native_simulation": simulation_stats,
         }
     collision_shape = None
+    collision_volume = 0.0
+    collision_volume_aggregation = "none"
+    collision_aggregation_warning = ""
     if collision_shapes:
-        collision_shape = collision_shapes[0]
-        if len(collision_shapes) > 1:
-            collision_shape = collision_shape.multiFuse(collision_shapes[1:]).removeSplitter()
-        if collision_shape.isNull() or not collision_shape.isValid():
-            raise RuntimeError("Protected-model collision union is null or invalid.")
-    collision_volume = float(collision_shape.Volume) if collision_shape is not None else 0.0
+        # A pocket can yield hundreds of mutually overlapping command
+        # intersections.  A monolithic OCC multiFuse is both unbounded and can
+        # create an invalid result from otherwise valid inputs.  Preserve the
+        # exact union for a bounded set; otherwise report a clearly identified
+        # conservative sum and compound bounds.  The collision verdict remains
+        # conservative in either case and each exact per-command volume is
+        # retained in ``commands`` below.
+        collision_shape = Part.makeCompound(collision_shapes)
+        collision_volume = sum(float(shape.Volume) for shape in collision_shapes)
+        collision_volume_aggregation = "per_command_sum_conservative"
+        if len(collision_shapes) <= 32:
+            try:
+                union = collision_shapes[0]
+                if len(collision_shapes) > 1:
+                    union = union.multiFuse(collision_shapes[1:]).removeSplitter()
+                if union.isNull() or not union.isValid():
+                    raise RuntimeError("OCC returned a null or invalid union")
+                collision_shape = union
+                collision_volume = float(union.Volume)
+                collision_volume_aggregation = "occ_union"
+            except Exception as exc:
+                collision_aggregation_warning = (
+                    "Exact bounded OCC union was unavailable; using the "
+                    f"conservative per-command sum: {type(exc).__name__}: {exc}"
+                )
     return {
         "complete": True,
         "stage": "complete",
@@ -627,6 +1022,8 @@ def analyze_operation(
             "volume_tolerance_mm3": float(volume_tolerance),
             "protected_model_collision": collision_volume > float(volume_tolerance),
             "protected_model_volume_mm3": collision_volume,
+            "protected_model_volume_aggregation": collision_volume_aggregation,
+            "protected_model_aggregation_warning": collision_aggregation_warning,
             "protected_model_bounds": _bounds(collision_shape),
             "commands": collision_commands,
             "holder_checked": False,

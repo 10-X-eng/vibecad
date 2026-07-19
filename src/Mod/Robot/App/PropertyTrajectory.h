@@ -50,6 +50,8 @@ public:
     //@{
     /// set the part shape
     void setValue(const Trajectory&);
+    /// Exchange an already-generated trajectory without rebuilding either path.
+    void swapValue(Trajectory&);
     /// get the part shape
     const Trajectory& getValue() const;
     //@}

@@ -792,7 +792,7 @@ def _validate_faces(
         if not face_name.startswith("Face"):
             return [], details, (
                 f"Invalid face name: {face_name}. CAM base geometry must be "
-                "faces, e.g. 'Face3' from part.find_subelements."
+                "an exact existing face name such as 'Face3'."
             )
         shape = getattr(obj, "Shape", None)
         try:

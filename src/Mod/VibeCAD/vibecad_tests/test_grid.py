@@ -93,3 +93,48 @@ def test_world_units_per_pixel_uses_grid_plane_projection() -> None:
     assert grid._world_units_per_pixel(_OrthographicView(), _Grid()) == pytest.approx(
         0.5
     )
+
+
+def test_final_subwindow_close_disposes_coin_sensors_without_rescheduling(
+    monkeypatch,
+) -> None:
+    class _Controller:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    controller = _Controller()
+    monkeypatch.setattr(grid, "_adaptive_controllers", [controller])
+
+    grid._on_sub_window_activated(None)
+
+    assert controller.disposed is True
+    assert grid._adaptive_controllers == []
+
+
+def test_main_window_close_stops_timer_and_disposes_coin_sensors(monkeypatch) -> None:
+    class _Timer:
+        stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class _Controller:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    timer = _Timer()
+    controller = _Controller()
+    monkeypatch.setattr(grid, "_maintenance_timer", timer)
+    monkeypatch.setattr(grid, "_adaptive_controllers", [controller])
+    monkeypatch.setattr(grid, "_close_suspended", False)
+
+    grid._suspend_for_main_window_close()
+
+    assert grid._close_suspended is True
+    assert timer.stopped is True
+    assert controller.disposed is True
+    assert grid._adaptive_controllers == []

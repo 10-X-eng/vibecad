@@ -316,8 +316,8 @@ def _validate_references(
             subshape = shape.getElement(element)
         except Exception:
             return [], (
-                f"{object_name} has no subelement named {element}. Use "
-                "part.find_subelements to list exact names."
+                f"{object_name} has no subelement named {element}. Provide an "
+                "exact subelement name from the active FEM document context."
             )
         refs.append(
             {

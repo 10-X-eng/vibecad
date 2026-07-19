@@ -14,6 +14,7 @@ set(VibeCAD_Scripts
     VibeCADGui.py
     VibeCADIntentMemory.py
     VibeCADIntentMemoryCompiler.py
+    VibeCADModelingSurface.py
     VibeCADOpenSCAD.py
     VibeCADPreferences.py
     VibeCADPromptStarters.py
@@ -28,6 +29,49 @@ set(VibeCAD_Scripts
     VibeCADTools.py
     VibeCADTransactions.py
     VibeCADVibeScript.py
+    VibeCADVibeScriptDomains.py
+    VibeCADVibeScriptDomainRuntime.py
+    VibeCADVibeScriptDomainPublication.py
+    VibeCADVibeScriptCAM.py
+    vibescript_assembly_api.py
+    vibescript_assembly_worker.py
+    VibeCADAssemblyHierarchy.py
+    VibeCADAssemblyBOM.py
+    vibescript_domain_api.py
+    vibescript_domain_worker.py
+    vibescript_draft_api.py
+    vibescript_draft_worker.py
+    vibescript_part_api.py
+    vibescript_part_worker.py
+    vibescript_sketcher_api.py
+    vibescript_sketcher_worker.py
+    vibescript_surface_api.py
+    vibescript_surface_worker.py
+    vibescript_spreadsheet_api.py
+    vibescript_spreadsheet_worker.py
+    vibescript_material_api.py
+    vibescript_material_worker.py
+    vibescript_bim_api.py
+    vibescript_bim_worker.py
+    vibescript_mesh_api.py
+    vibescript_mesh_worker.py
+    vibescript_meshpart_api.py
+    vibescript_meshpart_worker.py
+    vibescript_points_api.py
+    vibescript_points_worker.py
+    vibescript_reverse_engineering_api.py
+    vibescript_reverse_engineering_worker.py
+    vibescript_inspection_api.py
+    vibescript_inspection_worker.py
+    vibescript_robot_api.py
+    vibescript_robot_worker.py
+    vibescript_fem_api.py
+    vibescript_fem_worker.py
+    vibescript_cam_api.py
+    vibescript_cam_worker.py
+    vibescript_techdraw_api.py
+    vibescript_techdraw_worker.py
+    VibeCADPointArtifacts.py
     VibeCADWorkbenchTools.py
     build123d_worker.py
     openscad_freecad_worker.py

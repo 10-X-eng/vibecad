@@ -89,6 +89,15 @@ BomObject::BomObject()
         (App::PropertyType)(App::Prop_None),
         "Only Part containers will be added. Solids like PartDesign Bodies will be ignored."
     );
+
+    ADD_PROPERTY_TYPE(
+        autoGenerate,
+        (true),
+        "Bom",
+        (App::PropertyType)(App::Prop_None),
+        "Generate the native Bill of Materials during recompute. Disable this only when "
+        "an external publisher owns a validated literal table."
+    );
 }
 BomObject::~BomObject() = default;
 
@@ -103,7 +112,9 @@ PyObject* BomObject::getPyObject()
 
 App::DocumentObjectExecReturn* BomObject::execute()
 {
-    generateBOM();
+    if (autoGenerate.getValue()) {
+        generateBOM();
+    }
 
     return Spreadsheet::Sheet::execute();
 }
@@ -256,14 +267,14 @@ bool BomObject::isObjMirrored(App::DocumentObject* obj)
     // We multiply scales to handle nested mirroring (e.g., Mirrored LinkElement inside Mirrored
     // LinkGroup = Normal).
     double accumulatedScale = 1.0;
-    if (auto element = static_cast<App::LinkElement*>(obj)) {
+    if (auto* element = freecad_cast<App::LinkElement*>(obj)) {
         accumulatedScale *= element->Scale.getValue();
 
         if (auto group = element->getLinkGroup()) {
             accumulatedScale *= group->Scale.getValue();
         }
     }
-    else if (auto link = static_cast<App::Link*>(obj)) {
+    else if (auto* link = freecad_cast<App::Link*>(obj)) {
         accumulatedScale *= link->Scale.getValue();
     }
     return accumulatedScale < 0.0;

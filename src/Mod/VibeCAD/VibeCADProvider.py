@@ -19,6 +19,9 @@ import time
 from typing import Any, Callable
 
 from VibeCADDebug import capture_provider_request
+from VibeCADModelingSurface import resolve_modeling_surface, validate_surface_names
+from VibeCADVibeScriptDomains import get_vibescript_pack
+from VibeCADWorkbenchTools import get_tool_pack
 
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
@@ -57,8 +60,6 @@ For a new substantial design, begin with a concise written restatement of the in
 
 Preserve an existing document, component structure, editable history, and model identity unless replacement was explicitly requested. In a blank user-created document, create the editable component models needed for the new design. The human owns document creation, opening, saving, and project selection.
 
-Author the geometry the design requires. Use lines only for genuinely straight form; use arcs, conics, and splines for curved form. Use pads and pockets for constant sections, revolves for axisymmetry, lofts and sweeps for changing or guided sections, and patterns for real repetition. Fillets and chamfers finish primary form; they do not replace it. Parts that move relative to one another or are manufactured separately require separate Bodies.
-
 Use only the tools supplied for the active workbench and edit state. Read each structured result and its fresh CAD revision before the next operation.
 
 A failed or ineffective feature is a stop condition. Diagnose and repair its upstream cause before adding dependent work, and never repeat an unchanged failed call. Verify features against functional intent, mating geometry, motion and clearance envelopes, manufacturing constraints, and visible form, not merely nonzero volume or solid count. Capture the viewport when visual form matters. State incomplete work as incomplete, keep progress prose concise, and never claim verification you did not perform."""
@@ -93,6 +94,78 @@ def _vibescript_engine_active(context: dict[str, Any]) -> bool:
     return False
 
 
+def _vibescript_domain(context: dict[str, Any]) -> str | None:
+    surface = context.get("modeling_surface")
+    if isinstance(surface, dict) and surface.get("engine") == "vibescript":
+        domain = str(surface.get("domain") or "").strip()
+        if domain:
+            return domain
+    domains: set[str] = set()
+    legacy = False
+    for schema in context.get("provider_tool_schemas") or []:
+        if not isinstance(schema, dict):
+            continue
+        parts = str(schema.get("name") or "").split(".")
+        if not parts or parts[0] != "vibescript":
+            continue
+        if len(parts) == 2:
+            legacy = True
+        elif len(parts) == 3:
+            domains.add(parts[1])
+    if legacy:
+        domains.add("partdesign")
+    return next(iter(domains)) if len(domains) == 1 else None
+
+
+def _surface_authoring_instruction(context: dict[str, Any]) -> str:
+    surface = context.get("modeling_surface")
+    if not isinstance(surface, dict) or surface.get("engine") != "native":
+        return ""
+    workbench = str(surface.get("workbench") or context.get("workbench") or "")
+    pack = get_tool_pack(workbench)
+    if pack is None or not surface.get("available"):
+        return ""
+    return (
+        f"ACTIVE NATIVE WORKBENCH: {workbench}\n"
+        f"Domain: {pack.domain}. {pack.instructions}\n"
+        "Use only this workbench's declared native tools. Do not infer or call "
+        "tools from adjacent workbenches."
+    )
+
+
+def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
+    domain = _vibescript_domain(context)
+    if domain == "partdesign":
+        return VIBESCRIPT_AUTHORING_INSTRUCTIONS
+    workbench = str(context.get("workbench") or "")
+    pack = get_vibescript_pack(workbench)
+    if pack is None or pack.domain != domain:
+        return ""
+    namespace = f"vibescript.{pack.domain}"
+    return (
+        f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
+        f"The selected global engine is VibeScript and the only CAD authoring "
+        f"domain is {pack.title}. {pack.instructions}\n\n"
+        "Treat the injected vibescript_domain context as the authoritative working "
+        "set for this turn. Check its existing programs before creating one; inspect "
+        "and update a matching program instead of creating a duplicate. Copy stable "
+        "references exactly from the domain candidate context.\n\n"
+        f"Call {namespace}.describe_api before writing the first program. Programs "
+        "receive only doc, validated inputs, and the returned domain api. Inputs "
+        "are bounded JSON scalars, arrays, enums, or stable document references; "
+        "raw filesystem paths and arbitrary Python objects are forbidden. Every "
+        "output must have a stable declared name and one of these types: "
+        + ", ".join(pack.output_types)
+        + ". Choose the narrowest lifecycle mutation: edit_source for source-only "
+        "changes, set_inputs for value-only changes, and reconfigure_program only "
+        "when source, input schema, inputs, or declared outputs must change together. "
+        "Use the latest working_revision as every mutation guard. A failed candidate "
+        "becomes the working revision while the previous accepted revision stays live; "
+        "inspect it, repair the smallest exact cause, and verify the accepted/live state "
+        "after success. Never call native workbench tools from this mode."
+    )
+
+
 def _intent_memory_instruction(context: dict[str, Any]) -> str:
     memory = context.get("intent_memory")
     if not context.get("intent_memory_enabled") or not isinstance(memory, dict):
@@ -108,6 +181,9 @@ def _intent_memory_instruction(context: dict[str, Any]) -> str:
 def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
     """Ordered system-instruction sections shared by every wire format."""
     sections = [VIBECAD_SYSTEM_INSTRUCTIONS]
+    native_instruction = _surface_authoring_instruction(context)
+    if native_instruction:
+        sections.append(native_instruction)
     if any(
         isinstance(schema, dict)
         and schema.get("name") == "conversation.review_design"
@@ -122,7 +198,9 @@ def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
             "as a user approval gate."
         )
     if _vibescript_engine_active(context):
-        sections.append(VIBESCRIPT_AUTHORING_INSTRUCTIONS)
+        instruction = _vibescript_authoring_instruction(context)
+        if instruction:
+            sections.append(instruction)
     memory = _intent_memory_instruction(context)
     if memory:
         sections.append(memory)
@@ -287,8 +365,12 @@ def _codex_dynamic_tool_surface(
     expected_surface_fields = {
         "kind",
         "frozen",
-        "scripted_engine",
         "workbench",
+        "engine",
+        "domain",
+        "surface_id",
+        "available",
+        "unavailable_reason",
         "tool_names",
         "schema_count",
         "schema_sha256",
@@ -346,28 +428,27 @@ def _codex_dynamic_tool_surface(
         raise ProviderUnavailable(
             "The VibeCAD tool schemas changed after the turn-start surface was frozen."
         )
-    engine_prefixes = {
-        "build123d": "build123d.",
-        "openscad": "openscad.",
-        "vibescript": "vibescript.",
-    }
-    engines = [
-        engine
-        for engine, prefix in engine_prefixes.items()
-        if any(name.startswith(prefix) for name in schema_names)
-    ]
-    if len(engines) > 1:
+    workbench = str(surface.get("workbench") or "") or None
+    engine = str(surface.get("engine") or "")
+    resolution = resolve_modeling_surface(workbench, engine)
+    if (
+        surface.get("domain") != resolution.domain
+        or surface.get("surface_id") != resolution.surface_id
+        or surface.get("available") is not resolution.available
+        or str(surface.get("unavailable_reason") or "") != resolution.unavailable_reason
+    ):
         raise ProviderUnavailable(
-            "The frozen VibeCAD tool surface contains multiple scripted engines: "
-            + ", ".join(sorted(engines))
+            "The modeling-engine/domain declaration does not match the frozen " "VibeCAD surface."
         )
-    declared_engine = surface.get("scripted_engine")
-    actual_engine = engines[0] if engines else None
-    if declared_engine != actual_engine:
-        raise ProviderUnavailable(
-            "The scripted-engine declaration does not match the frozen VibeCAD "
-            "tool schemas."
+    try:
+        validate_surface_names(
+            workbench=workbench,
+            engine=engine,
+            names=schema_names,
+            allowed_names=resolution.tool_names,
         )
+    except ValueError as exc:
+        raise ProviderUnavailable(str(exc)) from exc
     namespaces: dict[str, dict[str, Any]] = {}
     names: dict[tuple[str, str], str] = {}
     for schema in schemas:
@@ -1490,6 +1571,7 @@ def _model_visible_context(
 ) -> dict[str, Any]:
     sections = (
         "workbench",
+        "modeling_surface",
         "vibecad_project",
         "document",
         "selection",
@@ -1501,6 +1583,7 @@ def _model_visible_context(
         "conversation",
         "partdesign",
         "vibescript",
+        "vibescript_domain",
         "sketcher",
         "part",
         "assembly",
@@ -1511,6 +1594,12 @@ def _model_visible_context(
         "fem",
         "material",
         "mesh",
+        "meshpart",
+        "points",
+        "reverse_engineering",
+        "inspection",
+        "robot",
+        "bim",
         "spreadsheet",
     )
     return {
@@ -1833,6 +1922,17 @@ def _openai_request_tools(
     return tools
 
 
+def _validate_provider_wire_surface(context: dict[str, Any]) -> None:
+    """Apply the frozen resolver contract to every online provider transport."""
+
+    # A few isolated transport tests and extension callers still supply schemas
+    # without a session snapshot. Production sessions always include one. When
+    # it is present, use the same strict validation as subscription mode before
+    # serializing schemas for OpenAI-compatible or Anthropic APIs.
+    if "provider_tool_surface" in context:
+        _codex_dynamic_tool_surface(context)
+
+
 def _openai_child_main(
     conn,
     prompt: str,
@@ -1864,6 +1964,7 @@ def _openai_child_main(
     def tool_surface(
         live_context: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        _validate_provider_wire_surface(live_context)
         definitions: list[dict[str, Any]] = []
         names: dict[str, str] = {}
         for index, schema in enumerate(live_context.get("provider_tool_schemas") or []):
@@ -2749,6 +2850,7 @@ def _anthropic_child_main(
         def build_tool_surface(
             surface_context: dict[str, Any],
         ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+            _validate_provider_wire_surface(surface_context)
             by_name: dict[str, str] = {}
             definitions: list[dict[str, Any]] = []
             for index, schema in enumerate(

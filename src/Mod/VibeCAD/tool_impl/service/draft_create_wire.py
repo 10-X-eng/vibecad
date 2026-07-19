@@ -17,7 +17,7 @@ TOOL_SPEC = {
         "Create one native Draft wire (polyline) through exact global points; "
         "consecutive points are joined by straight segments. A closed wire with "
         "make_face=true becomes a filled planar face usable as an extrusion "
-        "profile for part.extrude."
+        "profile in a later workbench."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
