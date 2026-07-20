@@ -23,6 +23,7 @@
 
 
 #include "WorkbenchManipulatorPython.h"
+#include "DockWindowManager.h"
 #include "MenuManager.h"
 #include "ToolBarManager.h"
 #include <Base/Console.h>
@@ -361,8 +362,68 @@ void WorkbenchManipulatorPython::tryModifyDockWindows(DockWindowItems* dockWindo
     }
 }
 
+/*!
+ * \brief WorkbenchManipulatorPython::tryModifyDockWindows
+ * \param dockWindow
+ * The Python manipulator can add native dock declarations with dictionaries:
+ * \code
+ * class Manipulator:
+ *   def modifyDockWindows(self):
+ *     return [{"add": "MyModule_Panel", "area": "right",
+ *              "visible": True, "tabbed": True}]
+ *
+ * manip = Manipulator()
+ * Gui.addWorkbenchManipulator(manip)
+ * \endcode
+ * DockWindowManager remains responsible for creating, placing, showing and
+ * persisting the registered dock widget.
+ */
 void WorkbenchManipulatorPython::tryModifyDockWindows(
-    [[maybe_unused]] const Py::Dict& dict,
-    [[maybe_unused]] DockWindowItems* dockWindow
+    const Py::Dict& dict,
+    DockWindowItems* dockWindow
 )
-{}
+{
+    const std::string add("add");
+    if (!dict.hasKey(add)) {
+        return;
+    }
+
+    const std::string name = static_cast<std::string>(Py::String(dict.getItem(add)));
+    if (name.empty()) {
+        throw Py::ValueError("modifyDockWindows: 'add' must name a registered dock window");
+    }
+
+    const std::string areaKey("area");
+    const QString area = dict.hasKey(areaKey)
+        ? QString::fromStdString(static_cast<std::string>(Py::String(dict.getItem(areaKey))))
+              .toLower()
+        : QStringLiteral("right");
+
+    Qt::DockWidgetArea dockArea;
+    if (area == QStringLiteral("left")) {
+        dockArea = Qt::LeftDockWidgetArea;
+    }
+    else if (area == QStringLiteral("right")) {
+        dockArea = Qt::RightDockWidgetArea;
+    }
+    else if (area == QStringLiteral("top")) {
+        dockArea = Qt::TopDockWidgetArea;
+    }
+    else if (area == QStringLiteral("bottom")) {
+        dockArea = Qt::BottomDockWidgetArea;
+    }
+    else {
+        throw Py::ValueError(
+            "modifyDockWindows: 'area' must be 'left', 'right', 'top' or 'bottom'"
+        );
+    }
+
+    const bool visible = !dict.hasKey(std::string("visible"))
+        || Py::Boolean(dict.getItem("visible")).as_bool();
+    const bool tabbed = dict.hasKey(std::string("tabbed"))
+        && Py::Boolean(dict.getItem("tabbed")).as_bool();
+    const DockWindowOption option = visible
+        ? (tabbed ? DockWindowOption::VisibleTabbed : DockWindowOption::Visible)
+        : (tabbed ? DockWindowOption::HiddenTabbed : DockWindowOption::Hidden);
+    dockWindow->addDockWidget(name.c_str(), dockArea, option);
+}

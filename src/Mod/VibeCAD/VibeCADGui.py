@@ -44,7 +44,6 @@ from VibeCADWorkbenchTools import get_tool_pack
 DOCK_NAME = "VibeCADAssistantPanel"
 CONTEXT_DEBUG_DOCK_NAME = "VibeCADContextDebugPanel"
 MODEL_CODE_DOCK_NAME = "VibeCADScriptedModelPanel"
-MODEL_CODE_DEFAULT_TAB_PROPERTY = "VibeCADDefaultAssistantTab"
 
 ICON_MARK = "preferences-vibecad.svg"
 ICON_OPEN_ASSISTANT = "vibecad-open-assistant.svg"
@@ -62,6 +61,9 @@ _document_observer = None
 _gui_document_observer_connected = False
 _gui_document_observer = None
 _context_debug_startup_scheduled = False
+_dock_workbench_manipulator = None
+_registered_assistant_widget = None
+_registered_context_debug_widget = None
 _document_save_conversations: dict[str, dict[str, Any]] = {}
 _document_save_references: dict[str, dict[str, Any]] = {}
 _pending_question_request: list[dict[str, Any]] = []
@@ -72,8 +74,55 @@ _conversation_persist_lock = threading.RLock()
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
 _PREFERENCES_PATH = "User parameter:BaseApp/Preferences/VibeCAD"
-_MODEL_CODE_LAYOUT_VERSION_PARAMETER = "ModelCodeDockLayoutVersion"
-_MODEL_CODE_LAYOUT_VERSION = 1
+
+
+class _VibeCADDockWorkbenchManipulator:
+    """Declare VibeCAD panels through the native workbench dock lifecycle."""
+
+    def modifyDockWindows(self) -> list[dict[str, Any]]:
+        try:
+            workbench = Gui.activeWorkbench()
+            workbench_name = workbench.name() if workbench is not None else ""
+        except Exception:
+            return []
+        if get_tool_pack(workbench_name) is None:
+            return []
+        docks: list[dict[str, Any]] = [
+            {
+                "add": DOCK_NAME,
+                "area": "right",
+                "visible": True,
+                "tabbed": True,
+            },
+            {
+                "add": MODEL_CODE_DOCK_NAME,
+                "area": "right",
+                "visible": False,
+                "tabbed": True,
+            },
+        ]
+        if (
+            _registered_context_debug_widget is not None
+            or _find_context_debug_dock() is not None
+        ):
+            docks.append(
+                {
+                    "add": CONTEXT_DEBUG_DOCK_NAME,
+                    "area": "bottom",
+                    "visible": True,
+                    "tabbed": True,
+                }
+            )
+        return docks
+
+
+def _ensure_dock_workbench_manipulator() -> None:
+    global _dock_workbench_manipulator
+    if _dock_workbench_manipulator is not None:
+        return
+    manipulator = _VibeCADDockWorkbenchManipulator()
+    Gui.addWorkbenchManipulator(manipulator)
+    _dock_workbench_manipulator = manipulator
 
 
 class _AssistantRunController:
@@ -307,6 +356,20 @@ def _find_context_debug_dock():
     return main_window.findChild(QtWidgets.QDockWidget, CONTEXT_DEBUG_DOCK_NAME)
 
 
+def _register_dock_content(widget: Any, name: str) -> None:
+    """Register panel content without creating or showing a dock window."""
+    main_window = Gui.getMainWindow()
+    if main_window is None:
+        raise RuntimeError("FreeCAD main window is not available.")
+    register = getattr(main_window, "registerDockWindow", None)
+    if not callable(register):
+        raise RuntimeError(
+            "FreeCAD main window does not expose "
+            "DockWindowManager.registerDockWindow."
+        )
+    register(widget, name)
+
+
 def _find_child(widget_type: str, name: str, dock: Any | None = None):
     try:
         from PySide import QtWidgets
@@ -508,8 +571,50 @@ def _build_context_debug_widget():
     timer.setObjectName("VibeContextDebugPollTimer")
     timer.setInterval(1000)
     timer.timeout.connect(lambda: _refresh_context_debug_viewer())
-    timer.start()
     return root
+
+
+def _sync_context_debug_polling(dock: Any, visible: bool) -> None:
+    from PySide import QtCore
+
+    timer = dock.findChild(QtCore.QTimer, "VibeContextDebugPollTimer")
+    enabled = bool(_context_debug_settings().context_debug_enabled)
+    if not visible or not enabled:
+        if timer is not None:
+            timer.stop()
+        return
+    if timer is not None and not timer.isActive():
+        timer.start()
+    _refresh_context_debug_viewer(dock)
+
+
+def _bind_context_debug_dock(dock: Any) -> None:
+    if bool(dock.property("VibeContextDebugVisibilityBound")):
+        _sync_context_debug_polling(dock, bool(dock.isVisible()))
+        return
+    dock.visibilityChanged.connect(
+        lambda visible, current=dock: _sync_context_debug_polling(
+            current, bool(visible)
+        )
+    )
+    dock.setProperty("VibeContextDebugVisibilityBound", True)
+    _sync_context_debug_polling(dock, bool(dock.isVisible()))
+
+
+def _register_startup_context_debugger() -> None:
+    """Register enabled debugger content for native workbench setup."""
+    global _registered_context_debug_widget
+    if not _context_debug_settings().context_debug_enabled:
+        return
+    if _find_context_debug_dock() is not None:
+        return
+    if _registered_context_debug_widget is not None:
+        return
+    widget = _build_context_debug_widget()
+    widget.setMinimumWidth(480)
+    widget.setMinimumHeight(220)
+    _register_dock_content(widget, CONTEXT_DEBUG_DOCK_NAME)
+    _registered_context_debug_widget = widget
 
 
 def _register_context_debug_dock(widget: Any) -> Any:
@@ -523,21 +628,19 @@ def _register_context_debug_dock(widget: Any) -> Any:
         )
     dock = add_dock_window(widget, CONTEXT_DEBUG_DOCK_NAME, "bottom")
     dock.toggleViewAction().setVisible(True)
-    # MainWindow.restoreState() runs before this optional dock is constructed.
-    # Give Qt the late-created dock so it can apply the location saved in the
-    # canonical VibeCAD user profile.
-    main_window.restoreDockWidget(dock)
     return dock
 
 
 def show_context_debugger() -> None:
-    from PySide import QtCore
-
     settings = _context_debug_settings()
     if not settings.context_debug_enabled:
         _warn("Enable the context debugger in VibeCAD Debug preferences first.")
         return
     dock = _find_context_debug_dock()
+    if dock is None and _registered_context_debug_widget is not None:
+        # Workbench activation will create the registered native dock. Never
+        # create a competing QDockWidget while that transition is in flight.
+        return
     if dock is None or dock.widget() is None:
         widget = _build_context_debug_widget()
         if dock is not None:
@@ -546,12 +649,9 @@ def show_context_debugger() -> None:
             dock = _register_context_debug_dock(widget)
         dock.setMinimumWidth(480)
         dock.setMinimumHeight(220)
-    timer = dock.findChild(QtCore.QTimer, "VibeContextDebugPollTimer")
-    if timer is not None and not timer.isActive():
-        timer.start()
+    _bind_context_debug_dock(dock)
     dock.show()
     dock.raise_()
-    _refresh_context_debug_viewer(dock)
 
 
 def apply_context_debug_preferences() -> None:
@@ -569,14 +669,15 @@ def apply_context_debug_preferences() -> None:
     show_context_debugger()
 
 
-def _schedule_context_debug_preferences() -> None:
+def _apply_startup_context_debug_preferences() -> None:
     global _context_debug_startup_scheduled
     if _context_debug_startup_scheduled:
         return
-    from PySide import QtCore
 
     _context_debug_startup_scheduled = True
-    QtCore.QTimer.singleShot(0, apply_context_debug_preferences)
+    # InitGui runs before workbench activation. Register content only; the
+    # native DockWindowManager owns creation, visibility and placement.
+    _register_startup_context_debugger()
 
 
 # ---------------------------------------------------------------------------
@@ -3113,54 +3214,22 @@ def _register_native_dock(widget) -> Any:
         )
     dock = add_dock_window(widget, DOCK_NAME, "right")
     dock.toggleViewAction().setVisible(True)
-    # MainWindow.restoreState() runs before InitGui creates this dock. Qt only
-    # restores a dock constructed after that point when restoreDockWidget() is
-    # called explicitly. Apply the default tab group only when no saved VibeCAD
-    # layout exists for the assistant.
-    if not bool(main_window.restoreDockWidget(dock)):
-        _tab_model_code_editor_with_assistant(dock)
     return dock
 
 
-def _tab_model_code_editor_with_assistant(assistant_dock: Any | None = None) -> bool:
-    """Apply the default shared tab group without overriding a restored layout."""
-    from PySide import QtWidgets
-
-    main_window = Gui.getMainWindow()
-    if main_window is None:
-        raise RuntimeError("FreeCAD main window is not available.")
-    if assistant_dock is None:
-        assistant_dock = main_window.findChild(QtWidgets.QDockWidget, DOCK_NAME)
-    model_code_dock = main_window.findChild(
-        QtWidgets.QDockWidget, MODEL_CODE_DOCK_NAME
-    )
-    if assistant_dock is None or model_code_dock is None:
-        return False
-    if not bool(model_code_dock.property(MODEL_CODE_DEFAULT_TAB_PROPERTY)):
-        return False
-    main_window.tabifyDockWidget(assistant_dock, model_code_dock)
-    model_code_dock.setProperty(MODEL_CODE_DEFAULT_TAB_PROPERTY, False)
-    App.ParamGet(_PREFERENCES_PATH).SetInt(
-        _MODEL_CODE_LAYOUT_VERSION_PARAMETER, _MODEL_CODE_LAYOUT_VERSION
-    )
-    assistant_dock.raise_()
-    return True
-
-
-def configure_model_code_editor_dock(dock: Any) -> None:
-    """Restore the editor's saved location or place it beside the assistant."""
-    main_window = Gui.getMainWindow()
-    if main_window is None:
-        raise RuntimeError("FreeCAD main window is not available.")
-    layout_version = App.ParamGet(_PREFERENCES_PATH).GetInt(
-        _MODEL_CODE_LAYOUT_VERSION_PARAMETER, 0
-    )
-    restored = layout_version >= _MODEL_CODE_LAYOUT_VERSION and bool(
-        main_window.restoreDockWidget(dock)
-    )
-    dock.setProperty(MODEL_CODE_DEFAULT_TAB_PROPERTY, not restored)
-    if not restored:
-        _tab_model_code_editor_with_assistant()
+def register_startup_assistant() -> Any:
+    """Register assistant content for native workbench-owned dock creation."""
+    global _registered_assistant_widget
+    dock = _find_dock()
+    if dock is not None:
+        return dock
+    if _registered_assistant_widget is not None:
+        return _registered_assistant_widget
+    widget = _build_panel_widget()
+    widget.setMinimumWidth(300)
+    _register_dock_content(widget, DOCK_NAME)
+    _registered_assistant_widget = widget
+    return widget
 
 
 def _show_panel(text: str = "") -> None:
@@ -3172,9 +3241,15 @@ def _show_panel(text: str = "") -> None:
 
     dock = _find_dock()
     if dock is None or not _assistant_panel_is_built(dock):
+        if dock is None and _registered_assistant_widget is not None:
+            _warn(
+                "VibeCAD assistant content is registered but the active "
+                "workbench has not created its dock window."
+            )
+            return
         widget = _build_panel_widget()
         if dock is not None:
-            # Dock exists (e.g. restored shell) but content is missing: rebuild.
+            # Replace incomplete panel content without replacing the native dock.
             old = dock.widget()
             if old is not None:
                 old.setParent(None)
@@ -3243,6 +3318,9 @@ def _on_workbench_activated(workbench_name: str) -> None:
     def refresh_or_open() -> None:
         dock = _find_dock()
         if dock is not None:
+            context_debug_dock = _find_context_debug_dock()
+            if context_debug_dock is not None:
+                _bind_context_debug_dock(context_debug_dock)
             if _assistant_panel_is_built(dock):
                 _refresh_view_status(dock)
                 _refresh_modeling_engine_selector(dock)
@@ -3258,6 +3336,8 @@ def _on_workbench_activated(workbench_name: str) -> None:
                     refresh_scripted_model_editor()
                 except Exception as exc:
                     _warn(f"VibeCAD scripted editor workbench refresh failed: {exc}")
+            return
+        if _registered_assistant_widget is not None:
             return
         _show_panel()
 
@@ -3409,8 +3489,9 @@ def ensure_preferences_registered() -> None:
 def ensure_commands_registered() -> None:
     global _commands_registered
     ensure_preferences_registered()
+    _ensure_dock_workbench_manipulator()
     _connect_document_observer()
-    _schedule_context_debug_preferences()
+    _apply_startup_context_debug_preferences()
     if _commands_registered:
         _connect_workbench_activation()
         return
@@ -3421,11 +3502,12 @@ def ensure_commands_registered() -> None:
     Gui.addCommand("VibeCAD_OpenScriptedModel", OpenScriptedModelCommand())
     Gui.addCommand("VibeCAD_AuthStatus", AuthStatusCommand())
     try:
-        from PySide import QtCore
-
         from VibeCADScriptedEditor import ensure_scripted_model_editor_registered
 
-        QtCore.QTimer.singleShot(0, ensure_scripted_model_editor_registered)
+        # InitGui runs before startup workbench setup and the one native
+        # MainWindow.loadWindowSettings() pass. Register the real dock now,
+        # matching the lifecycle of FreeCAD's built-in dock widgets.
+        ensure_scripted_model_editor_registered()
     except Exception as exc:
         _warn(f"VibeCAD scripted editor registration failed: {exc}")
     _connect_workbench_activation()

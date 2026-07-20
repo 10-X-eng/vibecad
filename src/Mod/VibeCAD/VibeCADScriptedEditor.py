@@ -26,6 +26,7 @@ PREVIEW_REVISION = "VibeCADPreviewRevision"
 DEBOUNCE_MS = 500
 
 _controller: Any | None = None
+_registered_widget: Any | None = None
 _preview_containers: dict[tuple[str, str], str] = {}
 _hidden_accepted: dict[tuple[str, str], list[str]] = {}
 _save_preview_restore: dict[str, tuple[str, str, str]] = {}
@@ -2272,15 +2273,27 @@ def _register_dock(widget: Any) -> Any:
         raise RuntimeError("FreeCAD DockWindowManager is unavailable.")
     dock = add_dock_window(widget, DOCK_NAME, "right")
     dock.toggleViewAction().setVisible(True)
-    from VibeCADGui import configure_model_code_editor_dock
-
-    configure_model_code_editor_dock(dock)
     return dock
+
+
+def _register_dock_content(widget: Any) -> None:
+    main = Gui.getMainWindow()
+    if main is None:
+        raise RuntimeError("FreeCAD main window is unavailable.")
+    register = getattr(main, "registerDockWindow", None)
+    if not callable(register):
+        raise RuntimeError("FreeCAD DockWindowManager registration is unavailable.")
+    register(widget, DOCK_NAME)
 
 
 def show_scripted_model_editor() -> None:
     global _controller
     dock = _find_dock()
+    if dock is None and _registered_widget is not None:
+        raise RuntimeError(
+            "The Model Code Editor is registered but the active workbench has "
+            "not created its dock window."
+        )
     if dock is None or dock.widget() is None:
         widget = _build_widget()
         if dock is None:
@@ -2299,19 +2312,24 @@ def show_scripted_model_editor() -> None:
 
 
 def ensure_scripted_model_editor_registered() -> Any:
-    """Create the native dock once so View > Panels can always reopen it."""
-    global _controller
+    """Register native dock content once so View > Panels can reopen it."""
+    global _controller, _registered_widget
     try:
         remove_all_previews()
     except Exception as exc:
         _warn(f"Could not remove stale transient previews: {exc}")
     dock = _find_dock()
-    if dock is None or dock.widget() is None:
+    if dock is None:
+        if _registered_widget is None:
+            widget = _build_widget()
+            widget.setMinimumWidth(DOCK_MINIMUM_WIDTH)
+            widget.setMinimumHeight(DOCK_MINIMUM_HEIGHT)
+            _register_dock_content(widget)
+            _registered_widget = widget
+        return _registered_widget
+    if dock.widget() is None:
         widget = _build_widget()
-        if dock is None:
-            dock = _register_dock(widget)
-        else:
-            dock.setWidget(widget)
+        dock.setWidget(widget)
         dock.setMinimumWidth(DOCK_MINIMUM_WIDTH)
         dock.setMinimumHeight(DOCK_MINIMUM_HEIGHT)
         dock.hide()
@@ -2325,7 +2343,7 @@ def ensure_scripted_model_editor_registered() -> Any:
 
 
 def refresh_scripted_model_editor() -> None:
-    global _refresh_retry_pending
+    global _controller, _refresh_retry_pending
     doc = App.ActiveDocument
     if doc is not None and bool(getattr(doc, "Recomputing", False)):
         if not _refresh_retry_pending:
@@ -2350,6 +2368,12 @@ def refresh_scripted_model_editor() -> None:
         )
         restore_openscad_display_modes(doc)
         restore_build123d_display_modes(doc)
+    dock = _find_dock()
+    if dock is not None and (_controller is None or _controller.dock is not dock):
+        _controller = ScriptedEditorController(dock)
+        if dock.isVisible():
+            _controller.activate()
+            return
     if _controller is not None:
         _controller.refresh()
 

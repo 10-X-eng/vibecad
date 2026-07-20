@@ -66,18 +66,17 @@ try:
 
     VibeCADGui.ensure_commands_registered()
 
-    def _open_startup_assistant() -> None:
+    def _register_startup_assistant() -> None:
         try:
             import VibeCADGui as _VibeCADGui
 
-            _VibeCADGui.ensure_commands_registered()
-            _VibeCADGui.show_assistant_for_active_workbench()
+            _VibeCADGui.register_startup_assistant()
         except Exception as exc:
             try:
                 import FreeCAD as _App
 
                 _App.Console.PrintWarning(
-                    f"VibeCAD assistant startup open failed: {exc}\n"
+                    f"VibeCAD assistant startup registration failed: {exc}\n"
                 )
             except Exception:
                 pass
@@ -95,7 +94,9 @@ try:
             except Exception:
                 pass
 
-    QtCore.QTimer.singleShot(0, _open_startup_assistant)
+    # Register content before workbench activation. DockWindowManager creates
+    # and shows the native dock as part of the active workbench lifecycle.
+    _register_startup_assistant()
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
 except Exception as exc:
     _warn(f"VibeCAD GUI bootstrap failed: {exc}")

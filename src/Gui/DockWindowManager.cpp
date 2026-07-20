@@ -529,7 +529,7 @@ void DockWindowManager::setup(DockWindowItems* items)
         if (!dw) {
             QMap<QString, QPointer<QWidget>>::Iterator jt = d->_dockWindows.find(it.name);
             if (jt != d->_dockWindows.end()) {
-                dw = addDockWindow(jt.value()->objectName().toUtf8(), jt.value(), it.pos);
+                dw = addDockWindow(dockName.constData(), jt.value(), it.pos);
                 jt.value()->show();
                 dw->toggleViewAction()->setData(it.name);
                 dw->setVisible(visible);

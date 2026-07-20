@@ -81,6 +81,14 @@ void MainWindowPy::init_type()
         "overlay-mode eligibility, visibility persistence and a "
         "View->Panels entry. Returns the QDockWidget container."
     );
+    add_keyword_method(
+        "registerDockWindow",
+        &MainWindowPy::registerDockWindow,
+        "registerDockWindow(widget, name)\n"
+        "Registers dock content without creating or showing a QDockWidget. "
+        "The active workbench's DockWindowManager setup owns creation, "
+        "visibility and placement."
+    );
     add_varargs_method(
         "removeDockWindow",
         &MainWindowPy::removeDockWindow,
@@ -130,6 +138,7 @@ Py::Object MainWindowPy::createWrapper(MainWindow* mw)
         "addStatusBarItem",
         "removeStatusBarItem",
         "addDockWindow",
+        "registerDockWindow",
         "removeDockWindow",
     };
 
@@ -463,6 +472,56 @@ Py::Object MainWindowPy::addDockWindow(const Py::Tuple& args, const Py::Dict& kw
     dw->show();
 
     return wrap.fromQWidget(dw, "QDockWidget");
+}
+
+Py::Object MainWindowPy::registerDockWindow(const Py::Tuple& args, const Py::Dict& kwds)
+{
+    PyObject* pyWidget {};
+    const char* name {};
+
+    static char* argNames[] = {
+        const_cast<char*>("widget"),
+        const_cast<char*>("name"),
+        nullptr
+    };
+    if (!PyArg_ParseTupleAndKeywords(
+            args.ptr(),
+            kwds.ptr(),
+            "Os",
+            argNames,
+            &pyWidget,
+            &name
+        )) {
+        throw Py::Exception();
+    }
+
+    PythonWrapper wrap;
+    if (!wrap.loadCoreModule() || !wrap.loadGuiModule() || !wrap.loadWidgetsModule()) {
+        throw Py::RuntimeError("registerDockWindow: failed to load Python wrapper for Qt");
+    }
+    QWidget* widget = qobject_cast<QWidget*>(wrap.toQObject(Py::Object(pyWidget)));
+    if (!widget) {
+        throw Py::TypeError("registerDockWindow: first argument must be a QWidget");
+    }
+    if (!_mw) {
+        throw Py::RuntimeError("registerDockWindow: main window is unavailable");
+    }
+
+    DockWindowManager* dwm = DockWindowManager::instance();
+    if (dwm->findRegisteredDockWindow(name)) {
+        throw Py::ValueError("registerDockWindow: a dock window with this name already exists");
+    }
+    widget->setParent(_mw);
+    if (!dwm->registerDockWindow(name, widget)) {
+        widget->setParent(nullptr);
+        throw Py::RuntimeError("registerDockWindow: failed to register the dock content");
+    }
+
+    // Registration reparents the widget in C++, outside PySide's view. Keep
+    // the wrapper owned by MainWindow until DockWindowManager reparents it to
+    // the QDockWidget created during workbench setup.
+    PythonWrapper::setParent(pyWidget, _mw);
+    return Py::None();
 }
 
 Py::Object MainWindowPy::removeDockWindow(const Py::Tuple& args)
