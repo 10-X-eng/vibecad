@@ -23,15 +23,18 @@
 #include <array>
 #include <QAction>
 #include <QApplication>
+#include <QDataStream>
 #include <QDockWidget>
 #include <QMap>
 #include <QMouseEvent>
 #include <QPointer>
+#include <QSet>
 #include <QTimer>
 
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Application.h>
+#include <Base/Console.h>
 #include <Base/Tools.h>
 
 #include "DockWindowManager.h"
@@ -40,6 +43,47 @@
 
 
 using namespace Gui;
+
+namespace
+{
+
+constexpr int maxMaterializedDockProxies = 64;
+
+struct DuplicateDockStateChoice
+{
+    QDockWidget* dock {nullptr};
+    Qt::DockWidgetArea area {Qt::NoDockWidgetArea};
+    QRect geometry;
+    QStringList groupNames;
+    bool visible {false};
+    bool floating {false};
+    int score {-1};
+    int occurrence {-1};
+};
+
+int serializedStringOccurrences(const QByteArray& state, const QString& value)
+{
+    QByteArray token;
+    QDataStream stream(&token, QIODevice::WriteOnly);
+    stream.setVersion(QDataStream::Qt_5_0);
+    stream << value;
+    return static_cast<int>(state.count(token));
+}
+
+bool isDockingArea(Qt::DockWidgetArea area)
+{
+    switch (area) {
+        case Qt::LeftDockWidgetArea:
+        case Qt::RightDockWidgetArea:
+        case Qt::TopDockWidgetArea:
+        case Qt::BottomDockWidgetArea:
+            return true;
+        default:
+            return false;
+    }
+}
+
+}  // namespace
 
 DockWindowItems::DockWindowItems() = default;
 
@@ -198,6 +242,172 @@ DockWindowManager::~DockWindowManager()
     delete d;
 }
 
+bool DockWindowManager::repairDuplicateDockState(QMainWindow* mainWindow, const QByteArray& state)
+{
+    if (!mainWindow || state.isEmpty()) {
+        return false;
+    }
+
+    QMap<QString, QDockWidget*> realDocks;
+    QSet<QString> ambiguousNames;
+    const auto existingDocks = mainWindow->findChildren<QDockWidget*>();
+    for (auto* dock : existingDocks) {
+        const QString name = dock->objectName();
+        if (name.isEmpty()) {
+            continue;
+        }
+        if (realDocks.contains(name)) {
+            ambiguousNames.insert(name);
+        }
+        else {
+            realDocks.insert(name, dock);
+        }
+    }
+    for (const auto& name : ambiguousNames) {
+        realDocks.remove(name);
+    }
+
+    QMap<QString, int> duplicateCounts;
+    int proxyCount = 0;
+    for (auto it = realDocks.cbegin(); it != realDocks.cend(); ++it) {
+        const int occurrences = serializedStringOccurrences(state, it.key());
+        if (occurrences > 1) {
+            proxyCount += occurrences - 1;
+            if (proxyCount > maxMaterializedDockProxies) {
+                Base::Console().warning(
+                    "Skipped duplicate dock layout repair: state requires more than %d "
+                    "temporary docks.\n",
+                    maxMaterializedDockProxies
+                );
+                return false;
+            }
+            duplicateCounts.insert(it.key(), occurrences);
+        }
+    }
+    if (duplicateCounts.isEmpty()) {
+        return false;
+    }
+
+    // Materialize every saved occurrence. QMainWindow otherwise binds the real dock to the
+    // first matching entry and leaves later entries as placeholders, which can hide the user's
+    // actual tab group indefinitely.
+    QMap<QString, QList<QDockWidget*>> instances;
+    QList<QDockWidget*> proxies;
+    for (auto it = duplicateCounts.cbegin(); it != duplicateCounts.cend(); ++it) {
+        QList<QDockWidget*> docks {realDocks.value(it.key())};
+        for (int index = 1; index < it.value(); ++index) {
+            auto* proxy = new QDockWidget(mainWindow);
+            proxy->setObjectName(it.key());
+            docks.push_back(proxy);
+            proxies.push_back(proxy);
+        }
+        instances.insert(it.key(), docks);
+    }
+
+    if (!mainWindow->restoreState(state)) {
+        for (auto* proxy : proxies) {
+            proxy->setObjectName(QString());
+            delete proxy;
+        }
+        return false;
+    }
+
+    QMap<QString, DuplicateDockStateChoice> choices;
+    for (auto it = instances.cbegin(); it != instances.cend(); ++it) {
+        DuplicateDockStateChoice choice;
+        choice.dock = realDocks.value(it.key());
+        const auto& docks = it.value();
+        for (int index = 0; index < docks.size(); ++index) {
+            auto* dock = docks.at(index);
+            QSet<QString> groupNames {it.key()};
+            const auto tabPeers = mainWindow->tabifiedDockWidgets(dock);
+            for (auto* peer : tabPeers) {
+                const QString peerName = peer->objectName();
+                if (realDocks.contains(peerName)) {
+                    groupNames.insert(peerName);
+                }
+            }
+
+            const int score = groupNames.size() - 1;
+            // Prefer the occurrence carrying the richest real tab group. For ungrouped
+            // duplicates, retain the first occurrence that Qt previously displayed.
+            if (score < choice.score
+                || (score == choice.score && (score == 0 || index < choice.occurrence))) {
+                continue;
+            }
+
+            choice.area = mainWindow->dockWidgetArea(dock);
+            choice.geometry = dock->geometry();
+            choice.groupNames = groupNames.values();
+            choice.groupNames.sort();
+            choice.visible = !dock->isHidden();
+            choice.floating = dock->isFloating();
+            choice.score = score;
+            choice.occurrence = index;
+        }
+        choices.insert(it.key(), choice);
+    }
+
+    // Destroy the materialized copies, then consume the temporary placeholders Qt creates
+    // during QDockWidget destruction. The final anonymous placeholder is intentionally skipped
+    // by QMainWindow::restoreState and disappears on the next serialization.
+    QStringList recoveryNames;
+    int recoveryIndex = 0;
+    for (auto* proxy : proxies) {
+        const QString recoveryName
+            = QStringLiteral("__FreeCADDockStateRecovery_%1").arg(recoveryIndex++);
+        recoveryNames.push_back(recoveryName);
+        proxy->setObjectName(recoveryName);
+        delete proxy;
+    }
+    for (const auto& recoveryName : recoveryNames) {
+        auto* cleanup = new QDockWidget(mainWindow);
+        cleanup->setObjectName(recoveryName);
+        mainWindow->addDockWidget(Qt::RightDockWidgetArea, cleanup);
+        cleanup->setObjectName(QString());
+        delete cleanup;
+    }
+
+    QMap<QString, QStringList> tabGroups;
+    for (auto it = choices.cbegin(); it != choices.cend(); ++it) {
+        const auto& choice = it.value();
+        if (!choice.dock) {
+            continue;
+        }
+        if (isDockingArea(choice.area)) {
+            mainWindow->addDockWidget(choice.area, choice.dock);
+        }
+        if (choice.floating) {
+            choice.dock->setFloating(true);
+            choice.dock->setGeometry(choice.geometry);
+        }
+        choice.dock->setVisible(choice.visible);
+
+        if (choice.score > 0) {
+            tabGroups.insert(choice.groupNames.join(QChar(0x1f)), choice.groupNames);
+        }
+    }
+
+    for (const auto& groupNames : tabGroups) {
+        QList<QDockWidget*> group;
+        for (const auto& name : groupNames) {
+            if (auto* dock = realDocks.value(name)) {
+                group.push_back(dock);
+            }
+        }
+        if (group.size() < 2) {
+            continue;
+        }
+        for (int index = 1; index < group.size(); ++index) {
+            mainWindow->tabifyDockWidget(group.front(), group.at(index));
+        }
+    }
+
+    const QByteArray repairedNames = duplicateCounts.keys().join(QStringLiteral(", ")).toUtf8();
+    Base::Console().warning("Repaired duplicate dock layout state for: %s\n", repairedNames.constData());
+    return true;
+}
+
 bool DockWindowManager::isOverlayActivated() const
 {
     return (d->overlayManager != nullptr);
@@ -261,6 +471,9 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
     // creates the dock widget as container to embed this widget
     MainWindow* mw = getMainWindow();
     dw = new QDockWidget(mw);
+    // QMainWindow identifies saved dock layout entries by objectName. Set it before
+    // asking Qt to restore a dock that was created after MainWindow::restoreState().
+    dw->setObjectName(QString::fromUtf8(name));
 
     if (d->overlayManager) {
         d->overlayManager->setupTitleBar(dw);
@@ -270,15 +483,6 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
     // menu. First, hide immediately the dock widget to avoid flickering, after setting up the dock
     // widgets MainWindow::loadLayoutSettings() is called to restore the layout.
     dw->hide();
-    switch (pos) {
-        case Qt::LeftDockWidgetArea:
-        case Qt::RightDockWidgetArea:
-        case Qt::TopDockWidgetArea:
-        case Qt::BottomDockWidgetArea:
-            mw->addDockWidget(pos, dw);
-        default:
-            break;
-    }
     connect(dw, &QObject::destroyed, this, &DockWindowManager::onDockWidgetDestroyed);
     connect(widget, &QObject::destroyed, this, &DockWindowManager::onWidgetDestroyed);
 
@@ -286,13 +490,27 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
     widget->setParent(dw);
     dw->setWidget(widget);
 
-    // set object name and window title needed for i18n stuff
-    dw->setObjectName(QString::fromUtf8(name));
+    // set window title needed for i18n stuff
     dw->setWindowTitle(widget->windowTitle());
     dw->setFeatures(
         QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
         | QDockWidget::DockWidgetFloatable
     );
+
+    // loadWindowSettings() can restore the main-window state before a workbench creates its
+    // docks. Qt retains placeholders for those late-created docks; restoreDockWidget() must be
+    // called before addDockWidget() so Qt consumes the saved entry instead of creating another.
+    if (!mw->restoreDockWidget(dw)) {
+        switch (pos) {
+            case Qt::LeftDockWidgetArea:
+            case Qt::RightDockWidgetArea:
+            case Qt::TopDockWidgetArea:
+            case Qt::BottomDockWidgetArea:
+                mw->addDockWidget(pos, dw);
+            default:
+                break;
+        }
+    }
 
     d->_dockedWindows.push_back(dw);
 

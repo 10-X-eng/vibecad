@@ -26,7 +26,9 @@
 #include <Base/Bitmask.h>
 #include <FCGlobal.h>
 
+class QByteArray;
 class QDockWidget;
+class QMainWindow;
 class QWidget;
 
 namespace Gui
@@ -115,6 +117,12 @@ public:
     void retranslate();
 
     bool isOverlayActivated() const;
+
+    /**
+     * Repair duplicate dock records left in a QMainWindow state by late-created docks.
+     * \internal
+     */
+    static bool repairDuplicateDockState(QMainWindow* mainWindow, const QByteArray& state);
 
 private Q_SLOTS:
     /**

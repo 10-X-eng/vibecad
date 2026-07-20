@@ -292,6 +292,29 @@ def test_python_dock_registration_defers_creation_to_workbench_setup() -> None:
     assert "addDockWindow(dockName.constData(), jt.value(), it.pos)" in manager
 
 
+def test_native_late_docks_consume_saved_entry_before_default_placement() -> None:
+    source = _source("src/Gui/DockWindowManager.cpp")
+    addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[1].split(
+        "QWidget* DockWindowManager::getDockWindow", 1
+    )[0]
+
+    assert addition.index("dw->setObjectName") < addition.index("mw->restoreDockWidget(dw)")
+    assert addition.index("mw->restoreDockWidget(dw)") < addition.index(
+        "mw->addDockWidget(pos, dw)"
+    )
+
+
+def test_corrupt_duplicate_dock_state_is_repaired_after_startup() -> None:
+    source = _source("src/Gui/MainWindow.cpp")
+    load = source.split("void MainWindow::loadWindowSettings()", 1)[1].split(
+        "bool MainWindow::isRestoringWindowState()", 1
+    )[0]
+
+    assert "QTimer::singleShot(0" in load
+    assert "DockWindowManager::repairDuplicateDockState(this, duplicateRepairState)" in load
+    assert 'SetASCII("MainWindowState", saveState().toBase64().constData())' in load
+
+
 def test_windows_bundle_creates_branded_executable() -> None:
     bundle_script = _source("package/rattler-build/windows/create_bundle.sh")
     main_cmake = _source("src/Main/CMakeLists.txt")
