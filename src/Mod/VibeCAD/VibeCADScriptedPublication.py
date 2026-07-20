@@ -180,28 +180,6 @@ def model_publications(root: Any) -> dict[str, Any]:
     return result
 
 
-def legacy_grouped_publications(root: Any) -> dict[str, Any]:
-    """Find the pre-global-publication layout for one explicit migration."""
-
-    result: dict[str, Any] = {}
-    for child in list(getattr(root, "Group", []) or []):
-        if not is_publication(child):
-            continue
-        key = str(getattr(child, PROP_OUTPUT_KEY, "") or "")
-        if not key:
-            raise PublicationError(
-                "A legacy grouped publication has no output key.",
-                details={"model_root": root.Name, "published_object": child.Name},
-            )
-        if key in result:
-            raise PublicationError(
-                f"Multiple legacy publications claim output key {key!r}.",
-                details={"objects": [result[key].Name, child.Name]},
-            )
-        result[key] = child
-    return result
-
-
 def model_implementations(root: Any) -> list[Any]:
     return [
         child

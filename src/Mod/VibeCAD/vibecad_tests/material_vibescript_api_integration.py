@@ -212,7 +212,7 @@ def _assert_exact_api() -> None:
     assert api.exported_names == ("material", "assign", "appearance")
     assert str(inspect.signature(api.material)) == (
         "(material_uuid: 'str', *, require_physical_properties: 'Sequence[str]' = (), "
-        "require_appearance_properties: 'Sequence[str]' = (), label: 'str' = '') -> 'DomainValue'"
+        "require_appearance_properties: 'Sequence[str]' = ()) -> 'DomainValue'"
     )
     assert str(inspect.signature(api.assign)) == (
         "(target: 'Mapping[str, str]', card: 'DomainValue', *, label: 'str' = '') -> 'DomainValue'"
@@ -343,7 +343,7 @@ def main() -> int:
         }
         source = (
             "card = api.material(inputs['material_uuid'], "
-            "require_physical_properties=['Density'], label='Structural card')\n"
+            "require_physical_properties=['Density'])\n"
             "physical = api.assign(inputs['target'], card, label='Chassis physical')\n"
             "axle = api.assign(inputs['physical_only_target'], card, label='Axle physical')\n"
             "display = api.appearance(inputs['target'], card, "

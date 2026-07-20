@@ -31,7 +31,6 @@ _OUTPUT_TYPES = (
     "mesh",
     "result",
 )
-_ANALYSIS_TYPES = ("static", "frequency", "thermomech", "check", "buckling")
 _MATRIX_SOLVERS = (
     "default",
     "pastix",
@@ -472,7 +471,6 @@ class FEMDomainAPI:
     def solver(
         self,
         *,
-        analysis_type: str = "static",
         matrix_solver: str = "default",
         geometrical_nonlinearity: bool = False,
         material_nonlinearity: bool = False,
@@ -484,9 +482,7 @@ class FEMDomainAPI:
         return self._value(
             "solver",
             "solver",
-            analysis_type=_choice(
-                "solver", "analysis_type", analysis_type, _ANALYSIS_TYPES
-            ),
+            analysis_type="static",
             matrix_solver=_choice(
                 "solver", "matrix_solver", matrix_solver, _MATRIX_SOLVERS
             ),

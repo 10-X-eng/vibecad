@@ -822,26 +822,6 @@ class PartDomainAPI:
             representation=clean_representation,
         )
 
-    def long_helix(
-        self,
-        pitch: float,
-        height: float,
-        radius: float,
-        *,
-        angle: float = 0.0,
-        left_handed: bool = False,
-    ) -> DomainValue:
-        """Compatibility wrapper for ``helix(..., representation='segmented')``."""
-
-        return self.helix(
-            pitch,
-            height,
-            radius,
-            angle=angle,
-            left_handed=left_handed,
-            representation="segmented",
-        )
-
     def wire(
         self,
         items: Sequence[Any],
@@ -1611,46 +1591,6 @@ class PartDomainAPI:
                 nonzero=clean_mode == "parallel",
             ),
             mode=clean_mode,
-            label=label,
-        )
-
-    def project_parallel(
-        self,
-        target: DomainValue,
-        profile: DomainValue,
-        direction: Sequence[float],
-        *,
-        output_type: str = "wire",
-        label: str = "",
-    ) -> DomainValue:
-        """Compatibility wrapper for ``project(..., mode='parallel')``."""
-
-        return self.project(
-            target,
-            profile,
-            direction,
-            mode="parallel",
-            output_type=output_type,
-            label=label,
-        )
-
-    def project_perspective(
-        self,
-        target: DomainValue,
-        profile: DomainValue,
-        viewpoint: Sequence[float],
-        *,
-        output_type: str = "wire",
-        label: str = "",
-    ) -> DomainValue:
-        """Compatibility wrapper for ``project(..., mode='perspective')``."""
-
-        return self.project(
-            target,
-            profile,
-            viewpoint,
-            mode="perspective",
-            output_type=output_type,
             label=label,
         )
 

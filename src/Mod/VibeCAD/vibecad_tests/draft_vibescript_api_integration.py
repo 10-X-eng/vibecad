@@ -35,7 +35,7 @@ from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     DraftDomainAdapter,
     _validate_draft_execution,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -429,56 +429,6 @@ def _exercise_isolated_native_objects(root: Path) -> None:
         App.closeDocument(document.Name)
 
 
-def _exercise_legacy_payload_compatibility(root: Path) -> None:
-    """Prove pre-extension Draft v1 graph payloads retain native defaults."""
-
-    import FreeCAD as App
-
-    api = _api()
-    rectangle = api.rectangle(5, 3, make_face=True)
-    rectangle_payload = rectangle.to_payload()
-    for name in ("fillet_radius", "chamfer_size"):
-        rectangle_payload["properties"].pop(name)
-    array_payload = api.array(rectangle).to_payload()
-    for name in (
-        "interval_axis",
-        "radial_distance",
-        "tangential_distance",
-        "number_circles",
-        "symmetry",
-    ):
-        array_payload["properties"].pop(name)
-    array_payload["arguments"][0] = copy.deepcopy(rectangle_payload)
-
-    output_root = root / "legacy-worker"
-    (output_root / "outputs").mkdir(parents=True)
-    configure_draft_references(output_root, [])
-    document = App.newDocument("DraftLegacyWorker", "Draft Legacy Worker", True, True)
-    try:
-        outputs, validation = validate_and_build_draft(
-            document,
-            {
-                "LegacyRectangle": rectangle_payload,
-                "LegacyArray": array_payload,
-            },
-            [
-                {"name": "LegacyRectangle", "type": "rectangle"},
-                {"name": "LegacyArray", "type": "array"},
-            ],
-            output_root,
-            max_shape_subelements=16,
-        )
-        by_name = {item["name"]: item for item in outputs}
-        assert validation["native_object_count"] == 2
-        assert by_name["LegacyRectangle"]["draft_data"]["fillet_radius"] == 0.0
-        assert by_name["LegacyRectangle"]["draft_data"]["chamfer_size"] == 0.0
-        assert by_name["LegacyArray"]["draft_data"]["interval_axis"] == [0.0, 0.0, 0.0]
-        assert by_name["LegacyArray"]["draft_data"]["number_circles"] == 3
-        assert by_name["LegacyArray"]["draft_data"]["symmetry"] == 1
-    finally:
-        App.closeDocument(document.Name)
-
-
 class _Service:
     def __init__(self, document, project_root: Path) -> None:
         self.document = document
@@ -605,7 +555,7 @@ def _finalize_prepared(prepared: dict, service: _Service) -> dict:
     if prepared.get("reference_requirements") and not prepared.get("finalized"):
         return finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     return prepared
 
@@ -1051,7 +1001,6 @@ def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="vibecad-draft-production-"))
     try:
         _exercise_isolated_native_objects(root)
-        _exercise_legacy_payload_compatibility(root)
         _exercise_lifecycle(root)
     finally:
         shutil.rmtree(root)

@@ -461,22 +461,18 @@ def _reference_graph(
     roots: dict[str, Any] = {}
     if model_root is not None:
         root_name = str(getattr(model_root, "Name", "") or "")
-        owned = {
-            id(model_root),
-            *(id(item) for item in list(getattr(model_root, "Group", []) or [])),
-            *(
-                id(item)
-                for item in list(getattr(model_root, "OutListRecursive", []) or [])
-            ),
-        }
-        unowned = [
-            str(getattr(item, "Name", "") or "")
-            for item in publications
-            if id(item) not in owned
-        ]
+        unowned = []
+        for item in publications:
+            try:
+                owner = publication.model_root_for(item)
+                publication.publication_target(item, model_root)
+            except publication.PublicationError:
+                owner = None
+            if owner is not model_root:
+                unowned.append(str(getattr(item, "Name", "") or ""))
         if not root_name or unowned:
             raise ReferenceContractError(
-                "Legacy scripted outputs do not belong to their declared model root.",
+                "Scripted outputs do not belong to their declared model root.",
                 details={"model_root": root_name, "unowned_outputs": unowned},
             )
         roots[root_name] = model_root

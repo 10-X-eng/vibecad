@@ -58,6 +58,7 @@ _DOMAIN_EDITOR_NEW_TYPES = {
     "inspection": "inspection_group",
     "mesh": "mesh",
     "part": "solid",
+    "partdesign": "solid",
     "points": "points",
     "robot": "robot",
     "sketcher": "sketch",
@@ -70,7 +71,21 @@ def _new_domain_program_template(domain: str, label: str) -> tuple[str, str] | N
     output_type = _DOMAIN_EDITOR_NEW_TYPES.get(str(domain or ""))
     if output_type is None:
         return None
-    if domain == "part":
+    if domain == "partdesign":
+        source = (
+            "w = inputs['width']\n"
+            "d = inputs['depth']\n"
+            "h = inputs['height']\n"
+            "bottom = api.line([0, 0], [w, 0], name='Bottom')\n"
+            "right = api.line([w, 0], [w, d], name='Right')\n"
+            "top = api.line([w, d], [0, d], name='Top')\n"
+            "left = api.line([0, d], [0, 0], name='Left')\n"
+            "profile = api.sketch([bottom, right, top, left], "
+            "require_closed_profile=True, label='Base Profile')\n"
+            "feature = api.pad(profile, h, label='Base Pad')\n"
+            f"result = {{'Result': api.body(feature, label={label!r})}}\n"
+        )
+    elif domain == "part":
         source = "result = {'Result': api.box(10, 10, 10)}\n"
     elif domain == "assembly":
         source = f"result = {{'Result': api.assembly(label={label!r})}}\n"
@@ -98,16 +113,14 @@ def _engine_api(engine: str):
         import VibeCADOpenSCAD as api
 
         return api
-    if engine == "vibescript":
-        import VibeCADVibeScript as api
-
-        return api
     raise RuntimeError(
-        "Select build123d, OpenSCAD, or VibeScript in the PartDesign engine selector."
+        "The selected scripted engine has no direct editor runtime."
     )
 
 
 def _model_source_path(engine: str, model: dict[str, Any]) -> Path | None:
+    if engine == "vibescript":
+        return None
     directory = str(model.get("artifact_directory") or "").strip()
     if not directory:
         return None
@@ -137,7 +150,6 @@ def _accepted_objects(doc: Any, engine: str, model_id: str) -> list[Any]:
     property_name = {
         "build123d": "VibeCADBuild123dModelId",
         "openscad": "VibeCADOpenSCADModelId",
-        "vibescript": "VibeCADVibeScriptModelId",
     }[engine]
     return [
         obj
@@ -1179,41 +1191,27 @@ class ScriptedEditorController:
 
         service = get_service()
         active_domain = self.domain
-        if active_domain == "partdesign":
-            snapshot = service.vibescript_context_snapshot()
-        else:
-            import VibeCADVibeScriptDomains as domain_contracts
+        import VibeCADVibeScriptDomains as domain_contracts
 
-            snapshot = domain_contracts.domain_context_snapshot(service, active_domain)
+        snapshot = domain_contracts.domain_context_snapshot(service, active_domain)
         self.generation += 1
         generation = self.generation
         self.status.setText("Loading VibeScript models...")
 
         def work():
             try:
-                if active_domain == "partdesign":
-                    completed = service.complete_vibescript_context(snapshot)
-                    models = list(completed.get("models") or [])
-                    event_kind = "vibescript_model_list"
-                else:
-                    import VibeCADVibeScriptDomains as domain_contracts
-
-                    completed = domain_contracts.complete_domain_context(snapshot)
-                    models = [
-                        {
-                            **item,
-                            "model_id": str(item.get("program_id") or ""),
-                        }
-                        for item in list(completed.get("programs") or [])
-                    ]
-                    event_kind = "vibescript_domain_program_list"
+                completed = domain_contracts.complete_domain_context(snapshot)
+                models = [
+                    {
+                        **item,
+                        "model_id": str(item.get("program_id") or ""),
+                    }
+                    for item in list(completed.get("programs") or [])
+                ]
+                event_kind = "vibescript_domain_program_list"
                 result = {"ok": True, "models": models}
             except Exception as exc:
-                event_kind = (
-                    "vibescript_model_list"
-                    if active_domain == "partdesign"
-                    else "vibescript_domain_program_list"
-                )
+                event_kind = "vibescript_domain_program_list"
                 result = {
                     "ok": False,
                     "error": str(exc),
@@ -1438,61 +1436,48 @@ class ScriptedEditorController:
         self._update_actions()
 
     def _start_vibescript_model_inspection(self, model_id: str) -> None:
-        """Inspect VibeScript artifacts and legacy geometry away from the GUI."""
+        """Inspect one VibeScript program away from the GUI thread."""
 
         active_domain = self.domain
-        if active_domain == "partdesign":
-            import VibeCADVibeScript as vibescript
+        from VibeCADVibeScriptDomainRuntime import capture_inspection_state
 
-            try:
-                captured = vibescript.capture_model_inspection(get_service(), model_id)
-            except vibescript.VibeScriptFailure as exc:
-                self._show_failure(exc.payload)
-                return
-        else:
-            from VibeCADVibeScriptDomainRuntime import capture_inspection_state
-
-            try:
-                captured = capture_inspection_state(
-                    get_service(),
-                    f"vibescript.{active_domain}.inspect_program",
-                    model_id,
-                )
-            except Exception as exc:
-                payload = getattr(exc, "payload", None)
-                self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-                return
+        try:
+            captured = capture_inspection_state(
+                get_service(),
+                f"vibescript.{active_domain}.inspect_program",
+                model_id,
+            )
+        except Exception as exc:
+            payload = getattr(exc, "payload", None)
+            self._show_failure(
+                payload if isinstance(payload, dict) else {"error": str(exc)}
+            )
+            return
         self.generation += 1
         generation = self.generation
         self.status.setText("Loading VibeScript source and model metadata...")
 
         def work():
             try:
-                if active_domain == "partdesign":
-                    result = vibescript.complete_model_inspection(captured)
-                    event_kind = "vibescript_model_inspection"
-                else:
-                    from VibeCADVibeScriptDomainRuntime import complete_inspection
+                from VibeCADVibeScriptDomainRuntime import complete_inspection
 
-                    result = complete_inspection(captured)
-                    if result.get("ok") is True:
-                        program = dict(result.get("program") or {})
-                        result = {
-                            "ok": True,
-                            "model": {
-                                **program,
-                                "model_id": str(program.get("program_id") or ""),
-                                "parameters": dict(program.get("inputs") or {}),
-                                "latest_attempt": dict(program.get("latest_candidate") or {}),
-                            },
-                        }
-                    event_kind = "vibescript_domain_program_inspection"
+                result = complete_inspection(captured)
+                if result.get("ok") is True:
+                    program = dict(result.get("program") or {})
+                    result = {
+                        "ok": True,
+                        "model": {
+                            **program,
+                            "model_id": str(program.get("program_id") or ""),
+                            "parameters": dict(program.get("inputs") or {}),
+                            "latest_attempt": dict(
+                                program.get("latest_candidate") or {}
+                            ),
+                        },
+                    }
+                event_kind = "vibescript_domain_program_inspection"
             except Exception as exc:
-                event_kind = (
-                    "vibescript_model_inspection"
-                    if active_domain == "partdesign"
-                    else "vibescript_domain_program_inspection"
-                )
+                event_kind = "vibescript_domain_program_inspection"
                 result = {
                     "ok": False,
                     "error": str(exc),
@@ -1538,38 +1523,21 @@ class ScriptedEditorController:
         parameters = self._parse_parameters()
         if parameters is None:
             return
-        api = _engine_api(self.engine)
         self.source_files[self.current_source_file] = self.source.toPlainText()
         if self.engine == "vibescript":
-            if self.domain != "partdesign":
-                self._start_vibescript_operation(
-                    f"vibescript.{self.domain}.reconfigure_program",
-                    {
-                        "program_id": self.model_id,
-                        "expected_revision": self.working_revision,
-                        "source": self.source_files.get("model.py", self.source.toPlainText()),
-                        "input_schema": dict(self.model.get("input_schema") or {}),
-                        "inputs": parameters,
-                        "expected_outputs": list(self.model.get("expected_outputs") or []),
-                    },
-                )
-                return
-            expected_outputs = list(self.model.get("expected_outputs") or [])
-            if not expected_outputs:
-                expected_outputs = list((self.model.get("outputs") or {}).keys())
             self._start_vibescript_operation(
-                "vibescript.editor_rebuild",
+                f"vibescript.{self.domain}.reconfigure_program",
                 {
-                    "model_id": self.model_id,
+                    "program_id": self.model_id,
                     "expected_revision": self.working_revision,
-                    "source": self.source_files.get(
-                        "model.py", self.source.toPlainText()
-                    ),
-                    "parameters": parameters,
-                    "expected_outputs": expected_outputs,
+                    "source": self.source_files.get("model.py", self.source.toPlainText()),
+                    "input_schema": dict(self.model.get("input_schema") or {}),
+                    "inputs": parameters,
+                    "expected_outputs": list(self.model.get("expected_outputs") or []),
                 },
             )
             return
+        api = _engine_api(self.engine)
         try:
             if self.engine == "openscad":
                 source_stage = api.stage_editor_files(
@@ -1706,8 +1674,6 @@ class ScriptedEditorController:
                 )
             return
         if event_kind in {
-            "vibescript_model_list",
-            "vibescript_model_inspection",
             "vibescript_domain_program_list",
             "vibescript_domain_program_inspection",
             "vibescript_revert",
@@ -1727,18 +1693,12 @@ class ScriptedEditorController:
                     else {"error": "VibeScript returned no structured result."}
                 )
                 return
-            if event_kind in {
-                "vibescript_model_list",
-                "vibescript_domain_program_list",
-            }:
+            if event_kind == "vibescript_domain_program_list":
                 self._apply_model_list(
                     list(result.get("models") or []),
                     str(event.get("preferred_model_id") or ""),
                 )
-            elif event_kind in {
-                "vibescript_model_inspection",
-                "vibescript_domain_program_inspection",
-            }:
+            elif event_kind == "vibescript_domain_program_inspection":
                 self._apply_loaded_model(str(event.get("model_id") or ""), result)
             else:
                 self.status.setText(
@@ -1885,7 +1845,7 @@ class ScriptedEditorController:
         self.generation += 1
         self.timer.stop()
         self._clear_source_watch()
-        if self.engine == "vibescript" and self.domain != "partdesign":
+        if self.engine == "vibescript":
             accepted = self.model.get("accepted_contract")
             if not isinstance(accepted, dict):
                 self.status.setText("This program has no accepted revision to restore.")
@@ -1904,43 +1864,6 @@ class ScriptedEditorController:
             )
             return
         api = _engine_api(self.engine)
-        if self.engine == "vibescript":
-            project_root = str(
-                get_service().project_scope_snapshot().get("root") or ""
-            ).strip()
-            generation = self.generation
-            model_id = self.model_id
-            self.status.setText("Restoring accepted VibeScript source...")
-
-            def work():
-                try:
-                    result = api.revert_artifact_to_accepted(project_root, model_id)
-                except Exception as exc:
-                    payload = getattr(exc, "payload", None)
-                    result = (
-                        payload
-                        if isinstance(payload, dict)
-                        else {
-                            "ok": False,
-                            "error": str(exc),
-                            "exception_type": type(exc).__name__,
-                        }
-                    )
-                self.root._vibecad_bridge.completed.emit(
-                    {
-                        "event_kind": "vibescript_revert",
-                        "engine": "vibescript",
-                        "generation": generation,
-                        "result": result,
-                    }
-                )
-
-            threading.Thread(
-                target=work,
-                name="VibeCAD VibeScript source revert",
-                daemon=True,
-            ).start()
-            return
         try:
             result = api.revert_working_to_accepted(get_service(), self.model_id)
         except Exception as exc:
@@ -1974,10 +1897,7 @@ class ScriptedEditorController:
             _dispatch_to_document_thread,
             _ensure_document_thread_invoker,
         )
-        from VibeCADSession import (
-            run_domain_vibescript_operation,
-            run_scripted_engine_operation,
-        )
+        from VibeCADSession import run_domain_vibescript_operation
 
         _ensure_document_thread_invoker()
         self.generation += 1
@@ -1987,12 +1907,7 @@ class ScriptedEditorController:
         self.button("VibeScriptedRender").setEnabled(False)
 
         def work():
-            runner = (
-                run_scripted_engine_operation
-                if self.domain == "partdesign"
-                else run_domain_vibescript_operation
-            )
-            result = runner(
+            result = run_domain_vibescript_operation(
                 get_service(),
                 tool_name,
                 arguments,
@@ -2034,58 +1949,47 @@ class ScriptedEditorController:
                 "conversion_mode": self._conversion_mode(),
             }
         elif self.engine == "vibescript":
-            if self.domain != "partdesign":
-                import VibeCADVibeScriptDomains as domain_contracts
+            import VibeCADVibeScriptDomains as domain_contracts
 
-                pack = domain_contracts.get_vibescript_pack(get_service().active_workbench_name())
-                if pack is None:
-                    self.status.setText("No active VibeScript domain is available.")
-                    return
-                template = _new_domain_program_template(self.domain, name.strip())
-                if template is None:
-                    self.status.setText(
-                        f"Create {pack.title} programs through its domain tools; "
-                        "the editor has no safe empty template for this output type."
-                    )
-                    return
-                source, output_type = template
-                output_name = "Result"
-                arguments = {
-                    "program_name": name.strip(),
-                    "source": source,
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                    "inputs": {},
-                    "expected_outputs": [{"name": output_name, "type": output_type}],
-                }
-                self._start_vibescript_operation(
-                    f"vibescript.{self.domain}.create_program", arguments
+            pack = domain_contracts.get_vibescript_pack(
+                get_service().active_workbench_name()
+            )
+            if pack is None:
+                self.status.setText("No active VibeScript domain is available.")
+                return
+            template = _new_domain_program_template(self.domain, name.strip())
+            if template is None:
+                self.status.setText(
+                    f"Create {pack.title} programs through its domain tools; "
+                    "the editor has no safe empty template for this output type."
                 )
                 return
-            source = (
-                "from vibescript_api import SketchBuilder, assert_fully_constrained, pad\n\n"
-                "width = params['width']\n"
-                "depth = params['depth']\n"
-                "height = params['height']\n\n"
-                "body = doc.addObject('PartDesign::Body', 'Body')\n"
-                "sketch = body.newObject('Sketcher::SketchObject', 'BaseProfile')\n"
-                "builder = SketchBuilder()\n"
-                "builder.rectangle(width, depth, width_name='width', height_name='depth')\n"
-                "builder.apply(sketch)\n"
-                "assert_fully_constrained(sketch)\n"
-                "pad(body, sketch, height, name='BasePad')\n"
-                "doc.recompute()\n"
-                "result = {'Part': body}\n"
-            )
+            source, output_type = template
+            if self.domain == "partdesign":
+                properties = {
+                    key: {"type": "number", "exclusiveMinimum": 0}
+                    for key in ("width", "depth", "height")
+                }
+                inputs = {"width": 40.0, "depth": 30.0, "height": 12.0}
+            else:
+                properties = {}
+                inputs = {}
             arguments = {
-                "model_name": name.strip(),
+                "program_name": name.strip(),
                 "source": source,
-                "parameters": {"width": 40.0, "depth": 30.0, "height": 12.0},
-                "expected_outputs": ["Part"],
+                "input_schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": list(properties),
+                    "additionalProperties": False,
+                },
+                "inputs": inputs,
+                "expected_outputs": [{"name": "Result", "type": output_type}],
             }
+            self._start_vibescript_operation(
+                f"vibescript.{self.domain}.create_program", arguments
+            )
+            return
         else:
             source = (
                 "from build123d import Box\n\n"
@@ -2101,9 +2005,6 @@ class ScriptedEditorController:
                 "input_objects": {},
                 "expected_outputs": ["Part"],
             }
-        if self.engine == "vibescript":
-            self._start_vibescript_operation("vibescript.create_model", arguments)
-            return
         try:
             prepared = _engine_api(self.engine).prepare_execution(
                 get_service(), f"{self.engine}.create_model", arguments
@@ -2324,7 +2225,6 @@ class ScriptedEditorController:
         )
         new_supported = (
             self.engine != "vibescript"
-            or self.domain == "partdesign"
             or self.domain in _DOMAIN_EDITOR_NEW_TYPES
         )
         self.button("VibeScriptedNew").setEnabled(scripted and new_supported)
@@ -2343,7 +2243,7 @@ class ScriptedEditorController:
                 scripted
                 and self.model_id
                 and self.accepted_revision
-                and not (self.engine == "vibescript" and self.domain != "partdesign")
+                and self.engine != "vibescript"
             )
         )
         self.button("VibeScriptedPointArtifactAdd").setEnabled(
@@ -2448,13 +2348,8 @@ def refresh_scripted_model_editor() -> None:
         from VibeCADOpenSCAD import (
             restore_output_display_modes as restore_openscad_display_modes,
         )
-        from VibeCADVibeScript import (
-            restore_output_display_modes as restore_vibescript_display_modes,
-        )
-
         restore_openscad_display_modes(doc)
         restore_build123d_display_modes(doc)
-        restore_vibescript_display_modes(doc)
     if _controller is not None:
         _controller.refresh()
 

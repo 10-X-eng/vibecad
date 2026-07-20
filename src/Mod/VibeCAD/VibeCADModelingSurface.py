@@ -24,10 +24,46 @@ CORE_CONVERSATION_VIEW_TOOLS = frozenset(
     {
         "conversation.ask_user",
         "conversation.review_design",
+        "core.inspect",
         "core.capture_view_screenshot",
         "core.set_view",
     }
 )
+
+# Domain-specific read entry points stay available to the application, but are
+# not duplicated in provider declarations. ``core.inspect`` is the one
+# model-facing read interface and remains bound to the resolved
+# workbench/engine tuple.
+HIDDEN_PROVIDER_INSPECTION_TOOLS = frozenset(
+    {
+        "assembly.list_structure",
+        "bim.list_structure",
+        "build123d.inspect_model",
+        "cam.list_jobs",
+        "draft.list_objects",
+        "fem.list_analysis",
+        "inspection.list_features",
+        "material.list_materials",
+        "mesh.list_meshes",
+        "openscad.inspect_model",
+        "points.list_clouds",
+        "robot.list_setup",
+        "spreadsheet.read_sheet",
+        "techdraw.list_pages",
+    }
+)
+
+
+def _provider_cad_tool_names(names: Iterable[str]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            str(name)
+            for name in names
+            if str(name) not in HIDDEN_PROVIDER_INSPECTION_TOOLS
+            and not str(name).endswith(".describe_api")
+            and not str(name).endswith(".inspect_program")
+        )
+    )
 
 PARTDESIGN_BUILD123D_TOOLS = frozenset(
     {
@@ -162,7 +198,7 @@ def resolve_modeling_surface(
         )
 
     if clean_engine == "native":
-        cad_names = tuple(dict.fromkeys(native_pack.tool_names))
+        cad_names = _provider_cad_tool_names(native_pack.tool_names)
         if not cad_names:
             return _unavailable(
                 clean_workbench,
@@ -178,7 +214,7 @@ def resolve_modeling_surface(
                 workbench=clean_workbench,
                 engine=clean_engine,
                 domain=native_pack.domain,
-                generation="native-v2",
+                generation="native-v3-unified-inspect",
             ),
             core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
             cad_tool_names=cad_names,
@@ -210,12 +246,10 @@ def resolve_modeling_surface(
                 workbench=clean_workbench,
                 engine=clean_engine,
                 domain=vibescript_pack.domain,
-                generation=(
-                    "partdesign-golden-v1" if vibescript_pack.legacy_partdesign else "domain-v2"
-                ),
+                generation="domain-v4-unified-lifecycle",
             ),
             core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
-            cad_tool_names=vibescript_pack.tool_names,
+            cad_tool_names=_provider_cad_tool_names(vibescript_pack.tool_names),
             available=True,
             unavailable_reason="",
         )
@@ -237,10 +271,10 @@ def resolve_modeling_surface(
             workbench=clean_workbench,
             engine=clean_engine,
             domain="partdesign",
-            generation=f"{clean_engine}-v1",
+            generation=f"{clean_engine}-v2-unified-inspect",
         ),
         core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
-        cad_tool_names=tuple(
+        cad_tool_names=_provider_cad_tool_names(
             name for name in sorted(tools) if name not in CORE_CONVERSATION_VIEW_TOOLS
         ),
         available=True,
@@ -250,8 +284,6 @@ def resolve_modeling_surface(
 
 def engine_from_service(service: Any) -> str:
     getter = getattr(service, "modeling_engine", None)
-    if not callable(getter):
-        getter = getattr(service, "partdesign_engine", None)
     if not callable(getter):
         raise RuntimeError("VibeCAD service has no modeling-engine accessor.")
     engine = str(getter() or "").strip().lower()
@@ -266,19 +298,14 @@ def resolve_service_surface(service: Any, workbench: str | None) -> ModelingSurf
 
 def _vibescript_domains(names: Iterable[str]) -> set[str]:
     result: set[str] = set()
-    legacy = False
     for name in names:
         parts = str(name).split(".")
         if not parts or parts[0] != "vibescript":
             continue
-        if len(parts) == 2:
-            legacy = True
-        elif len(parts) == 3:
+        if len(parts) == 3:
             result.add(parts[1])
         else:
             result.add("<malformed>")
-    if legacy:
-        result.add("partdesign")
     return result
 
 
@@ -312,10 +339,15 @@ def validate_surface_names(
     expects_engine_tools = (
         any(name.startswith(f"{engine}.") for name in allowed) if allowed is not None else True
     )
+    non_core_names = [
+        name
+        for name in clean_names
+        if name.partition(".")[0] not in {"conversation", "core"}
+    ]
     if engine in {"vibescript", "build123d", "openscad"}:
         if scripted and scripted != {engine}:
             raise ValueError(f"The {engine} surface declaration does not match its tool schemas.")
-        if expects_engine_tools and scripted != {engine}:
+        if expects_engine_tools and non_core_names and scripted != {engine}:
             raise ValueError(f"The {engine} surface declaration does not match its tool schemas.")
     if engine == "vibescript" and scripted:
         native_cad = [

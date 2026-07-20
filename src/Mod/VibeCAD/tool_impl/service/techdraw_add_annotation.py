@@ -29,7 +29,7 @@ TOOL_SPEC = {
             "page_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the drawing page from techdraw.list_pages."
+                    "Exact internal name of the drawing page from core.inspect scope='domain'."
                 ),
             },
             "text_lines": {
@@ -91,7 +91,7 @@ def run(
     if page is None or getattr(page, "TypeId", "") != "TechDraw::DrawPage":
         return _invalid(
             f"Drawing page not found by exact internal name: {page_name}. "
-            "Call techdraw.list_pages for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
 
     def create() -> dict[str, Any]:

@@ -25,7 +25,7 @@ import Part  # noqa: E402
 from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     execute_candidate,
     finalize_candidate,
     finish_delete,
@@ -214,7 +214,7 @@ def _prepare_execute(
     service: _Service,
 ) -> tuple[dict[str, object], dict[str, object]]:
     prepared = prepare_candidate(captured)
-    snapshots = capture_reference_shapes(service, prepared)
+    snapshots = capture_reference_inputs(service, prepared)
     prepared = finalize_candidate(prepared, snapshots)
     staged_names = {path.name for path in Path(prepared["staging"]).iterdir()}
     assert staged_names == {
@@ -432,7 +432,7 @@ def _exercise_api() -> None:
 def _exercise_lifecycle() -> None:
     surface = resolve_modeling_surface("TechDrawWorkbench", "vibescript")
     assert surface.available, surface.unavailable_reason
-    assert len(surface.tool_names) == 11
+    assert len(surface.tool_names) == 10
     assert not any(name.startswith("native.") for name in surface.tool_names)
     adapter = get_domain_adapter("techdraw")
     assert adapter is not None and adapter.production_ready

@@ -98,14 +98,14 @@ TOOL_SPEC = {
             "page_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the drawing page from techdraw.list_pages."
+                    "Exact internal name of the drawing page from core.inspect scope='domain'."
                 ),
             },
             "view_name": {
                 "type": "string",
                 "description": (
                     "Exact internal name of the view that owns the referenced "
-                    "elements, from techdraw.list_pages."
+                    "elements, from core.inspect scope='domain'."
                 ),
             },
             "dimension": {
@@ -209,7 +209,7 @@ def run(
     if page is None or getattr(page, "TypeId", "") != "TechDraw::DrawPage":
         return _invalid(
             f"Drawing page not found by exact internal name: {page_name}. "
-            "Call techdraw.list_pages for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
     view = doc.getObject(str(view_name or "").strip())
     if view is None or not str(getattr(view, "TypeId", "")).startswith(
@@ -217,7 +217,7 @@ def run(
     ):
         return _invalid(
             f"Projected view not found by exact internal name: {view_name}. "
-            "Call techdraw.list_pages for exact names; dimensions attach to "
+            "Call core.inspect scope='domain' for exact names; dimensions attach to "
             "part views, not annotations."
         )
     page_views = [obj.Name for obj in list(getattr(page, "Views", []) or [])]

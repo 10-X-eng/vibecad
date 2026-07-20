@@ -136,7 +136,7 @@ When using a `.env` file for xAI, use `OPENAI_API_KEY` because the OpenAI-compat
 2. Select the workbench that matches the work you are doing. VibeCAD exposes the focused tool surface for the active workbench.
 3. Open **View > Panels > VibeCAD Assistant** if the assistant is not visible.
 4. Describe the intended result, including the dimensions, interfaces, material, manufacturing process, and constraints that matter.
-5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport.
+5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport in the next model request only; it is consumed after that delivery.
 6. Click **Send**. While work is running, the same input becomes **Steer**, so corrections stay in the same conversation. **Stop** ends the run after the current provider or CAD step returns.
 7. Save the CAD document normally. Reopening it restores the associated VibeCAD conversations and project records.
 
@@ -146,7 +146,9 @@ Be explicit about functional intent, not only appearance. For an existing model,
 
 The conversation selector at the top of the assistant opens prior conversations for the current CAD document. The new-conversation button starts a clean thread without deleting earlier work. This makes it possible to separate a redesign, manufacturing discussion, or analysis task while retaining the project's history.
 
-When **Intent Memory** is enabled in Preferences, VibeCAD compiles durable project intent after completed conversations. This preserves important requirements without replaying an unlimited chat transcript on every model call.
+Saved conversations remain available to the human in this selector, but VibeCAD does not replay the project transcript or persisted tool traces into a model request. The model receives the current message exactly once. **Intent Memory** remains available as an explicit human project record, but it is not compiled after every turn or injected automatically.
+
+Turn-start CAD context is deliberately small: active workbench/engine/domain, document identity and object count, edit object, and the exact explicit selection. Object inventories, properties, programs, domain APIs, geometry, solver state, and old images are read only when the model calls the bounded `core.inspect` tool. Newly attached reference images and **Attach View** are delivered once. Exact active tool declarations have a hard wire-size limit, as do inspection pages and individual tool results.
 
 ## Global Modeling Engine
 
@@ -164,9 +166,10 @@ Scripted engines keep source, inputs, diagnostics, revisions, and accepted outpu
 All 18 supported user-workbench VibeScript interfaces are production-ready:
 Part Design, Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material,
 BIM, Mesh, MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM,
-and TechDraw. Each non-Part-Design domain exposes the same seven lifecycle
-tools, but `describe_api` and program source contain only that workbench's
-canonical runtime operations and typed outputs.
+and TechDraw. Every domain, including Part Design, exposes the same five
+provider-facing mutation tools plus the shared `core.inspect` read interface.
+API inspection and program source contain only that workbench's canonical
+runtime operations and typed outputs.
 
 Geometry, solver, mesh, reconstruction, projection, and toolpath work runs in
 the isolated worker. The live document receives only independently validated,
@@ -180,8 +183,8 @@ restore accepted state when FreeCAD transaction rollback is incomplete.
 
 Part, MeshPart, Points, CAM, and TechDraw deliberately collapse equivalent
 variants behind selectors or one ordered pipeline instead of advertising
-redundant operations. Compatibility wrappers can still read older Part source,
-but new `describe_api` output presents only the canonical methods. Startup,
+redundant operations. There are no forwarding wrappers for removed Part
+operations; `core.inspect` presents the only canonical runtime methods. Startup,
 test, unknown, or future unimplemented workbenches resolve to an exact core-only
 unavailable surface; VibeCAD never substitutes another workbench's tools.
 

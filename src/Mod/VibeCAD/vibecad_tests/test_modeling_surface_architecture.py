@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import ast
-from importlib import import_module
 import hashlib
 import inspect
 import json
@@ -15,6 +14,7 @@ import pytest
 
 from VibeCADModelingSurface import (
     CORE_CONVERSATION_VIEW_TOOLS,
+    HIDDEN_PROVIDER_INSPECTION_TOOLS,
     resolve_modeling_surface,
     validate_surface_names,
 )
@@ -56,11 +56,20 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
     observed_ready = set()
     for workbench in USER_WORKBENCHES:
         native_pack = WORKBENCH_TOOL_PACKS[workbench]
+        visible_native_tools = tuple(
+            name
+            for name in native_pack.tool_names
+            if name not in HIDDEN_PROVIDER_INSPECTION_TOOLS
+            and not name.endswith(".describe_api")
+            and not name.endswith(".inspect_program")
+        )
         native = resolve_modeling_surface(workbench, "native")
         assert not any(name.startswith("vibescript.") for name in native.tool_names)
-        if native_pack.tool_names:
+        if visible_native_tools:
             assert native.available is True
-            assert native.cad_tool_names == native_pack.tool_names
+            assert native.cad_tool_names == visible_native_tools
+            assert "core.inspect" in native.tool_names
+            assert not set(native.tool_names) & set(HIDDEN_PROVIDER_INSPECTION_TOOLS)
         else:
             assert native.available is False
             assert native.cad_tool_names == ()
@@ -75,10 +84,18 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
             observed_ready.add(workbench)
             assert scripted.available is True
             assert scripted.unavailable_reason == ""
-            assert scripted.cad_tool_names == domain_pack.tool_names
-            assert len(scripted.cad_tool_names) == 7
+            assert scripted.cad_tool_names == tuple(
+                name
+                for name in domain_pack.tool_names
+                if name not in HIDDEN_PROVIDER_INSPECTION_TOOLS
+                and not name.endswith(".describe_api")
+                and not name.endswith(".inspect_program")
+            )
+            assert len(scripted.cad_tool_names) == 5
             assert len(scripted.tool_names) <= 11
-            assert set(native_pack.provider_tool_names()).isdisjoint(
+            assert "core.inspect" in scripted.tool_names
+            assert not set(scripted.tool_names) & set(HIDDEN_PROVIDER_INSPECTION_TOOLS)
+            assert set(native_pack.tool_names).isdisjoint(
                 scripted.cad_tool_names
             )
             namespaces = {
@@ -86,10 +103,7 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
                 for name in scripted.cad_tool_names
                 if name.count(".") == 2
             }
-            if workbench == "PartDesignWorkbench":
-                assert not namespaces
-            else:
-                assert namespaces == {domain_pack.domain}
+            assert namespaces == {domain_pack.domain}
         else:
             assert scripted.available is False
             assert scripted.cad_tool_names == ()
@@ -117,7 +131,7 @@ def test_unsupported_surfaces_are_precise_and_core_only(
 
 
 @pytest.mark.parametrize("engine", ("build123d", "openscad"))
-def test_legacy_script_engines_are_partdesign_only(engine: str) -> None:
+def test_external_script_engines_are_partdesign_only(engine: str) -> None:
     assert resolve_modeling_surface("PartDesignWorkbench", engine).available is True
     for workbench in USER_WORKBENCHES:
         if workbench == "PartDesignWorkbench":
@@ -130,7 +144,7 @@ def test_legacy_script_engines_are_partdesign_only(engine: str) -> None:
 
 def test_mixed_and_cross_domain_surfaces_are_rejected() -> None:
     part = resolve_modeling_surface("PartWorkbench", "vibescript")
-    native_part_tool = WORKBENCH_TOOL_PACKS["PartWorkbench"].provider_tool_names()[0]
+    native_part_tool = WORKBENCH_TOOL_PACKS["PartWorkbench"].tool_names[0]
     with pytest.raises(ValueError, match="cannot contain native"):
         validate_surface_names(
             workbench="PartWorkbench",
@@ -153,8 +167,6 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
-        if pack.legacy_partdesign:
-            continue
         specs = domains.domain_tool_specs(pack)
         assert tuple(spec["name"] for spec in specs) == pack.tool_names
         assert len(specs) == 7
@@ -173,8 +185,6 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
-        if pack.legacy_partdesign:
-            continue
         specs = {
             spec["name"].rsplit(".", 1)[-1]: spec
             for spec in domains.domain_tool_specs(pack)
@@ -183,7 +193,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
             "program_id"
         ]["description"]
         assert "create_program" in program_id_description
-        assert "injected domain program context" in program_id_description
+        assert "core.inspect" in program_id_description
         assert "source-only" in specs["edit_source"]["description"]
         assert "value-only" in specs["set_inputs"]["description"]
         assert (
@@ -219,8 +229,6 @@ def test_every_domain_description_is_copy_ready_for_the_operating_model() -> Non
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
-        if pack.legacy_partdesign:
-            continue
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
         description = adapter.describe_api()
@@ -336,19 +344,11 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
 def test_partdesign_vibescript_schema_golden_fixture() -> None:
     fixture_path = Path(__file__).with_name("partdesign_vibescript_schema_sha256.json")
     expected = json.loads(fixture_path.read_text(encoding="utf-8"))
-    module_names = (
-        "vibescript_describe_api",
-        "vibescript_inspect_model",
-        "vibescript_create_model",
-        "vibescript_edit_source",
-        "vibescript_set_parameters",
-        "vibescript_reconfigure_model",
-        "vibescript_delete_model",
-    )
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
     observed: dict[str, str] = {}
-    for module_name in module_names:
-        module = import_module(f"tool_impl.service.{module_name}")
-        schema = ToolSpec.from_mapping(module.TOOL_SPEC).to_schema(
+    for raw in domains.domain_tool_specs(pack):
+        schema = ToolSpec.from_mapping(raw).to_schema(
             active_workbench="PartDesignWorkbench"
         )
         digest = hashlib.sha256(
@@ -359,42 +359,44 @@ def test_partdesign_vibescript_schema_golden_fixture() -> None:
 
 
 def test_schema_v1_migrates_to_partdesign_without_relocation(tmp_path: Path) -> None:
-    legacy_directory = tmp_path / "vibescript" / ("a" * 32)
+    v1_directory = tmp_path / "vibescript" / ("a" * 32)
     migrated = domains.migrate_program_manifest(
         {
-            "schema": domains.LEGACY_PARTDESIGN_SCHEMA,
+            "schema": domains.PARTDESIGN_V1_SCHEMA,
             "model_id": "a" * 32,
-            "model_name": "Legacy",
+            "model_name": "Saved v1 model",
             "source": "result = {}",
             "parameters": {"Length": 10.0},
             "expected_outputs": ["Body"],
             "revision": "b" * 64,
         },
-        artifact_directory=legacy_directory,
+        artifact_directory=v1_directory,
     )
     assert migrated["schema"] == domains.PROGRAM_SCHEMA
     assert migrated["version"] == 2
     assert migrated["domain"] == "partdesign"
     assert migrated["workbench"] == "PartDesignWorkbench"
-    assert migrated["artifact_directory"] == str(legacy_directory)
+    assert migrated["artifact_directory"] == str(v1_directory)
     assert migrated["expected_outputs"] == [{"name": "Body", "type": "solid"}]
+    assert migrated["migration_required"] is True
+    assert migrated["migration_action"] == "vibescript.partdesign.reconfigure_program"
 
-    legacy_directory.mkdir(parents=True)
-    (legacy_directory / "model.py").write_text("result = {}\n", encoding="utf-8")
-    (legacy_directory / "parameters.json").write_text('{"Length":12}', encoding="utf-8")
+    v1_directory.mkdir(parents=True)
+    (v1_directory / "model.py").write_text("result = {}\n", encoding="utf-8")
+    (v1_directory / "parameters.json").write_text('{"Length":12}', encoding="utf-8")
     artifact_backed = domains.migrate_program_manifest(
         {
-            "schema": domains.LEGACY_PARTDESIGN_SCHEMA,
+            "schema": domains.PARTDESIGN_V1_SCHEMA,
             "model_id": "a" * 32,
-            "model_name": "Legacy",
+            "model_name": "Saved v1 model",
             "expected_outputs": ["Body"],
             "revision": "b" * 64,
         },
-        artifact_directory=legacy_directory,
+        artifact_directory=v1_directory,
     )
     assert artifact_backed["source"] == "result = {}\n"
     assert artifact_backed["inputs"] == {"Length": 12}
-    assert artifact_backed["artifact_directory"] == str(legacy_directory)
+    assert artifact_backed["artifact_directory"] == str(v1_directory)
 
 
 def test_source_and_input_policy_blocks_escape_hatches() -> None:
@@ -514,14 +516,9 @@ def test_part_api_is_explicit_documented_and_generated_from_the_runtime() -> Non
     )
     assert len(description["recommended_patterns"]) >= 2
 
-    legacy_helix = api.long_helix(2, 10, 3)
-    assert legacy_helix.operation == "helix"
-    assert legacy_helix.properties["representation"] == "segmented"
-    target = api.plane(10, 10)
-    profile = api.circle(2, center=[0, 0, 5])
-    legacy_projection = api.project_parallel(target, profile, [0, 0, -1])
-    assert legacy_projection.operation == "project"
-    assert legacy_projection.properties["mode"] == "parallel"
+    assert not hasattr(api, "long_helix")
+    assert not hasattr(api, "project_parallel")
+    assert not hasattr(api, "project_perspective")
 
 
 def test_part_api_reports_operation_and_parameter_before_kernel_execution() -> None:
@@ -982,6 +979,7 @@ def test_material_api_is_explicit_separated_and_generated_from_runtime() -> None
     assert appearance.output_type == "appearance"
     assert appearance.to_payload()["arguments"][1]["output_type"] == "material_card"
     assert appearance.to_payload()["properties"]["shape_color"] == [0.1, 0.2, 0.3]
+    assert "label" not in card.properties
     with pytest.raises(TypeError):
         card.properties["label"] = "changed"
 
@@ -2845,6 +2843,31 @@ def test_mesh_document_thread_boundary_only_assigns_detached_native_state() -> N
     assert "artifact_sha256" in validation_source
 
 
+def test_rollback_property_digest_ignores_zip_timestamp_not_content() -> None:
+    from io import BytesIO
+    import zipfile
+
+    import VibeCADVibeScriptDomainPublication as publication
+
+    def persisted(timestamp: tuple[int, int, int, int, int, int], text: str) -> bytes:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            info = zipfile.ZipInfo("Persistence.xml", timestamp)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, text.encode("utf-8"))
+        return buffer.getvalue()
+
+    first = persisted((2024, 1, 1, 0, 0, 0), "<Property value='3 mm'/>")
+    later = persisted((2026, 7, 19, 12, 30, 0), "<Property value='3 mm'/>")
+    changed = persisted((2026, 7, 19, 12, 30, 0), "<Property value='4 mm'/>")
+    assert publication._property_content_sha256(first) == (
+        publication._property_content_sha256(later)
+    )
+    assert publication._property_content_sha256(first) != (
+        publication._property_content_sha256(changed)
+    )
+
+
 def test_cam_document_thread_boundary_only_applies_validated_native_state() -> None:
     import VibeCADVibeScriptDomainPublication as publication
 
@@ -3206,12 +3229,12 @@ def test_domain_context_is_aggregate_bounded_and_points_to_exact_inspection(
     assert "face_details" not in output_facts
     assert "edge_details" not in output_facts
     assert output_facts["subelement_details_context_omitted"] is True
-    assert "inspect_program" in output_facts["subelement_details_guidance"]
+    assert "core.inspect" in output_facts["subelement_details_guidance"]
 
 
 def test_generic_prototype_adapters_cannot_surface_unfinished_domains() -> None:
     for workbench, pack in domains.VIBESCRIPT_WORKBENCH_PACKS.items():
-        if pack.production_ready or pack.legacy_partdesign:
+        if pack.production_ready:
             continue
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
@@ -3275,7 +3298,7 @@ def test_domain_publication_has_no_worker_or_artifact_io_fallback() -> None:
 def test_part_reference_capture_only_detaches_live_shapes() -> None:
     import VibeCADVibeScriptDomainRuntime as runtime
 
-    source = inspect.getsource(runtime.capture_reference_shapes)
+    source = inspect.getsource(runtime.capture_reference_inputs)
     for forbidden in (
         "exportBrep(",
         "importBrep(",

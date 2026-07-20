@@ -34,7 +34,7 @@ from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     SurfaceDomainAdapter,
     _validate_surface_execution,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -769,7 +769,7 @@ def _finalize_prepared(prepared: dict[str, Any], service: _Service) -> dict[str,
     if prepared.get("reference_requirements") and not prepared.get("finalized"):
         return finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     return prepared
 

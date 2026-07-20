@@ -630,8 +630,6 @@ def _exercise_lifecycle() -> dict[str, object]:
             assert surface.cad_tool_names == tuple(
                 f"vibescript.robot.{name}"
                 for name in (
-                    "describe_api",
-                    "inspect_program",
                     "create_program",
                     "edit_source",
                     "set_inputs",

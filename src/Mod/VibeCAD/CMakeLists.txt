@@ -9,9 +9,11 @@ set(VibeCAD_Scripts
     VibeCADCore.py
     VibeCADDebug.py
     VibeCADDesignReview.py
+    VibeCADEditState.py
     VibeCADGrid.py
     VibeCADGeometry.py
     VibeCADGui.py
+    VibeCADInspection.py
     VibeCADIntentMemory.py
     VibeCADIntentMemoryCompiler.py
     VibeCADModelingSurface.py
@@ -28,7 +30,6 @@ set(VibeCAD_Scripts
     VibeCADScriptedPublication.py
     VibeCADTools.py
     VibeCADTransactions.py
-    VibeCADVibeScript.py
     VibeCADVibeScriptDomains.py
     VibeCADVibeScriptDomainRuntime.py
     VibeCADVibeScriptDomainPublication.py
@@ -43,6 +44,8 @@ set(VibeCAD_Scripts
     vibescript_draft_worker.py
     vibescript_part_api.py
     vibescript_part_worker.py
+    vibescript_partdesign_api.py
+    vibescript_partdesign_worker.py
     vibescript_sketcher_api.py
     vibescript_sketcher_worker.py
     vibescript_surface_api.py
@@ -75,9 +78,6 @@ set(VibeCAD_Scripts
     VibeCADWorkbenchTools.py
     build123d_worker.py
     openscad_freecad_worker.py
-    vibescript_api.py
-    vibescript_executor.py
-    vibescript_worker.py
     build123d-requirements.txt
     requirements.txt
 )

@@ -23,7 +23,7 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 )
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -802,7 +802,7 @@ def _run_candidate(captured: dict, service: _Service):
     if prepared.get("reference_requirements") and not prepared.get("finalized"):
         prepared = finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     execution = execute_candidate(prepared, cancellation_check=None)
     assert execution.get("ok") is True, execution

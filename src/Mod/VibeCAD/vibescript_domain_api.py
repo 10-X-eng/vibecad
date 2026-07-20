@@ -287,6 +287,10 @@ def create_domain_api(
     """
 
     clean_domain = str(domain or "").strip().lower()
+    if clean_domain == "partdesign":
+        from vibescript_partdesign_api import PartDesignDomainAPI
+
+        return PartDesignDomainAPI(exports, output_types)
     if clean_domain == "part":
         from vibescript_part_api import PartDomainAPI
 

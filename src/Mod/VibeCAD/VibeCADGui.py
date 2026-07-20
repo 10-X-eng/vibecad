@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import queue
 import re
 import tempfile
 import threading
@@ -24,6 +25,7 @@ import FreeCADGui as Gui
 
 from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
+from VibeCADEditState import active_edit_object, active_edit_state
 from VibeCADProject import DEFAULT_MODELING_ENGINE
 from VibeCADPromptStarters import (
     BUILTIN_PROMPT_STARTERS,
@@ -63,6 +65,9 @@ _context_debug_startup_scheduled = False
 _document_save_conversations: dict[str, dict[str, Any]] = {}
 _document_save_references: dict[str, dict[str, Any]] = {}
 _pending_question_request: list[dict[str, Any]] = []
+_conversation_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
+_conversation_persist_thread: threading.Thread | None = None
+_conversation_persist_lock = threading.RLock()
 
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
@@ -516,7 +521,13 @@ def _register_context_debug_dock(widget: Any) -> Any:
         raise RuntimeError(
             "FreeCAD main window does not expose DockWindowManager.addDockWindow."
         )
-    return add_dock_window(widget, CONTEXT_DEBUG_DOCK_NAME, "bottom")
+    dock = add_dock_window(widget, CONTEXT_DEBUG_DOCK_NAME, "bottom")
+    dock.toggleViewAction().setVisible(True)
+    # MainWindow.restoreState() runs before this optional dock is constructed.
+    # Give Qt the late-created dock so it can apply the location saved in the
+    # canonical VibeCAD user profile.
+    main_window.restoreDockWidget(dock)
+    return dock
 
 
 def show_context_debugger() -> None:
@@ -832,9 +843,58 @@ def _record_conversation_turn(
     if storage_role is None or not clean:
         return
     try:
-        get_service().record_conversation_turn(storage_role, clean, metadata=metadata)
+        service = get_service()
+        prepared = service.prepare_conversation_turn(
+            storage_role,
+            clean,
+            metadata=metadata,
+        )
     except Exception as exc:
         _warn(f"VibeCAD conversation save failed: {exc}")
+        return
+    try:
+        _ensure_conversation_persist_thread()
+    except Exception as exc:
+        _warn(f"VibeCAD conversation save failed: {exc}")
+        return
+    _conversation_persist_queue.put((service, prepared))
+
+
+def _ensure_conversation_persist_thread() -> None:
+    """Start the single ordered transcript writer without blocking Qt."""
+
+    global _conversation_persist_thread
+    with _conversation_persist_lock:
+        if (
+            _conversation_persist_thread is not None
+            and _conversation_persist_thread.is_alive()
+        ):
+            return
+        _ensure_document_thread_invoker()
+        _conversation_persist_thread = threading.Thread(
+            target=_conversation_persist_loop,
+            name="VibeCAD-conversation-persistence",
+            daemon=True,
+        )
+        _conversation_persist_thread.start()
+
+
+def _conversation_persist_loop() -> None:
+    while True:
+        service, prepared = _conversation_persist_queue.get()
+        try:
+            history = service.persist_prepared_conversation_turn(prepared)
+            _dispatch_to_document_thread(
+                lambda: service.accept_persisted_conversation_turn(history, prepared)
+            )
+        except Exception as exc:
+            message = f"VibeCAD conversation save failed: {exc}"
+            try:
+                _dispatch_to_document_thread(lambda: _warn(message))
+            except Exception:
+                pass
+        finally:
+            _conversation_persist_queue.task_done()
 
 
 def _format_saved_conversation(conversation: list[dict[str, Any]]) -> str:
@@ -2274,13 +2334,7 @@ def _stop_prompt_from_panel() -> None:
 
 def _active_edit_sketch_continuation_event() -> dict[str, str] | None:
     gui_document = getattr(Gui, "ActiveDocument", None)
-    get_in_edit = getattr(gui_document, "getInEdit", None)
-    edit_object = get_in_edit() if callable(get_in_edit) else None
-    if isinstance(edit_object, (tuple, list)):
-        edit_object = edit_object[0] if edit_object else None
-    app_object = getattr(edit_object, "Object", None)
-    if app_object is not None:
-        edit_object = app_object
+    edit_object = active_edit_object(gui_document)
     if getattr(edit_object, "TypeId", "") != "Sketcher::SketchObject":
         return None
     document = getattr(edit_object, "Document", None)
@@ -2505,8 +2559,7 @@ def _start_sketch_close_continuation(event: dict[str, Any]) -> None:
     ) != str(event.get("owner_body") or ""):
         return
     gui_document = getattr(Gui, "ActiveDocument", None)
-    get_in_edit = getattr(gui_document, "getInEdit", None)
-    if callable(get_in_edit) and get_in_edit() is not None:
+    if active_edit_state(gui_document).active:
         _warn(
             "VibeCAD did not continue after sketch close because another edit session is active."
         )
@@ -2580,8 +2633,9 @@ def _run_prompt_from_panel() -> None:
             )
         return
 
-    _append_conversation("User", prompt, persist=True, metadata={"source": "prompt"})
-    _refresh_conversation_selector(dock)
+    # The background session persists the prompt after capturing only the
+    # active document identity on the GUI thread.
+    _append_conversation("User", prompt)
     prompt_box.clear()
     _execute_assistant_run(dock, service, prompt=prompt)
 
@@ -3059,7 +3113,12 @@ def _register_native_dock(widget) -> Any:
         )
     dock = add_dock_window(widget, DOCK_NAME, "right")
     dock.toggleViewAction().setVisible(True)
-    _tab_model_code_editor_with_assistant(dock)
+    # MainWindow.restoreState() runs before InitGui creates this dock. Qt only
+    # restores a dock constructed after that point when restoreDockWidget() is
+    # called explicitly. Apply the default tab group only when no saved VibeCAD
+    # layout exists for the assistant.
+    if not bool(main_window.restoreDockWidget(dock)):
+        _tab_model_code_editor_with_assistant(dock)
     return dock
 
 

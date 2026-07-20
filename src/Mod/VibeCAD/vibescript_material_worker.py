@@ -44,7 +44,6 @@ _GRAPH_FIELDS = {"domain", "operation", "output_type", "arguments", "properties"
 _CARD_PROPERTIES = {
     "require_physical_properties",
     "require_appearance_properties",
-    "label",
 }
 _ASSIGN_PROPERTIES = {"label"}
 _APPEARANCE_PROPERTIES = {
@@ -282,7 +281,6 @@ def _rebuild_card(raw: Any, *, context: str, api: MaterialDomainAPI) -> DomainVa
             arguments[0],
             require_physical_properties=properties["require_physical_properties"],
             require_appearance_properties=properties["require_appearance_properties"],
-            label=properties["label"],
         )
     except (TypeError, ValueError) as exc:
         raise MaterialCandidateError(

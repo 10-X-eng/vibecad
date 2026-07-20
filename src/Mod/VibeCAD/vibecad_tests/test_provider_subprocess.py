@@ -102,11 +102,21 @@ def test_clean_exit_drains_delayed_final_pipe_message(monkeypatch) -> None:
     assert 0.2 in context.parent_conn.poll_timeouts
 
 
-def _vibescript_mode_context() -> dict[str, object]:
+def _vibescript_mode_context(
+    workbench: str = "PartDesignWorkbench",
+    domain: str = "partdesign",
+) -> dict[str, object]:
     return {
+        "workbench": workbench,
+        "modeling_surface": {
+            "workbench": workbench,
+            "engine": "vibescript",
+            "domain": domain,
+            "available": True,
+        },
         "provider_tool_schemas": [
             {
-                "name": "vibescript.create_model",
+                "name": f"vibescript.{domain}.create_program",
                 "description": "Create a VibeScript model.",
                 "parameters": {"type": "object"},
             }
@@ -115,9 +125,12 @@ def _vibescript_mode_context() -> dict[str, object]:
 
 
 def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> None:
-    instructions = provider._provider_instructions(_vibescript_mode_context())
+    context = _vibescript_mode_context()
+    guidance = provider._vibescript_authoring_instruction(context)
+    instructions = provider._provider_instructions(context)
     assert instructions.startswith(provider.VIBECAD_SYSTEM_INSTRUCTIONS)
-    assert provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS in instructions
+    assert guidance
+    assert guidance in instructions
 
     for other_context in (
         {},
@@ -127,16 +140,18 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
         {"provider_tool_schemas": [{"name": "partdesign.pad"}]},
     ):
         other = provider._provider_instructions(other_context)
-        assert provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS not in other
+        assert guidance not in other
         assert other.startswith(provider.VIBECAD_SYSTEM_INSTRUCTIONS)
 
 
 def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> None:
-    blocks = provider._anthropic_system_blocks(_vibescript_mode_context())
+    context = _vibescript_mode_context()
+    guidance = provider._vibescript_authoring_instruction(context)
+    blocks = provider._anthropic_system_blocks(context)
     texts = [block["text"] for block in blocks]
     assert texts == [
         provider.VIBECAD_SYSTEM_INSTRUCTIONS,
-        provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS,
+        guidance,
     ]
     assert all(block["cache_control"] == {"type": "ephemeral"} for block in blocks)
 
@@ -146,24 +161,24 @@ def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> No
     assert [block["text"] for block in other_blocks] == [provider.VIBECAD_SYSTEM_INSTRUCTIONS]
 
 
-def test_both_wire_formats_order_vibescript_guidance_before_intent_memory() -> None:
+def test_both_wire_formats_do_not_inject_intent_memory() -> None:
     context = _vibescript_mode_context()
     context["intent_memory_enabled"] = True
     context["intent_memory"] = {"revision": "r1"}
 
+    guidance = provider._vibescript_authoring_instruction(context)
     instructions = provider._provider_instructions(context)
-    assert instructions.index(provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS) < instructions.index(
-        "VIBECAD INTENT MEMORY"
-    )
+    assert guidance in instructions
+    assert "VIBECAD INTENT MEMORY" not in instructions
 
     blocks = provider._anthropic_system_blocks(context)
-    assert len(blocks) == 3
-    assert blocks[1]["text"] == provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS
-    assert blocks[2]["text"].startswith("VIBECAD INTENT MEMORY")
+    assert len(blocks) == 2
+    assert blocks[1]["text"] == guidance
 
 
 def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
-    text = provider.VIBESCRIPT_AUTHORING_INSTRUCTIONS.lower()
+    context = _vibescript_mode_context()
+    text = provider._vibescript_authoring_instruction(context).lower()
     for foreign_term in (
         "anthropic",
         "openai",
@@ -178,6 +193,27 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
         assert foreign_term not in text, (
             f"VibeScript guidance must stay CAD-only; found {foreign_term!r}"
         )
+    for removed_contract in ("params", "new_body", "new_sketch", "sketchbuilder"):
+        assert removed_contract not in text
+    assert "validated inputs" in text
+    assert "scope='api'" in text
+
+
+def test_partdesign_uses_the_same_model_operating_template_as_other_domains() -> None:
+    partdesign = provider._vibescript_authoring_instruction(
+        _vibescript_mode_context()
+    )
+    assembly = provider._vibescript_authoring_instruction(
+        _vibescript_mode_context("AssemblyWorkbench", "assembly")
+    )
+    for instruction in (partdesign, assembly):
+        assert "scope='domain'" in instruction
+        assert "scope='api'" in instruction
+        assert "scope='program'" in instruction
+        assert "edit_source" in instruction
+        assert "set_inputs" in instruction
+        assert "reconfigure_program" in instruction
+        assert "Never call native workbench tools" in instruction
 
 
 class _ProviderContextService:
@@ -191,7 +227,6 @@ class _ProviderContextService:
         self.workbench = workbench
         self.base_context = base_context
         self.engine = engine
-        self.vibescript_context_calls = 0
 
     def provider_context_summary(self) -> dict[str, object]:
         return dict(self.base_context)
@@ -211,16 +246,6 @@ class _ProviderContextService:
     def intent_memory_snapshot(self) -> dict[str, object]:
         return {"enabled": False}
 
-    def vibescript_context_snapshot(self) -> dict[str, object]:
-        self.vibescript_context_calls += 1
-        return {
-            "_vibecad_deferred_vibescript_context": True,
-            "models": [{"model_id": "a" * 32, "name": "Impeller"}],
-        }
-
-    def complete_vibescript_context(self, snapshot: dict[str, object]) -> dict[str, object]:
-        return {"models": list(snapshot.get("models") or [])}
-
 
 def _context_schema(name: str) -> dict[str, object]:
     return {
@@ -234,10 +259,13 @@ def _context_schema(name: str) -> dict[str, object]:
     }
 
 
-def test_vibescript_model_context_follows_its_surfaced_tools(
+def test_vibescript_model_context_is_not_eagerly_snapshotted(
     monkeypatch,
 ) -> None:
-    schemas = [_context_schema("vibescript.part.inspect_program")]
+    schemas = [
+        _context_schema("core.inspect"),
+        _context_schema("vibescript.part.create_program"),
+    ]
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
@@ -265,20 +293,11 @@ def test_vibescript_model_context_follows_its_surfaced_tools(
         },
     )
 
-    context = session._complete_vibescript_provider_context(
-        service, session._context_for_provider(service)
-    )
+    context = session._context_for_provider(service)
 
-    assert context["vibescript_domain"] == {
-        "domain": "part",
-        "programs": [{"program_id": "a" * 32, "label": "Fixture"}],
-    }
-    assert "part" not in context
-    assert service.vibescript_context_calls == 0
-    assert (
-        provider._model_visible_context(context)["vibescript_domain"]
-        == context["vibescript_domain"]
-    )
+    assert "vibescript_domain" not in context
+    assert "partdesign" not in context
+    assert "vibescript_domain" not in provider._model_visible_context(context)
 
 
 def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
@@ -287,7 +306,7 @@ def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
-        lambda _service, _wb, **_kwargs: [_context_schema("bim.list_structure")],
+        lambda _service, _wb, **_kwargs: [_context_schema("core.inspect")],
     )
     service = _ProviderContextService(
         "BIMWorkbench",
@@ -298,17 +317,19 @@ def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
     context = session._context_for_provider(service)
 
     assert "vibescript" not in context
-    assert service.vibescript_context_calls == 0
 
 
-def test_partdesign_keeps_one_vibescript_model_context_without_duplication(
+def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
     monkeypatch,
 ) -> None:
     models = [{"model_id": "b" * 32, "name": "Rotor"}]
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
-        lambda _service, _wb, **_kwargs: [_context_schema("vibescript.inspect_model")],
+        lambda _service, _wb, **_kwargs: [
+            _context_schema("core.inspect"),
+            _context_schema("vibescript.partdesign.create_program"),
+        ],
     )
     service = _ProviderContextService(
         "PartDesignWorkbench",
@@ -317,9 +338,8 @@ def test_partdesign_keeps_one_vibescript_model_context_without_duplication(
 
     context = session._context_for_provider(service)
 
-    assert context["partdesign"] == {"models": models}
+    assert "partdesign" not in context
     assert "vibescript" not in context
-    assert service.vibescript_context_calls == 0
 
 
 class _ResponsesItem:

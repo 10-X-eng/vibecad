@@ -829,11 +829,10 @@ def configure_assembly_references(root: Path, entries: list[dict[str, Any]]) -> 
                     "does not match its authenticated source kind."
                 )
             hierarchies[key] = MappingProxyType(loaded_hierarchy)
-        # Compatibility: historical rigid Assembly inputs were transferred as
-        # one aggregate BREP and remain valid for that exact use.  Operations
-        # that require internals (flexibility, stable occurrence paths, or a
-        # detailed BOM) reject the missing hierarchy at their own call site
-        # with a copy-ready model correction.
+        # A rigid component may intentionally provide only one authenticated
+        # aggregate BREP. Operations that require internals (flexibility,
+        # stable occurrence paths, or a detailed BOM) reject the missing
+        # hierarchy at their own call site with a copy-ready model correction.
     global _REFERENCE_METADATA
     _REFERENCE_METADATA = MappingProxyType(metadata)
     global _REFERENCE_HIERARCHIES

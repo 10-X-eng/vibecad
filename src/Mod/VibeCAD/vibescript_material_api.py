@@ -312,7 +312,6 @@ class MaterialDomainAPI:
         *,
         require_physical_properties: Sequence[str] = (),
         require_appearance_properties: Sequence[str] = (),
-        label: str = "",
     ) -> DomainValue:
         """Select one exact catalog card and declare every property the design consumes."""
 
@@ -330,7 +329,6 @@ class MaterialDomainAPI:
                 "require_appearance_properties",
                 require_appearance_properties,
             ),
-            label=_label("material", label),
         )
 
     def assign(

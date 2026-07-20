@@ -59,7 +59,7 @@ def _api():
 def _expect_error(fragment: str, call) -> None:
     try:
         call()
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RuntimeError) as exc:
         assert fragment in str(exc), (fragment, str(exc))
     else:
         raise AssertionError(f"Expected validation failure containing {fragment!r}.")
@@ -106,13 +106,15 @@ def _exercise_source_api() -> None:
         merged_ranges=["d2:c1"],
     ).to_payload()
     assert merged["properties"]["merged_ranges"] == ["C1:D2"]
-    legacy = copy.deepcopy(payload)
-    legacy["properties"].pop("merged_ranges")
-    migrated = spreadsheet_worker.validate_spreadsheet_definition(
-        legacy,
-        context="legacy Spreadsheet definition",
+    incomplete = copy.deepcopy(payload)
+    incomplete["properties"].pop("merged_ranges")
+    _expect_error(
+        "does not match the exact api.sheet schema",
+        lambda: spreadsheet_worker.validate_spreadsheet_definition(
+            incomplete,
+            context="incomplete Spreadsheet definition",
+        ),
     )
-    assert migrated["properties"]["merged_ranges"] == []
     try:
         first.properties["alias"] = "changed"
     except TypeError:
@@ -138,7 +140,10 @@ def _exercise_source_api() -> None:
         "duplicates alias",
         lambda: api.sheet([api.cell("A1", alias="Length"), api.cell("A2", alias="length")]),
     )
-    _expect_error("unknown fields", lambda: api.sheet({"A1": {"value": 1, "magic": True}}))
+    _expect_error(
+        "sequence of api.cell values",
+        lambda: api.sheet({"A1": {"value": 1}}),
+    )
     _expect_error("at least two cells", lambda: api.sheet([api.cell("A1")], merged_ranges=["A1"]))
     _expect_error(
         "overlaps",

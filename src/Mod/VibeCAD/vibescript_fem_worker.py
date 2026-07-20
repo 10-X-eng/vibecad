@@ -390,7 +390,13 @@ def validate_fem_definition(
             }
             if arguments or set(properties) != required:
                 raise ValueError("solver fields are malformed")
-            rebuilt = api.solver(**properties)
+            rebuilt = api.solver(
+                matrix_solver=properties["matrix_solver"],
+                geometrical_nonlinearity=properties["geometrical_nonlinearity"],
+                material_nonlinearity=properties["material_nonlinearity"],
+                reduced_integration=properties["reduced_integration"],
+                label=properties["label"],
+            )
         elif operation == "material":
             required = {
                 "name",
@@ -400,12 +406,7 @@ def validate_fem_definition(
                 "thermal_expansion_per_k",
                 "label",
             }
-            material_fields = set(properties)
-            legacy_material = material_fields == required
-            if arguments or (
-                material_fields != required
-                and material_fields != required | {"assignments"}
-            ):
+            if arguments or set(properties) != required | {"assignments"}:
                 raise ValueError("material fields are malformed")
             rebuilt = api.material(
                 **{
@@ -531,10 +532,6 @@ def validate_fem_definition(
             operation=operation,
         ) from exc
     canonical = rebuilt.to_payload()
-    if operation == "material" and legacy_material:
-        # Program schema v2 initially emitted global materials without this
-        # additive field. Preserve exact replay for already-accepted revisions.
-        canonical["properties"].pop("assignments", None)
     if canonical != payload:
         raise _fail(
             f"{context} is not the canonical api.{operation} representation.",
@@ -1497,18 +1494,6 @@ def _solve_analysis(
 
     execution = str(definition["properties"]["execution"])
     analysis_type = str(solver.AnalysisType)
-    if execution == "calculix" and analysis_type in {"frequency", "buckling", "check"}:
-        raise _fail(
-            f"CalculiX {analysis_type!r} execution does not produce exactly one "
-            "mechanical result object under this stable result contract.",
-            stage="solver_prerequisites",
-            analysis_type=analysis_type,
-            supported_execution="validate_only",
-            required_changes=[
-                "Change only api.solve execution to 'validate_only' for this analysis type, "
-                "or use a static analysis when one stable numerical result is required."
-            ],
-        )
     working = root / "outputs" / f"calculix-{index:03d}"
     try:
         working.mkdir(parents=True, exist_ok=False)

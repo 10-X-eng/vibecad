@@ -32,7 +32,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the target assembly from "
-                    "assembly.list_structure."
+                    "core.inspect scope='domain'."
                 ),
             },
             "source_object_name": {
@@ -77,7 +77,7 @@ def run(
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call assembly.list_structure for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
     source_name = str(source_object_name or "").strip()
     source = doc.getObject(source_name) if source_name else None

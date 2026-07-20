@@ -47,6 +47,81 @@ def test_runtime_branding_resources_are_registered() -> None:
         assert (ROOT / "src" / "Gui" / "Icons" / asset).is_file()
 
 
+def test_every_runtime_entry_point_uses_only_the_vibecad_config_namespace() -> None:
+    for relative_path in (
+        "src/Main/MainGui.cpp",
+        "src/Main/MainCmd.cpp",
+        "src/Main/MainPy.cpp",
+    ):
+        source = _source(relative_path)
+        assert 'Config()["ExeName"] = "VibeCAD"' in source
+        assert 'Config()["ExeVendor"] = "VibeCAD"' in source
+        assert 'Config()["AppDataSkipVendor"] = "true"' in source
+        assert 'Config()["ExeName"] = "FreeCAD"' not in source
+        assert 'Config()["ExeVendor"] = "FreeCAD"' not in source
+
+
+def test_late_vibecad_docks_restore_the_saved_vibecad_layout(monkeypatch) -> None:
+    import VibeCADGui as panel
+
+    class _ToggleAction:
+        def __init__(self) -> None:
+            self.visible = False
+
+        def setVisible(self, visible: bool) -> None:
+            self.visible = bool(visible)
+
+    class _Dock:
+        def __init__(self) -> None:
+            self.toggle_action = _ToggleAction()
+
+        def toggleViewAction(self) -> _ToggleAction:
+            return self.toggle_action
+
+    class _MainWindow:
+        def __init__(self, restored: bool) -> None:
+            self.restored = restored
+            self.dock = _Dock()
+            self.added: list[tuple[object, str, str]] = []
+            self.restore_calls: list[_Dock] = []
+
+        def addDockWindow(self, widget: object, name: str, area: str) -> _Dock:
+            self.added.append((widget, name, area))
+            return self.dock
+
+        def restoreDockWidget(self, dock: _Dock) -> bool:
+            self.restore_calls.append(dock)
+            return self.restored
+
+    tab_calls: list[_Dock] = []
+    monkeypatch.setattr(
+        panel,
+        "_tab_model_code_editor_with_assistant",
+        lambda dock: tab_calls.append(dock),
+    )
+
+    restored_main = _MainWindow(restored=True)
+    monkeypatch.setattr(panel.Gui, "getMainWindow", lambda: restored_main, raising=False)
+    assistant = panel._register_native_dock(object())
+    assert restored_main.restore_calls == [assistant]
+    assert assistant.toggle_action.visible is True
+    assert tab_calls == []
+
+    new_profile_main = _MainWindow(restored=False)
+    monkeypatch.setattr(
+        panel.Gui, "getMainWindow", lambda: new_profile_main, raising=False
+    )
+    assistant = panel._register_native_dock(object())
+    assert new_profile_main.restore_calls == [assistant]
+    assert tab_calls == [assistant]
+
+    context_main = _MainWindow(restored=True)
+    monkeypatch.setattr(panel.Gui, "getMainWindow", lambda: context_main, raising=False)
+    context_dock = panel._register_context_debug_dock(object())
+    assert context_main.restore_calls == [context_dock]
+    assert context_dock.toggle_action.visible is True
+
+
 def test_windows_bundle_creates_branded_executable() -> None:
     bundle_script = _source("package/rattler-build/windows/create_bundle.sh")
     main_cmake = _source("src/Main/CMakeLists.txt")
@@ -122,7 +197,7 @@ def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
     assert disabled.isdisjoint(user_workbenches)
 
 
-def test_vibecad_bootstrap_repairs_only_legacy_disabled_lists(monkeypatch) -> None:
+def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> None:
     class ParameterGroup:
         def __init__(self, disabled: str) -> None:
             self.disabled = disabled
@@ -135,13 +210,13 @@ def test_vibecad_bootstrap_repairs_only_legacy_disabled_lists(monkeypatch) -> No
             assert name == "Disabled"
             self.disabled = value
 
-    legacy = ParameterGroup(
+    preferences = ParameterGroup(
         "InspectionWorkbench,MaterialWorkbench,PointsWorkbench,"
         "ReverseEngineeringWorkbench,RobotWorkbench,TestWorkbench,NoneWorkbench"
     )
     app = SimpleNamespace(
         Console=SimpleNamespace(PrintWarning=lambda _message: None),
-        ParamGet=lambda _path: legacy,
+        ParamGet=lambda _path: preferences,
     )
     qt_core = SimpleNamespace(
         QTimer=SimpleNamespace(singleShot=lambda _delay, _callback: None)
@@ -152,17 +227,17 @@ def test_vibecad_bootstrap_repairs_only_legacy_disabled_lists(monkeypatch) -> No
     monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
 
     namespace = runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
-    assert legacy.disabled == "TestWorkbench,NoneWorkbench"
+    assert preferences.disabled == "TestWorkbench,NoneWorkbench"
 
-    legacy.disabled = "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
-    assert namespace["_restore_legacy_disabled_workbenches"]() is False
-    assert legacy.disabled == (
+    preferences.disabled = "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
+    assert namespace["_restore_vibecad_disabled_workbenches"]() is False
+    assert preferences.disabled == (
         "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
     )
 
-    legacy.disabled = (
+    preferences.disabled = (
         "NoneWorkbench,OpenSCADWorkbench,RobotWorkbench,InspectionWorkbench,"
         "ReverseEngineeringWorkbench,PointsWorkbench,MaterialWorkbench,TestWorkbench"
     )
-    assert namespace["_restore_legacy_disabled_workbenches"]() is True
-    assert legacy.disabled == "TestWorkbench,NoneWorkbench"
+    assert namespace["_restore_vibecad_disabled_workbenches"]() is True
+    assert preferences.disabled == "TestWorkbench,NoneWorkbench"

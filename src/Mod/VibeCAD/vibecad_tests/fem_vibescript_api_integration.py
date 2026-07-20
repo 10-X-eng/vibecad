@@ -25,7 +25,7 @@ from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     FEMDomainAdapter,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     execute_candidate,
     finish_delete,
     finalize_candidate,
@@ -160,6 +160,7 @@ def _exercise_source_api(document_uid: str) -> None:
         signature = str(inspect.signature(getattr(api, name)))
         assert "*args" not in signature and "**" not in signature
         assert inspect.getdoc(getattr(api, name))
+    assert "analysis_type" not in str(inspect.signature(api.solver))
     reference = {"document_uid": document_uid, "object_name": "SourceSolid"}
     solver = api.solver()
     material = api.material(
@@ -296,9 +297,7 @@ def _exercise_source_api(document_uid: str) -> None:
     assert "cannot switch workbench or engine" in description[
         "workbench_handoffs"
     ]["rule"]
-    assert description["solver_contract"]["analysis_type_matrix"]["static"].startswith(
-        "validate_only"
-    )
+    assert "fixed to a static" in description["solver_contract"]["analysis_type"]
     document = App.newDocument("VibeCADFEMResultContract", "FEM result gate", True, True)
     try:
         _expect_candidate_error(
@@ -451,7 +450,7 @@ def _prepare_execute_validate(
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object] | None]:
     prepared = prepare_candidate(captured)
     assert prepared["finalized"] is False
-    snapshots = capture_reference_shapes(service, prepared)
+    snapshots = capture_reference_inputs(service, prepared)
     prepared = finalize_candidate(prepared, snapshots)
     staged_names = {path.name for path in Path(prepared["staging"]).iterdir()}
     assert staged_names == {

@@ -76,7 +76,7 @@ class VibeCADSettings:
     anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
     chatgpt_model: str = DEFAULT_CHATGPT_MODEL
     web_search_enabled: bool = False
-    design_review_enabled: bool = True
+    design_review_enabled: bool = False
     codex_skills_enabled: bool = False
     openai_base_url: str = ""
     anthropic_base_url: str = ""
@@ -201,7 +201,7 @@ def load_settings() -> VibeCADSettings:
         or DEFAULT_ANTHROPIC_MODEL,
         chatgpt_model=pref.GetString("ChatGPTModel", DEFAULT_CHATGPT_MODEL),
         web_search_enabled=pref.GetBool("WebSearchEnabled", False),
-        design_review_enabled=pref.GetBool("DesignReviewEnabled", True),
+        design_review_enabled=pref.GetBool("DesignReviewEnabled", False),
         codex_skills_enabled=pref.GetBool("CodexSkillsEnabled", False),
         openai_base_url=pref.GetString("OpenAIBaseUrl", ""),
         anthropic_base_url=pref.GetString("AnthropicBaseUrl", ""),

@@ -24,7 +24,7 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 )
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -482,7 +482,7 @@ class _Service:
 def _run_candidate(captured, service):
     prepared = prepare_candidate(captured)
     if prepared.get("reference_requirements") and not prepared.get("finalized"):
-        prepared = finalize_candidate(prepared, capture_reference_shapes(service, prepared))
+        prepared = finalize_candidate(prepared, capture_reference_inputs(service, prepared))
     execution = execute_candidate(prepared, cancellation_check=None)
     assert execution.get("ok") is True, execution
     validated = validate_candidate(prepared, execution)
@@ -649,7 +649,7 @@ def _exercise_isolated_lifecycle(root: Path, pack) -> dict:
     failed_prepared = prepare_candidate(failed_capture)
     failed_prepared = finalize_candidate(
         failed_prepared,
-        capture_reference_shapes(service, failed_prepared),
+        capture_reference_inputs(service, failed_prepared),
     )
     failed_execution = execute_candidate(failed_prepared, cancellation_check=None)
     assert failed_execution.get("ok") is False
@@ -772,7 +772,7 @@ def _exercise_isolated_lifecycle(root: Path, pack) -> dict:
     unsafe_prepared = prepare_candidate(unsafe_capture)
     unsafe_prepared = finalize_candidate(
         unsafe_prepared,
-        capture_reference_shapes(service, unsafe_prepared),
+        capture_reference_inputs(service, unsafe_prepared),
     )
     unsafe_execution = execute_candidate(unsafe_prepared, cancellation_check=None)
     assert unsafe_execution.get("ok") is True, unsafe_execution

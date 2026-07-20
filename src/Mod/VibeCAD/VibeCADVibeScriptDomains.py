@@ -2,10 +2,8 @@
 
 """Workbench-qualified VibeScript domain contracts.
 
-The existing Part Design implementation intentionally remains in
-``VibeCADVibeScript``.  This module owns the shared, versioned contract used by
-all other workbenches and the registry that tells surface resolution whether a
-domain is complete enough to expose.  A pack is never considered available
+Every supported workbench, including Part Design, uses this one versioned
+program contract and lifecycle registry.  A pack is never considered available
 merely because its metadata exists: worker, validator, publisher, persistence,
 inspection, and deletion adapters must all be registered.
 """
@@ -25,7 +23,8 @@ from jsonschema import Draft202012Validator
 
 PROGRAM_SCHEMA = "vibecad-vibescript-program-v2"
 PROGRAM_VERSION = 2
-LEGACY_PARTDESIGN_SCHEMA = "vibecad-vibescript-model-v1"
+VIBESCRIPT_VERSION = "2"
+PARTDESIGN_V1_SCHEMA = "vibecad-vibescript-model-v1"
 MAX_SOURCE_BYTES = 256_000
 MAX_INPUT_BYTES = 256_000
 MAX_INPUT_DEPTH = 8
@@ -124,21 +123,10 @@ class VibeScriptWorkbenchPack:
     output_types: tuple[str, ...]
     instructions: str
     api_exports: tuple[str, ...]
-    legacy_partdesign: bool = False
     production_ready: bool = False
 
     @property
     def tool_names(self) -> tuple[str, ...]:
-        if self.legacy_partdesign:
-            return (
-                "vibescript.describe_api",
-                "vibescript.inspect_model",
-                "vibescript.create_model",
-                "vibescript.edit_source",
-                "vibescript.set_parameters",
-                "vibescript.reconfigure_model",
-                "vibescript.delete_model",
-            )
         return tuple(
             f"vibescript.{self.domain}.{operation}"
             for operation in LIFECYCLE_OPERATIONS
@@ -160,7 +148,6 @@ class VibeScriptWorkbenchPack:
             "tool_names": list(self.tool_names),
             "available": bool(available),
             "unavailable_reason": str(reason or ""),
-            "legacy_partdesign": self.legacy_partdesign,
             "production_ready": self.production_ready,
         }
 
@@ -173,7 +160,6 @@ def _pack(
     instructions: str,
     api_exports: tuple[str, ...],
     *,
-    legacy_partdesign: bool = False,
     production_ready: bool = False,
 ) -> VibeScriptWorkbenchPack:
     return VibeScriptWorkbenchPack(
@@ -183,7 +169,6 @@ def _pack(
         output_types=outputs,
         instructions=instructions,
         api_exports=api_exports,
-        legacy_partdesign=legacy_partdesign,
         production_ready=production_ready,
     )
 
@@ -196,8 +181,27 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         ("solid",),
         "Author source-parametric Bodies, sketches, and Part Design features. "
         "Every published output is exactly one validated solid.",
-        ("SketchBuilder", "new_body", "new_sketch", "pad", "pocket", "revolve"),
-        legacy_partdesign=True,
+        (
+            "point",
+            "line",
+            "arc",
+            "circle",
+            "ellipse",
+            "bspline",
+            "external_geometry",
+            "constraint",
+            "sketch",
+            "pad",
+            "pocket",
+            "revolve",
+            "groove",
+            "loft",
+            "polar_pattern",
+            "mirror",
+            "fillet",
+            "chamfer",
+            "body",
+        ),
         production_ready=True,
     ),
     "SketcherWorkbench": _pack(
@@ -550,8 +554,6 @@ def domain_availability(workbench: str | None) -> tuple[bool, str]:
             False,
             f"No VibeScript domain is registered for {workbench or 'no workbench'}.",
         )
-    if pack.legacy_partdesign:
-        return True, ""
     if not pack.production_ready:
         return (
             False,
@@ -2518,7 +2520,7 @@ def domain_context_snapshot(service: Any, domain: str) -> dict[str, Any]:
         ),
         None,
     )
-    if pack is None or pack.legacy_partdesign:
+    if pack is None:
         raise RuntimeError(f"Unknown shared VibeScript domain: {clean_domain!r}.")
     from VibeCADModelingSurface import resolve_service_surface
 
@@ -2548,7 +2550,7 @@ def domain_context_snapshot(service: Any, domain: str) -> dict[str, Any]:
         "native_programs": native_programs[:MAX_DOMAIN_CONTEXT_PROGRAMS],
         "part_document_shapes": (
             _part_document_shape_snapshot(service, doc)
-            if clean_domain == "part" and doc is not None
+            if clean_domain in {"part", "partdesign"} and doc is not None
             else None
         ),
         "assembly_component_shapes": (
@@ -2727,7 +2729,7 @@ def _bounded_context_value(value: Any) -> Any:
     return {
         "_vibecad_context_omitted": True,
         "json_bytes": len(encoded),
-        "reason": "Use inspect_program for the complete persisted value.",
+        "reason": "Use core.inspect scope='program' for the persisted value.",
     }
 
 
@@ -2744,7 +2746,7 @@ def _compact_context_facts(value: Any) -> Any:
     if isinstance(face_details, list) or isinstance(edge_details, list):
         result["subelement_details_context_omitted"] = True
         result["subelement_details_guidance"] = (
-            "Use inspect_program, or select the live object, for bounded 1-based details."
+            "Use core.inspect scope='program', or inspect the live object, for bounded details."
         )
     return result
 
@@ -2844,6 +2846,16 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         if root.is_dir()
         else []
     )
+    if domain == "partdesign":
+        v1_root = Path(str(snapshot.get("project_root") or "")) / "vibescript"
+        if v1_root.is_dir():
+            artifact_directories.extend(
+                directory
+                for directory in v1_root.iterdir()
+                if directory.is_dir()
+                and re.fullmatch(r"[0-9a-f]{32}", directory.name)
+                and directory not in artifact_directories
+            )
     artifact_by_id = {directory.name: directory for directory in artifact_directories}
     native_ids = [str(item["program_id"]) for item in raw_native_programs]
 
@@ -2896,6 +2908,8 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             if directory is None:
                 continue
             manifest_path = directory / "program.json"
+            if not manifest_path.is_file() and domain == "partdesign":
+                manifest_path = directory / "manifest.json"
             if not manifest_path.is_file():
                 continue
             try:
@@ -2923,6 +2937,10 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                     "working_revision",
                     "accepted_revision",
                     "latest_candidate",
+                    "imported_from_schema",
+                    "migration_required",
+                    "migration_reason",
+                    "migration_action",
                 )
                 if manifest.get(key) not in (None, "", [], {})
             }
@@ -2953,7 +2971,11 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 }
             compact["artifact_directory"] = str(directory)
             compact["state"] = (
-                "accepted" if compact.get("accepted_revision") else "working_candidate"
+                "reconfiguration_required"
+                if compact.get("migration_required")
+                else "accepted"
+                if compact.get("accepted_revision")
+                else "working_candidate"
             )
             programs[program_id] = compact
     result = {
@@ -2979,7 +3001,7 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         available_program_count - len(result["programs"]),
     )
     raw_shapes = snapshot.get("part_document_shapes")
-    if domain == "part" and isinstance(raw_shapes, Mapping):
+    if domain in {"part", "partdesign"} and isinstance(raw_shapes, Mapping):
         from vibescript_part_worker import part_shape_facts
 
         completed_shapes = []
@@ -4485,12 +4507,12 @@ def migrate_program_manifest(
     *,
     artifact_directory: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Return one v2 view without relocating a legacy Part Design directory."""
+    """Return one v2 view without relocating a v1 Part Design directory."""
 
     raw = dict(manifest)
     if raw.get("schema") == PROGRAM_SCHEMA and int(raw.get("version") or 0) == 2:
         result = dict(raw)
-    elif raw.get("schema") == LEGACY_PARTDESIGN_SCHEMA:
+    elif raw.get("schema") == PARTDESIGN_V1_SCHEMA:
         directory = Path(artifact_directory) if artifact_directory is not None else None
         source = str(raw.get("source") or "")
         if not source and directory is not None and (directory / "model.py").is_file():
@@ -4507,7 +4529,12 @@ def migrate_program_manifest(
         if not isinstance(parameters, dict):
             parameters = {}
         output_map = raw.get("outputs") if isinstance(raw.get("outputs"), dict) else {}
-        names = raw.get("expected_outputs") or list(output_map)
+        declarations = raw.get("expected_outputs") or list(output_map)
+        names = [
+            str(item.get("name") or "") if isinstance(item, Mapping) else str(item)
+            for item in declarations
+        ]
+        names = [name for name in names if name]
         result = {
             "schema": PROGRAM_SCHEMA,
             "version": PROGRAM_VERSION,
@@ -4532,7 +4559,14 @@ def migrate_program_manifest(
                 raw.get("accepted_revision") or raw.get("revision") or ""
             ),
             "live_outputs": dict(output_map),
-            "migrated_from": LEGACY_PARTDESIGN_SCHEMA,
+            "imported_from_schema": PARTDESIGN_V1_SCHEMA,
+            "migration_required": True,
+            "migration_reason": (
+                "The saved source uses the v1 Part Design execution contract. The "
+                "accepted live objects remain available, but this source cannot execute "
+                "in the v2 domain runtime."
+            ),
+            "migration_action": "vibescript.partdesign.reconfigure_program",
         }
     else:
         raise ValueError("Unsupported VibeScript program manifest schema.")
@@ -4572,16 +4606,14 @@ def _base_tool_spec(
 
 
 def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ...]:
-    if pack.legacy_partdesign:
-        return ()
     program_id = _property_schema(
-        "Exact stable program id returned by create_program, supplied in the injected "
-        "domain program context, or returned by inspect_program.",
+        "Exact stable program id returned by create_program or core.inspect with "
+        "scope='domain' or scope='program'.",
         type="string",
         pattern="^[0-9a-f]{32}$",
     )
     revision = _property_schema(
-        "Exact current working revision returned by inspect_program.",
+        "Exact current working revision returned by core.inspect scope='program'.",
         type="string",
         pattern="^[0-9a-f]{64}$",
     )
@@ -4659,7 +4691,7 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             description=(
                 f"Create, isolate, validate, and publish a new {pack.title} "
                 "VibeScript program with declared typed outputs. Use only when the "
-                "injected domain context has no existing program for the same intent."
+                "active-domain core.inspect result has no existing program for the same intent."
             ),
             properties={
                 "program_name": _property_schema(
@@ -4770,15 +4802,11 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
 
 
 def register_domain_tools(registry: Any, service: Any) -> None:
-    """Register only packs backed by a complete adapter.
-
-    Part Design's golden seven schemas are registered by the legacy service
-    modules and therefore are deliberately skipped here.
-    """
+    """Register only packs backed by a complete adapter."""
 
     for pack in VIBESCRIPT_WORKBENCH_PACKS.values():
         available, _reason = domain_availability(pack.workbench)
-        if pack.legacy_partdesign or not available:
+        if not available:
             continue
         for raw_spec in domain_tool_specs(pack):
             registry.register_spec(raw_spec, None)

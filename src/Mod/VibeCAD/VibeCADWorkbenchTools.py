@@ -4,15 +4,15 @@
 
 A workbench lists provider tools only after that surface has a complete,
 native, exact-target implementation. Each pack owns its complete provider
-surface; tools from adjacent workbenches are never injected. Legacy
-FreeCAD-command wrappers are never exposed; every listed tool is an AI-native implementation. Long-tail
+surface; tools from adjacent workbenches are never injected. FreeCAD command
+wrappers are never exposed; every listed tool is an AI-native implementation. Long-tail
 workbenches expose a read tool only when native object identity is available.
 TestWorkbench and NoneWorkbench intentionally list no tools.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 SKETCHER_PACK_TOOL_NAMES: tuple[str, ...] = (
@@ -71,11 +71,6 @@ PARTDESIGN_PACK_TOOL_NAMES: tuple[str, ...] = (
     "partdesign.boolean",
     "partdesign.set_tip",
 )
-
-# Compatibility export retained for callers that imported the old metadata.
-# Exact surface resolution deliberately does not borrow the Sketcher pack:
-# entering Sketcher activates SketcherWorkbench and its own native surface.
-PARTDESIGN_REQUIRED_ADJACENT_TOOL_NAMES: tuple[str, ...] = ()
 
 PART_PACK_TOOL_NAMES: tuple[str, ...] = (
     "part.find_subelements",
@@ -185,17 +180,7 @@ class WorkbenchToolPack:
     command_prefixes: tuple[str, ...]
     object_types: tuple[str, ...] = ()
     object_templates: tuple[dict[str, str], ...] = ()
-    tool_names: tuple[str, ...] = field(default=())
-    # Retained for additive metadata compatibility. Production packs must leave
-    # this empty: a provider surface is exactly the active workbench's own tools.
-    required_adjacent_tool_names: tuple[str, ...] = field(default=())
-
-    def provider_tool_names(self) -> tuple[str, ...]:
-        names: list[str] = []
-        for tool_name in self.tool_names + self.required_adjacent_tool_names:
-            if tool_name not in names:
-                names.append(tool_name)
-        return tuple(names)
+    tool_names: tuple[str, ...] = ()
 
     def summary(self) -> dict[str, object]:
         return {
@@ -206,8 +191,6 @@ class WorkbenchToolPack:
             "object_types": list(self.object_types),
             "object_templates": list(self.object_templates),
             "tool_names": list(self.tool_names),
-            "required_adjacent_tool_names": list(self.required_adjacent_tool_names),
-            "provider_tool_names": list(self.provider_tool_names()),
         }
 
 
@@ -219,7 +202,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "components as links, ground the base component, then relate "
         "components with joints. The solver positions unfixed components; "
         "check its verdict after every joint. Use only exact component and "
-        "subelement names present in the active Assembly context, and verify "
+        "subelement names returned by core.inspect for the active Assembly, and verify "
         "solved positions from the returned placements or a screenshot.",
         ("Assembly_",),
         ("Assembly::AssemblyObject",),
@@ -250,7 +233,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "Create a machining job for shaped model objects, add cutting "
         "tools, then add operations (profile, pocket, drilling, face). "
         "Depths are absolute Z and face references must be exact; derive both "
-        "from the bounded active-document context or ask the human to confirm "
+        "from core.inspect on the active document or ask the human to confirm "
         "them. An operation reporting an empty toolpath cut nothing; fix "
         "depths or faces before continuing. G-code "
         "postprocessing to files is left to the user in the FreeCAD GUI.",
@@ -278,7 +261,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "FEA",
         "Finite element analysis on solid models: create an analysis with "
         "a CalculiX solver, add a library material, add fixed supports and "
-        "loads on exact model subelements from the active FEM context, "
+        "loads on exact model subelements returned by core.inspect, "
         "generate a Gmsh mesh, then solve. If an exact subelement name or "
         "material UUID is unavailable, ask the human to provide it rather "
         "than guessing or calling another workbench's tools. "
@@ -309,7 +292,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "MaterialWorkbench",
         "materials",
         "Assign materials and appearance to shaped objects. Find the material "
-        "card's exact UUID with material.list_materials, then apply it with "
+        "card's exact UUID with core.inspect scope='domain', then apply it with "
         "material.apply_material; the card carries physical properties used "
         "by FEM. Use material.set_appearance for display color/transparency "
         "only, without physical properties.",
@@ -321,7 +304,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     "MeshWorkbench": WorkbenchToolPack(
         "MeshWorkbench",
         "mesh",
-        "Inspect and repair triangle meshes. List meshes for exact names, "
+        "Inspect and repair triangle meshes. Use core.inspect for exact names, "
         "analyze one mesh to see its defects, then repair only what the "
         "analysis justifies and re-analyze to confirm. A watertight, "
         "defect-free mesh is the goal before conversion or export.",
@@ -337,7 +320,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "tessellates a shaped object into a triangle mesh; shape_from_mesh "
         "sews a mesh into a faceted BREP shape. A solid result requires an "
         "already validated watertight source mesh; ask the human to validate "
-        "it in the owning workbench if that state is not in context. Sources "
+        "it in the owning workbench if core.inspect cannot verify that state. Sources "
         "are never modified.",
         ("MeshPart_",),
         ("Mesh::", "Part::"),
@@ -381,7 +364,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     "PointsWorkbench": WorkbenchToolPack(
         "PointsWorkbench",
         "point clouds",
-        "Read point-cloud data. List clouds for exact names, counts, and "
+        "Read point-cloud data with core.inspect for exact names, counts, and "
         "bounds. Clouds are source data — never modify or delete them; "
         "import and conversion run in the FreeCAD GUI.",
         ("Points_",),
@@ -406,7 +389,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     "RobotWorkbench": WorkbenchToolPack(
         "RobotWorkbench",
         "robot simulation",
-        "Read the robot-simulation setup. List robots, trajectories, and "
+        "Read the robot-simulation setup with core.inspect: robots, trajectories, and "
         "related geometry with their roles; placement and trajectory editing "
         "run in the FreeCAD GUI.",
         ("Robot_",),
@@ -443,7 +426,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "surfaces",
         "Freeform surfacing: fill closed edge loops, loft through profiles, "
         "blend between edges, extend faces, thicken into solids. Reference "
-        "only exact edge and face names present in the active Surface context; "
+        "only exact edge and face names returned by core.inspect; "
         "ask the human to identify missing prerequisites rather than guessing.",
         ("Surface_",),
         ("Surface::",),

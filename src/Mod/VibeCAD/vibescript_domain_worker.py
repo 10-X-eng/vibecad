@@ -787,6 +787,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
     if not isinstance(exports, list) or not isinstance(output_types, list):
         raise TypeError("The domain API contract is missing.")
     if domain in {
+        "partdesign",
         "part",
         "assembly",
         "sketcher",
@@ -804,7 +805,11 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         references = request.get("document_references", [])
         if not isinstance(references, list):
             raise TypeError("document_references must be an array.")
-        if domain == "assembly":
+        if domain == "partdesign":
+            from vibescript_partdesign_worker import configure_partdesign_references
+
+            configure_partdesign_references(root, references)
+        elif domain == "assembly":
             from vibescript_assembly_worker import configure_assembly_references
 
             configure_assembly_references(root, references)
@@ -909,7 +914,18 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         fem_validation = None
         cam_validation = None
         techdraw_validation = None
-        if domain == "draft":
+        partdesign_validation = None
+        if domain == "partdesign":
+            from vibescript_partdesign_worker import validate_and_build_partdesign
+
+            outputs, partdesign_validation = validate_and_build_partdesign(
+                document,
+                result,
+                [dict(item) for item in expected_outputs],
+                root,
+                max_shape_subelements=shape_detail_limit,
+            )
+        elif domain == "draft":
             from vibescript_draft_worker import validate_and_build_draft
 
             outputs, draft_validation = validate_and_build_draft(
@@ -1063,7 +1079,9 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             "stdout": stdout,
             "budget": budget,
         }
-        if domain == "assembly":
+        if domain == "partdesign":
+            response["partdesign_validation"] = partdesign_validation
+        elif domain == "assembly":
             from vibescript_assembly_worker import validate_and_solve_assembly
 
             response["assembly_validation"] = validate_and_solve_assembly(

@@ -32,7 +32,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the wall to cut the opening "
-                    "into, from bim.list_structure."
+                    "into, from core.inspect scope='domain'."
                 ),
             },
             "preset": {
@@ -171,7 +171,7 @@ def run(
         native_wall = doc.getObject(wall_name)
         if native_wall is None:
             raise RuntimeError(
-                f"Host wall '{wall_name}' not found; use bim.list_structure "
+                f"Host wall '{wall_name}' not found; use core.inspect scope='domain' "
                 "for exact names."
             )
         if getattr(getattr(native_wall, "Proxy", None), "Type", "") != "Wall":

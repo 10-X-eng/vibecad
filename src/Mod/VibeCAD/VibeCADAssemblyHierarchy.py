@@ -455,8 +455,7 @@ def capture_assembly_hierarchy(
 ) -> dict[str, Any]:
     """Capture one native AssemblyObject or App::Part as a stable-path graph.
 
-    The historical function name is retained for additive compatibility.  A
-    Part root carries no joint state, but uses the same authenticated node and
+    A Part root carries no joint state, but uses the same authenticated node and
     occurrence contract needed by detailed native BOMs and connector paths.
     """
 

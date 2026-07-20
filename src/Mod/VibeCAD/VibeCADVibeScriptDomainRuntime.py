@@ -63,6 +63,13 @@ _MAX_ASSEMBLY_HIERARCHY_JSON_BYTES = 8 * 1024 * 1024
 # staging an unrelated domain implementation would weaken the same-domain
 # boundary even though the source sandbox cannot import arbitrary modules.
 _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
+    "partdesign": (
+        "vibescript_partdesign_api.py",
+        "vibescript_partdesign_worker.py",
+        "vibescript_sketcher_api.py",
+        "vibescript_sketcher_worker.py",
+        "vibescript_part_worker.py",
+    ),
     "part": (
         "vibescript_part_api.py",
         "vibescript_part_worker.py",
@@ -302,7 +309,7 @@ def parse_domain_tool(
         (
             candidate
             for candidate in contracts.VIBESCRIPT_WORKBENCH_PACKS.values()
-            if not candidate.legacy_partdesign and candidate.domain == domain
+            if candidate.domain == domain
         ),
         None,
     )
@@ -310,11 +317,39 @@ def parse_domain_tool(
 
 
 def _program_directory(project_root: str | Path, domain: str, program_id: str) -> Path:
-    return Path(project_root) / "vibescript" / domain / program_id
+    root = Path(project_root) / "vibescript"
+    canonical = root / domain / program_id
+    if canonical.exists() or domain != "partdesign":
+        return canonical
+    v1_directory = root / program_id
+    return v1_directory if v1_directory.is_dir() else canonical
 
 
 def _manifest_path(project_root: str | Path, domain: str, program_id: str) -> Path:
     return _program_directory(project_root, domain, program_id) / "program.json"
+
+
+def _program_directories(project_root: str | Path, domain: str) -> list[Path]:
+    root = Path(project_root) / "vibescript"
+    canonical_root = root / domain
+    result = (
+        [
+            path
+            for path in canonical_root.iterdir()
+            if path.is_dir() and _PROGRAM_ID.fullmatch(path.name)
+        ]
+        if canonical_root.is_dir()
+        else []
+    )
+    if domain == "partdesign" and root.is_dir():
+        result.extend(
+            path
+            for path in root.iterdir()
+            if path.is_dir()
+            and _PROGRAM_ID.fullmatch(path.name)
+            and path not in result
+        )
+    return result
 
 
 def _load_manifest(
@@ -323,6 +358,10 @@ def _load_manifest(
     program_id: str,
 ) -> dict[str, Any]:
     path = _manifest_path(project_root, pack.domain, program_id)
+    if not path.is_file() and pack.domain == "partdesign":
+        v1_path = path.parent / "manifest.json"
+        if v1_path.is_file():
+            path = v1_path
     if not path.is_file():
         raise FileNotFoundError(
             f"No {pack.title} VibeScript program has id {program_id}."
@@ -918,15 +957,14 @@ def _assembly_reference_contract(service: Any, obj: Any) -> dict[str, Any]:
     }
 
 
-def capture_reference_shapes(
+def capture_reference_inputs(
     service: Any, prepared: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     """Copy validated shape or mesh inputs on the document thread.
 
     No BREP/BMS serialization, artifact I/O, geometry generation, or solver work
     is performed here. The detached kernels are serialized and validated by the
-    background lifecycle after this callback returns. The historical function
-    name is retained for additive compatibility.
+    background lifecycle after this callback returns.
     """
 
     requirements = list(prepared.get("reference_requirements") or [])
@@ -934,6 +972,7 @@ def capture_reference_shapes(
         return []
     domain = prepared["pack"].domain
     if domain not in {
+        "partdesign",
         "part",
         "assembly",
         "sketcher",
@@ -1758,11 +1797,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     "program_name must start with a letter and contain at most 120 "
                     "letters, numbers, spaces, dots, underscores, or hyphens."
                 )
-            domain_root = project_root / "vibescript" / pack.domain
-            if domain_root.is_dir():
-                for path in domain_root.glob("*/program.json"):
+            for directory in _program_directories(project_root, pack.domain):
+                for path in (directory / "program.json", directory / "manifest.json"):
+                    if not path.is_file():
+                        continue
                     try:
-                        other = _read_json(path, "VibeScript program manifest")
+                        other = contracts.migrate_program_manifest(
+                            _read_json(path, "VibeScript program manifest"),
+                            artifact_directory=directory,
+                        )
                     except ValueError:
                         continue
                     if str(other.get("label") or "") == label:
@@ -1795,6 +1838,42 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     observed={"current_revision": base_revision},
                     required_changes=[{"inspect_program": program_id}],
                 )
+            if manifest.get("migration_required") and operation != "reconfigure_program":
+                action = f"vibescript.{pack.domain}.reconfigure_program"
+                _raise(
+                    tool_name,
+                    "PROGRAM_RECONFIGURATION_REQUIRED",
+                    "precondition",
+                    "This saved program uses a source contract that is not executable "
+                    "by the active VibeScript domain runtime. Replace its complete v2 "
+                    "source, input contract, inputs, and outputs before editing or "
+                    "regenerating it.",
+                    requested={"program_id": program_id},
+                    observed={
+                        "working_revision": base_revision,
+                        "accepted_revision": str(
+                            manifest.get("accepted_revision") or ""
+                        ),
+                        "accepted_live_state_preserved": bool(
+                            manifest.get("accepted_revision")
+                        ),
+                        "imported_from_schema": str(
+                            manifest.get("imported_from_schema") or ""
+                        ),
+                    },
+                    required_changes=[
+                        {
+                            "tool": action,
+                            "expected_revision": base_revision,
+                            "replace": [
+                                "source",
+                                "input_schema",
+                                "inputs",
+                                "expected_outputs",
+                            ],
+                        }
+                    ],
+                )
             source = str(manifest.get("source") or "")
             input_schema = manifest.get("input_schema")
             inputs = manifest.get("inputs")
@@ -1808,6 +1887,12 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 input_schema = arguments.get("input_schema")
                 inputs = arguments.get("inputs")
                 expected_outputs = arguments.get("expected_outputs")
+                for key in (
+                    "migration_required",
+                    "migration_reason",
+                    "migration_action",
+                ):
+                    manifest.pop(key, None)
             else:
                 raise ValueError(
                     f"Operation {operation!r} does not prepare a candidate."
@@ -1828,6 +1913,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             _input_references(clean["inputs"])
             if pack.domain
             in {
+                "partdesign",
                 "part",
                 "assembly",
                 "sketcher",
@@ -4888,17 +4974,6 @@ def _staged_artifact_path(
     return path
 
 
-def _reverse_staged_path(
-    prepared: Mapping[str, Any],
-    relative: Any,
-    *,
-    context: str,
-) -> Path:
-    """Compatibility wrapper for Reverse Engineering staged artifacts."""
-
-    return _staged_artifact_path(prepared, relative, context=context)
-
-
 def _reverse_source_points(
     prepared: Mapping[str, Any],
     definition: Mapping[str, Any],
@@ -4971,7 +5046,7 @@ def _reverse_source_points(
     if not isinstance(entry, Mapping):
         return None
     artifact_kind = str(entry.get("artifact_kind") or "")
-    path = _reverse_staged_path(
+    path = _staged_artifact_path(
         prepared,
         entry.get("artifact_path"),
         context="Reverse Engineering source",
@@ -5442,7 +5517,7 @@ def _validate_reverse_engineering_execution(
                         f"Reverse Engineering BREP output {name!r} has no native Shape."
                     )
                 facts = dict(item.get("facts") or {})
-                path = _reverse_staged_path(
+                path = _staged_artifact_path(
                     prepared,
                     item.get("artifact_path"),
                     context=f"Reverse Engineering output {name!r}",
@@ -14330,6 +14405,38 @@ def validate_candidate(
             )
             if output_type in _BREP_OUTPUT_TYPES and pack.domain != "draft":
                 _validate_shape_class(output_type, facts)
+            if pack.domain == "partdesign":
+                data = item.get("partdesign_data")
+                if not isinstance(data, dict):
+                    raise ValueError(
+                        f"Part Design output {declaration['name']!r} has no native "
+                        "Body/feature validation evidence."
+                    )
+                if str(data.get("brep_sha256") or "") != _sha256_file(path):
+                    raise ValueError(
+                        f"Part Design output {declaration['name']!r} BREP digest changed."
+                    )
+                history = data.get("feature_history")
+                sketches = data.get("sketches")
+                interfaces = data.get("interfaces")
+                if (
+                    not isinstance(history, list)
+                    or int(data.get("feature_count") or -1) != len(history)
+                    or not isinstance(sketches, list)
+                    or not isinstance(interfaces, dict)
+                    or any(
+                        not isinstance(sketch, dict)
+                        or int(sketch.get("solver_code") or 0) != 0
+                        or sketch.get("conflicting_constraints")
+                        or sketch.get("redundant_constraints")
+                        or sketch.get("malformed_constraints")
+                        for sketch in sketches
+                    )
+                ):
+                    raise ValueError(
+                        f"Part Design output {declaration['name']!r} has malformed "
+                        "native feature or sketch evidence."
+                    )
             item["facts"] = facts
             item["detached_shape"] = shape
         elif output_type == "mesh" and pack.domain != "fem":
@@ -14436,6 +14543,7 @@ def validate_candidate(
                     f"Spreadsheet output {declaration['name']!r} has no native validation."
                 )
         validated.append(item)
+    partdesign_validation = None
     assembly_validation = None
     sketch_validation = None
     draft_validation = None
@@ -14454,7 +14562,16 @@ def validate_candidate(
     cam_publication_state = None
     techdraw_validation = None
     techdraw_publication_state = None
-    if pack.domain == "assembly":
+    if pack.domain == "partdesign":
+        partdesign_validation = execution.get("partdesign_validation")
+        if not isinstance(partdesign_validation, dict):
+            raise ValueError("The Part Design worker returned no domain validation.")
+        reported = partdesign_validation.get("outputs")
+        if not isinstance(reported, list) or [item.get("name") for item in reported] != [
+            item["name"] for item in validated
+        ]:
+            raise ValueError("Part Design domain validation changed output identity.")
+    elif pack.domain == "assembly":
         assembly_validation = _validate_assembly_execution(
             prepared,
             execution,
@@ -14580,6 +14697,8 @@ def validate_candidate(
         "budget": dict(execution.get("budget") or {}),
         "process": dict(execution.get("process") or {}),
     }
+    if partdesign_validation is not None:
+        result["partdesign_validation"] = partdesign_validation
     if assembly_validation is not None:
         result["assembly_validation"] = assembly_validation
     if sketch_validation is not None:
@@ -14710,8 +14829,15 @@ def accept_candidate(
             "accepted_is_current": True,
             "next_write_expected_revision": revision,
             "verification_call": {
-                "tool": f"vibescript.{domain}.inspect_program",
-                "arguments": {"program_id": program_id},
+                "tool": "core.inspect",
+                "arguments": {
+                    "scope": "program",
+                    "target": program_id,
+                    "path": "",
+                    "offset": 0,
+                    "limit": 50,
+                    "attach": False,
+                },
             },
             "verification_goal": (
                 "Confirm accepted_revision equals working_revision and every declared "
@@ -14997,6 +15123,10 @@ class DeclarativeDomainAdapter:
                 "live_outputs",
                 "latest_candidate",
                 "artifact_directory",
+                "imported_from_schema",
+                "migration_required",
+                "migration_reason",
+                "migration_action",
                 "live_state",
             )
             if contract.get(key) not in (None, "", [], {})
@@ -15015,18 +15145,22 @@ class DeclarativeDomainAdapter:
             and working_revision == accepted_revision
             and candidate_status == "accepted"
         )
+        migration_required = bool(contract.get("migration_required"))
         return {
             "ok": True,
             "program": program,
             "model_state": {
                 "status": (
-                    "accepted_current"
+                    "reconfiguration_required"
+                    if migration_required
+                    else "accepted_current"
                     if accepted_is_current
                     else "working_candidate_not_accepted"
                 ),
                 "candidate_status": candidate_status,
                 "accepted_is_current": accepted_is_current,
                 "accepted_live_state_preserved": bool(accepted_revision),
+                **({"migration_required": True} if migration_required else {}),
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
                     "source_only": f"vibescript.{self.pack.domain}.edit_source",
@@ -15036,7 +15170,11 @@ class DeclarativeDomainAdapter:
                     ),
                 },
                 "instruction": (
-                    "If this candidate is not accepted, use latest_candidate.failure and "
+                    "Replace the complete program contract with the domain-qualified "
+                    "reconfigure_program tool. The prior accepted live objects remain "
+                    "available until a valid v2 candidate is accepted."
+                    if migration_required
+                    else "If this candidate is not accepted, use latest_candidate.failure and "
                     "the accepted contract as the repair baseline, then make the narrowest "
                     "guarded mutation using next_write_expected_revision."
                     if not accepted_is_current
@@ -15443,6 +15581,172 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                             "public binding documentation in this build, so they are not exposed."
                         ),
                     },
+                ],
+            }
+        )
+        return description
+
+
+@dataclass
+class PartDesignDomainAdapter(DeclarativeDomainAdapter):
+    """Production adapter for source-parametric Part Design programs."""
+
+    production_ready: bool = True
+
+    def describe_api(self) -> dict[str, Any]:
+        description = super().describe_api()
+        description.update(
+            {
+                "api_contract": "vibecad-vibescript-partdesign-api-v2",
+                "units": {"length": "millimetres", "angle": "degrees"},
+                "evaluation_model": (
+                    "API calls build one immutable Body/sketch/feature graph. The graph "
+                    "is evaluated as native PartDesign and Sketcher objects in an isolated "
+                    "FreeCADCmd document; only exact validated single-solid BREP tips cross "
+                    "the publication boundary."
+                ),
+                "profile_contract": {
+                    "geometry": (
+                        "Create geometry with point/line/arc/circle/ellipse/bspline and "
+                        "constraints with api.constraint, then pass those exact graph values "
+                        "to api.sketch."
+                    ),
+                    "invariants": (
+                        "Set require_fully_constrained and require_closed_profile whenever "
+                        "the downstream feature depends on those invariants. Solver conflicts, "
+                        "redundancy, malformed constraints, DoF, and profile readiness are "
+                        "validated in the worker."
+                    ),
+                },
+                "feature_contract": {
+                    "additive": ["pad", "revolve", "loft"],
+                    "subtractive": ["pocket", "groove", "loft(subtractive=True)"],
+                    "transform": ["polar_pattern", "mirror"],
+                    "dressup": ["fillet", "chamfer"],
+                    "publication": (
+                        "Return api.body(final_feature, ...) for every declared solid. "
+                        "Keep result names stable across regeneration."
+                    ),
+                },
+                "operation_selection": {
+                    "profile_geometry": (
+                        "Use point, line, arc, circle, ellipse, bspline, and "
+                        "external_geometry only for the exact native curve type needed."
+                    ),
+                    "profile_constraints": (
+                        "Use the single api.constraint operation for geometric and "
+                        "dimensional intent; do not recreate geometry or invent native indexes."
+                    ),
+                    "add_material": "pad, revolve, loft(subtractive=False)",
+                    "remove_material": "pocket, groove, loft(subtractive=True)",
+                    "repeat_or_reflect": "polar_pattern or mirror",
+                    "edge_finish": "fillet or chamfer with one geometric query",
+                    "publish": "api.body",
+                    "redundancy_contract": (
+                        "Each native feature family has one model-facing operation. There "
+                        "are no rectangle, box, add-feature, recompute, update, or output "
+                        "aliases. Compose profiles from explicit geometry, reuse graph values, "
+                        "and publish only the final feature through api.body."
+                    ),
+                },
+                "semantic_interfaces": {
+                    "purpose": (
+                        "Declare mating, datum, load, drawing, and machining references in "
+                        "api.body(interfaces=...). Origin or geometric query selections are "
+                        "resolved against the accepted solid in the worker; raw FaceN/EdgeN "
+                        "interface declarations are forbidden."
+                    ),
+                    "selection_modes": ["origin", "query"],
+                },
+                "publication_contract": {
+                    "identity": (
+                        "Each program/output pair owns one stable native publication identity "
+                        "updated in place after worker validation."
+                    ),
+                    "shape": "exact OCC Solid containing exactly one valid solid",
+                    "gui_thread": (
+                        "The document thread applies detached validated shapes and metadata "
+                        "only; it performs no provider wait, subprocess wait, recompute-heavy "
+                        "feature construction, or artifact I/O."
+                    ),
+                },
+                "workbench_handoffs": {
+                    "sketcher": (
+                        "Use Sketcher when the requested result is an independently editable "
+                        "2D constraint definition rather than a Body feature history."
+                    ),
+                    "part": (
+                        "Use Part for direct OCC construction without a PartDesign::Body "
+                        "history."
+                    ),
+                    "assembly": (
+                        "Use Assembly to link accepted components, ground instances, add "
+                        "joints, and solve motion. Part Design publishes component geometry "
+                        "and semantic interfaces; it does not position an assembly."
+                    ),
+                    "rule": (
+                        "The model cannot switch workbench or engine. Explain the exact "
+                        "handoff and ask the human to switch when the requested result belongs "
+                        "to another domain."
+                    ),
+                },
+                "error_contract": {
+                    "source_or_contract": (
+                        "Correct the exact policy, schema, graph, or output declaration named "
+                        "by the failure; do not broaden the source or change unrelated inputs."
+                    ),
+                    "sketch": (
+                        "Use the returned graph ids, constraint names, solver sets, DoF, and "
+                        "profile openings to correct only the failing profile intent."
+                    ),
+                    "feature": (
+                        "Use feature_history and native validation evidence to correct the "
+                        "first invalid feature; the accepted revision remains live."
+                    ),
+                    "publication": (
+                        "A reference-preflight or stale-consumer rejection is not permission "
+                        "to delete a consumer. Preserve its semantic reference or ask the human."
+                    ),
+                },
+                "recommended_patterns": [
+                    {
+                        "goal": "fully constrained parametric rectangular Body",
+                        "source": (
+                            "bottom = api.line([0,0], [inputs['width'],0], name='Bottom')\n"
+                            "right = api.line([inputs['width'],0], "
+                            "[inputs['width'],inputs['depth']], name='Right')\n"
+                            "top = api.line([inputs['width'],inputs['depth']], "
+                            "[0,inputs['depth']], name='Top')\n"
+                            "left = api.line([0,inputs['depth']], [0,0], name='Left')\n"
+                            "constraints = [\n"
+                            " api.constraint('coincident',[{'geometry':bottom,'point':'end'},"
+                            "{'geometry':right,'point':'start'}]),\n"
+                            " api.constraint('coincident',[{'geometry':right,'point':'end'},"
+                            "{'geometry':top,'point':'start'}]),\n"
+                            " api.constraint('coincident',[{'geometry':top,'point':'end'},"
+                            "{'geometry':left,'point':'start'}]),\n"
+                            " api.constraint('coincident',[{'geometry':left,'point':'end'},"
+                            "{'geometry':bottom,'point':'start'}]),\n"
+                            " api.constraint('horizontal',[bottom]),\n"
+                            " api.constraint('horizontal',[top]),\n"
+                            " api.constraint('vertical',[right]),\n"
+                            " api.constraint('vertical',[left]),\n"
+                            " api.constraint('distance',[bottom],value=inputs['width'],name='Width'),\n"
+                            " api.constraint('distance',[right],value=inputs['depth'],name='Depth'),\n"
+                            " api.constraint('coincident',[{'geometry':bottom,'point':'start'},"
+                            "'origin'],name='Anchored'),\n"
+                            "]\n"
+                            "profile = api.sketch([bottom,right,top,left], constraints, "
+                            "require_fully_constrained=True, require_closed_profile=True, "
+                            "label='Base Profile')\n"
+                            "base = api.pad(profile, inputs['height'], label='Base Pad')\n"
+                            "result = {'Part': api.body(base, interfaces={'Top': {"
+                            "'selection': {'type':'query','element_type':'face',"
+                            "'expected_count':1,'geometry_type':'plane','normal':[0,0,1]},"
+                            "'description':'Top mating face'}}, label='Part')}"
+                        ),
+                        "expected_outputs": [{"name": "Part", "type": "solid"}],
+                    }
                 ],
             }
         )
@@ -16631,11 +16935,6 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                         "There is no separate set-value, set-formula, set-alias, set-unit, or "
                         "format-cell operation; api.cell is the single best form for all of them."
                     ),
-                    "legacy_mapping_input": (
-                        "api.sheet still accepts an address mapping only to reopen older persisted "
-                        "programs. New model-generated source must use an explicit sequence of "
-                        "api.cell values so validation, formatting precedence, and repair paths stay exact."
-                    ),
                     "no_structural_edit_aliases": (
                         "Do not model row/column insertion or deletion as separate operations. "
                         "api.sheet declares the complete desired final batch, so structural edit "
@@ -16943,11 +17242,6 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                         "choose by exact UUID from the bounded catalog, using name, tags, common "
                         "selection values, and complete property-name inventories. Never invent a "
                         "UUID or infer a hidden card from its display name"
-                    ),
-                    "helper_label": (
-                        "api.material label is retained for source compatibility but does not name "
-                        "a live object. Use api.assign/api.appearance label and the stable result "
-                        "key for provider-visible output identity"
                     ),
                 },
                 "appearance_contract": {
@@ -17625,17 +17919,11 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "rebuild_neighbourhood",
                     "harmonize_normals",
                 ],
-                "repair_defaults": {
-                    "enabled_for_compatibility": [
-                        "remove_duplicate_points",
-                        "remove_duplicate_facets",
-                        "fix_degenerations",
-                        "harmonize_normals",
-                    ],
+                "repair_contract": {
                     "model_rule": (
-                        "When intent calls for fewer passes, explicitly set every unrelated "
-                        "enabled default to False. The worker records the exact applied list, "
-                        "so verify it rather than assuming only the named non-default ran."
+                        "Every repair pass defaults to disabled. Explicitly enable exactly the "
+                        "passes required by the request; an empty repair operation is rejected. "
+                        "The worker records the exact applied list for verification."
                     ),
                     "decimation_pair": (
                         "decimate_reduction and decimate_tolerance must both be zero or both be "
@@ -18788,11 +19076,6 @@ class InspectionDomainAdapter(DeclarativeDomainAdapter):
                         "Use [lower,upper] when signed inward/outward allowances differ; a scalar expands "
                         "to symmetric [-value,+value]."
                     ),
-                    "thickness_compatibility": (
-                        "The current native FreeCAD Inspection engine stores Thickness but does not apply "
-                        "it to Distances. Leave thickness=0.0; model physical offsets in nominal geometry "
-                        "instead. The parameter remains only for source compatibility."
-                    ),
                 },
                 "graph_contract": (
                     "Every comparison used by group or measurement must be returned as "
@@ -19369,13 +19652,6 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                         "layups, arbitrary material cards, modal result sets, or result "
                         "postprocessing merely because native FreeCAD supports some of them."
                     ),
-                    "compatibility_values": (
-                        "solver.analysis_type retains native static, frequency, thermomech, "
-                        "check, and buckling values for persisted-program compatibility. Under "
-                        "the current exactly-one-result contract, only static is a supported "
-                        "numerical solve. frequency, buckling, and check are validate_only; "
-                        "thermomech lacks the thermal constraints required for a production solve."
-                    ),
                 },
                 "operation_selection": {
                     "solver": "Create once for one analysis and configure native CalculiX settings.",
@@ -19529,16 +19805,10 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                     ),
                 },
                 "solver_contract": {
-                    "analysis_type_matrix": {
-                        "static": "validate_only or a real exactly-one-result CalculiX solve",
-                        "frequency": "validate_only only under this single-result contract",
-                        "buckling": "validate_only only under this single-result contract",
-                        "check": "validate_only only; it is an input check, not a result field",
-                        "thermomech": (
-                            "compatibility value only in this surface; required thermal constraints "
-                            "are not exposed, so do not claim a production solve"
-                        ),
-                    },
+                    "analysis_type": (
+                        "fixed to a static 3D continuum analysis; there is no unsupported "
+                        "frequency, thermomechanical, buckling, or check selector"
+                    ),
                     "matrix_solver": (
                         "default, pastix, pardiso, spooles, iterativescaling, and "
                         "iterativecholesky are native CalculiX settings, not guarantees that an "
@@ -20862,7 +21132,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "indices are 1-based and worker errors report the available range."
                     ),
                     "semantic": (
-                        "Use {'type':'published_interface','interface_name':'...'} for legacy "
+                        "Use {'type':'published_interface','interface_name':'...'} for "
                         "regenerating scripted publications. Available names and geometry "
                         "types appear in Assembly domain component_candidates context."
                     ),
@@ -21249,12 +21519,11 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
 
 def install_builtin_adapters() -> None:
     for pack in contracts.VIBESCRIPT_WORKBENCH_PACKS.values():
-        if (
-            pack.legacy_partdesign
-            or contracts.get_domain_adapter(pack.domain) is not None
-        ):
+        if contracts.get_domain_adapter(pack.domain) is not None:
             continue
-        if pack.domain == "part":
+        if pack.domain == "partdesign":
+            adapter = PartDesignDomainAdapter(pack)
+        elif pack.domain == "part":
             adapter = PartDomainAdapter(pack)
         elif pack.domain == "sketcher":
             adapter = SketcherDomainAdapter(pack)

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADEditState import active_edit_state
+
 TOOL_SPEC = {
     "name": "partdesign.edit_sketch",
     "description": (
@@ -97,10 +99,11 @@ def run(service: Any, sketch_name: str) -> dict[str, Any]:
             "The active FreeCAD GUI document does not expose native sketch edit controls."
         )
 
-    current = _native_edit_object(get_in_edit())
+    current_state = active_edit_state(gui_document)
+    current = current_state.document_object
     if _same_document_object(current, sketch):
         return _success_response(service, document, sketch, opened_now=False)
-    if current is not None:
+    if current_state.active:
         return _invalid(
             f"Cannot open sketch {sketch.Name}; {getattr(current, 'Name', 'another object')} "
             "is already in edit mode. The human must finish or close that edit session first.",
@@ -110,6 +113,11 @@ def run(service: Any, sketch_name: str) -> dict[str, Any]:
                 "label": getattr(current, "Label", getattr(current, "Name", None)),
                 "type": getattr(current, "TypeId", None),
             },
+        )
+    if current_state.error:
+        return _invalid(
+            f"FreeCAD edit state could not be verified: {current_state.error}",
+            requested_sketch=sketch.Name,
         )
 
     control = getattr(Gui, "Control", None)
@@ -138,11 +146,13 @@ def run(service: Any, sketch_name: str) -> dict[str, Any]:
             requested_sketch=sketch.Name,
         )
 
-    active_after = _native_edit_object(get_in_edit())
+    active_after_state = active_edit_state(gui_document)
+    active_after = active_after_state.document_object
     if not _same_document_object(active_after, sketch):
         return _invalid(
             f"FreeCAD did not retain sketch {sketch.Name} as the active edit object.",
             requested_sketch=sketch.Name,
+            edit_state_error=active_after_state.error or None,
             active_edit_object={
                 "name": getattr(active_after, "Name", None),
                 "type": getattr(active_after, "TypeId", None),
@@ -151,13 +161,6 @@ def run(service: Any, sketch_name: str) -> dict[str, Any]:
             else None,
         )
     return _success_response(service, document, sketch, opened_now=True)
-
-
-def _native_edit_object(value: Any) -> Any | None:
-    if isinstance(value, (tuple, list)):
-        value = value[0] if value else None
-    provider_object = getattr(value, "Object", None)
-    return provider_object if provider_object is not None else value
 
 
 def _same_document_object(first: Any, second: Any) -> bool:

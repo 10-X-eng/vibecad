@@ -33,8 +33,13 @@ _CELL_PROPERTIES = {
     "background",
 }
 _RANGE_PROPERTIES = {"area", "style", "alignment", "foreground", "background"}
-_LEGACY_SHEET_PROPERTIES = {"range_styles", "column_widths", "row_heights", "label"}
-_SHEET_PROPERTIES = _LEGACY_SHEET_PROPERTIES | {"merged_ranges"}
+_SHEET_PROPERTIES = {
+    "range_styles",
+    "merged_ranges",
+    "column_widths",
+    "row_heights",
+    "label",
+}
 
 
 def _default_correction(details: Mapping[str, Any]) -> str:
@@ -203,13 +208,8 @@ def _first_difference(expected: Any, observed: Any, path: str = "definition") ->
 def validate_spreadsheet_definition(value: Any, *, context: str) -> dict[str, Any]:
     """Reconstruct a definition through the explicit API and require byte-equivalent form."""
 
-    normalized_value = _payload(value, context=context)
-    normalized_properties = dict(normalized_value["properties"])
-    if set(normalized_properties) == _LEGACY_SHEET_PROPERTIES:
-        normalized_properties["merged_ranges"] = []
-        normalized_value = {**normalized_value, "properties": normalized_properties}
     payload = _expect_graph(
-        normalized_value,
+        _payload(value, context=context),
         operation="sheet",
         output_type="sheet",
         property_names=_SHEET_PROPERTIES,
@@ -751,11 +751,8 @@ def sheet_readback(sheet: Any, definition: Mapping[str, Any]) -> dict[str, Any]:
             (str(address) for address in list(sheet.getNonEmptyCells() or [])),
             key=_address_key,
         ),
+        "merged_ranges": merged_ranges,
     }
-    if merged_ranges:
-        # Preserve the v1 no-merge digest shape so accepted legacy programs can
-        # be safely reauthorized and migrated on their next successful write.
-        readback["merged_ranges"] = merged_ranges
     return {
         "sha256": _json_sha256(readback),
         "affected_cell_count": len(cells),

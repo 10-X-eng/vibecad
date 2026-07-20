@@ -33,7 +33,7 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     MeshPartDomainAdapter,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -412,7 +412,7 @@ def _prepare_execute_validate(captured: dict[str, object], service: _Service):
     assert prepared["reference_requirements"]
     prepared = finalize_candidate(
         prepared,
-        capture_reference_shapes(service, prepared),
+        capture_reference_inputs(service, prepared),
     )
     execution = execute_candidate(prepared, cancellation_check=None)
     assert execution.get("ok") is True, execution
@@ -741,7 +741,7 @@ def _exercise_native_operation_matrix(
             prepared = prepare_candidate(capture)
             prepared = finalize_candidate(
                 prepared,
-                capture_reference_shapes(service, prepared),
+                capture_reference_inputs(service, prepared),
             )
             execution = execute_candidate(prepared, cancellation_check=None)
             assert execution["ok"] is False
@@ -893,7 +893,7 @@ def main() -> int:
         failed_prepared = prepare_candidate(failed_capture)
         failed_prepared = finalize_candidate(
             failed_prepared,
-            capture_reference_shapes(service, failed_prepared),
+            capture_reference_inputs(service, failed_prepared),
         )
         failed_execution = execute_candidate(
             failed_prepared,

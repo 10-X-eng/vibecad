@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from VibeCADEditState import active_edit_object
+
 
 ActionHandler = Callable[[], dict[str, Any]]
 VerificationHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -29,23 +31,7 @@ def _diagnostic_generation_advanced(
 
 def _active_edit_recompute_objects(doc: Any) -> list[Any] | None:
     """Limit an in-edit Sketcher transaction to the sketch being authored."""
-    try:
-        import FreeCADGui as Gui
-    except Exception:
-        return None
-    gui_document = getattr(Gui, "ActiveDocument", None)
-    get_in_edit = getattr(gui_document, "getInEdit", None)
-    if not callable(get_in_edit):
-        return None
-    try:
-        edit_object = get_in_edit()
-    except Exception:
-        return None
-    if isinstance(edit_object, (tuple, list)):
-        edit_object = edit_object[0] if edit_object else None
-    provider_object = getattr(edit_object, "Object", None)
-    if provider_object is not None:
-        edit_object = provider_object
+    edit_object = active_edit_object()
     if (
         getattr(edit_object, "TypeId", "") == "Sketcher::SketchObject"
         and getattr(edit_object, "Document", None) is doc

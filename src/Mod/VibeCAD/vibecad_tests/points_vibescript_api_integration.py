@@ -37,7 +37,7 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     PointsDomainAdapter,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -331,7 +331,7 @@ def _prepare_execute_validate(captured: dict, service: _Service):
     if prepared["reference_requirements"]:
         prepared = finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     assert (Path(prepared["staging"]) / "request.json").is_file()
     execution = execute_candidate(prepared, cancellation_check=None)
@@ -537,8 +537,6 @@ def main() -> int:
         assert surface.cad_tool_names == tuple(
             f"vibescript.points.{name}"
             for name in (
-                "describe_api",
-                "inspect_program",
                 "create_program",
                 "edit_source",
                 "set_inputs",
@@ -678,7 +676,7 @@ def main() -> int:
         failed_prepared = prepare_candidate(failed_capture)
         failed_prepared = finalize_candidate(
             failed_prepared,
-            capture_reference_shapes(service, failed_prepared),
+            capture_reference_inputs(service, failed_prepared),
         )
         failed_execution = execute_candidate(
             failed_prepared,

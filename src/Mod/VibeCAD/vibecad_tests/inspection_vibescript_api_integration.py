@@ -33,7 +33,7 @@ from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     InspectionDomainAdapter,
     abandon_prepared_candidate,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -204,9 +204,8 @@ def _exercise_source_api() -> None:
     assert "measured_count only" in description["distance_contract"][
         "completeness"
     ]["within_tolerance_fraction"]
-    assert "does not apply" in description["distance_contract"][
-        "thickness_compatibility"
-    ]
+    comparison_signature = str(inspect.signature(api.comparison))
+    assert "thickness" not in comparison_signature
     assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, allow_nan=False).encode("utf-8")) < 32 * 1024
 
@@ -328,7 +327,7 @@ def _exercise_worker(root: Path) -> dict:
     service = _Service(root)
     prepared = prepare_candidate(captured)
     try:
-        snapshots = capture_reference_shapes(service, prepared)
+        snapshots = capture_reference_inputs(service, prepared)
         snapshot_kinds = {
             item["reference_artifact_kind"] for item in snapshots
         }
@@ -434,7 +433,7 @@ def _prepare_execute_validate(captured: dict[str, object], service: _Service):
     if prepared["reference_requirements"]:
         prepared = finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     execution = execute_candidate(prepared, cancellation_check=None)
     return prepared, execution, (
@@ -579,8 +578,6 @@ def _exercise_lifecycle() -> dict[str, object]:
         assert surface.cad_tool_names == tuple(
             f"vibescript.inspection.{name}"
             for name in (
-                "describe_api",
-                "inspect_program",
                 "create_program",
                 "edit_source",
                 "set_inputs",

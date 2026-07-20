@@ -313,7 +313,6 @@ class InspectionDomainAPI:
         *,
         search_radius: float,
         tolerance: float | Sequence[float],
-        thickness: float = 0.0,
         require_complete: bool = True,
         label: str = "",
     ) -> DomainValue:
@@ -382,13 +381,7 @@ class InspectionDomainAPI:
             nominal_references,
             search_radius=radius,
             tolerance=bounds,
-            thickness=_number(
-                "comparison",
-                "thickness",
-                thickness,
-                minimum=0.0,
-                maximum=_MAX_DISTANCE,
-            ),
+            thickness=0.0,
             require_complete=require_complete,
             label=_label("comparison", label),
         )

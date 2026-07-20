@@ -25,7 +25,7 @@ TOOL_SPEC = {
         "transaction: numbers, text, formulas (content starting with '='), and "
         "optional aliases. Aliased cells can be referenced from parametric "
         "expressions in other objects as SheetName.alias. Existing cell content "
-        "is overwritten; read the sheet first with spreadsheet.read_sheet when "
+        "is overwritten; read the sheet first with core.inspect scope='domain' when "
         "unsure."
     ),
     "contextual": True,

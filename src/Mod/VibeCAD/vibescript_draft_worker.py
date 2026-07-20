@@ -357,13 +357,15 @@ def _create_primitive(document: Any, payload: Mapping[str, Any], name: str) -> A
             arguments = _arguments(payload, count=1, context=context)
             properties = _properties(
                 payload,
-                names=common | {"closed", "make_face"},
-                context=context,
-                defaults={
-                    "fillet_radius": 0.0,
-                    "chamfer_size": 0.0,
-                    "subdivisions": 0,
+                names=common
+                | {
+                    "closed",
+                    "make_face",
+                    "fillet_radius",
+                    "chamfer_size",
+                    "subdivisions",
                 },
+                context=context,
             )
             obj = Draft.make_wire(
                 [_vector(point, context=f"{context}.points") for point in arguments[0]],
@@ -399,9 +401,8 @@ def _create_primitive(document: Any, payload: Mapping[str, Any], name: str) -> A
             arguments = _arguments(payload, count=2, context=context)
             properties = _properties(
                 payload,
-                names=common | {"make_face"},
+                names=common | {"make_face", "fillet_radius", "chamfer_size"},
                 context=context,
-                defaults={"fillet_radius": 0.0, "chamfer_size": 0.0},
             )
             obj = Draft.make_rectangle(
                 _number(arguments[0], context=f"{context}.length"),
@@ -631,19 +632,17 @@ def _create_array(
             "total_angle_degrees",
             "center",
             "axis",
+            "interval_axis",
+            "radial_distance",
+            "tangential_distance",
+            "number_circles",
+            "symmetry",
             "use_link",
             "fuse",
             "label",
             "graph_id",
         },
         context="api.array",
-        defaults={
-            "interval_axis": [0.0, 0.0, 0.0],
-            "radial_distance": 100.0,
-            "tangential_distance": 50.0,
-            "number_circles": 3,
-            "symmetry": 1,
-        },
     )
     source, source_data = _array_source(
         document,

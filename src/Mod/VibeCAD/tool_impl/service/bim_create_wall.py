@@ -169,7 +169,7 @@ def run(
             if level is None:
                 raise RuntimeError(
                     f"Level object '{level_name}' not found; use "
-                    "bim.list_structure for exact names."
+                    "core.inspect scope='domain' for exact names."
                 )
         wall = Arch.makeWall(
             native_baseline,

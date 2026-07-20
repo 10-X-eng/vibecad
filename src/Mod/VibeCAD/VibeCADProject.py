@@ -33,11 +33,6 @@ DEFAULT_CONVERSATION_TITLE = "New conversation"
 MODELING_ENGINES = frozenset({"native", "build123d", "openscad", "vibescript"})
 DEFAULT_MODELING_ENGINE = "vibescript"
 
-# Compatibility aliases for extensions written before the engine became global.
-# Persistence and provider context use only ``modeling_engine``.
-PARTDESIGN_ENGINES = MODELING_ENGINES
-DEFAULT_PARTDESIGN_ENGINE = DEFAULT_MODELING_ENGINE
-
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -228,6 +223,10 @@ def _validated_conversation_turns(
                 f"VibeCAD conversation {source} turn {index} has no text content."
             )
         turn = dict(item)
+        # Legacy files could retain complete tool arguments/results on an
+        # assistant turn. Strip them during validation so the next atomic
+        # thread write migrates the conversation to text-only history.
+        turn.pop("tool_trace", None)
         turn["content"] = content.strip()
         sequence = int(turn.get("sequence") or index + 1)
         if sequence != index + 1:
@@ -830,6 +829,39 @@ class VibeCADProjectStore:
             raise RuntimeError(f"VibeCAD project has an invalid modeling engine: {engine!r}.")
         return engine
 
+    @staticmethod
+    def read_modeling_engine_manifest(manifest_path: str | Path) -> str:
+        """Read only the persisted engine from an already captured project path.
+
+        This helper deliberately has no FreeCAD/document access, allowing the
+        interactive session to perform the filesystem read off the document
+        thread after it captures the active project's identity.
+        """
+
+        path = Path(str(manifest_path))
+        if not path.is_file():
+            return DEFAULT_MODELING_ENGINE
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"VibeCAD project manifest could not be read from {path}: {exc}"
+            ) from exc
+        if not isinstance(data, dict) or data.get("schema") != PROJECT_SCHEMA:
+            raise RuntimeError(
+                f"VibeCAD project manifest at {path} has an invalid schema."
+            )
+        engine = str(
+            data.get("modeling_engine")
+            or data.get("partdesign_engine")
+            or DEFAULT_MODELING_ENGINE
+        ).strip().lower()
+        if engine not in MODELING_ENGINES:
+            raise RuntimeError(
+                f"VibeCAD project has an invalid modeling engine: {engine!r}."
+            )
+        return engine
+
     def set_modeling_engine(self, engine: str) -> dict[str, Any]:
         clean = str(engine or "").strip().lower()
         if clean not in MODELING_ENGINES:
@@ -842,16 +874,6 @@ class VibeCADProjectStore:
             "manifest_path": self.project_scope()["manifest_path"],
             "updated_at": saved.get("updated_at"),
         }
-
-    def partdesign_engine(self) -> str:
-        """Compatibility alias for the former project-scoped accessor."""
-
-        return self.modeling_engine()
-
-    def set_partdesign_engine(self, engine: str) -> dict[str, Any]:
-        """Compatibility alias for the former project-scoped setter."""
-
-        return self.set_modeling_engine(engine)
 
     def _default_manifest(self, scope: dict[str, Any]) -> dict[str, Any]:
         return {

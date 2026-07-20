@@ -28,7 +28,7 @@ import Path.Main.Simulation as NativeSimulation  # noqa: E402
 from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     execute_candidate,
     finish_delete,
     finalize_candidate,
@@ -263,14 +263,12 @@ def _exercise_api(document_uid: str) -> dict[str, object]:
 def _exercise_native_worker() -> None:
     surface = resolve_modeling_surface("CAMWorkbench", "vibescript")
     assert surface.available, surface.unavailable_reason
-    assert len(surface.tool_names) == 11
+    assert len(surface.tool_names) == 10
     assert tuple(
         name for name in surface.tool_names if name.startswith("vibescript.")
     ) == tuple(
         f"vibescript.cam.{operation}"
         for operation in (
-            "describe_api",
-            "inspect_program",
             "create_program",
             "edit_source",
             "set_inputs",
@@ -906,7 +904,7 @@ def _prepare_execute(
 ) -> tuple[dict[str, object], dict[str, object]]:
     prepared = prepare_candidate(captured)
     assert prepared["finalized"] is False
-    snapshots = capture_reference_shapes(service, prepared)
+    snapshots = capture_reference_inputs(service, prepared)
     prepared = finalize_candidate(prepared, snapshots)
     staged_names = {
         path.name for path in FilesystemPath(prepared["staging"]).iterdir()

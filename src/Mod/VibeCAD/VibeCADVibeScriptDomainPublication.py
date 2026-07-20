@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from array import array
 import hashlib
+from io import BytesIO
 import json
 import math
 import re
 from typing import Any, Mapping
+import zipfile
 
 import VibeCADReferenceContracts as reference_contracts
 import VibeCADScriptedPublication as scripted_publication
@@ -190,6 +192,7 @@ _MAX_INSPECTION_ROLLBACK_PROPERTY_BYTES = 2 * 1024 * 1024
 _MAX_INSPECTION_ROLLBACK_DISTANCES = 2_000_000
 _MAX_ROBOT_ROLLBACK_PROPERTIES = 256
 _MAX_ROBOT_ROLLBACK_PROPERTY_BYTES = 4 * 1024 * 1024
+_MAX_ROLLBACK_PROPERTY_UNCOMPRESSED_BYTES = 16 * 1024 * 1024
 _ROBOT_TRAJECTORY_TYPES = frozenset(
     {"Robot::TrajectoryObject", "Robot::TrajectoryDressUpObject"}
 )
@@ -202,6 +205,44 @@ _INSPECTION_FEATURE_KERNEL_PROPERTIES = frozenset(
         "Distances",
     }
 )
+
+
+def _property_content_sha256(content: bytes | bytearray) -> str:
+    """Hash persisted property data while ignoring ZIP container metadata."""
+
+    raw = bytes(content)
+    digest = hashlib.sha256()
+    try:
+        with zipfile.ZipFile(BytesIO(raw), "r") as archive:
+            infos = sorted(
+                archive.infolist(),
+                key=lambda item: (str(item.filename), int(item.header_offset)),
+            )
+            uncompressed_bytes = sum(int(item.file_size) for item in infos)
+            if uncompressed_bytes > _MAX_ROLLBACK_PROPERTY_UNCOMPRESSED_BYTES:
+                raise RuntimeError(
+                    "A rollback property exceeds the bounded uncompressed content limit."
+                )
+            digest.update(b"zip\0")
+            for info in infos:
+                name = str(info.filename).encode("utf-8", errors="surrogatepass")
+                with archive.open(info, "r") as handle:
+                    payload = handle.read(
+                        _MAX_ROLLBACK_PROPERTY_UNCOMPRESSED_BYTES + 1
+                    )
+                if len(payload) > _MAX_ROLLBACK_PROPERTY_UNCOMPRESSED_BYTES:
+                    raise RuntimeError(
+                        "A rollback property entry exceeds the bounded content limit."
+                    )
+                digest.update(len(name).to_bytes(8, "big"))
+                digest.update(name)
+                digest.update(len(payload).to_bytes(8, "big"))
+                digest.update(payload)
+            return digest.hexdigest()
+    except zipfile.BadZipFile:
+        digest.update(b"raw\0")
+        digest.update(raw)
+        return digest.hexdigest()
 
 
 def _properties(obj: Any) -> set[str]:
@@ -3348,38 +3389,6 @@ def _configure_material_carrier(
     return ownership
 
 
-def _configure_material(doc: Any, obj: Any, item: Mapping[str, Any]) -> None:
-    """Compatibility wrapper retained for callers of the former helper.
-
-    Production publication uses :func:`_publish_material_candidate`, which can
-    preflight and roll back the complete multi-output ownership graph.
-    """
-
-    target = _material_definition_target(doc, item)
-    channel = (
-        "physical"
-        if str(item.get("type") or "") == "material_assignment"
-        else "appearance"
-    )
-    validation = item.get("material_validation")
-    controlled = (
-        list(validation.get("controlled_properties") or [])
-        if isinstance(validation, dict)
-        else []
-    )
-    baseline = _material_baseline_for_desired(
-        None,
-        None,
-        target,
-        channel=channel,
-        controlled=controlled,
-    )
-    raise RuntimeError(
-        "Material outputs require the atomic production publisher; direct single-object "
-        f"configuration is unavailable (captured baseline keys: {sorted(baseline)})."
-    )
-
-
 def _set_native_property(obj: Any, name: str, value: Any) -> None:
     if name in _properties(obj):
         setattr(obj, name, value)
@@ -6138,6 +6147,7 @@ def _reverse_feature_rollback_states(objects: list[Any]) -> list[dict[str, Any]]
                 "documentation": str(obj.getDocumentationOfProperty(name) or ""),
                 "editor_modes": list(obj.getEditorMode(name) or []),
                 "content": content,
+                "content_sha256": _property_content_sha256(content),
             }
         states.append(
             {
@@ -6201,9 +6211,9 @@ def _restore_reverse_feature_rollback_states(
                 obj.setExpression(str(path).lstrip("."), str(expression))
             obj.Label = str(state["label"])
             for property_name, captured in state["properties"].items():
-                if bytes(obj.dumpPropertyContent(property_name)) != bytes(
-                    captured["content"]
-                ):
+                if _property_content_sha256(
+                    bytes(obj.dumpPropertyContent(property_name))
+                ) != str(captured["content_sha256"]):
                     raise RuntimeError(
                         f"restored property {property_name!r} differs from accepted state"
                     )
@@ -6272,6 +6282,7 @@ def _inspection_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
                 "documentation": str(obj.getDocumentationOfProperty(name) or ""),
                 "editor_modes": list(obj.getEditorMode(name) or []),
                 "content": content,
+                "content_sha256": _property_content_sha256(content),
                 "deferred_link": property_type.startswith("App::PropertyLink"),
             }
             if property_type == "App::PropertyFloat":
@@ -6473,9 +6484,9 @@ def _restore_inspection_rollback_states(
         name = str(state["name"])
         try:
             for property_name, captured in state["properties"].items():
-                if bytes(obj.dumpPropertyContent(property_name)) != bytes(
-                    captured["content"]
-                ):
+                if _property_content_sha256(
+                    bytes(obj.dumpPropertyContent(property_name))
+                ) != str(captured["content_sha256"]):
                     raise RuntimeError(
                         f"restored property {property_name!r} differs from accepted state"
                     )
@@ -6686,6 +6697,7 @@ def _robot_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
                 "documentation": str(obj.getDocumentationOfProperty(name) or ""),
                 "editor_modes": list(obj.getEditorMode(name) or []),
                 "content": content,
+                "content_sha256": _property_content_sha256(content),
                 "deferred_link": property_type.startswith("App::PropertyLink"),
                 "exact_value": _robot_exact_property_value(obj, name, property_type),
             }
@@ -6897,9 +6909,9 @@ def _restore_robot_rollback_states(
         name = str(state["name"])
         try:
             for property_name, captured in state["properties"].items():
-                if bytes(obj.dumpPropertyContent(property_name)) != bytes(
-                    captured["content"]
-                ):
+                if _property_content_sha256(
+                    bytes(obj.dumpPropertyContent(property_name))
+                ) != str(captured["content_sha256"]):
                     raise RuntimeError(
                         f"restored property {property_name!r} differs from accepted state"
                     )
@@ -7653,8 +7665,6 @@ def _configure_object(
         _configure_assembly_bom(obj, item, outputs, prepared)
     elif output_type == "sheet":
         _configure_sheet(obj, item)
-    elif output_type in {"material_assignment", "appearance"}:
-        _configure_material(doc, obj, item)
     elif output_type == "solver_diagnostics":
         _configure_solver_diagnostics(obj, item)
 
@@ -9985,6 +9995,369 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+class _PartDesignShapeCarrier:
+    """Detached validated shape presented to the shared publication service."""
+
+    def __init__(self, item: Mapping[str, Any]) -> None:
+        import FreeCAD as App
+
+        self.Name = str(item["name"])
+        self.Label = str(
+            dict(item.get("partdesign_data") or {}).get("body_label")
+            or item["name"]
+        )
+        self.Shape = item["detached_shape"]
+        self.Placement = App.Placement()
+        self.ViewObject = None
+
+    def getGlobalPlacement(self) -> Any:
+        return self.Placement
+
+
+def _partdesign_program_root(doc: Any, program_id: str) -> Any | None:
+    matches = []
+    for obj in list(getattr(doc, "Objects", []) or []):
+        properties = _properties(obj)
+        v2_id = str(getattr(obj, contracts.PROP_PROGRAM_ID, "") or "")
+        v1_id = str(getattr(obj, "VibeCADVibeScriptModelId", "") or "")
+        publication_id = str(
+            getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+        )
+        if program_id not in {v2_id, v1_id, publication_id}:
+            continue
+        if (
+            scripted_publication.role_of(obj) == scripted_publication.ROLE_MODEL
+            or (
+                str(getattr(obj, "TypeId", "") or "") == "App::Part"
+                and not str(
+                    getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or ""
+                )
+                and not str(
+                    getattr(obj, "VibeCADVibeScriptOutputKey", "") or ""
+                )
+            )
+        ):
+            matches.append(obj)
+    unique = {str(obj.Name): obj for obj in matches}
+    if len(unique) > 1:
+        raise RuntimeError(
+            f"Multiple Part Design program roots claim id {program_id}: "
+            f"{sorted(unique)}."
+        )
+    return next(iter(unique.values()), None)
+
+
+def _partdesign_publications(
+    doc: Any,
+    root: Any,
+    program_id: str,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    candidates = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if scripted_publication.is_publication(obj)
+        and str(getattr(obj, scripted_publication.PROP_MODEL_ID, "") or "")
+        == program_id
+    ]
+    candidates.extend(
+        obj
+        for obj in list(getattr(root, "Group", []) or [])
+        if obj not in candidates
+        and (
+            scripted_publication.is_publication(obj)
+            or "VibeCADVibeScriptOutputKey" in _properties(obj)
+        )
+    )
+    for obj in candidates:
+        output_name = str(
+            getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "")
+            or getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "")
+            or getattr(obj, "VibeCADVibeScriptOutputKey", "")
+            or ""
+        )
+        if not output_name:
+            continue
+        if output_name in result and result[output_name] is not obj:
+            raise RuntimeError(
+                f"Multiple Part Design publications claim output {output_name!r}."
+            )
+        result[output_name] = obj
+    return result
+
+
+def _tag_partdesign_root(root: Any, prepared: Mapping[str, Any]) -> None:
+    scripted_publication.tag_object(
+        root,
+        role=scripted_publication.ROLE_MODEL,
+        engine="vibescript:partdesign",
+        model_id=str(prepared["program_id"]),
+        revision=str(prepared["revision"]),
+    )
+    for name, description, value in (
+        (
+            contracts.PROP_PROGRAM_ID,
+            "Stable VibeScript program id.",
+            str(prepared["program_id"]),
+        ),
+        (
+            contracts.PROP_PROGRAM_DOMAIN,
+            "VibeScript workbench domain.",
+            "partdesign",
+        ),
+        (
+            contracts.PROP_PROGRAM_WORKBENCH,
+            "Workbench owning this VibeScript program.",
+            "PartDesignWorkbench",
+        ),
+        (
+            contracts.PROP_PROGRAM_REVISION,
+            "Accepted VibeScript program revision.",
+            str(prepared["revision"]),
+        ),
+    ):
+        _add_string_property(root, name, description)
+        setattr(root, name, value)
+    scripted_publication.ensure_string_property(
+        root, scripted_publication.PROP_INTERFACES
+    )
+
+
+def _partdesign_interface_table(
+    validated: Mapping[str, Any],
+    publications: Mapping[str, Any],
+) -> dict[str, Any]:
+    table: dict[str, Any] = {}
+    for item in list(validated.get("outputs") or []):
+        output_name = str(item["name"])
+        published = publications[output_name]
+        data = item.get("partdesign_data")
+        if not isinstance(data, Mapping):
+            raise RuntimeError(
+                f"Part Design output {output_name!r} has no interface evidence."
+            )
+        for raw_name, raw in dict(data.get("interfaces") or {}).items():
+            name = str(raw_name)
+            if name in table:
+                raise RuntimeError(
+                    f"Part Design semantic interface {name!r} is declared by more "
+                    "than one output."
+                )
+            if not isinstance(raw, Mapping):
+                raise RuntimeError(
+                    f"Part Design semantic interface {name!r} is malformed."
+                )
+            table[name] = {
+                "output": output_name,
+                "selection": dict(raw.get("selection") or {}),
+                **(
+                    {"description": str(raw.get("description") or "")}
+                    if raw.get("description")
+                    else {}
+                ),
+                "resolved": {
+                    "object": str(published.Name),
+                    "subelements": list(raw.get("subelements") or []),
+                    "geometry": list(raw.get("geometry") or []),
+                },
+            }
+    return table
+
+
+def _publish_partdesign_candidate(
+    service: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+    doc: Any,
+) -> dict[str, Any]:
+    """Publish one v2 Part Design candidate through the shared stable boundary."""
+
+    program_id = str(prepared["program_id"])
+    root = _partdesign_program_root(doc, program_id)
+    publications = (
+        _partdesign_publications(doc, root, program_id) if root is not None else {}
+    )
+    previous_interfaces: dict[str, Any] = {}
+    if root is not None:
+        try:
+            previous_interfaces = json.loads(
+                str(
+                    getattr(root, scripted_publication.PROP_INTERFACES, "{}")
+                    or "{}"
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Part Design program {program_id} has invalid interface metadata: {exc}"
+            ) from exc
+        if not isinstance(previous_interfaces, dict):
+            raise RuntimeError(
+                f"Part Design program {program_id} has a non-object interface table."
+            )
+    existing_values = list(publications.values())
+    reference_preflight = (
+        reference_contracts.preflight_regeneration(
+            service,
+            existing_values,
+            model_root=root,
+        )
+        if root is not None and existing_values
+        else None
+    )
+    desired = {str(item["name"]) for item in validated["outputs"]}
+    retired_names = sorted(set(publications) - desired)
+    for name in retired_names:
+        uses = scripted_publication.external_reference_uses(
+            doc,
+            [publications[name]],
+            internal_objects=[root, *existing_values] if root is not None else existing_values,
+        )
+        if uses:
+            raise _reference_error(
+                f"Cannot retire Part Design VibeScript output {name!r} while "
+                "downstream objects reference it",
+                uses,
+            )
+    transaction_open = False
+    created: list[str] = []
+    removed: list[str] = []
+    try:
+        if hasattr(doc, "openTransaction"):
+            doc.openTransaction(
+                f"Publish Part Design VibeScript: {prepared['program_name']}"
+            )
+            transaction_open = True
+        if root is None:
+            root = doc.addObject(
+                "App::Part", _internal_name(prepared, "Program")
+            )
+            if root is None:
+                raise RuntimeError("FreeCAD did not create the Part Design program root.")
+            created.append(str(root.Name))
+        root.Label = str(prepared["program_name"])
+        _tag_partdesign_root(root, prepared)
+        for name in retired_names:
+            removed.extend(
+                scripted_publication.delete_publication(
+                    doc, root, publications.pop(name)
+                )
+            )
+        for item in validated["outputs"]:
+            name = str(item["name"])
+            carrier = _PartDesignShapeCarrier(item)
+            published = publications.get(name)
+            if published is None:
+                published = scripted_publication.create_publication(
+                    doc,
+                    root,
+                    carrier,
+                    internal_name=_internal_name(prepared, name),
+                    label=carrier.Label,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=str(prepared["revision"]),
+                )
+                publications[name] = published
+                created.append(str(published.Name))
+            else:
+                scripted_publication.tag_object(
+                    published,
+                    role=scripted_publication.ROLE_PUBLICATION,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=str(prepared["revision"]),
+                )
+                scripted_publication.update_publication(
+                    published,
+                    root,
+                    carrier,
+                    revision=str(prepared["revision"]),
+                )
+                published.Label = carrier.Label
+            _set_metadata(
+                published,
+                prepared,
+                name,
+                "solid",
+                _definition(item),
+            )
+        interface_table = _partdesign_interface_table(validated, publications)
+        reference_contracts.validate_removed_interfaces(
+            doc,
+            list(publications.values()),
+            program_id,
+            set(previous_interfaces),
+            set(interface_table),
+            preflight=reference_preflight,
+        )
+        setattr(
+            root,
+            scripted_publication.PROP_INTERFACES,
+            json.dumps(
+                interface_table,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        )
+        downstream = reference_contracts.refresh_after_publication(
+            service,
+            program_id,
+            list(publications.values()),
+            revision=str(prepared["revision"]),
+            preflight=reference_preflight,
+        )
+        if hasattr(doc, "commitTransaction") and transaction_open:
+            doc.commitTransaction()
+            transaction_open = False
+    except Exception:
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            doc.abortTransaction()
+        raise
+    live_outputs: dict[str, Any] = {}
+    output_rows: list[dict[str, Any]] = []
+    for item in validated["outputs"]:
+        name = str(item["name"])
+        published = publications[name]
+        row = {
+            "object_name": str(published.Name),
+            "label": str(published.Label),
+            "type_id": str(published.TypeId),
+            "output_type": "solid",
+            "facts": dict(item.get("facts") or {}),
+            "partdesign_data": dict(item.get("partdesign_data") or {}),
+            "derived_state": str(
+                getattr(published, reference_contracts.PROP_DERIVED_STATE, "")
+                or ""
+            ),
+            "stale_reason": str(
+                getattr(published, reference_contracts.PROP_STALE_REASON, "")
+                or ""
+            ),
+            "source_revision": str(
+                getattr(published, reference_contracts.PROP_SOURCE_REVISION, "")
+                or ""
+            ),
+        }
+        live_outputs[name] = row
+        output_rows.append({"name": name, **row})
+    return {
+        "ok": True,
+        "outputs": output_rows,
+        "live_outputs": live_outputs,
+        "interfaces": interface_table,
+        "created_objects": created,
+        "retired_objects": removed,
+        "downstream_references": downstream,
+        "recompute_deferred": True,
+        "stdout": str(validated.get("stdout") or ""),
+        "budget": dict(validated.get("budget") or {}),
+    }
+
+
 def publish_candidate(
     service: Any,
     prepared: dict[str, Any],
@@ -10004,6 +10377,8 @@ def publish_candidate(
         raise RuntimeError(
             "The document changed while the domain worker ran; regenerate on the live state."
         )
+    if prepared["pack"].domain == "partdesign":
+        return _publish_partdesign_candidate(service, prepared, validated, doc)
     if prepared["pack"].domain == "material":
         return _publish_material_candidate(service, prepared, validated, doc)
     if prepared["pack"].domain == "cam":
@@ -10772,6 +11147,60 @@ def _delete_techdraw_program(
     }
 
 
+def _delete_partdesign_program(
+    doc: Any,
+    prepared: Mapping[str, Any],
+) -> dict[str, Any]:
+    program_id = str(prepared["program_id"])
+    root = _partdesign_program_root(doc, program_id)
+    if root is None:
+        return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
+    publications = _partdesign_publications(doc, root, program_id)
+    internal = [
+        root,
+        *list(getattr(root, "OutListRecursive", []) or []),
+        *publications.values(),
+    ]
+    external = _external_uses(doc, list(publications.values()), internal)
+    if external:
+        raise _reference_error(
+            "Cannot delete this Part Design VibeScript program while downstream "
+            "objects reference its stable publications",
+            external,
+        )
+    deleted: list[dict[str, Any]] = [
+        {
+            "object_name": str(obj.Name),
+            "label": str(obj.Label),
+            "type_id": str(obj.TypeId),
+            "output_name": str(name),
+        }
+        for name, obj in publications.items()
+    ]
+    transaction_open = False
+    try:
+        if hasattr(doc, "openTransaction"):
+            doc.openTransaction("Delete Part Design VibeScript program")
+            transaction_open = True
+        for published in list(publications.values()):
+            scripted_publication.delete_publication(doc, root, published)
+        for child in reversed(list(getattr(root, "Group", []) or [])):
+            child_name = str(getattr(child, "Name", "") or "")
+            if child_name and doc.getObject(child_name) is not None:
+                doc.removeObject(child_name)
+        root_name = str(root.Name)
+        if doc.getObject(root_name) is not None:
+            doc.removeObject(root_name)
+        if hasattr(doc, "commitTransaction") and transaction_open:
+            doc.commitTransaction()
+            transaction_open = False
+    except Exception:
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            doc.abortTransaction()
+        raise
+    return {"ok": True, "deleted_objects": deleted, "recompute_deferred": True}
+
+
 def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, Any]:
     _surface_still_matches(service, prepared)
     doc = service._active_document()
@@ -10779,6 +11208,14 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
         raise RuntimeError("The active document changed before deletion.")
     if str(getattr(doc, "Uid", "") or "") != str(prepared.get("document_uid") or ""):
         raise RuntimeError("The active document identity changed before deletion.")
+    if prepared["pack"].domain == "partdesign":
+        if str(service.provider_document_revision()) != str(
+            prepared.get("document_revision") or ""
+        ):
+            raise RuntimeError(
+                "The document changed before Part Design deletion; inspect and retry."
+            )
+        return _delete_partdesign_program(doc, prepared)
     if prepared["pack"].domain == "material":
         if str(service.provider_document_revision()) != str(
             prepared.get("document_revision") or ""

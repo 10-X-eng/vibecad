@@ -21,7 +21,7 @@ if str(MODULE_ROOT) not in sys.path:
 
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -327,10 +327,10 @@ def _exercise_spreadsheet_lifecycle(root: Path, captured: dict) -> None:
     pack = get_vibescript_pack("SpreadsheetWorkbench")
     assert pack is not None
     source = (
-        "cells = {\n"
-        "  'A1': {'value': 10, 'unit': 'mm', 'alias': 'length', 'style': 'bold'},\n"
-        "  'B1': {'expression': 'A1 * 2', 'alias': 'double_length'},\n"
-        "}\n"
+        "cells = [\n"
+        "  api.cell('A1', 10, unit='mm', alias='length', style='bold'),\n"
+        "  api.cell('B1', expression='length * 2', alias='double_length'),\n"
+        "]\n"
         "result = {'Parameters': api.sheet(cells=cells, label='Worker Sheet')}\n"
     )
     sheet_captured = {
@@ -375,9 +375,9 @@ def _exercise_spreadsheet_lifecycle(root: Path, captured: dict) -> None:
     assert sheet.getAlias("B1") == "double_length"
 
     replacement = (
-        "cells = {\n"
-        "  'A1': {'value': 12, 'unit': 'mm', 'alias': 'length'},\n"
-        "}\n"
+        "cells = [\n"
+        "  api.cell('A1', 12, unit='mm', alias='length'),\n"
+        "]\n"
         "result = {'Parameters': api.sheet(cells=cells, label='Worker Sheet')}\n"
     )
     update_captured = {
@@ -615,7 +615,7 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
         if prepared.get("reference_requirements"):
             prepared = finalize_candidate(
                 prepared,
-                capture_reference_shapes(service, prepared),
+                capture_reference_inputs(service, prepared),
             )
         execution = execute_candidate(prepared, cancellation_check=None)
         assert execution.get("ok") is True, (workbench, execution)
@@ -645,7 +645,7 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
         if update_prepared.get("reference_requirements"):
             update_prepared = finalize_candidate(
                 update_prepared,
-                capture_reference_shapes(service, update_prepared),
+                capture_reference_inputs(service, update_prepared),
             )
         update_execution = execute_candidate(update_prepared, cancellation_check=None)
         assert update_execution.get("ok") is True, (workbench, update_execution)
@@ -828,6 +828,9 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
 
 def main() -> int:
     import FreeCAD as App
+    from pathlib import Path
+    import shutil
+    import tempfile
 
     root = Path(tempfile.mkdtemp(prefix="vibecad-domain-worker-"))
     try:
@@ -969,7 +972,7 @@ def main() -> int:
         assembly_service = _WorkbenchService("AssemblyWorkbench")
         assembly_prepared = finalize_candidate(
             assembly_prepared,
-            capture_reference_shapes(assembly_service, assembly_prepared),
+            capture_reference_inputs(assembly_service, assembly_prepared),
         )
         assembly_execution = execute_candidate(
             assembly_prepared, cancellation_check=None
@@ -1034,7 +1037,7 @@ def main() -> int:
         update_prepared = prepare_candidate(update_captured)
         update_prepared = finalize_candidate(
             update_prepared,
-            capture_reference_shapes(service, update_prepared),
+            capture_reference_inputs(service, update_prepared),
         )
         update_execution = execute_candidate(update_prepared, cancellation_check=None)
         assert update_execution.get("ok") is True, update_execution
@@ -1063,7 +1066,7 @@ def main() -> int:
         failed_prepared = prepare_candidate(failed_captured)
         failed_prepared = finalize_candidate(
             failed_prepared,
-            capture_reference_shapes(service, failed_prepared),
+            capture_reference_inputs(service, failed_prepared),
         )
         failed_execution = execute_candidate(failed_prepared, cancellation_check=None)
         assert failed_execution.get("ok") is False

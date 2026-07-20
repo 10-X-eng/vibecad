@@ -4,7 +4,8 @@
 
 Run this file inside ``FreeCADCmd``.  Candidate subprocess waits happen on a
 background thread while the main thread owns a real Qt event loop. Part covers
-OCC generation, Sketcher covers geometry/constraint solving, Draft covers
+OCC generation, Part Design covers native Body/sketch/feature recompute,
+Sketcher covers geometry/constraint solving, Draft covers
 native parametric proxy recompute and array generation, Surface covers B-spline
 interpolation plus native extension, and Assembly covers authenticated reference
 transfer plus a native solver. Spreadsheet covers a large native batch and
@@ -76,6 +77,14 @@ WORKER_CASES = (
         "lower = api.wire([[0,0,0],[8,0,0],[8,5,0],[0,5,0]], closed=True)\n"
         "upper = api.wire([[1,1,8],[7,1,8],[7,4,8],[1,4,8]], closed=True)\n"
         "result = {'Result': api.loft([lower, upper], solid=True, label=str(total))}\n",
+    ),
+    (
+        "PartDesignWorkbench",
+        "solid",
+        "circle = api.circle([0,0], 4)\n"
+        "profile = api.sketch([circle], label='Heartbeat Profile')\n"
+        "tip = api.pad(profile, 8, label='Heartbeat Pad')\n"
+        "result = {'Result': api.body(tip, label=str(total))}\n",
     ),
     (
         "SketcherWorkbench",
@@ -423,8 +432,8 @@ def _material_candidate(root: Path, index: int):
         "for value in range(30000):\n"
         "    total += value % 7\n"
         "card = api.material(inputs['material_uuid'], "
-        "require_physical_properties=['Density'], label=str(total))\n"
-        "result = {'Result': api.assign(inputs['target'], card)}\n"
+        "require_physical_properties=['Density'])\n"
+        "result = {'Result': api.assign(inputs['target'], card, label=str(total))}\n"
     )
     return prepare_candidate(
         {

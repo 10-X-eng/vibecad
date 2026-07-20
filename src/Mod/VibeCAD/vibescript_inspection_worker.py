@@ -290,7 +290,6 @@ def validate_inspection_definition(
                 arguments[1],
                 search_radius=properties["search_radius"],
                 tolerance=properties["tolerance"],
-                thickness=properties["thickness"],
                 require_complete=properties["require_complete"],
                 label=properties["label"],
             )

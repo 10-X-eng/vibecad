@@ -45,12 +45,15 @@ def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dic
 
 
 def _scripted_context() -> dict:
-    return _surface_context("vibescript.inspect_model")
+    return _surface_context(
+        "core.inspect", "vibescript.partdesign.create_program"
+    )
 
 
 def _part_vibescript_context() -> dict:
     return _surface_context(
-        "vibescript.part.inspect_program",
+        "core.inspect",
+        "vibescript.part.create_program",
         workbench="PartWorkbench",
     )
 
@@ -70,15 +73,18 @@ def test_turn_start_surface_accepts_one_workbench_vibescript_domain() -> None:
     assert surface["engine"] == "vibescript"
     assert surface["domain"] == "part"
     assert surface["workbench"] == "PartWorkbench"
-    assert surface["tool_names"] == ["vibescript.part.inspect_program"]
-    assert surface["schema_count"] == 1
+    assert surface["tool_names"] == ["core.inspect", "vibescript.part.create_program"]
+    assert surface["schema_count"] == 2
     assert surface["schema_sha256"] == provider.provider_tool_schema_digest(schemas)
     assert surface["available"] is True
     assert surface["unavailable_reason"] == ""
 
 
 def test_turn_start_surface_preserves_pure_vibescript_behavior() -> None:
-    schemas = [{"name": name} for name in sorted(session.VIBESCRIPT_PROVIDER_TOOLS)]
+    from VibeCADModelingSurface import resolve_modeling_surface
+
+    resolution = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
+    schemas = [_tool_schema(name) for name in resolution.tool_names]
     surface = session._turn_start_tool_surface("PartDesignWorkbench", schemas)
     assert surface["engine"] == "vibescript"
     assert surface["domain"] == "partdesign"
@@ -86,16 +92,16 @@ def test_turn_start_surface_preserves_pure_vibescript_behavior() -> None:
 
 
 def test_turn_start_surface_accepts_native_tools_without_a_scripted_engine() -> None:
-    schemas = [_tool_schema("bim.list_structure")]
+    schemas = [_tool_schema("core.inspect"), _tool_schema("bim.create_wall")]
     surface = session._turn_start_tool_surface("BIMWorkbench", schemas)
     assert surface["engine"] == "native"
-    assert surface["tool_names"] == ["bim.list_structure"]
+    assert surface["tool_names"] == ["core.inspect", "bim.create_wall"]
 
 
 def test_turn_start_surface_rejects_multiple_scripted_engines() -> None:
     schemas = [
-        _tool_schema("vibescript.inspect_model"),
-        _tool_schema("build123d.inspect_model"),
+        _tool_schema("vibescript.partdesign.create_program"),
+        _tool_schema("build123d.create_model"),
     ]
     with pytest.raises(ValueError, match="multiple modeling engines"):
         session._turn_start_tool_surface("AssemblyWorkbench", schemas)
@@ -116,35 +122,34 @@ def test_turn_start_surface_rejects_malformed_declarations(schemas: list[dict]) 
 
 def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_scripted_context())
-    assert names == {("vibescript", "inspect_model"): "vibescript.inspect_model"}
-    assert tools == [
-        {
-            "type": "namespace",
-            "name": "vibescript",
-            "description": "VibeCAD vibescript operations available now.",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "inspect_model",
-                    "description": "Call vibescript.inspect_model.",
-                    "deferLoading": False,
-                    "inputSchema": _scripted_context()["provider_tool_schemas"][0]["parameters"],
-                }
-            ],
-        }
+    assert names == {
+        ("core", "inspect"): "core.inspect",
+        (
+            "vibescript",
+            "partdesign_create_program",
+        ): "vibescript.partdesign.create_program",
+    }
+    assert [namespace["name"] for namespace in tools] == ["core", "vibescript"]
+    inspect_tool = tools[0]["tools"][0]
+    assert inspect_tool["name"] == "inspect"
+    assert inspect_tool["inputSchema"] == _scripted_context()["provider_tool_schemas"][0][
+        "parameters"
     ]
 
 
 def test_codex_dynamic_tools_accept_one_domain_qualified_namespace() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_part_vibescript_context())
-    assert names == {("vibescript", "part_inspect_program"): "vibescript.part.inspect_program"}
-    assert [namespace["name"] for namespace in tools] == ["vibescript"]
+    assert names == {
+        ("core", "inspect"): "core.inspect",
+        ("vibescript", "part_create_program"): "vibescript.part.create_program",
+    }
+    assert [namespace["name"] for namespace in tools] == ["core", "vibescript"]
 
 
 def test_turn_start_surface_rejects_mixed_native_and_vibescript_namespaces() -> None:
     schemas = [
         _tool_schema("part.measure"),
-        _tool_schema("vibescript.part.inspect_program"),
+        _tool_schema("vibescript.part.create_program"),
     ]
     with pytest.raises(ValueError, match="cannot contain native"):
         session._turn_start_tool_surface("PartWorkbench", schemas)
@@ -181,13 +186,7 @@ def test_provider_update_keeps_the_turn_surface_frozen_after_workbench_change(
         "domain": "partdesign",
         "surface_id": next_context["provider_tool_surface"]["surface_id"],
     }
-    next_context["vibescript"] = {"models": []}
     monkeypatch.setattr(session, "_context_for_provider", lambda *_args: next_context)
-    monkeypatch.setattr(
-        session,
-        "_complete_vibescript_provider_context",
-        lambda _service, context: dict(context),
-    )
 
     initial_surface = dict(initial["provider_tool_surface"])
     initial_schemas = list(initial["provider_tool_schemas"])
@@ -281,7 +280,7 @@ def test_tool_runner_revalidates_each_call_against_the_live_surface(
         question_callback=None,
     )
 
-    result = runner("vibescript.inspect_model", "{}")
+    result = runner("vibescript.part.inspect_program", "{}")
 
     assert result["ok"] is False
     assert result["failure_code"] == "TOOL_NOT_ON_ACTIVE_SURFACE"
@@ -321,6 +320,7 @@ def test_codex_images_use_the_bounded_inline_transport(
         "view_screenshot": {
             "captured": True,
             "new_observation": True,
+            "pending_attachment": True,
             "path": str(screenshot),
         }
     }
@@ -340,6 +340,43 @@ def test_codex_images_use_the_bounded_inline_transport(
     assert turn_image["url"].startswith("data:image/jpeg;base64,")
     assert base64.b64decode(turn_image["url"].partition(",")[2]) == encoded
     assert len(encoded) <= provider.CODEX_INLINE_IMAGE_MAX_BYTES
+
+
+def test_consumed_view_is_not_attached_to_a_later_provider_turn(
+    tmp_path: Path,
+) -> None:
+    screenshot = tmp_path / "viewport.png"
+    screenshot.write_bytes(b"png")
+    context = {
+        "view_screenshot": {
+            "captured": True,
+            "pending_attachment": False,
+            "path": str(screenshot),
+        }
+    }
+
+    assert provider._screenshot_image_payload(context) is None
+    assert provider._context_image_blocks(context) == []
+
+
+def test_session_consumes_the_exact_view_after_copying_provider_context() -> None:
+    consumed: list[dict] = []
+    service = SimpleNamespace(
+        consume_view_screenshot_attachment=lambda value: consumed.append(dict(value))
+    )
+    screenshot = {
+        "captured": True,
+        "pending_attachment": True,
+        "path": "/project/screenshots/view.png",
+    }
+    context = {"view_screenshot": dict(screenshot)}
+
+    session._consume_context_view_attachment(
+        service, context, lambda operation: operation()
+    )
+
+    assert consumed == [screenshot]
+    assert context["view_screenshot"] == screenshot
 
 
 def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
@@ -369,11 +406,39 @@ def test_codex_thread_config_enables_only_web_and_skill_capabilities() -> None:
     assert config["features.plugins"] is False
 
 
-def test_provider_capability_preferences_have_explicit_defaults() -> None:
+def test_provider_capability_preferences_have_explicit_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnsetPreferences:
+        def GetBool(self, _name: str, default: bool) -> bool:
+            return default
+
+        def GetString(self, _name: str, default: str) -> str:
+            return default
+
+        def GetFloat(self, _name: str, default: float) -> float:
+            return default
+
+        def GetInt(self, _name: str, default: int) -> int:
+            return default
+
     settings = preferences.VibeCADSettings()
     assert settings.web_search_enabled is False
-    assert settings.design_review_enabled is True
+    assert settings.design_review_enabled is False
     assert settings.codex_skills_enabled is False
+
+    monkeypatch.setattr(preferences, "preferences", lambda: _UnsetPreferences())
+    loaded = preferences.load_settings()
+    assert loaded.design_review_enabled is False
+
+    class _OptedInPreferences(_UnsetPreferences):
+        def GetBool(self, name: str, default: bool) -> bool:
+            if name == "DesignReviewEnabled":
+                return True
+            return default
+
+    monkeypatch.setattr(preferences, "preferences", lambda: _OptedInPreferences())
+    assert preferences.load_settings().design_review_enabled is True
 
 
 def test_codex_skill_reader_is_scoped_to_enabled_skill_directory(

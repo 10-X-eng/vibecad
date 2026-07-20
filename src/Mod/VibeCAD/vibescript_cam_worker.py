@@ -873,11 +873,6 @@ def path_to_records(path: Any) -> list[dict[str, Any]]:
     return records
 
 
-# Compatibility for existing internal and downstream imports.  There is one
-# implementation; new host-side code uses the public descriptive name.
-_path_records = path_to_records
-
-
 def path_from_records(records: Any) -> Any:
     """Reconstruct one bounded native Path value from authenticated records."""
 
@@ -904,7 +899,7 @@ def path_from_records(records: Any) -> Any:
         command.Annotations = dict(annotations)
         commands.append(command)
     rebuilt = PathModule.Path(commands)
-    if _path_records(rebuilt) != [dict(item) for item in records]:
+    if path_to_records(rebuilt) != [dict(item) for item in records]:
         raise ValueError("CAM path changed during native command reconstruction.")
     return rebuilt
 
@@ -2148,7 +2143,7 @@ def _build_operation(
     if strategy == "face":
         requested_readback["boundary"] = str(operation.BoundaryShape)
     generation = _native_generation_diagnostics(operation)
-    records = _path_records(operation.Path)
+    records = path_to_records(operation.Path)
     summary = _path_summary(records)
     if summary["cutting_command_count"] <= 0:
         raise _fail(
@@ -2263,7 +2258,7 @@ def _combined_native_path(
             )
         commands.extend(operation_commands)
     combined = PathModule.Path(commands)
-    records = _path_records(combined)
+    records = path_to_records(combined)
     if _path_summary(records)["cutting_command_count"] <= 0:
         raise _fail(
             "The combined native CAM path contains no cutting commands.",
@@ -2274,7 +2269,7 @@ def _combined_native_path(
     toolpath.Path = path_from_records(records)
     toolpath.Label = "Validated CAM Toolpath"
     toolpath.purgeTouched()
-    if _path_records(job.Path) != records or _path_records(toolpath.Path) != records:
+    if path_to_records(job.Path) != records or path_to_records(toolpath.Path) != records:
         raise _fail(
             "The combined native CAM path changed during document assignment.",
             stage="toolpath_readback",

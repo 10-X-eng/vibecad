@@ -444,44 +444,9 @@ class SpreadsheetDomainAPI:
             background=clean_background,
         )
 
-    def _legacy_cell(self, address: str, raw: Any) -> DomainValue:
-        """Normalize the unavailable v2 scaffold's mapping form without weakening validation."""
-
-        if not isinstance(raw, Mapping):
-            return self.cell(address, raw)
-        allowed = {
-            "value",
-            "content",
-            "expression",
-            "alias",
-            "unit",
-            "display_unit",
-            "style",
-            "alignment",
-            "foreground",
-            "background",
-        }
-        unknown = sorted(str(key) for key in set(raw) - allowed)
-        if unknown:
-            raise _error("sheet", f"cells[{address!r}]", f"contains unknown fields {unknown!r}")
-        if "value" in raw and "content" in raw:
-            raise _error("sheet", f"cells[{address!r}]", "cannot contain both value and content")
-        return self.cell(
-            address,
-            raw.get("value", raw.get("content")),
-            expression=raw.get("expression"),
-            alias=raw.get("alias", ""),
-            unit=raw.get("unit", ""),
-            display_unit=raw.get("display_unit", ""),
-            style=raw.get("style"),
-            alignment=raw.get("alignment"),
-            foreground=raw.get("foreground"),
-            background=raw.get("background"),
-        )
-
     def sheet(
         self,
-        cells: Sequence[DomainValue] | Mapping[str, Any],
+        cells: Sequence[DomainValue],
         *,
         range_styles: Sequence[DomainValue] = (),
         merged_ranges: Sequence[str] = (),
@@ -491,9 +456,7 @@ class SpreadsheetDomainAPI:
     ) -> DomainValue:
         """Publish one atomic native sheet from api.cell and api.range_style definitions."""
 
-        if isinstance(cells, Mapping):
-            raw_cells = [self._legacy_cell(str(address), raw) for address, raw in cells.items()]
-        elif isinstance(cells, (list, tuple)):
+        if isinstance(cells, (list, tuple)):
             raw_cells = list(cells)
         else:
             raise _error("sheet", "cells", "must be a sequence of api.cell values", cells)

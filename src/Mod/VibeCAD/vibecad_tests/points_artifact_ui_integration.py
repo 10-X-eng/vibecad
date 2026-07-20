@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import unittest
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
 while str(MODULE_ROOT) in sys.path:
@@ -210,6 +211,13 @@ def main() -> int:
             QtWidgets.QApplication.processEvents()
             QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
             QtWidgets.QApplication.processEvents()
+
+
+class PointsArtifactUIIntegration(unittest.TestCase):
+    """FreeCAD internal-GUI entry point for the artifact panel lifecycle."""
+
+    def test_artifact_panel_lifecycle(self) -> None:
+        self.assertEqual(main(), 0)
 
 
 if __name__ == "__main__":

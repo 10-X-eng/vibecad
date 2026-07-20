@@ -470,6 +470,10 @@ def run(
         result = {
             "ok": True,
             "captured": True,
+            # A viewport capture is a message attachment, not durable provider
+            # context.  The session consumes this flag after handing one copy to
+            # the next provider request (or to the screenshot tool result).
+            "pending_attachment": True,
             "path": str(path),
             "file_size": path.stat().st_size,
             "size": result_size,
@@ -567,6 +571,7 @@ def _remember_failure(
         allowed_values=allowed_values or [],
         artifact=artifact_state,
         captured=bool(artifact_state.get("created")),
+        pending_attachment=bool(artifact_state.get("created")),
         path=artifact_state.get("path"),
         file_size=int(artifact_state.get("file_size") or 0),
     )

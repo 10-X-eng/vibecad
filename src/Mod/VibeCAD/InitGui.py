@@ -7,55 +7,54 @@ from __future__ import annotations
 import FreeCAD as App
 
 
-_WORKBENCH_PREFERENCES = "User parameter:BaseApp/Preferences/Workbenches"
-_LEGACY_DISABLED_WORKBENCH_SETS = (
-    frozenset(
-        {
-            "InspectionWorkbench",
-            "MaterialWorkbench",
-            "OpenSCADWorkbench",
-            "PointsWorkbench",
-            "ReverseEngineeringWorkbench",
-            "RobotWorkbench",
-            "TestWorkbench",
-            "NoneWorkbench",
-        }
-    ),
-    frozenset(
-        {
-            "InspectionWorkbench",
-            "MaterialWorkbench",
-            "PointsWorkbench",
-            "ReverseEngineeringWorkbench",
-            "RobotWorkbench",
-            "TestWorkbench",
-            "NoneWorkbench",
-        }
-    ),
-)
-
-
 def _warn(message: str) -> None:
     App.Console.PrintWarning(f"{message}\n")
 
 
-def _restore_legacy_disabled_workbenches() -> bool:
-    """Undo only the exact disabled lists shipped by old VibeCAD packs."""
+def _restore_vibecad_disabled_workbenches() -> bool:
+    """Undo only the exact disabled lists previously written by VibeCAD."""
 
-    preferences = App.ParamGet(_WORKBENCH_PREFERENCES)
+    preferences = App.ParamGet(
+        "User parameter:BaseApp/Preferences/Workbenches"
+    )
     disabled = frozenset(
         item.strip()
         for item in preferences.GetString("Disabled", "").split(",")
         if item.strip()
     )
-    if disabled not in _LEGACY_DISABLED_WORKBENCH_SETS:
+    disabled_sets_to_repair = (
+        frozenset(
+            {
+                "InspectionWorkbench",
+                "MaterialWorkbench",
+                "OpenSCADWorkbench",
+                "PointsWorkbench",
+                "ReverseEngineeringWorkbench",
+                "RobotWorkbench",
+                "TestWorkbench",
+                "NoneWorkbench",
+            }
+        ),
+        frozenset(
+            {
+                "InspectionWorkbench",
+                "MaterialWorkbench",
+                "PointsWorkbench",
+                "ReverseEngineeringWorkbench",
+                "RobotWorkbench",
+                "TestWorkbench",
+                "NoneWorkbench",
+            }
+        ),
+    )
+    if disabled not in disabled_sets_to_repair:
         return False
     preferences.SetString("Disabled", "TestWorkbench,NoneWorkbench")
     return True
 
 
 try:
-    _restore_legacy_disabled_workbenches()
+    _restore_vibecad_disabled_workbenches()
 except Exception as exc:
     _warn(f"VibeCAD workbench preference migration failed: {exc}")
 

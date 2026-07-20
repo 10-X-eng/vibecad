@@ -40,7 +40,7 @@ TOOL_SPEC = {
             "analysis_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the FEM analysis from fem.list_analysis."
+                    "Exact internal name of the FEM analysis from core.inspect scope='domain'."
                 ),
             },
             "material_uuid": {
@@ -78,7 +78,7 @@ def run(
     if analysis is None:
         return _invalid(
             f"FEM analysis not found by exact internal name: {analysis_name}. "
-            "Call fem.list_analysis for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
     try:
         import ObjectsFem

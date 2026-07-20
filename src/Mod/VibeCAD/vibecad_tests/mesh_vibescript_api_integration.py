@@ -29,7 +29,7 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     MeshDomainAdapter,
     accept_candidate,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -126,7 +126,7 @@ def _prepare_execute_validate(captured: dict, service: _Service | None = None):
         assert service is not None
         prepared = finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     execution = execute_candidate(prepared, cancellation_check=None)
     assert execution.get("ok") is True, execution
@@ -195,6 +195,7 @@ def _exercise_source_api() -> None:
         fix_self_intersections=True,
         fill_holes_max_edges=3,
     )
+    _expect_error("at least one explicit repair", lambda: api.repair(raw))
     checked = api.diagnostics(
         repaired,
         require_solid=True,
@@ -466,8 +467,6 @@ def main() -> int:
         assert surface.cad_tool_names == tuple(
             f"vibescript.mesh.{name}"
             for name in (
-                "describe_api",
-                "inspect_program",
                 "create_program",
                 "edit_source",
                 "set_inputs",

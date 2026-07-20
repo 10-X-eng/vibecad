@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+# Import FreeCAD before other module globals. Its embedded-module
+# initialization mutates the importing frame in some built configurations.
+import FreeCAD as App  # noqa: F401
+
 import copy
 import hashlib
 import json
@@ -26,7 +30,7 @@ from VibeCADVibeScriptDomainPublication import (  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     accept_candidate,
     capture_inspection_state,
-    capture_reference_shapes,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
     finalize_candidate,
@@ -160,7 +164,7 @@ def _prepare_and_execute(captured: dict, service: _Service):
     if prepared.get("reference_requirements") and not prepared.get("finalized"):
         prepared = finalize_candidate(
             prepared,
-            capture_reference_shapes(service, prepared),
+            capture_reference_inputs(service, prepared),
         )
     execution = execute_candidate(prepared, cancellation_check=None)
     return prepared, execution
@@ -179,8 +183,15 @@ def _run_candidate(captured: dict, service: _Service):
         "working_revision"
     ]
     assert accepted["model_state"]["verification_call"] == {
-        "tool": "vibescript.assembly.inspect_program",
-        "arguments": {"program_id": prepared["program_id"]},
+        "tool": "core.inspect",
+        "arguments": {
+            "scope": "program",
+            "target": prepared["program_id"],
+            "path": "",
+            "offset": 0,
+            "limit": 50,
+            "attach": False,
+        },
     }
     return prepared, execution, publication, accepted
 

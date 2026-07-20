@@ -325,13 +325,13 @@ class MeshDomainAPI:
         self,
         source: DomainValue,
         *,
-        remove_duplicate_points: bool = True,
-        remove_duplicate_facets: bool = True,
-        fix_degenerations: bool = True,
+        remove_duplicate_points: bool = False,
+        remove_duplicate_facets: bool = False,
+        fix_degenerations: bool = False,
         remove_non_manifolds: bool = False,
         fix_self_intersections: bool = False,
         fill_holes_max_edges: int = 0,
-        harmonize_normals: bool = True,
+        harmonize_normals: bool = False,
         decimate_reduction: float = 0.0,
         decimate_tolerance: float = 0.0,
         label: str = "",
@@ -365,31 +365,40 @@ class MeshDomainAPI:
             minimum=0,
             maximum=_MAX_FACETS * 3,
         )
+        repair_flags = {
+            "remove_duplicate_points": _boolean(
+                "repair", "remove_duplicate_points", remove_duplicate_points
+            ),
+            "remove_duplicate_facets": _boolean(
+                "repair", "remove_duplicate_facets", remove_duplicate_facets
+            ),
+            "fix_degenerations": _boolean(
+                "repair", "fix_degenerations", fix_degenerations
+            ),
+            "remove_non_manifolds": _boolean(
+                "repair", "remove_non_manifolds", remove_non_manifolds
+            ),
+            "fix_self_intersections": _boolean(
+                "repair", "fix_self_intersections", fix_self_intersections
+            ),
+            "harmonize_normals": _boolean(
+                "repair", "harmonize_normals", harmonize_normals
+            ),
+        }
+        if not any(repair_flags.values()) and hole_limit == 0 and reduction == 0.0:
+            raise _error(
+                "repair",
+                "operations",
+                "must enable at least one explicit repair operation",
+            )
         return DomainValue(
             domain=self.domain,
             operation="repair",
             output_type="mesh",
             arguments=(_mesh_value("repair", "source", source),),
             properties={
-                "remove_duplicate_points": _boolean(
-                    "repair", "remove_duplicate_points", remove_duplicate_points
-                ),
-                "remove_duplicate_facets": _boolean(
-                    "repair", "remove_duplicate_facets", remove_duplicate_facets
-                ),
-                "fix_degenerations": _boolean(
-                    "repair", "fix_degenerations", fix_degenerations
-                ),
-                "remove_non_manifolds": _boolean(
-                    "repair", "remove_non_manifolds", remove_non_manifolds
-                ),
-                "fix_self_intersections": _boolean(
-                    "repair", "fix_self_intersections", fix_self_intersections
-                ),
+                **repair_flags,
                 "fill_holes_max_edges": hole_limit,
-                "harmonize_normals": _boolean(
-                    "repair", "harmonize_normals", harmonize_normals
-                ),
                 "decimate_reduction": reduction,
                 "decimate_tolerance": tolerance,
                 "label": _label("repair", label),
