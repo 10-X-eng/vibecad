@@ -590,6 +590,13 @@ def seed_grid_preferences() -> None:
 def _get_snapper() -> Any:
     """Return the shared Draft Snapper, creating it if it does not exist."""
     import FreeCADGui as Gui
+    import WorkingPlane
+
+    # Draft's tracker classes still read the compatibility
+    # ``FreeCAD.DraftWorkingPlane`` attribute. The supported working-plane
+    # API creates and synchronizes that attribute for the active 3D view;
+    # importing gui_snapper alone does not.
+    WorkingPlane.get_working_plane(update=False)
 
     snapper = getattr(Gui, "Snapper", None)
     if snapper is None:

@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 import VibeCADGrid as grid
@@ -35,6 +38,20 @@ class _OrthographicView:
     def getPointOnFocalPlane(pixel: tuple[int, int]) -> tuple[float, float, float]:
         x, y = pixel
         return (0.5 * x, 0.25 * y, 0.0)
+
+
+def test_snapper_initializes_drafts_active_working_plane(monkeypatch) -> None:
+    calls: list[bool] = []
+    snapper = object()
+    monkeypatch.setitem(sys.modules, "FreeCADGui", SimpleNamespace(Snapper=snapper))
+    monkeypatch.setitem(
+        sys.modules,
+        "WorkingPlane",
+        SimpleNamespace(get_working_plane=lambda *, update: calls.append(bool(update))),
+    )
+
+    assert grid._get_snapper() is snapper
+    assert calls == [False]
 
 
 def test_metric_spacing_uses_125_engineering_series() -> None:

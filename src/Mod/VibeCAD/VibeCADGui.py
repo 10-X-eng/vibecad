@@ -2866,6 +2866,12 @@ class _VibeCADDocumentObserver:
         _schedule_assistant_document_refresh()
 
     def slotChangedObject(self, obj, property_name) -> None:
+        is_restoring = getattr(App, "isRestoring", None)
+        if callable(is_restoring) and bool(is_restoring()):
+            return
+        document = getattr(obj, "Document", None)
+        if document is not None and bool(getattr(document, "Restoring", False)):
+            return
         try:
             from VibeCADVibeScriptDomainPublication import (
                 mark_programs_stale_from_source,

@@ -3767,3 +3767,22 @@ def test_gui_document_observer_marks_vibescript_dependencies_stale(monkeypatch) 
     gui._VibeCADDocumentObserver().slotChangedObject(source, "Shape")
     assert observed == [(source, "Shape")]
     assert refreshed == [True]
+
+
+def test_gui_document_observer_ignores_properties_restored_from_file(
+    monkeypatch,
+) -> None:
+    import VibeCADGui as gui
+    import VibeCADVibeScriptDomainPublication as publication
+
+    observed = []
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: True, raising=False)
+    monkeypatch.setattr(
+        publication,
+        "mark_programs_stale_from_source",
+        lambda obj, property_name: observed.append((obj, property_name)),
+    )
+
+    gui._VibeCADDocumentObserver().slotChangedObject(object(), "Shape")
+
+    assert observed == []
