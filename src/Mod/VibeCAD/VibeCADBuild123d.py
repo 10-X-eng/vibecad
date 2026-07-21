@@ -591,15 +591,26 @@ def _artifact_summary(contract: dict[str, Any], *, include_source: bool) -> dict
     return summary
 
 
-def model_summaries(
-    doc: Any,
-    project_root: str | Path | None = None,
-) -> list[dict[str, Any]]:
-    summaries = {
-        item["model_id"]: item
-        for item in (
+def editor_model_index_snapshot(doc: Any) -> dict[str, Any]:
+    """Capture native model metadata without filesystem or Shape access."""
+
+    return {
+        "native_models": [
             _model_summary(obj, include_source=False) for obj in _model_objects(doc)
-        )
+        ]
+    }
+
+
+def complete_editor_model_index(
+    snapshot: dict[str, Any],
+    project_root: str | Path | None,
+) -> list[dict[str, Any]]:
+    """Complete a model selector index using project artifacts off the GUI thread."""
+
+    summaries = {
+        str(item.get("model_id") or ""): dict(item)
+        for item in list(snapshot.get("native_models") or [])
+        if isinstance(item, dict) and str(item.get("model_id") or "")
     }
     root = Path(project_root) if project_root else None
     build_root = root / "build123d" if root else None
@@ -617,6 +628,83 @@ def model_summaries(
                 summary["outputs"] = native.get("outputs", summary["outputs"])
             summaries[directory.name] = summary
     return list(summaries.values())
+
+
+def model_summaries(
+    doc: Any,
+    project_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    return complete_editor_model_index(editor_model_index_snapshot(doc), project_root)
+
+
+def editor_model_inspection_snapshot(service: Any, model_id: str) -> dict[str, Any]:
+    """Capture one model's native properties without inspecting its geometry."""
+
+    doc = service._active_document()
+    if doc is None:
+        return _failure("NO_DOCUMENT", "precondition", "No active FreeCAD document.")
+    try:
+        project_root = _project_root(service)
+        container = _find_model(doc, model_id)
+    except Build123dFailure as exc:
+        return exc.payload
+    return {
+        "ok": True,
+        "model_id": str(model_id),
+        "project_root": str(project_root),
+        "native_model": (
+            _model_summary(container, include_source=True)
+            if container is not None
+            else None
+        ),
+    }
+
+
+def complete_editor_model_inspection(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Read one model's source contract away from the GUI thread."""
+
+    if snapshot.get("ok") is not True:
+        return dict(snapshot)
+    model_id = str(snapshot.get("model_id") or "")
+    project_root = str(snapshot.get("project_root") or "")
+    native = snapshot.get("native_model")
+    try:
+        contract = _artifact_contract(project_root, model_id)
+    except Build123dFailure as exc:
+        return exc.payload
+    if not isinstance(native, dict) and contract is None:
+        return _failure(
+            "MODEL_NOT_FOUND",
+            "precondition",
+            f"No build123d model has id {model_id!r}.",
+        )
+    if contract is None:
+        model = dict(native)
+        model.update(
+            {
+                "working_revision": model["revision"],
+                "accepted_revision": model["revision"],
+                "state": "accepted",
+            }
+        )
+    else:
+        model = _artifact_summary(contract, include_source=True)
+    if isinstance(native, dict):
+        model["object_name"] = str(native.get("object_name") or "")
+    model["artifact_directory"] = str(_model_directory(project_root, model_id))
+    if contract is not None:
+        latest_attempt = _inspect_latest_attempt(contract)
+        if latest_attempt:
+            model["latest_attempt"] = latest_attempt
+        accepted_revision = contract["accepted_revision"]
+        if accepted_revision and accepted_revision != contract["working_revision"]:
+            accepted_path = contract["directory"] / "revisions" / f"{accepted_revision}.py"
+            if accepted_path.is_file():
+                model["accepted_source"] = accepted_path.read_text(encoding="utf-8")
+    return {
+        "ok": True,
+        "model": model,
+    }
 
 
 def inspect_model(service: Any, model_id: str) -> dict[str, Any]:

@@ -23,7 +23,8 @@ TOOL_SPEC = {
         "Create one native Surface sections loft that blends smoothly through "
         "two or more exact profile curves in order. Profiles must not "
         "intersect each other; list them in the order the surface should pass "
-        "through them. Resolve edge names with part.find_subelements first."
+        "through them. Use exact profile and edge names from the active Surface "
+        "context."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

@@ -163,6 +163,25 @@ class DocumentBasicCases(unittest.TestCase):
         self.assertEqual(L1.ExecCount, countChild + 1)
         self.assertEqual(L2.ExecCount, countParent + 1)
 
+    def testFreezePythonBinding(self):
+        obj = self.Doc.addObject("App::FeatureTest", "FrozenObject")
+        self.Doc.recompute()
+        execute_count = obj.ExecCount
+
+        self.assertFalse(obj.isFrozen())
+        obj.freeze()
+        self.assertTrue(obj.isFrozen())
+        self.assertEqual(obj.getStatusString(), "Freezed")
+        obj.enforceRecompute()
+        self.assertEqual(self.Doc.recompute(), 0)
+        self.assertEqual(obj.ExecCount, execute_count)
+
+        obj.purgeTouched()
+        obj.unfreeze(True)
+        self.assertFalse(obj.isFrozen())
+        self.assertEqual(self.Doc.recompute(), 0)
+        self.assertEqual(obj.ExecCount, execute_count)
+
     def testAbortTransaction(self):
         self.Doc.openTransaction("Add")
         obj = self.Doc.addObject("App::FeatureTest", "Label")

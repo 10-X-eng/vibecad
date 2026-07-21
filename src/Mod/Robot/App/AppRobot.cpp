@@ -25,6 +25,7 @@
 
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
+#include <App/DocumentObjectPy.h>
 
 #include "Edge2TracObject.h"
 #include "PropertyTrajectory.h"
@@ -54,6 +55,12 @@ public:
             &Module::simulateToFile,
             "simulateToFile(Robot,Trajectory,TickSize,FileName) - runs the "
             "simulation and write the result to a file."
+        );
+        add_varargs_method(
+            "swapPrecomputedTrajectory",
+            &Module::swapPrecomputedTrajectory,
+            "swapPrecomputedTrajectory(object, trajectory) - atomically exchange an "
+            "already-generated trajectory with a Robot trajectory document object."
         );
         initialize("This module is the Robot module.");  // register with Python
     }
@@ -89,6 +96,50 @@ private:
         }
 
         return Py::Float(0.0);
+    }
+
+    Py::Object swapPrecomputedTrajectory(const Py::Tuple& args)
+    {
+        PyObject* objectPy = nullptr;
+        PyObject* trajectoryPy = nullptr;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!O!:swapPrecomputedTrajectory",
+                &App::DocumentObjectPy::Type,
+                &objectPy,
+                &TrajectoryPy::Type,
+                &trajectoryPy
+            )) {
+            throw Py::Exception();
+        }
+
+        auto* object = dynamic_cast<Robot::TrajectoryObject*>(
+            static_cast<App::DocumentObjectPy*>(objectPy)->getDocumentObjectPtr()
+        );
+        if (!object) {
+            throw Py::TypeError(
+                "object must be a Robot::TrajectoryObject or a derived native type"
+            );
+        }
+        auto* trajectory = static_cast<TrajectoryPy*>(trajectoryPy)->getTrajectoryPtr();
+        object->Trajectory.swapValue(*trajectory);
+        const Robot::Trajectory& installed = object->Trajectory.getValue();
+        Py::Dict installedSummary;
+        installedSummary["waypoint_count"] = Py::Long(
+            static_cast<unsigned long>(installed.getSize())
+        );
+        installedSummary["length"] = Py::Float(installed.getLength());
+        installedSummary["duration"] = Py::Float(installed.getDuration());
+        Py::Dict displacedSummary;
+        displacedSummary["waypoint_count"] = Py::Long(
+            static_cast<unsigned long>(trajectory->getSize())
+        );
+        displacedSummary["length"] = Py::Float(trajectory->getLength());
+        displacedSummary["duration"] = Py::Float(trajectory->getDuration());
+        Py::Dict result;
+        result["installed"] = installedSummary;
+        result["displaced"] = displacedSummary;
+        return result;
     }
 };
 

@@ -183,6 +183,17 @@ void WaypointPy::setVelocity(Py::Float arg)
 }
 
 
+Py::Float WaypointPy::getAcceleration() const
+{
+    return Py::Float(getWaypointPtr()->Acceleration);
+}
+
+void WaypointPy::setAcceleration(Py::Float arg)
+{
+    getWaypointPtr()->Acceleration = (float)arg.operator double();
+}
+
+
 Py::String WaypointPy::getName() const
 {
     return {getWaypointPtr()->Name};

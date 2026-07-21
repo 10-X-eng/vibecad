@@ -87,19 +87,6 @@ class FemWorkbench(Workbench):
 
             vtk_module_handling()
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "FEM")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for FEM: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
     def GetClassName(self):
         # see https://forum.freecad.org/viewtopic.php?f=10&t=43300
         return "FemGui::Workbench"

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from VibeCADEditState import active_edit_state
+
 
 TOOL_SPEC = {
     "name": "sketcher.close_sketch",
@@ -64,8 +66,13 @@ def run(service: Any) -> dict[str, Any]:
             "The active FreeCAD GUI document does not expose native sketch edit controls."
         )
 
-    sketch = _native_edit_object(get_in_edit())
-    if sketch is None:
+    edit_state = active_edit_state(gui_document)
+    sketch = edit_state.document_object
+    if not edit_state.active:
+        if edit_state.error:
+            return _invalid(
+                f"FreeCAD edit state could not be verified: {edit_state.error}"
+            )
         return _invalid("No Sketcher sketch is currently open for editing.")
     if getattr(sketch, "TypeId", "") != "Sketcher::SketchObject":
         return _invalid(
@@ -95,12 +102,14 @@ def run(service: Any) -> dict[str, Any]:
             sketch_snapshot=before,
         )
 
-    active_after = _native_edit_object(get_in_edit())
-    if active_after is not None:
+    active_after_state = active_edit_state(gui_document)
+    active_after = active_after_state.document_object
+    if active_after_state.active:
         return _invalid(
             f"Sketch {sketch_name} left edit mode, but FreeCAD retained another active edit object.",
             closed_sketch=sketch_name,
             closed=True,
+            edit_state_error=active_after_state.error or None,
             active_edit_object={
                 "name": getattr(active_after, "Name", None),
                 "label": getattr(
@@ -138,13 +147,6 @@ def run(service: Any) -> dict[str, Any]:
         "sketch_snapshot": snapshot,
         "native_diagnostics": diagnostics,
     }
-
-
-def _native_edit_object(value: Any) -> Any | None:
-    if isinstance(value, (tuple, list)):
-        value = value[0] if value else None
-    provider_object = getattr(value, "Object", None)
-    return provider_object if provider_object is not None else value
 
 
 def _owner_body_name(sketch: Any) -> str | None:

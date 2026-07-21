@@ -66,21 +66,8 @@ class MeshPartWorkbench(Workbench):
         import MeshPartGui
         import MeshPart
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "MeshPart")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for MeshPart: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
     def GetClassName(self):
         return "MeshPartGui::Workbench"
 
 
-# Gui.addWorkbench(MeshPartWorkbench())
+Gui.addWorkbench(MeshPartWorkbench())

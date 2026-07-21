@@ -59,6 +59,22 @@ _seen_views: set[int] = set()
 _observer_installed = False
 _adaptive_controllers: list[Any] = []
 _maintenance_timer: Any = None
+_main_window_filter: Any = None
+_close_suspended = False
+
+
+def _document_restore_active() -> bool:
+    if App is None:
+        return False
+    is_restoring = getattr(App, "isRestoring", None)
+    if callable(is_restoring):
+        try:
+            if bool(is_restoring()):
+                return True
+        except Exception:
+            pass
+    document = getattr(App, "ActiveDocument", None)
+    return document is not None and bool(getattr(document, "Restoring", False))
 
 
 def _nearest_125(value: float) -> float:
@@ -444,6 +460,8 @@ class _AdaptiveGridController:
 
 
 def _update_adaptive_controllers() -> None:
+    if _document_restore_active():
+        return
     for controller in list(_adaptive_controllers):
         if controller.maintain():
             continue
@@ -451,8 +469,87 @@ def _update_adaptive_controllers() -> None:
         _adaptive_controllers.remove(controller)
 
 
+def _dispose_adaptive_controllers() -> None:
+    """Detach every per-view Coin sensor before its native view disappears."""
+    for controller in list(_adaptive_controllers):
+        controller.dispose()
+    _adaptive_controllers.clear()
+
+
+def _suspend_for_main_window_close() -> None:
+    """Stop callbacks before FreeCAD processes its main-window close event."""
+    global _close_suspended
+    _close_suspended = True
+    if _maintenance_timer is not None:
+        try:
+            _maintenance_timer.stop()
+        except RuntimeError:
+            pass
+    _dispose_adaptive_controllers()
+
+
+def _resume_after_cancelled_close() -> None:
+    """Restore maintenance if a human cancels FreeCAD shutdown."""
+    global _close_suspended
+    if not _close_suspended:
+        return
+    try:
+        from PySide import QtCore
+
+        if QtCore.QCoreApplication.closingDown():
+            return
+    except (AttributeError, RuntimeError):
+        return
+    _close_suspended = False
+    if _maintenance_timer is not None:
+        try:
+            _maintenance_timer.start()
+        except RuntimeError:
+            pass
+    try:
+        import FreeCADGui as Gui
+        from PySide import QtWidgets
+
+        mdi_area = Gui.getMainWindow().findChild(QtWidgets.QMdiArea)
+        active = mdi_area.currentSubWindow() if mdi_area is not None else None
+        if active is not None:
+            _on_sub_window_activated(active)
+    except (AttributeError, RuntimeError):
+        pass
+
+
+def _install_main_window_close_guard(main_window: Any) -> None:
+    """Install one pre-close sensor guard on FreeCAD's main window."""
+    global _main_window_filter
+    if _main_window_filter is not None:
+        return
+    try:
+        from PySide import QtCore, QtWidgets
+
+        class _MainWindowCloseFilter(QtCore.QObject):
+            def eventFilter(self, watched: Any, event: Any) -> bool:
+                event_type = event.type()
+                if event_type == QtCore.QEvent.Close:
+                    _suspend_for_main_window_close()
+                elif event_type in (QtCore.QEvent.Show, QtCore.QEvent.WindowActivate):
+                    if _close_suspended:
+                        QtCore.QTimer.singleShot(0, _resume_after_cancelled_close)
+                return False
+
+        observer = _MainWindowCloseFilter(main_window)
+        main_window.installEventFilter(observer)
+        application = QtWidgets.QApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(_suspend_for_main_window_close)
+        _main_window_filter = observer
+    except (AttributeError, RuntimeError, TypeError) as exc:
+        _warn(f"main-window close guard unavailable: {exc}")
+
+
 def _ensure_maintenance_timer() -> None:
     global _maintenance_timer
+    if _close_suspended:
+        return
     if _maintenance_timer is not None:
         return
     try:
@@ -469,6 +566,8 @@ def _ensure_maintenance_timer() -> None:
 
 
 def _ensure_adaptive_controller(view: Any, grid: Any) -> None:
+    if _close_suspended:
+        return
     parent = _active_view_parent()
     for controller in _adaptive_controllers:
         if controller.matches(view):
@@ -507,6 +606,13 @@ def seed_grid_preferences() -> None:
 def _get_snapper() -> Any:
     """Return the shared Draft Snapper, creating it if it does not exist."""
     import FreeCADGui as Gui
+    import WorkingPlane
+
+    # Draft's tracker classes still read the compatibility
+    # ``FreeCAD.DraftWorkingPlane`` attribute. The supported working-plane
+    # API creates and synchronizes that attribute for the active 3D view;
+    # importing gui_snapper alone does not.
+    WorkingPlane.get_working_plane(update=False)
 
     snapper = getattr(Gui, "Snapper", None)
     if snapper is None:
@@ -604,7 +710,7 @@ def _show_grid_in_active_view() -> None:
     grid is toggled on). Views whose grid tracker already exists are skipped
     so a manual grid toggle by the user is never fought.
     """
-    if App is None or not App.GuiUp:
+    if App is None or not App.GuiUp or _close_suspended or _document_restore_active():
         return
     if not _grid_should_always_show():
         return
@@ -639,6 +745,15 @@ def _show_grid_in_active_view() -> None:
 
 def _on_sub_window_activated(_window: Any = None) -> None:
     """Defer grid initialization until the view activation settles."""
+    if _window is None:
+        # QMdiArea emits ``subWindowActivated(None)`` synchronously while the
+        # final document view is closing. Detach Coin camera sensors now;
+        # waiting for the maintenance timer can otherwise recreate a sensor
+        # while FreeCAD is already tearing down the Coin database.
+        _dispose_adaptive_controllers()
+        return
+    if _close_suspended:
+        return
     try:
         from PySide import QtCore
 
@@ -657,6 +772,7 @@ def _install_view_observer() -> None:
         from PySide import QtWidgets
 
         main_window = Gui.getMainWindow()
+        _install_main_window_close_guard(main_window)
         mdi_area = main_window.findChild(QtWidgets.QMdiArea)
         if mdi_area is None:
             _warn("MDI area not found; grid observer not installed")

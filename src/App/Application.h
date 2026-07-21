@@ -396,6 +396,15 @@ public:
     bool isFineGrainedRecomputeEnabled();
     bool canRecomputeRequestOnWorker(const RecomputeRequest& req) const;
 
+    // Queue a recompute only when it can execute on the worker. Unlike
+    // queueRecomputeRequest(), this never falls back to the caller or GUI
+    // thread. This is the safe entry point for asynchronous integrations.
+    bool tryQueueRecomputeRequest(RecomputeRequest req);
+    bool tryQueueRecomputeRequests(std::vector<RecomputeRequest> requests);
+
+    // True while a request for the document is queued or executing.
+    bool hasPendingRecomputeRequest(const std::string& documentName);
+
     // Adds a recompute request to the processing queue.
     void queueRecomputeRequest(RecomputeRequest req);
 

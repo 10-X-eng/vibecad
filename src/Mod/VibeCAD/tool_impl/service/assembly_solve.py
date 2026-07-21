@@ -30,7 +30,7 @@ TOOL_SPEC = {
             "assembly_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the assembly from assembly.list_structure."
+                    "Exact internal name of the assembly from core.inspect scope='domain'."
                 ),
             },
         },
@@ -45,7 +45,7 @@ def run(service: Any, assembly_name: str) -> dict[str, Any]:
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call assembly.list_structure for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
     joint_group = domain_runtime.assembly_joint_group(assembly)
     if joint_group is None:
@@ -128,7 +128,7 @@ def run(service: Any, assembly_name: str) -> dict[str, Any]:
         transaction,
         extra={"operation": "solve", "mutation": mutation},
         next_action=(
-            "Verify component placements with part.measure or a screenshot; "
+            "Verify the returned component placements or capture a screenshot; "
             "if the verdict is not 'solved', fix the reported joint problem "
             "before adding more joints."
         ),

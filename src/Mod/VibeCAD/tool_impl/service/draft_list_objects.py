@@ -14,8 +14,8 @@ TOOL_SPEC = {
     "description": (
         "List every Draft object in the active document with its exact internal "
         "name, label, type, and geometry summary. Use the returned internal "
-        "names to target draft.create_array, part.extrude, or other tools that "
-        "take an exact object name."
+        "names to target draft.create_array and other Draft tools that take an "
+        "exact object name."
     ),
     "contextual": True,
     "safety": "READ",

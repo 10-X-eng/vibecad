@@ -1,0 +1,9 @@
+{
+  "vibescript.partdesign.create_program": "7ff1abfa5bb6f84ed7dbba2514ff859dcaed3afa862aaf799d78a7b5bb570500",
+  "vibescript.partdesign.delete_program": "277296defdafadcc904ebd029d2908a4774011dc5ab2dc672a6066c0d1d8d5d0",
+  "vibescript.partdesign.describe_api": "20e119b9c26888687577e2b3ad9b372456741eade9f5fbcb5122833cc405452a",
+  "vibescript.partdesign.edit_source": "f19cbcc0fba2acce9dfc68847fde13ec91b0104b7ecb9a41a4bc93e64b1bc474",
+  "vibescript.partdesign.inspect_program": "876a762e85a7af936b8566d0147deac06385c8a3c216654b1af0e5c043423e19",
+  "vibescript.partdesign.reconfigure_program": "532c41fc2b32656323f9f4b08b08743467fd9bc20a6f6c474d5ea2621bc91efc",
+  "vibescript.partdesign.set_inputs": "c18abcd36ac4e65052cb6fedc325b14cbed6ca3d628eb8634fa814d19db6b724"
+}

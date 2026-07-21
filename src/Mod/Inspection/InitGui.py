@@ -44,19 +44,6 @@ class InspectionWorkbench(Workbench):
         # load the module
         import InspectionGui
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "Inspection")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for Inspection: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
     def GetClassName(self):
         return "InspectionGui::Workbench"
 

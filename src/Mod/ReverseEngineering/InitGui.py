@@ -46,19 +46,6 @@ class ReverseEngineeringWorkbench(Workbench):
         import ReverseEngineeringGui
         import ReverseEngineering
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "ReverseEngineering")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for ReverseEngineering: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
     def GetClassName(self):
         return "ReverseEngineeringGui::Workbench"
 

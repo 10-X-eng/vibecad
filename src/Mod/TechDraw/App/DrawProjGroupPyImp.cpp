@@ -60,6 +60,23 @@ PyObject* DrawProjGroupPy::addProjection(PyObject* args)
     return new DrawProjGroupItemPy(newProj);
 }
 
+PyObject* DrawProjGroupPy::addPrecomputedProjection(PyObject* args)
+{
+    char* projectionType;
+    if (!PyArg_ParseTuple(args, "s", &projectionType)) {
+        throw Py::Exception();
+    }
+
+    App::DocumentObject* object =
+        getDrawProjGroupPtr()->addPrecomputedProjection(projectionType);
+    auto* projection = dynamic_cast<TechDraw::DrawProjGroupItem*>(object);
+    if (!projection) {
+        PyErr_SetString(PyExc_TypeError, "wrong type for adding precomputed projection");
+        return nullptr;
+    }
+    return new DrawProjGroupItemPy(projection);
+}
+
 PyObject* DrawProjGroupPy::removeProjection(PyObject* args)
 {
     char* projType;

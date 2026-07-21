@@ -58,18 +58,6 @@ class BIMWorkbench(Workbench):
 
         Log("Loading BIM module… done\n")
         FreeCADGui.updateLocale()
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "BIM")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for BIM: {err}\n".format(
-                    err=str(err)
-                )
-            )
 
     def createTools(self):
         "Create tolbars and menus"

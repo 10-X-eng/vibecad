@@ -584,7 +584,10 @@ class ExplodedViewSelGate:
 
 
 ######### Create Exploded View Task ###########
-class TaskAssemblyCreateView(QtCore.QObject):
+_TaskAssemblyCreateViewBase = QtCore.QObject if App.GuiUp else object
+
+
+class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
     def __init__(self, viewObj=None):
         super().__init__()
 

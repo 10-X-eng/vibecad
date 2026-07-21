@@ -23,12 +23,12 @@
  ***************************************************************************/
 
 
-#include <App/DocumentObjectPy.h>
 #include <Base/Placement.h>
 #include <Base/Reader.h>
 #include <Base/Writer.h>
 
 #include "RobotObject.h"
+#include "RobotObjectPy.h"
 
 
 using namespace Robot;
@@ -105,14 +105,32 @@ PyObject* RobotObject::getPyObject()
 {
     if (PythonObject.is(Py::_None())) {
         // ref counter is set to 1
-        PythonObject = Py::Object(new DocumentObjectPy(this), true);
+        PythonObject = Py::Object(new RobotObjectPy(this), true);
     }
     return Py::new_reference_to(PythonObject);
 }
 
+void RobotObject::setKinematic(const AxisDefinition definitions[6])
+{
+    block = true;
+    robot.setKinematic(definitions);
+    robot.setAxis(0, Axis1.getValue());
+    robot.setAxis(1, Axis2.getValue());
+    robot.setAxis(2, Axis3.getValue());
+    robot.setAxis(3, Axis4.getValue());
+    robot.setAxis(4, Axis5.getValue());
+    robot.setAxis(5, Axis6.getValue());
+    Tcp.setValue(robot.getTcp());
+    block = false;
+}
 
 void RobotObject::onChanged(const Property* prop)
 {
+
+    if (isFreezed() && prop != &Visibility) {
+        App::GeoFeature::onChanged(prop);
+        return;
+    }
 
     if (prop == &RobotKinematicFile) {
         // load the new kinematic

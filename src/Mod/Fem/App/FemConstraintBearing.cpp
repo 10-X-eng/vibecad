@@ -84,8 +84,11 @@ void ConstraintBearing::onChanged(const App::Property* prop)
             return;
         }
 
-        Part::Feature* feat = static_cast<Part::Feature*>(ref.front());
-        TopoDS_Shape sh = Tools::getFeatureSubShape(feat, subRef.front().c_str(), true);
+        TopoDS_Shape sh = Tools::getFeatureSubShape(
+            ref.front(),
+            subRef.front().c_str(),
+            true
+        );
         double radius, height;
         Base::Vector3d base, axis;
         if (sh.IsNull() || !Tools::getCylinderParams(sh, base, axis, height, radius)) {
@@ -109,8 +112,10 @@ void ConstraintBearing::onChanged(const App::Property* prop)
             return;
         }
         std::string subName = names.front();
-        Part::Feature* feat = static_cast<Part::Feature*>(obj);
-        TopoDS_Shape sh = feat->Shape.getShape().getSubShape(subName.c_str());
+        TopoDS_Shape sh = Tools::getFeatureSubShape(obj, subName.c_str(), true);
+        if (sh.IsNull()) {
+            return;
+        }
 
         if (sh.ShapeType() == TopAbs_FACE) {
             BRepAdaptor_Surface surface(TopoDS::Face(sh));
@@ -131,8 +136,7 @@ void ConstraintBearing::onChanged(const App::Property* prop)
             return;
         }
 
-        feat = static_cast<Part::Feature*>(ref.front());
-        sh = Tools::getFeatureSubShape(feat, subRef.front().c_str(), true);
+        sh = Tools::getFeatureSubShape(ref.front(), subRef.front().c_str(), true);
         double radius, height;
         Base::Vector3d base, axis;
         if (!Tools::getCylinderParams(sh, base, axis, height, radius)) {

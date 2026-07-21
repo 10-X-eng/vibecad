@@ -444,6 +444,17 @@ bool DrawProjGroup::canDelete(const char* viewProjType) const
 
 App::DocumentObject* DrawProjGroup::addProjection(const char* viewProjType)
 {
+    return addProjectionImpl(viewProjType, true);
+}
+
+App::DocumentObject* DrawProjGroup::addPrecomputedProjection(const char* viewProjType)
+{
+    return addProjectionImpl(viewProjType, false);
+}
+
+App::DocumentObject* DrawProjGroup::addProjectionImpl(const char* viewProjType,
+                                                      bool recomputeProjection)
+{
     // Base::Console().message("DPG::addProjection(%s)\n", viewProjType ? viewProjType : "null");
     DrawProjGroupItem* view(nullptr);
     std::pair<Base::Vector3d, Base::Vector3d> vecs;
@@ -477,7 +488,9 @@ App::DocumentObject* DrawProjGroup::addProjection(const char* viewProjType)
             vecs = getDirsFromFront(view);
             view->Direction.setValue(vecs.first);
             view->XDirection.setValue(vecs.second);
-            view->recomputeFeature();
+            if (recomputeProjection) {
+                view->recomputeFeature();
+            }
         }
         else {//Front
             Anchor.setValue(view);

@@ -22,3 +22,11 @@ class AssemblyLink(Part):
 
     Joints: Final[list]
     """A list of all joints this assembly link has."""
+
+    def synchronizeContents(self) -> None:
+        """Synchronize linked components and joints without recomputing the document.
+
+        This is intended for bounded publishers that already hold validated
+        placements and must not trigger unrelated document execution.
+        """
+        ...

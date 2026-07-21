@@ -1760,6 +1760,11 @@ class SpreadsheetCases(unittest.TestCase):
         ss1 = self.doc.addObject("Spreadsheet::Sheet", "Spreadsheet1")
         ss1.mergeCells("A1:B4")
         ss1.mergeCells("C1:D4")
+        self.assertEqual(ss1.getCellMerge("A1"), ("A1", 4, 2))
+        self.assertEqual(ss1.getCellMerge("B4"), ("A1", 4, 2))
+        self.assertEqual(ss1.getCellMerge("Z99"), ("Z99", 1, 1))
+        with self.assertRaises(ValueError):
+            ss1.getCellMerge("not-a-cell")
         self.doc.recompute()
         ss1.set("B1", "fail")
         self.doc.recompute()

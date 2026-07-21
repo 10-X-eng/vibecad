@@ -107,6 +107,8 @@ public:
     //@{
     void startRestoring() override;
     void finishRestoring() override;
+    /// Build a deferred visible shape after document restoration has completed.
+    void finishDeferredVisualRestore();
     //@}
 
     /** @name Selection handling

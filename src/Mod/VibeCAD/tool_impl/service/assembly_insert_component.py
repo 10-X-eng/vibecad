@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import VibeCADScriptedPublication as scripted_publication
 from VibeCADTransactions import run_freecad_transaction
 
 from . import domain_runtime
@@ -31,7 +32,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the target assembly from "
-                    "assembly.list_structure."
+                    "core.inspect scope='domain'."
                 ),
             },
             "source_object_name": {
@@ -76,7 +77,7 @@ def run(
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call assembly.list_structure for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
     source_name = str(source_object_name or "").strip()
     source = doc.getObject(source_name) if source_name else None
@@ -197,6 +198,46 @@ def _invalid(message: str, **details: Any) -> dict[str, Any]:
 
 def _validate_component_source(service: Any, source: Any) -> dict[str, Any]:
     type_id = str(getattr(source, "TypeId", ""))
+    if type_id == "App::Link" and scripted_publication.is_publication(source):
+        try:
+            root = scripted_publication.model_root_for(source)
+            output_key = str(
+                getattr(source, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+            )
+            registered = scripted_publication.model_publications(root).get(output_key)
+        except scripted_publication.PublicationError as exc:
+            return _invalid(
+                "The scripted publication link is not structurally valid.",
+                requested_object={
+                    "name": source.Name,
+                    "label": source.Label,
+                    "type": type_id,
+                },
+                publication_error=str(exc),
+                publication_details=exc.details,
+            )
+        if registered is not source:
+            return _invalid(
+                "The scripted publication link is not registered to its model root.",
+                requested_object={
+                    "name": source.Name,
+                    "label": source.Label,
+                    "type": type_id,
+                },
+            )
+        health = domain_runtime.shape_health(source)
+        if health.get("valid_non_null") and int(
+            (health.get("shape") or {}).get("solids", 0)
+        ) > 0:
+            return {
+                "ok": True,
+                "component_type": "VibeScript publication",
+                "shape": health,
+            }
+        return _invalid(
+            "A scripted publication component must contain at least one valid solid.",
+            requested_object=health,
+        )
     if type_id == "PartDesign::Body" or source.isDerivedFrom("Assembly::AssemblyObject"):
         return {"ok": True, "component_type": type_id}
     owner = service._partdesign_body_for_feature(source)
@@ -221,7 +262,13 @@ def _validate_component_source(service: Any, source: Any) -> dict[str, Any]:
     return _invalid(
         "The source is not an explicit standalone component type.",
         requested_object={"name": source.Name, "label": source.Label, "type": type_id},
-        allowed_types=["PartDesign::Body", "App::Part", "Assembly::AssemblyObject", "standalone solid Part::Feature"],
+        allowed_types=[
+            "PartDesign::Body",
+            "App::Part",
+            "Assembly::AssemblyObject",
+            "registered solid VibeScript publication",
+            "standalone solid Part::Feature",
+        ],
     )
 
 

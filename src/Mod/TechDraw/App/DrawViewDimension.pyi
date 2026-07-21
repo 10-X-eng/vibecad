@@ -29,6 +29,17 @@ class DrawViewDimension(DrawView):
         """getText() - returns Dimension text."""
         ...
 
+    def getPrecomputedDimension(self) -> Any:
+        """Return the fixed-shape descriptive geometry for this computed dimension."""
+        ...
+
+    def setPrecomputedDimension(self) -> Any:
+        """
+        Adopt descriptive geometry returned by getPrecomputedDimension()
+        without measuring or projecting document geometry.
+        """
+        ...
+
     def getLinearPoints(self) -> Any:
         """getLinearPoints() - returns list of points for linear Dimension"""
         ...

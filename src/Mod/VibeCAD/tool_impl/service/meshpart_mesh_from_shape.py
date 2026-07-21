@@ -99,8 +99,7 @@ def run(
     if shape is None or shape.isNull():
         return _invalid(
             f"Object has no shape geometry to tessellate: {clean_name}. "
-            "meshpart.mesh_from_shape needs a shaped BREP object; for "
-            "existing meshes use mesh.analyze."
+            "meshpart.mesh_from_shape needs a shaped BREP object."
         )
     source_health = domain_runtime.shape_health(obj)
     if not source_health.get("valid_non_null"):
@@ -195,7 +194,7 @@ def run(
         extra={"operation": "mesh_from_shape", **result},
         next_action=(
             "Check the returned facet count: refine deflection if too coarse, "
-            "or continue with mesh.analyze / export."
+            "or ask the human to inspect the result in the owning workbench."
         ),
     )
 

@@ -288,6 +288,34 @@ PyObject* SheetPy::splitCell(PyObject* args)
     Py_Return;
 }
 
+PyObject* SheetPy::getCellMerge(PyObject* args)
+{
+    const char* strAddress;
+
+    if (!PyArg_ParseTuple(args, "s:getCellMerge", &strAddress)) {
+        return nullptr;
+    }
+
+    CellAddress address;
+    try {
+        address = stringToAddress(strAddress);
+    }
+    catch (const Base::Exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+        return nullptr;
+    }
+
+    const CellAddress anchor = getSheetPtr()->getAnchor(address);
+    int rows = 1;
+    int columns = 1;
+    getSheetPtr()->getSpans(anchor, rows, columns);
+    Py::Tuple result(3);
+    result[0] = Py::String(anchor.toString());
+    result[1] = Py::Long(rows);
+    result[2] = Py::Long(columns);
+    return Py::new_reference_to(result);
+}
+
 PyObject* SheetPy::insertColumns(PyObject* args)
 {
     const char* column;

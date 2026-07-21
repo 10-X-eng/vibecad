@@ -14,8 +14,7 @@ TOOL_SPEC = {
     "description": (
         "List every mesh object in the active document with its exact "
         "internal name, label, and triangle counts. Use the returned "
-        "internal names to target mesh.analyze, mesh.repair, or "
-        "meshpart.shape_from_mesh."
+        "internal names to target mesh.analyze or mesh.repair."
     ),
     "contextual": True,
     "safety": "READ",

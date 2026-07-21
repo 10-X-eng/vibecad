@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,12 +15,13 @@ import VibeCADCodex as codex
 import VibeCADPreferences as preferences
 import VibeCADProvider as provider
 import VibeCADSession as session
+from VibeCADTools import SafetyLevel
 
 
-def _scripted_context() -> dict:
-    schema = {
-        "name": "vibescript.inspect_model",
-        "description": "Inspect one VibeScript model.",
+def _tool_schema(name: str) -> dict:
+    return {
+        "name": name,
+        "description": f"Call {name}.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -32,82 +34,258 @@ def _scripted_context() -> dict:
             "additionalProperties": False,
         },
     }
+
+
+def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dict:
+    schemas = [_tool_schema(name) for name in names]
     return {
-        "provider_tool_schemas": [schema],
-        "provider_tool_surface": {
-            "kind": "scripted",
-            "fixed": True,
-            "engine": "vibescript",
-            "workbench": "PartDesignWorkbench",
-            "tool_names": ["vibescript.inspect_model"],
-        },
+        "provider_tool_schemas": schemas,
+        "provider_tool_surface": session._turn_start_tool_surface(workbench, schemas),
     }
 
 
-def test_codex_dynamic_tools_require_a_fixed_scripted_surface() -> None:
-    context = _scripted_context()
+def _scripted_context() -> dict:
+    return _surface_context(
+        "core.inspect", "vibescript.partdesign.create_program"
+    )
+
+
+def _part_vibescript_context() -> dict:
+    return _surface_context(
+        "core.inspect",
+        "vibescript.part.create_program",
+        workbench="PartWorkbench",
+    )
+
+
+def test_codex_dynamic_tools_require_a_frozen_turn_start_surface() -> None:
+    context = _part_vibescript_context()
     context.pop("provider_tool_surface")
-    with pytest.raises(provider.ProviderUnavailable, match="fixed VibeCAD scripted"):
+    with pytest.raises(provider.ProviderUnavailable, match="frozen turn-start"):
         provider._codex_dynamic_tool_surface(context)
 
 
-def test_fixed_scripted_surface_is_independent_of_workbench() -> None:
-    schemas = _scripted_context()["provider_tool_schemas"]
-    surface = session._fixed_scripted_surface("FemWorkbench", schemas)
-    assert surface == {
-        "kind": "scripted",
-        "fixed": True,
-        "engine": "vibescript",
-        "workbench": "FemWorkbench",
-        "tool_names": ["vibescript.inspect_model"],
-    }
-
-
-def test_fixed_scripted_surface_accepts_approved_vibescript_adjuncts() -> None:
-    schemas = [{"name": name} for name in sorted(session.VIBESCRIPT_PROVIDER_TOOLS)]
-    surface = session._fixed_scripted_surface("PartDesignWorkbench", schemas)
-    assert surface is not None
+def test_turn_start_surface_accepts_one_workbench_vibescript_domain() -> None:
+    schemas = _part_vibescript_context()["provider_tool_schemas"]
+    surface = session._turn_start_tool_surface("PartWorkbench", schemas)
+    assert surface["kind"] == "turn_start_snapshot"
+    assert surface["frozen"] is True
     assert surface["engine"] == "vibescript"
+    assert surface["domain"] == "part"
+    assert surface["workbench"] == "PartWorkbench"
+    assert surface["tool_names"] == ["core.inspect", "vibescript.part.create_program"]
+    assert surface["schema_count"] == 2
+    assert surface["schema_sha256"] == provider.provider_tool_schema_digest(schemas)
+    assert surface["available"] is True
+    assert surface["unavailable_reason"] == ""
+
+
+def test_turn_start_surface_preserves_pure_vibescript_behavior() -> None:
+    from VibeCADModelingSurface import resolve_modeling_surface
+
+    resolution = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
+    schemas = [_tool_schema(name) for name in resolution.tool_names]
+    surface = session._turn_start_tool_surface("PartDesignWorkbench", schemas)
+    assert surface["engine"] == "vibescript"
+    assert surface["domain"] == "partdesign"
     assert surface["tool_names"] == [schema["name"] for schema in schemas]
 
 
-def test_fixed_scripted_surface_rejects_mixed_native_tools() -> None:
+def test_turn_start_surface_accepts_native_tools_without_a_scripted_engine() -> None:
+    schemas = [_tool_schema("core.inspect"), _tool_schema("bim.create_wall")]
+    surface = session._turn_start_tool_surface("BIMWorkbench", schemas)
+    assert surface["engine"] == "native"
+    assert surface["tool_names"] == ["core.inspect", "bim.create_wall"]
+
+
+def test_turn_start_surface_rejects_multiple_scripted_engines() -> None:
     schemas = [
-        *_scripted_context()["provider_tool_schemas"],
-        {
-            "name": "core.get_active_document",
-            "description": "Inspect the active document.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            },
-        },
+        _tool_schema("vibescript.partdesign.create_program"),
+        _tool_schema("build123d.create_model"),
     ]
-    assert session._fixed_scripted_surface("PartDesignWorkbench", schemas) is None
+    with pytest.raises(ValueError, match="multiple modeling engines"):
+        session._turn_start_tool_surface("AssemblyWorkbench", schemas)
+
+
+@pytest.mark.parametrize(
+    "schemas",
+    (
+        [],
+        [{"description": "missing name"}],
+        [_tool_schema("assembly.solve"), _tool_schema("assembly.solve")],
+    ),
+)
+def test_turn_start_surface_rejects_malformed_declarations(schemas: list[dict]) -> None:
+    with pytest.raises(ValueError):
+        session._turn_start_tool_surface("AssemblyWorkbench", schemas)
 
 
 def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_scripted_context())
-    assert names == {("vibescript", "inspect_model"): "vibescript.inspect_model"}
-    assert tools == [
-        {
-            "type": "namespace",
-            "name": "vibescript",
-            "description": "VibeCAD vibescript operations available now.",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "inspect_model",
-                    "description": "Inspect one VibeScript model.",
-                    "deferLoading": False,
-                    "inputSchema": _scripted_context()["provider_tool_schemas"][0][
-                        "parameters"
-                    ],
-                }
-            ],
-        }
+    assert names == {
+        ("core", "inspect"): "core.inspect",
+        (
+            "vibescript",
+            "partdesign_create_program",
+        ): "vibescript.partdesign.create_program",
+    }
+    assert [namespace["name"] for namespace in tools] == ["core", "vibescript"]
+    inspect_tool = tools[0]["tools"][0]
+    assert inspect_tool["name"] == "inspect"
+    assert inspect_tool["inputSchema"] == _scripted_context()["provider_tool_schemas"][0][
+        "parameters"
     ]
+
+
+def test_codex_dynamic_tools_accept_one_domain_qualified_namespace() -> None:
+    tools, names = provider._codex_dynamic_tool_surface(_part_vibescript_context())
+    assert names == {
+        ("core", "inspect"): "core.inspect",
+        ("vibescript", "part_create_program"): "vibescript.part.create_program",
+    }
+    assert [namespace["name"] for namespace in tools] == ["core", "vibescript"]
+
+
+def test_turn_start_surface_rejects_mixed_native_and_vibescript_namespaces() -> None:
+    schemas = [
+        _tool_schema("part.measure"),
+        _tool_schema("vibescript.part.create_program"),
+    ]
+    with pytest.raises(ValueError, match="cannot contain native"):
+        session._turn_start_tool_surface("PartWorkbench", schemas)
+
+
+def test_codex_dynamic_tools_reject_surface_name_or_schema_drift() -> None:
+    name_drift = _part_vibescript_context()
+    name_drift["provider_tool_surface"]["tool_names"] = []
+    with pytest.raises(provider.ProviderUnavailable, match="do not match"):
+        provider._codex_dynamic_tool_surface(name_drift)
+
+    schema_drift = _part_vibescript_context()
+    schema_drift["provider_tool_schemas"][0]["description"] = "Changed after freeze."
+    with pytest.raises(provider.ProviderUnavailable, match="changed after"):
+        provider._codex_dynamic_tool_surface(schema_drift)
+
+
+def test_codex_dynamic_tools_reject_a_false_scripted_engine_declaration() -> None:
+    context = _part_vibescript_context()
+    context["provider_tool_surface"]["engine"] = "openscad"
+    with pytest.raises(provider.ProviderUnavailable, match="does not match"):
+        provider._codex_dynamic_tool_surface(context)
+
+
+def test_provider_update_keeps_the_turn_surface_frozen_after_workbench_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = _part_vibescript_context()
+    next_context = _scripted_context()
+    next_context["workbench"] = "PartDesignWorkbench"
+    next_context["modeling_surface"] = {
+        "workbench": "PartDesignWorkbench",
+        "engine": "vibescript",
+        "domain": "partdesign",
+        "surface_id": next_context["provider_tool_surface"]["surface_id"],
+    }
+    monkeypatch.setattr(session, "_context_for_provider", lambda *_args: next_context)
+
+    initial_surface = dict(initial["provider_tool_surface"])
+    initial_schemas = list(initial["provider_tool_schemas"])
+    runner = session.make_provider_tool_runner(
+        object(),
+        tool_trace=[],
+        progress_callback=None,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        turn_surface=initial_surface,
+        turn_schemas=initial_schemas,
+        turn_modeling_surface={
+            "workbench": "PartWorkbench",
+            "engine": "vibescript",
+            "domain": "part",
+            "surface_id": initial_surface["surface_id"],
+        },
+    )
+
+    updated = runner.provider_update()
+
+    assert updated["provider_tool_surface"] == initial_surface
+    assert updated["provider_tool_schemas"] == initial_schemas
+    assert updated["workbench"] == "PartWorkbench"
+    assert updated["modeling_surface"]["invalidated"] is True
+    assert updated["modeling_surface"]["next_turn_required"] is True
+    assert "vibescript_domain" not in updated
+
+
+def test_codex_dynamic_tools_reject_malformed_or_extended_snapshots() -> None:
+    malformed = _part_vibescript_context()
+    malformed["provider_tool_schemas"][0]["parameters"] = {"type": "string"}
+    malformed["provider_tool_surface"] = session._turn_start_tool_surface(
+        "PartWorkbench", malformed["provider_tool_schemas"]
+    )
+    with pytest.raises(provider.ProviderUnavailable, match="Invalid frozen schema"):
+        provider._codex_dynamic_tool_surface(malformed)
+
+    extended = _part_vibescript_context()
+    extended["provider_tool_surface"]["unexpected"] = True
+    with pytest.raises(provider.ProviderUnavailable, match="unexpected fields"):
+        provider._codex_dynamic_tool_surface(extended)
+
+
+def test_tool_runner_revalidates_each_call_against_the_live_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Spec:
+        def validate_arguments(self, _args: dict) -> None:
+            raise AssertionError("A removed tool must be blocked before validation.")
+
+    class _Registry:
+        def __init__(self) -> None:
+            self.called = False
+
+        def get(self, _name: str):
+            return SimpleNamespace(
+                safety=SafetyLevel.READ,
+                workbench="PartDesignWorkbench",
+                spec=_Spec(),
+            )
+
+        def call(self, _name: str, **_args):
+            self.called = True
+            raise AssertionError("A removed tool must never execute.")
+
+    class _Service:
+        def __init__(self) -> None:
+            self.registry = _Registry()
+
+        def active_workbench_name(self) -> str:
+            return "AssemblyWorkbench"
+
+    service = _Service()
+    monkeypatch.setattr(
+        session,
+        "_live_provider_surface_state",
+        lambda _service: {
+            "workbench": "AssemblyWorkbench",
+            "runtime_state": {"edit_mode": "none"},
+            "tool_names": ["assembly.solve"],
+        },
+    )
+    runner = session.make_provider_tool_runner(
+        service,
+        tool_trace=[],
+        progress_callback=None,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+    )
+
+    result = runner("vibescript.part.inspect_program", "{}")
+
+    assert result["ok"] is False
+    assert result["failure_code"] == "TOOL_NOT_ON_ACTIVE_SURFACE"
+    assert result["candidates"] == ["assembly.solve"]
+    assert service.registry.called is False
 
 
 def test_codex_images_use_the_bounded_inline_transport(
@@ -142,6 +320,7 @@ def test_codex_images_use_the_bounded_inline_transport(
         "view_screenshot": {
             "captured": True,
             "new_observation": True,
+            "pending_attachment": True,
             "path": str(screenshot),
         }
     }
@@ -161,6 +340,43 @@ def test_codex_images_use_the_bounded_inline_transport(
     assert turn_image["url"].startswith("data:image/jpeg;base64,")
     assert base64.b64decode(turn_image["url"].partition(",")[2]) == encoded
     assert len(encoded) <= provider.CODEX_INLINE_IMAGE_MAX_BYTES
+
+
+def test_consumed_view_is_not_attached_to_a_later_provider_turn(
+    tmp_path: Path,
+) -> None:
+    screenshot = tmp_path / "viewport.png"
+    screenshot.write_bytes(b"png")
+    context = {
+        "view_screenshot": {
+            "captured": True,
+            "pending_attachment": False,
+            "path": str(screenshot),
+        }
+    }
+
+    assert provider._screenshot_image_payload(context) is None
+    assert provider._context_image_blocks(context) == []
+
+
+def test_session_consumes_the_exact_view_after_copying_provider_context() -> None:
+    consumed: list[dict] = []
+    service = SimpleNamespace(
+        consume_view_screenshot_attachment=lambda value: consumed.append(dict(value))
+    )
+    screenshot = {
+        "captured": True,
+        "pending_attachment": True,
+        "path": "/project/screenshots/view.png",
+    }
+    context = {"view_screenshot": dict(screenshot)}
+
+    session._consume_context_view_attachment(
+        service, context, lambda operation: operation()
+    )
+
+    assert consumed == [screenshot]
+    assert context["view_screenshot"] == screenshot
 
 
 def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
@@ -190,11 +406,39 @@ def test_codex_thread_config_enables_only_web_and_skill_capabilities() -> None:
     assert config["features.plugins"] is False
 
 
-def test_provider_capability_preferences_have_explicit_defaults() -> None:
+def test_provider_capability_preferences_have_explicit_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnsetPreferences:
+        def GetBool(self, _name: str, default: bool) -> bool:
+            return default
+
+        def GetString(self, _name: str, default: str) -> str:
+            return default
+
+        def GetFloat(self, _name: str, default: float) -> float:
+            return default
+
+        def GetInt(self, _name: str, default: int) -> int:
+            return default
+
     settings = preferences.VibeCADSettings()
     assert settings.web_search_enabled is False
-    assert settings.design_review_enabled is True
+    assert settings.design_review_enabled is False
     assert settings.codex_skills_enabled is False
+
+    monkeypatch.setattr(preferences, "preferences", lambda: _UnsetPreferences())
+    loaded = preferences.load_settings()
+    assert loaded.design_review_enabled is False
+
+    class _OptedInPreferences(_UnsetPreferences):
+        def GetBool(self, name: str, default: bool) -> bool:
+            if name == "DesignReviewEnabled":
+                return True
+            return default
+
+    monkeypatch.setattr(preferences, "preferences", lambda: _OptedInPreferences())
+    assert preferences.load_settings().design_review_enabled is True
 
 
 def test_codex_skill_reader_is_scoped_to_enabled_skill_directory(

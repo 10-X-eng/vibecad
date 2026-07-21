@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import part_fillet, partdesign_dressup_feature
+from . import part_fillet
 
 
 TOOL_SPEC = {
@@ -14,8 +14,8 @@ TOOL_SPEC = {
     "description": (
         "Create one native Part chamfer that bevels count-guarded geometric edges of one shaped "
         "object with an equal-distance cut. Finishing operation; apply after the "
-        "primary form is complete. Resolve edge names with part.find_subelements "
-        "first - never guess them. The source object becomes a hidden child of the "
+        "primary form is complete. Use count-guarded geometric selection; scripted "
+        "outputs require a declared published interface. The source object becomes a hidden child of the "
         "chamfer result."
     ),
     "contextual": True,
@@ -29,10 +29,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": "Exact internal name of the object whose edges are chamfered.",
             },
-            "selection": partdesign_dressup_feature.selection_schema(
-                allow_all_edges=True,
-                edge_only=True,
-            ),
+            "selection": part_fillet.edge_selection_schema(),
             "size_mm": {
                 "type": "number",
                 "exclusiveMinimum": 0,

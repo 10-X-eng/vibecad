@@ -145,6 +145,15 @@ void QGIViewAnnotation::drawAnnotation()
         ss << "font-weight:normal; font-style:normal; ";
     }
     ss << "line-height:" << viewAnno->LineSpace.getValue() << "%; ";
+    if (viewAnno->TextAlignment.isValue("Center")) {
+        ss << "text-align:center; ";
+    }
+    else if (viewAnno->TextAlignment.isValue("Right")) {
+        ss << "text-align:right; ";
+    }
+    else {
+        ss << "text-align:left; ";
+    }
     Base::Color c = viewAnno->TextColor.getValue();
     c = TechDraw::Preferences::getAccessibleColor(c);
     ss << "color:" << c.asHexString() << "; ";

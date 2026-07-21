@@ -47,6 +47,13 @@ void PropertyTrajectory::setValue(const Trajectory& sh)
     hasSetValue();
 }
 
+void PropertyTrajectory::swapValue(Trajectory& trajectory)
+{
+    aboutToSetValue();
+    _Trajectory.swap(trajectory);
+    hasSetValue();
+}
+
 
 const Trajectory& PropertyTrajectory::getValue() const
 {

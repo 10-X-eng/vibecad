@@ -16,8 +16,8 @@ TOOL_SPEC = {
     "description": (
         "Create one native Draft rectangle on the global XY plane with its "
         "lower-left corner at an exact position. With make_face=true the "
-        "rectangle is a filled planar face usable as an extrusion profile for "
-        "part.extrude."
+        "rectangle is a filled planar face that another workbench can consume "
+        "later as a profile."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

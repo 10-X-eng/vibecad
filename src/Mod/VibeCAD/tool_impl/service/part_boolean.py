@@ -17,7 +17,7 @@ TOOL_SPEC = {
         "Create one native Part boolean (union, cut, or intersection) from exact "
         "named shaped objects. The inputs become children of the result and are "
         "hidden, not deleted; the boolean stays parametric. Do not use this on "
-        "features inside a PartDesign Body - use partdesign.boolean there."
+        "features inside a PartDesign Body; those belong to their own workbench."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

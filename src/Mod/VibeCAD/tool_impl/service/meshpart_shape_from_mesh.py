@@ -16,11 +16,9 @@ TOOL_SPEC = {
     "name": "meshpart.shape_from_mesh",
     "description": (
         "Create one BREP shape object (Part::Feature) from an exact mesh "
-        "object, so mesh geometry becomes usable by part.* tools (booleans, "
-        "measure, subelements). The mesh is unchanged. Every mesh triangle "
-        "becomes a planar face, so the result is faceted, not smooth; run "
-        "mesh.analyze first — a watertight, defect-free mesh is required "
-        "for a valid solid."
+        "object. The mesh is unchanged. Every mesh triangle becomes a planar "
+        "face, so the result is faceted, not smooth; a watertight, defect-free "
+        "source mesh is required for a valid solid."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
@@ -33,7 +31,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the mesh object (Mesh::Feature) "
-                    "to convert, as returned by mesh.list_meshes."
+                    "already present in the active document."
                 ),
             },
             "sewing_tolerance_mm": {
@@ -85,8 +83,8 @@ def run(
     mesh = getattr(obj, "Mesh", None)
     if mesh is None:
         return _invalid(
-            f"Object is not a mesh (no Mesh property): {clean_name}. Use "
-            "mesh.list_meshes for mesh names."
+            f"Object is not a mesh (no Mesh property): {clean_name}. Provide "
+            "the exact name of an existing Mesh::Feature."
         )
     tolerance = float(sewing_tolerance_mm)
     if tolerance <= 0.0:
@@ -276,8 +274,8 @@ def run(
         transaction,
         extra={"operation": "shape_from_mesh", **result},
         next_action=(
-            "The shape is faceted (one planar face per triangle); verify with "
-            "part.measure and expect slow booleans on large meshes."
+            "The shape is faceted (one planar face per triangle); ask the "
+            "human to inspect it before using large results downstream."
         ),
     )
 

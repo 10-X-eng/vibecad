@@ -135,11 +135,9 @@ TOOL_SPEC = {
                                 "type": "string",
                                 "description": (
                                     "Exact internal name of the closed planar "
-                                    "profile object (from "
-                                    "draft.create_rectangle or "
-                                    "draft.create_wire with make_face=true) "
-                                    "outlining the slab; the profile is "
-                                    "consumed and hidden."
+                                    "profile object already present in the "
+                                    "document and outlining the slab; the "
+                                    "profile is consumed and hidden."
                                 ),
                             },
                             "thickness_mm": {
@@ -282,7 +280,7 @@ def run(
             if level is None:
                 raise RuntimeError(
                     f"Level object '{level_name}' not found; use "
-                    "bim.list_structure for exact names."
+                    "core.inspect scope='domain' for exact names."
                 )
         native_profile = None
         if kind == "column":
@@ -303,8 +301,8 @@ def run(
             native_profile = doc.getObject(profile_name)
             if native_profile is None:
                 raise RuntimeError(
-                    f"Profile object '{profile_name}' not found; use "
-                    "draft.list_objects for exact names."
+                    f"Profile object '{profile_name}' not found; provide an "
+                    "exact existing document object name."
                 )
             profile_shape = getattr(native_profile, "Shape", None)
             if profile_shape is None or not getattr(profile_shape, "Faces", []):
@@ -424,7 +422,7 @@ def run(
         transaction,
         operation=f"create_{kind}",
         next_action=(
-            "Verify the element position with part.measure or a screenshot, "
+            "Verify the returned placement or capture a screenshot, "
             "then continue placing elements."
         ),
     )

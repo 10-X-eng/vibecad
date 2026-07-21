@@ -159,19 +159,6 @@ class DraftWorkbench(FreeCADGui.Workbench):
 
         FreeCADGui.getMainWindow().mainWindowClosed.connect(self.Deactivated)
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "Draft")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for Draft: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
         FreeCAD.Console.PrintLog("Loading Draft workbench, done.\n")
 
     def Activated(self):

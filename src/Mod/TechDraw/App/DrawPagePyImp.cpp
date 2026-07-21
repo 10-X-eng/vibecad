@@ -61,6 +61,21 @@ PyObject* DrawPagePy::addView(PyObject* args)
     return PyLong_FromLong(rc);
 }
 
+PyObject* DrawPagePy::addPrecomputedView(PyObject* args)
+{
+    PyObject* pcDocObj;
+    if (!PyArg_ParseTuple(args, "O!", &(TechDraw::DrawViewPy::Type), &pcDocObj)) {
+        return nullptr;
+    }
+
+    DrawPage* page = getDrawPagePtr();
+    DrawViewPy* pyView = static_cast<TechDraw::DrawViewPy*>(pcDocObj);
+    DrawView* view = pyView->getDrawViewPtr();
+    int rc = page->addPrecomputedView(view);
+
+    return PyLong_FromLong(rc);
+}
+
 PyObject* DrawPagePy::removeView(PyObject* args)
 {
     PyObject *pcDocObj;

@@ -29,7 +29,7 @@ TOOL_SPEC = {
             "assembly_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the assembly from assembly.list_structure."
+                    "Exact internal name of the assembly from core.inspect scope='domain'."
                 ),
             },
             "component_name": {
@@ -54,7 +54,7 @@ def run(service: Any, assembly_name: str, component_name: str) -> dict[str, Any]
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call assembly.list_structure for exact names."
+            "Call core.inspect with scope='domain' for exact names."
         )
     clean_component = str(component_name or "").strip()
     component = doc.getObject(clean_component) if clean_component else None
@@ -108,6 +108,7 @@ def run(service: Any, assembly_name: str, component_name: str) -> dict[str, Any]
             raise RuntimeError("The assembly's native JointGroup disappeared before grounding.")
         ground = native_joint_group.newObject("App::FeaturePython", "GroundedJoint")
         JointObject.GroundedJoint(ground, target)
+        JointObject.ensureViewProviderGroundedJoint(ground)
         active.recompute()
         solver_visible = bool(target_assembly.isPartGrounded(target))
         return {

@@ -1159,9 +1159,15 @@ def restoreAssemblyPartsPlacements(assembly, initialPlcs):
 
 def getComAndSize(assembly):
     if assembly.ViewObject is None:
-        # these vars use the bounding box which is only available in gui...
-        # We could use the real center of mass, but it's too slow to compute it
-        return App.Vector(), 100
+        # Windowless consumers (including FreeCADCmd workers) still have the
+        # exact placed aggregate Shape.  Using its OCC bounding box keeps radial
+        # exploded-view placement identical to the GUI path without requiring a
+        # view provider or the substantially more expensive mass calculation.
+        shape = getattr(assembly, "Shape", None)
+        bbox = getattr(shape, "BoundBox", None)
+        if bbox is None or not bbox.isValid():
+            return App.Vector(), 100
+        return bbox.Center, bbox.DiagonalLength
 
     bbox = assembly.ViewObject.getBoundingBox()
     if not bbox.isValid():

@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""VibeCAD assistant GUI: native dock panel and shared workbench commands.
+"""VibeCAD assistant GUI: native dock panels and shared commands.
 
-The panel registers through ``MainWindow.addDockWindow`` (DockWindowManager)
-so it gets the same first-class treatment as the Tree and Tasks panels:
-the native overlay title bar, overlay-mode eligibility, visibility
-persistence, and a View -> Panels entry. No hand-rolled placement code.
+VibeCAD's application initializer registers panel content once through
+``DockWindowManager``. ``StdWorkbench`` owns dock creation for every standard
+workbench, exactly as it does for the Tree and Tasks panels. One global
+``MainWindow.workbenchActivated`` connection refreshes the UI; individual
+workbenches contain no VibeCAD registration or activation code.
 """
 
 from __future__ import annotations
 
 import html
 import json
+import queue
 import re
 import tempfile
 import threading
@@ -24,7 +26,13 @@ import FreeCADGui as Gui
 
 from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
-from VibeCADProject import DEFAULT_PARTDESIGN_ENGINE
+from VibeCADEditState import active_edit_object, active_edit_state
+from VibeCADProject import DEFAULT_MODELING_ENGINE
+from VibeCADPromptStarters import (
+    BUILTIN_PROMPT_STARTERS,
+    CATEGORY_ORDER,
+    load_custom_prompt_starters,
+)
 from VibeCADSession import (
     _format_document_delta,
     rebuild_intent_memory,
@@ -37,7 +45,6 @@ from VibeCADWorkbenchTools import get_tool_pack
 DOCK_NAME = "VibeCADAssistantPanel"
 CONTEXT_DEBUG_DOCK_NAME = "VibeCADContextDebugPanel"
 MODEL_CODE_DOCK_NAME = "VibeCADScriptedModelPanel"
-MODEL_CODE_DEFAULT_TAB_PROPERTY = "VibeCADDefaultAssistantTab"
 
 ICON_MARK = "preferences-vibecad.svg"
 ICON_OPEN_ASSISTANT = "vibecad-open-assistant.svg"
@@ -45,6 +52,7 @@ ICON_SEND = "vibecad-send.svg"
 ICON_STOP = "vibecad-stop.svg"
 ICON_ACTIVITY = "vibecad-activity.svg"
 ICON_NEW_CONVERSATION = "vibecad-new-conversation.svg"
+ICON_PROMPT_STARTERS = "vibecad-prompt-starters.svg"
 
 _commands_registered = False
 _preferences_registered = False
@@ -54,15 +62,19 @@ _document_observer = None
 _gui_document_observer_connected = False
 _gui_document_observer = None
 _context_debug_startup_scheduled = False
+_registered_assistant_widget = None
+_registered_context_debug_widget = None
 _document_save_conversations: dict[str, dict[str, Any]] = {}
 _document_save_references: dict[str, dict[str, Any]] = {}
 _pending_question_request: list[dict[str, Any]] = []
+_conversation_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
+_conversation_persist_thread: threading.Thread | None = None
+_conversation_persist_lock = threading.RLock()
+_assistant_document_refresh_scheduled = False
 
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
 _PREFERENCES_PATH = "User parameter:BaseApp/Preferences/VibeCAD"
-_MODEL_CODE_LAYOUT_VERSION_PARAMETER = "ModelCodeDockLayoutVersion"
-_MODEL_CODE_LAYOUT_VERSION = 1
 
 
 class _AssistantRunController:
@@ -296,6 +308,20 @@ def _find_context_debug_dock():
     return main_window.findChild(QtWidgets.QDockWidget, CONTEXT_DEBUG_DOCK_NAME)
 
 
+def _register_dock_content(widget: Any, name: str) -> None:
+    """Register panel content without creating or showing a dock window."""
+    main_window = Gui.getMainWindow()
+    if main_window is None:
+        raise RuntimeError("FreeCAD main window is not available.")
+    register = getattr(main_window, "registerDockWindow", None)
+    if not callable(register):
+        raise RuntimeError(
+            "FreeCAD main window does not expose "
+            "DockWindowManager.registerDockWindow."
+        )
+    register(widget, name)
+
+
 def _find_child(widget_type: str, name: str, dock: Any | None = None):
     try:
         from PySide import QtWidgets
@@ -497,8 +523,50 @@ def _build_context_debug_widget():
     timer.setObjectName("VibeContextDebugPollTimer")
     timer.setInterval(1000)
     timer.timeout.connect(lambda: _refresh_context_debug_viewer())
-    timer.start()
     return root
+
+
+def _sync_context_debug_polling(dock: Any, visible: bool) -> None:
+    from PySide import QtCore
+
+    timer = dock.findChild(QtCore.QTimer, "VibeContextDebugPollTimer")
+    enabled = bool(_context_debug_settings().context_debug_enabled)
+    if not visible or not enabled:
+        if timer is not None:
+            timer.stop()
+        return
+    if timer is not None and not timer.isActive():
+        timer.start()
+    _refresh_context_debug_viewer(dock)
+
+
+def _bind_context_debug_dock(dock: Any) -> None:
+    if bool(dock.property("VibeContextDebugVisibilityBound")):
+        _sync_context_debug_polling(dock, bool(dock.isVisible()))
+        return
+    dock.visibilityChanged.connect(
+        lambda visible, current=dock: _sync_context_debug_polling(
+            current, bool(visible)
+        )
+    )
+    dock.setProperty("VibeContextDebugVisibilityBound", True)
+    _sync_context_debug_polling(dock, bool(dock.isVisible()))
+
+
+def _register_startup_context_debugger() -> None:
+    """Register enabled debugger content for native workbench setup."""
+    global _registered_context_debug_widget
+    if not _context_debug_settings().context_debug_enabled:
+        return
+    if _find_context_debug_dock() is not None:
+        return
+    if _registered_context_debug_widget is not None:
+        return
+    widget = _build_context_debug_widget()
+    widget.setMinimumWidth(480)
+    widget.setMinimumHeight(220)
+    _register_dock_content(widget, CONTEXT_DEBUG_DOCK_NAME)
+    _registered_context_debug_widget = widget
 
 
 def _register_context_debug_dock(widget: Any) -> Any:
@@ -510,17 +578,21 @@ def _register_context_debug_dock(widget: Any) -> Any:
         raise RuntimeError(
             "FreeCAD main window does not expose DockWindowManager.addDockWindow."
         )
-    return add_dock_window(widget, CONTEXT_DEBUG_DOCK_NAME, "bottom")
+    dock = add_dock_window(widget, CONTEXT_DEBUG_DOCK_NAME, "bottom")
+    dock.toggleViewAction().setVisible(True)
+    return dock
 
 
 def show_context_debugger() -> None:
-    from PySide import QtCore
-
     settings = _context_debug_settings()
     if not settings.context_debug_enabled:
         _warn("Enable the context debugger in VibeCAD Debug preferences first.")
         return
     dock = _find_context_debug_dock()
+    if dock is None and _registered_context_debug_widget is not None:
+        # Workbench activation will create the registered native dock. Never
+        # create a competing QDockWidget while that transition is in flight.
+        return
     if dock is None or dock.widget() is None:
         widget = _build_context_debug_widget()
         if dock is not None:
@@ -529,12 +601,9 @@ def show_context_debugger() -> None:
             dock = _register_context_debug_dock(widget)
         dock.setMinimumWidth(480)
         dock.setMinimumHeight(220)
-    timer = dock.findChild(QtCore.QTimer, "VibeContextDebugPollTimer")
-    if timer is not None and not timer.isActive():
-        timer.start()
+    _bind_context_debug_dock(dock)
     dock.show()
     dock.raise_()
-    _refresh_context_debug_viewer(dock)
 
 
 def apply_context_debug_preferences() -> None:
@@ -552,14 +621,15 @@ def apply_context_debug_preferences() -> None:
     show_context_debugger()
 
 
-def _schedule_context_debug_preferences() -> None:
+def _apply_startup_context_debug_preferences() -> None:
     global _context_debug_startup_scheduled
     if _context_debug_startup_scheduled:
         return
-    from PySide import QtCore
 
     _context_debug_startup_scheduled = True
-    QtCore.QTimer.singleShot(0, apply_context_debug_preferences)
+    # InitGui runs before workbench activation. Register content only; the
+    # native DockWindowManager owns creation, visibility and placement.
+    _register_startup_context_debugger()
 
 
 # ---------------------------------------------------------------------------
@@ -826,9 +896,58 @@ def _record_conversation_turn(
     if storage_role is None or not clean:
         return
     try:
-        get_service().record_conversation_turn(storage_role, clean, metadata=metadata)
+        service = get_service()
+        prepared = service.prepare_conversation_turn(
+            storage_role,
+            clean,
+            metadata=metadata,
+        )
     except Exception as exc:
         _warn(f"VibeCAD conversation save failed: {exc}")
+        return
+    try:
+        _ensure_conversation_persist_thread()
+    except Exception as exc:
+        _warn(f"VibeCAD conversation save failed: {exc}")
+        return
+    _conversation_persist_queue.put((service, prepared))
+
+
+def _ensure_conversation_persist_thread() -> None:
+    """Start the single ordered transcript writer without blocking Qt."""
+
+    global _conversation_persist_thread
+    with _conversation_persist_lock:
+        if (
+            _conversation_persist_thread is not None
+            and _conversation_persist_thread.is_alive()
+        ):
+            return
+        _ensure_document_thread_invoker()
+        _conversation_persist_thread = threading.Thread(
+            target=_conversation_persist_loop,
+            name="VibeCAD-conversation-persistence",
+            daemon=True,
+        )
+        _conversation_persist_thread.start()
+
+
+def _conversation_persist_loop() -> None:
+    while True:
+        service, prepared = _conversation_persist_queue.get()
+        try:
+            history = service.persist_prepared_conversation_turn(prepared)
+            _dispatch_to_document_thread(
+                lambda: service.accept_persisted_conversation_turn(history, prepared)
+            )
+        except Exception as exc:
+            message = f"VibeCAD conversation save failed: {exc}"
+            try:
+                _dispatch_to_document_thread(lambda: _warn(message))
+            except Exception:
+                pass
+        finally:
+            _conversation_persist_queue.task_done()
 
 
 def _format_saved_conversation(conversation: list[dict[str, Any]]) -> str:
@@ -940,32 +1059,29 @@ def _refresh_conversation_selector(dock: Any | None = None) -> None:
     selector.blockSignals(previous_blocked)
 
 
-def _refresh_partdesign_engine_selector(dock: Any | None = None) -> None:
-    selector = _find_child("QComboBox", "VibePartDesignEngine", dock)
+def _refresh_modeling_engine_selector(dock: Any | None = None) -> None:
+    selector = _find_child("QComboBox", "VibeModelingEngine", dock)
     if selector is None:
         return
     service = get_service()
     try:
-        state = service.partdesign_engine_state()
-        active = service.active_workbench_name() == "PartDesignWorkbench"
+        workbench = service.active_workbench_name()
+        state = service.modeling_engine_state(workbench)
+        pack = get_tool_pack(workbench)
+        active = pack is not None and workbench not in {
+            "NoneWorkbench",
+            "TestWorkbench",
+        }
     except Exception as exc:
         selector.setVisible(False)
         _warn(f"VibeCAD modeling-engine state failed: {exc}")
         return
-    selected = str(state.get("selected") or DEFAULT_PARTDESIGN_ENGINE)
+    selected = str(state.get("selected") or DEFAULT_MODELING_ENGINE)
     build123d_enabled = bool(state.get("build123d_preference_enabled"))
     openscad_enabled = bool(state.get("openscad_preference_enabled"))
     vibescript_enabled = bool(state.get("vibescript_preference_enabled"))
     scripted_engines = {"build123d", "openscad", "vibescript"}
-    selector.setVisible(
-        active
-        and (
-            build123d_enabled
-            or openscad_enabled
-            or vibescript_enabled
-            or selected in scripted_engines
-        )
-    )
+    selector.setVisible(active)
     if not selector.isVisible():
         return
 
@@ -977,17 +1093,35 @@ def _refresh_partdesign_engine_selector(dock: Any | None = None) -> None:
     try:
         selector.clear()
         selector.addItem("Native", "native")
-        if "build123d" in available:
+        if active and workbench == "PartDesignWorkbench" and "build123d" in available:
             selector.addItem("build123d", "build123d")
-        elif selected == "build123d" or build123d_enabled:
+        elif selected == "build123d" and workbench != "PartDesignWorkbench":
+            selector.addItem("build123d (Part Design only)", "")
+            item = selector.model().item(selector.count() - 1)
+            if item is not None:
+                item.setEnabled(False)
+                item.setToolTip(
+                    "The automatic change to VibeScript is waiting for the "
+                    "active edit session or AI run to finish."
+                )
+        elif workbench == "PartDesignWorkbench" and (selected == "build123d" or build123d_enabled):
             selector.addItem("build123d unavailable", "")
             item = selector.model().item(selector.count() - 1)
             if item is not None:
                 item.setEnabled(False)
                 item.setToolTip(str(build_state.get("error") or "Runtime unavailable"))
-        if "openscad" in available:
+        if active and workbench == "PartDesignWorkbench" and "openscad" in available:
             selector.addItem("OpenSCAD", "openscad")
-        elif selected == "openscad" or openscad_enabled:
+        elif selected == "openscad" and workbench != "PartDesignWorkbench":
+            selector.addItem("OpenSCAD (Part Design only)", "")
+            item = selector.model().item(selector.count() - 1)
+            if item is not None:
+                item.setEnabled(False)
+                item.setToolTip(
+                    "The automatic change to VibeScript is waiting for the "
+                    "active edit session or AI run to finish."
+                )
+        elif workbench == "PartDesignWorkbench" and (selected == "openscad" or openscad_enabled):
             selector.addItem("OpenSCAD unavailable", "")
             item = selector.model().item(selector.count() - 1)
             if item is not None:
@@ -1010,44 +1144,52 @@ def _refresh_partdesign_engine_selector(dock: Any | None = None) -> None:
             selector.setCurrentIndex(index)
         elif selected in scripted_engines:
             unavailable_text = {
-                "build123d": "build123d unavailable",
-                "openscad": "OpenSCAD unavailable",
+                "build123d": (
+                    "build123d unavailable"
+                    if workbench == "PartDesignWorkbench"
+                    else "build123d (Part Design only)"
+                ),
+                "openscad": (
+                    "OpenSCAD unavailable"
+                    if workbench == "PartDesignWorkbench"
+                    else "OpenSCAD (Part Design only)"
+                ),
                 "vibescript": "VibeScript unavailable",
             }[selected]
             unavailable_index = selector.findText(unavailable_text)
             if unavailable_index >= 0:
                 selector.setCurrentIndex(unavailable_index)
         selector.setToolTip(
-            "PartDesign modeling engine for this saved CAD document. "
-            "The human controls this setting."
+            "Global modeling engine for this saved CAD document. The human "
+            "controls this setting; AI tools cannot change it."
         )
     finally:
         selector.blockSignals(previous_blocked)
 
 
-def _partdesign_engine_changed(index: int) -> None:
+def _modeling_engine_changed(index: int) -> None:
     dock = _find_dock()
-    selector = _find_child("QComboBox", "VibePartDesignEngine", dock)
+    selector = _find_child("QComboBox", "VibeModelingEngine", dock)
     if selector is None or index < 0:
         return
     engine = str(selector.itemData(index) or "").strip()
     if not engine:
-        _refresh_partdesign_engine_selector(dock)
+        _refresh_modeling_engine_selector(dock)
         return
     if _is_assistant_run_active():
-        _refresh_partdesign_engine_selector(dock)
+        _refresh_modeling_engine_selector(dock)
         return
     service = get_service()
     try:
-        if engine == service.partdesign_engine():
+        if engine == service.modeling_engine():
             return
-        service.set_partdesign_engine(engine)
+        service.set_modeling_engine(engine)
     except Exception as exc:
         _set_status_line(f"Could not select modeling engine: {exc}", dock=dock)
-        _refresh_partdesign_engine_selector(dock)
+        _refresh_modeling_engine_selector(dock)
         return
-    _set_status_line(f"PartDesign engine: {engine}", dock=dock)
-    _refresh_partdesign_engine_selector(dock)
+    _set_status_line(f"Modeling engine: {engine}", dock=dock)
+    _refresh_modeling_engine_selector(dock)
     try:
         from VibeCADScriptedEditor import (
             refresh_scripted_model_editor,
@@ -1064,7 +1206,7 @@ def _partdesign_engine_changed(index: int) -> None:
 
 def apply_modeling_preferences() -> None:
     """Refresh engine availability after the Preferences page is applied."""
-    _refresh_partdesign_engine_selector(_find_dock())
+    _refresh_modeling_engine_selector(_find_dock())
     try:
         from VibeCADScriptedEditor import refresh_scripted_model_editor
 
@@ -1994,6 +2136,90 @@ def _install_prompt_paste_filter(prompt: Any) -> None:
     prompt.setProperty("VibePasteFilterInstalled", True)
 
 
+def _insert_prompt_starter(prompt: Any, content: str) -> None:
+    """Insert editable starter text at the current composer selection."""
+    from PySide import QtGui
+
+    if prompt is None or prompt.isReadOnly():
+        return
+    clean = str(content or "").strip()
+    if not clean:
+        return
+
+    cursor = prompt.textCursor()
+    existing = prompt.toPlainText()
+    selection_start = cursor.selectionStart()
+    selection_end = cursor.selectionEnd()
+    before = existing[:selection_start]
+    after = existing[selection_end:]
+    if not before or before.endswith("\n\n"):
+        prefix = ""
+    elif before.endswith("\n"):
+        prefix = "\n"
+    else:
+        prefix = "\n\n"
+    if not after or after.startswith("\n\n"):
+        suffix = ""
+    elif after.startswith("\n"):
+        suffix = "\n"
+    else:
+        suffix = "\n\n"
+
+    inserted_start = selection_start + len(prefix)
+    cursor.insertText(f"{prefix}{clean}{suffix}")
+    placeholder = re.search(r"\[[^\]\n]+\]", clean)
+    if placeholder is not None:
+        cursor.setPosition(inserted_start + placeholder.start())
+        cursor.setPosition(
+            inserted_start + placeholder.end(),
+            QtGui.QTextCursor.MoveMode.KeepAnchor,
+        )
+    prompt.setTextCursor(cursor)
+    prompt.setFocus()
+
+
+def _show_prompt_starter_preferences() -> None:
+    Gui.showPreferencesByName("VibeCAD", "Prompt Starters")
+
+
+def _populate_prompt_starter_menu(menu: Any, prompt: Any) -> None:
+    menu.clear()
+    starters = list(BUILTIN_PROMPT_STARTERS)
+    custom_error = ""
+    try:
+        starters.extend(load_custom_prompt_starters())
+    except Exception as exc:
+        custom_error = str(exc)
+
+    for category in CATEGORY_ORDER:
+        category_starters = sorted(
+            (starter for starter in starters if starter.category == category),
+            key=lambda starter: (not starter.builtin, starter.name.casefold()),
+        )
+        if not category_starters:
+            continue
+        category_menu = menu.addMenu(category)
+        for starter in category_starters:
+            action = category_menu.addAction(starter.name)
+            action.setToolTip(
+                "Built-in prompt starter" if starter.builtin else "Custom prompt starter"
+            )
+            action.triggered.connect(
+                lambda _checked=False, text=starter.content: _insert_prompt_starter(
+                    prompt, text
+                )
+            )
+
+    if custom_error:
+        menu.addSeparator()
+        error_action = menu.addAction("Custom starters unavailable")
+        error_action.setEnabled(False)
+        error_action.setToolTip(custom_error)
+    menu.addSeparator()
+    manage_action = menu.addAction("Manage Prompt Starters...")
+    manage_action.triggered.connect(_show_prompt_starter_preferences)
+
+
 # ---------------------------------------------------------------------------
 # Run / stop / steering
 # ---------------------------------------------------------------------------
@@ -2085,7 +2311,8 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     reference_chips = _find_child("QWidget", "VibeReferenceChips", dock)
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
-    engine_selector = _find_child("QComboBox", "VibePartDesignEngine", dock)
+    prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
+    engine_selector = _find_child("QComboBox", "VibeModelingEngine", dock)
 
     if send_button is not None:
         send_button.setEnabled(busy or document_ready)
@@ -2102,6 +2329,8 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         conversation_selector.setEnabled(document_ready and not busy)
     if new_conversation is not None:
         new_conversation.setEnabled(document_ready and not busy)
+    if prompt_starters is not None:
+        prompt_starters.setEnabled(document_ready and not busy)
     if engine_selector is not None:
         engine_selector.setEnabled(document_ready and not busy)
     if prompt_box is not None:
@@ -2158,13 +2387,7 @@ def _stop_prompt_from_panel() -> None:
 
 def _active_edit_sketch_continuation_event() -> dict[str, str] | None:
     gui_document = getattr(Gui, "ActiveDocument", None)
-    get_in_edit = getattr(gui_document, "getInEdit", None)
-    edit_object = get_in_edit() if callable(get_in_edit) else None
-    if isinstance(edit_object, (tuple, list)):
-        edit_object = edit_object[0] if edit_object else None
-    app_object = getattr(edit_object, "Object", None)
-    if app_object is not None:
-        edit_object = app_object
+    edit_object = active_edit_object(gui_document)
     if getattr(edit_object, "TypeId", "") != "Sketcher::SketchObject":
         return None
     document = getattr(edit_object, "Document", None)
@@ -2292,6 +2515,17 @@ def _execute_assistant_run(
             run_succeeded = response.error is None and not _cancelled()
 
         _assistant_run_controller.finish(run_id)
+        try:
+            transition = service.coerce_modeling_engine_for_workbench(
+                service.active_workbench_name()
+            )
+            if transition.get("changed"):
+                terminal_status = (
+                    f"{transition.get('previous_engine')} is Part Design-only; "
+                    "global modeling engine changed to VibeScript."
+                )
+        except Exception as exc:
+            _warn(f"VibeCAD deferred engine transition failed: {exc}")
         _cancel_question_round()
         if run_succeeded:
             try:
@@ -2307,6 +2541,13 @@ def _execute_assistant_run(
             current_dock,
             text=terminal_status or None,
         )
+        _refresh_modeling_engine_selector(current_dock)
+        try:
+            from VibeCADScriptedEditor import refresh_scripted_model_editor
+
+            refresh_scripted_model_editor()
+        except Exception as exc:
+            _warn(f"VibeCAD scripted editor completion refresh failed: {exc}")
         _refresh_view_status(current_dock)
         _render_questions(current_dock)
         _assistant_run_thread = None
@@ -2371,8 +2612,7 @@ def _start_sketch_close_continuation(event: dict[str, Any]) -> None:
     ) != str(event.get("owner_body") or ""):
         return
     gui_document = getattr(Gui, "ActiveDocument", None)
-    get_in_edit = getattr(gui_document, "getInEdit", None)
-    if callable(get_in_edit) and get_in_edit() is not None:
+    if active_edit_state(gui_document).active:
         _warn(
             "VibeCAD did not continue after sketch close because another edit session is active."
         )
@@ -2446,8 +2686,9 @@ def _run_prompt_from_panel() -> None:
             )
         return
 
-    _append_conversation("User", prompt, persist=True, metadata={"source": "prompt"})
-    _refresh_conversation_selector(dock)
+    # The background session persists the prompt after capturing only the
+    # active document identity on the GUI thread.
+    _append_conversation("User", prompt)
     prompt_box.clear()
     _execute_assistant_run(dock, service, prompt=prompt)
 
@@ -2473,7 +2714,34 @@ def _refresh_view_status(dock: Any | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _document_restore_active() -> bool:
+    is_restoring = getattr(App, "isRestoring", None)
+    if callable(is_restoring):
+        try:
+            if bool(is_restoring()):
+                return True
+        except Exception:
+            pass
+    try:
+        document = App.ActiveDocument
+    except Exception:
+        document = None
+    return document is not None and bool(getattr(document, "Restoring", False))
+
+
 def _refresh_assistant_for_document_change() -> None:
+    document = App.ActiveDocument
+    if document is not None:
+        try:
+            from VibeCADVibeScriptDomainPublication import (
+                compact_persisted_input_snapshots,
+                migrate_assembly_dependency_anchors,
+            )
+
+            compact_persisted_input_snapshots(document)
+            migrate_assembly_dependency_anchors(document)
+        except Exception as exc:
+            _warn(f"VibeCAD input-snapshot compaction failed: {exc}")
     try:
         from VibeCADScriptedEditor import refresh_scripted_model_editor
 
@@ -2486,19 +2754,34 @@ def _refresh_assistant_for_document_change() -> None:
     _clear_thinking(dock)
     _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
-    _refresh_partdesign_engine_selector(dock)
+    _refresh_modeling_engine_selector(dock)
     _refresh_reference_chips(dock)
     _refresh_view_status(dock)
     _render_assistant_run_state(dock)
 
 
 def _schedule_assistant_document_refresh() -> None:
+    global _assistant_document_refresh_scheduled
+    if _assistant_document_refresh_scheduled:
+        return
+    _assistant_document_refresh_scheduled = True
+
     try:
         from PySide import QtCore
 
-        QtCore.QTimer.singleShot(0, _refresh_assistant_for_document_change)
+        def refresh_when_restored() -> None:
+            global _assistant_document_refresh_scheduled
+            if _document_restore_active():
+                QtCore.QTimer.singleShot(100, refresh_when_restored)
+                return
+            _assistant_document_refresh_scheduled = False
+            _refresh_assistant_for_document_change()
+
+        QtCore.QTimer.singleShot(0, refresh_when_restored)
     except Exception:
-        _refresh_assistant_for_document_change()
+        _assistant_document_refresh_scheduled = False
+        if not _document_restore_active():
+            _refresh_assistant_for_document_change()
 
 
 def _document_storage_key(doc: Any) -> str:
@@ -2575,6 +2858,25 @@ class _VibeCADDocumentObserver:
         if pending and pending.get("document_uid") != active_uid:
             _sketch_close_continuation_controller.clear()
         _schedule_assistant_document_refresh()
+
+    def slotChangedObject(self, obj, property_name) -> None:
+        is_restoring = getattr(App, "isRestoring", None)
+        if callable(is_restoring) and bool(is_restoring()):
+            return
+        document = getattr(obj, "Document", None)
+        if document is not None and bool(getattr(document, "Restoring", False)):
+            return
+        try:
+            from VibeCADVibeScriptDomainPublication import (
+                mark_programs_stale_from_source,
+            )
+
+            marked = mark_programs_stale_from_source(obj, str(property_name or ""))
+        except Exception as exc:
+            _warn(f"VibeCAD VibeScript dependency observer failed: {exc}")
+            return
+        if marked:
+            _schedule_assistant_document_refresh()
 
     def slotStartSaveDocument(self, doc, filepath) -> None:
         _snapshot_active_document_conversation(doc)
@@ -2720,11 +3022,11 @@ def _build_panel_widget():
     conversation_header_layout.addWidget(conversation_selector, 1)
 
     engine_selector = QtWidgets.QComboBox(conversation_header)
-    engine_selector.setObjectName("VibePartDesignEngine")
+    engine_selector.setObjectName("VibeModelingEngine")
     engine_selector.setMinimumContentsLength(9)
     engine_selector.setMaximumWidth(138)
     engine_selector.setVisible(False)
-    engine_selector.currentIndexChanged.connect(_partdesign_engine_changed)
+    engine_selector.currentIndexChanged.connect(_modeling_engine_changed)
     conversation_header_layout.addWidget(engine_selector)
 
     new_conversation = QtWidgets.QToolButton(conversation_header)
@@ -2854,6 +3156,21 @@ def _build_panel_widget():
     )
     attach_image_button.clicked.connect(_attach_image_from_panel)
 
+    prompt_starters = QtWidgets.QToolButton(composer_buttons)
+    prompt_starters.setObjectName("VibePromptStarters")
+    prompt_starters.setIcon(QtGui.QIcon(_icon_path(ICON_PROMPT_STARTERS)))
+    prompt_starters.setIconSize(icon_size)
+    prompt_starters.setToolTip("Insert an editable prompt starter")
+    prompt_starters.setPopupMode(
+        QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+    )
+    prompt_starter_menu = QtWidgets.QMenu(prompt_starters)
+    prompt_starter_menu.setObjectName("VibePromptStarterMenu")
+    prompt_starter_menu.aboutToShow.connect(
+        lambda: _populate_prompt_starter_menu(prompt_starter_menu, prompt)
+    )
+    prompt_starters.setMenu(prompt_starter_menu)
+
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
@@ -2868,6 +3185,7 @@ def _build_panel_widget():
     stop_button.setEnabled(False)
     stop_button.clicked.connect(_stop_prompt_from_panel)
 
+    buttons_layout.addWidget(prompt_starters)
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
@@ -2896,49 +3214,22 @@ def _register_native_dock(widget) -> Any:
         )
     dock = add_dock_window(widget, DOCK_NAME, "right")
     dock.toggleViewAction().setVisible(True)
-    _tab_model_code_editor_with_assistant(dock)
     return dock
 
 
-def _tab_model_code_editor_with_assistant(assistant_dock: Any | None = None) -> bool:
-    """Apply the default shared tab group without overriding a restored layout."""
-    from PySide import QtWidgets
-
-    main_window = Gui.getMainWindow()
-    if main_window is None:
-        raise RuntimeError("FreeCAD main window is not available.")
-    if assistant_dock is None:
-        assistant_dock = main_window.findChild(QtWidgets.QDockWidget, DOCK_NAME)
-    model_code_dock = main_window.findChild(
-        QtWidgets.QDockWidget, MODEL_CODE_DOCK_NAME
-    )
-    if assistant_dock is None or model_code_dock is None:
-        return False
-    if not bool(model_code_dock.property(MODEL_CODE_DEFAULT_TAB_PROPERTY)):
-        return False
-    main_window.tabifyDockWidget(assistant_dock, model_code_dock)
-    model_code_dock.setProperty(MODEL_CODE_DEFAULT_TAB_PROPERTY, False)
-    App.ParamGet(_PREFERENCES_PATH).SetInt(
-        _MODEL_CODE_LAYOUT_VERSION_PARAMETER, _MODEL_CODE_LAYOUT_VERSION
-    )
-    assistant_dock.raise_()
-    return True
-
-
-def configure_model_code_editor_dock(dock: Any) -> None:
-    """Restore the editor's saved location or place it beside the assistant."""
-    main_window = Gui.getMainWindow()
-    if main_window is None:
-        raise RuntimeError("FreeCAD main window is not available.")
-    layout_version = App.ParamGet(_PREFERENCES_PATH).GetInt(
-        _MODEL_CODE_LAYOUT_VERSION_PARAMETER, 0
-    )
-    restored = layout_version >= _MODEL_CODE_LAYOUT_VERSION and bool(
-        main_window.restoreDockWidget(dock)
-    )
-    dock.setProperty(MODEL_CODE_DEFAULT_TAB_PROPERTY, not restored)
-    if not restored:
-        _tab_model_code_editor_with_assistant()
+def register_startup_assistant() -> Any:
+    """Register assistant content for native workbench-owned dock creation."""
+    global _registered_assistant_widget
+    dock = _find_dock()
+    if dock is not None:
+        return dock
+    if _registered_assistant_widget is not None:
+        return _registered_assistant_widget
+    widget = _build_panel_widget()
+    widget.setMinimumWidth(300)
+    _register_dock_content(widget, DOCK_NAME)
+    _registered_assistant_widget = widget
+    return widget
 
 
 def _show_panel(text: str = "") -> None:
@@ -2950,9 +3241,15 @@ def _show_panel(text: str = "") -> None:
 
     dock = _find_dock()
     if dock is None or not _assistant_panel_is_built(dock):
+        if dock is None and _registered_assistant_widget is not None:
+            _warn(
+                "VibeCAD assistant content is registered but the active "
+                "workbench has not created its dock window."
+            )
+            return
         widget = _build_panel_widget()
         if dock is not None:
-            # Dock exists (e.g. restored shell) but content is missing: rebuild.
+            # Replace incomplete panel content without replacing the native dock.
             old = dock.widget()
             if old is not None:
                 old.setParent(None)
@@ -2981,7 +3278,7 @@ def _show_panel(text: str = "") -> None:
     else:
         _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
-    _refresh_partdesign_engine_selector(dock)
+    _refresh_modeling_engine_selector(dock)
     _refresh_view_status(dock)
     _refresh_reference_chips(dock)
     _render_questions(dock)
@@ -2998,8 +3295,19 @@ def show_assistant_for_active_workbench() -> None:
 
 
 def _on_workbench_activated(workbench_name: str) -> None:
-    if get_tool_pack(str(workbench_name)) is None:
-        return
+    clean_workbench = str(workbench_name)
+    transition: dict[str, Any] = {"changed": False}
+    if _is_assistant_run_active():
+        transition = {
+            "changed": False,
+            "deferred": True,
+            "reason": "An AI run is active.",
+        }
+    else:
+        try:
+            transition = get_service().coerce_modeling_engine_for_workbench(clean_workbench)
+        except Exception as exc:
+            _warn(f"VibeCAD global engine transition failed: {exc}")
     try:
         from PySide import QtCore
     except Exception:
@@ -3008,9 +3316,26 @@ def _on_workbench_activated(workbench_name: str) -> None:
     def refresh_or_open() -> None:
         dock = _find_dock()
         if dock is not None:
+            context_debug_dock = _find_context_debug_dock()
+            if context_debug_dock is not None:
+                _bind_context_debug_dock(context_debug_dock)
             if _assistant_panel_is_built(dock):
                 _refresh_view_status(dock)
-                _refresh_partdesign_engine_selector(dock)
+                _refresh_modeling_engine_selector(dock)
+                if transition.get("changed"):
+                    _set_status_line(
+                        f"{transition.get('previous_engine')} is Part Design-only; "
+                        "global modeling engine changed to VibeScript.",
+                        dock=dock,
+                    )
+                try:
+                    from VibeCADScriptedEditor import refresh_scripted_model_editor
+
+                    refresh_scripted_model_editor()
+                except Exception as exc:
+                    _warn(f"VibeCAD scripted editor workbench refresh failed: {exc}")
+            return
+        if _registered_assistant_widget is not None:
             return
         _show_panel()
 
@@ -3027,28 +3352,6 @@ def _connect_workbench_activation() -> None:
         _workbench_activation_connected = True
     except Exception as exc:
         _warn(f"VibeCAD AI assistant could not watch workbench activation: {exc}")
-
-
-def _wrap_workbench_activation(workbench: Any) -> None:
-    if getattr(workbench, "__VibeCADActivatedWrapped__", False):
-        return
-    original = getattr(workbench, "Activated", None)
-
-    def _activated_with_vibecad(*args: Any, **kwargs: Any) -> Any:
-        result = None
-        if callable(original):
-            result = original(*args, **kwargs)
-        try:
-            active = get_service().active_workbench_name()
-            if active:
-                _on_workbench_activated(active)
-        except Exception as exc:
-            _warn(f"VibeCAD assistant could not open after workbench activation: {exc}")
-        return result
-
-    setattr(workbench, "__VibeCADOriginalActivated__", original)
-    setattr(workbench, "Activated", _activated_with_vibecad)
-    setattr(workbench, "__VibeCADActivatedWrapped__", True)
 
 
 # ---------------------------------------------------------------------------
@@ -3152,6 +3455,9 @@ def ensure_preferences_registered() -> None:
 
     Gui.addIconPath(str(Path(__file__).resolve().parent))
     Gui.addPreferencePage(VibeCADPreferences.VibeCADPreferencesPage, "VibeCAD")
+    Gui.addPreferencePage(
+        VibeCADPreferences.VibeCADPromptStartersPreferencesPage, "VibeCAD"
+    )
     Gui.addPreferencePage(VibeCADPreferences.VibeCADDebugPreferencesPage, "VibeCAD")
     _preferences_registered = True
 
@@ -3159,8 +3465,11 @@ def ensure_preferences_registered() -> None:
 def ensure_commands_registered() -> None:
     global _commands_registered
     ensure_preferences_registered()
+    # VibeCAD's application module calls this before the first workbench
+    # activation. Keep it idempotent for in-process module reloads.
+    register_startup_assistant()
     _connect_document_observer()
-    _schedule_context_debug_preferences()
+    _apply_startup_context_debug_preferences()
     if _commands_registered:
         _connect_workbench_activation()
         return
@@ -3171,19 +3480,13 @@ def ensure_commands_registered() -> None:
     Gui.addCommand("VibeCAD_OpenScriptedModel", OpenScriptedModelCommand())
     Gui.addCommand("VibeCAD_AuthStatus", AuthStatusCommand())
     try:
-        from PySide import QtCore
-
         from VibeCADScriptedEditor import ensure_scripted_model_editor_registered
 
-        QtCore.QTimer.singleShot(0, ensure_scripted_model_editor_registered)
+        # InitGui runs before startup workbench setup and the one native
+        # MainWindow.loadWindowSettings() pass. Register the real dock now,
+        # matching the lifecycle of FreeCAD's built-in dock widgets.
+        ensure_scripted_model_editor_registered()
     except Exception as exc:
         _warn(f"VibeCAD scripted editor registration failed: {exc}")
     _connect_workbench_activation()
     _commands_registered = True
-
-
-def register_ai_commands_for_workbench(workbench: Any, _workbench_name: str) -> None:
-    """Connect VibeCAD lifecycle handling to an existing workbench."""
-
-    ensure_commands_registered()
-    _wrap_workbench_activation(workbench)

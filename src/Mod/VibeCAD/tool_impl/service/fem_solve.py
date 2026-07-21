@@ -13,6 +13,7 @@ from typing import Any
 
 from VibeCADTools import tool_failure
 from VibeCADTransactions import run_freecad_transaction
+import VibeCADReferenceContracts as reference_contracts
 
 from . import domain_runtime
 
@@ -473,6 +474,22 @@ def _structured_prerequisites(analysis: Any, solver: Any) -> dict[str, Any]:
         missing.append({"kind": "mesh_nodes", "mesh": meshes[0].Name})
     elif int(getattr(meshes[0].FemMesh, "VolumeCount", 0) or 0) == 0:
         missing.append({"kind": "mesh_volume_elements", "mesh": meshes[0].Name})
+    elif str(
+        getattr(meshes[0], reference_contracts.PROP_DERIVED_STATE, "") or ""
+    ) == "stale":
+        missing.append(
+            {
+                "kind": "stale_mesh",
+                "mesh": meshes[0].Name,
+                "reason": str(
+                    getattr(
+                        meshes[0], reference_contracts.PROP_STALE_REASON, ""
+                    )
+                    or "The source model changed."
+                ),
+                "required_action": "Regenerate the FEM mesh before solving.",
+            }
+        )
     if not materials:
         missing.append({"kind": "material"})
     if analysis_type in {"static", "frequency", "thermomech", "buckling"} and not fixed:

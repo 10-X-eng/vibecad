@@ -30,8 +30,8 @@ LEGACY_CONVERSATION_NAME = "conversation.json"
 CONVERSATION_INDEX_SCHEMA = "vibecad-conversation-index-v1"
 CONVERSATION_THREAD_SCHEMA = "vibecad-conversation-thread-v1"
 DEFAULT_CONVERSATION_TITLE = "New conversation"
-PARTDESIGN_ENGINES = frozenset({"native", "build123d", "openscad", "vibescript"})
-DEFAULT_PARTDESIGN_ENGINE = "vibescript"
+MODELING_ENGINES = frozenset({"native", "build123d", "openscad", "vibescript"})
+DEFAULT_MODELING_ENGINE = "vibescript"
 
 
 def now_iso() -> str:
@@ -223,6 +223,10 @@ def _validated_conversation_turns(
                 f"VibeCAD conversation {source} turn {index} has no text content."
             )
         turn = dict(item)
+        # Legacy files could retain complete tool arguments/results on an
+        # assistant turn. Strip them during validation so the next atomic
+        # thread write migrates the conversation to text-only history.
+        turn.pop("tool_trace", None)
         turn["content"] = content.strip()
         sequence = int(turn.get("sequence") or index + 1)
         if sequence != index + 1:
@@ -779,9 +783,7 @@ class VibeCADProjectStore:
             "document_saved": bool(scope.get("document_saved")),
             "document": scope.get("document", {}),
             "documents": manifest.get("documents", {}),
-            "partdesign_engine": str(
-                manifest.get("partdesign_engine") or DEFAULT_PARTDESIGN_ENGINE
-            ),
+            "modeling_engine": str(manifest.get("modeling_engine") or DEFAULT_MODELING_ENGINE),
         }
 
     def design_document(self) -> dict[str, Any]:
@@ -821,24 +823,51 @@ class VibeCADProjectStore:
             "updated_at": saved.get("updated_at"),
         }
 
-    def partdesign_engine(self) -> str:
-        engine = str(
-            self.load_manifest().get("partdesign_engine") or DEFAULT_PARTDESIGN_ENGINE
-        )
-        if engine not in PARTDESIGN_ENGINES:
+    def modeling_engine(self) -> str:
+        engine = str(self.load_manifest().get("modeling_engine") or DEFAULT_MODELING_ENGINE)
+        if engine not in MODELING_ENGINES:
+            raise RuntimeError(f"VibeCAD project has an invalid modeling engine: {engine!r}.")
+        return engine
+
+    @staticmethod
+    def read_modeling_engine_manifest(manifest_path: str | Path) -> str:
+        """Read only the persisted engine from an already captured project path.
+
+        This helper deliberately has no FreeCAD/document access, allowing the
+        interactive session to perform the filesystem read off the document
+        thread after it captures the active project's identity.
+        """
+
+        path = Path(str(manifest_path))
+        if not path.is_file():
+            return DEFAULT_MODELING_ENGINE
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
             raise RuntimeError(
-                f"VibeCAD project has an invalid PartDesign engine: {engine!r}."
+                f"VibeCAD project manifest could not be read from {path}: {exc}"
+            ) from exc
+        if not isinstance(data, dict) or data.get("schema") != PROJECT_SCHEMA:
+            raise RuntimeError(
+                f"VibeCAD project manifest at {path} has an invalid schema."
+            )
+        engine = str(
+            data.get("modeling_engine")
+            or data.get("partdesign_engine")
+            or DEFAULT_MODELING_ENGINE
+        ).strip().lower()
+        if engine not in MODELING_ENGINES:
+            raise RuntimeError(
+                f"VibeCAD project has an invalid modeling engine: {engine!r}."
             )
         return engine
 
-    def set_partdesign_engine(self, engine: str) -> dict[str, Any]:
+    def set_modeling_engine(self, engine: str) -> dict[str, Any]:
         clean = str(engine or "").strip().lower()
-        if clean not in PARTDESIGN_ENGINES:
-            raise ValueError(
-                f"PartDesign engine must be one of: {sorted(PARTDESIGN_ENGINES)}."
-            )
+        if clean not in MODELING_ENGINES:
+            raise ValueError(f"Modeling engine must be one of: {sorted(MODELING_ENGINES)}.")
         manifest = self.load_manifest()
-        manifest["partdesign_engine"] = clean
+        manifest["modeling_engine"] = clean
         saved = self.save_manifest(manifest)
         return {
             "engine": clean,
@@ -849,11 +878,11 @@ class VibeCADProjectStore:
     def _default_manifest(self, scope: dict[str, Any]) -> dict[str, Any]:
         return {
             "schema": PROJECT_SCHEMA,
-            "version": 1,
+            "version": 2,
             "project_id": scope["project_id"],
             "title": scope["title"],
             "summary": "",
-            "partdesign_engine": DEFAULT_PARTDESIGN_ENGINE,
+            "modeling_engine": DEFAULT_MODELING_ENGINE,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "documents": {"active": scope.get("document", {})},
@@ -864,6 +893,9 @@ class VibeCADProjectStore:
     ) -> dict[str, Any]:
         default = self._default_manifest(scope)
         merged = dict(default)
+        migrated_engine = manifest.get("modeling_engine")
+        if migrated_engine is None:
+            migrated_engine = manifest.get("partdesign_engine")
         merged.update(
             {
                 key: value
@@ -872,6 +904,8 @@ class VibeCADProjectStore:
             }
         )
         merged["schema"] = PROJECT_SCHEMA
+        merged["version"] = 2
+        merged["modeling_engine"] = str(migrated_engine or DEFAULT_MODELING_ENGINE).strip().lower()
         merged["project_id"] = scope["project_id"]
         merged["documents"] = dict(merged.get("documents") or {})
         merged["documents"]["active"] = scope.get("document", {})

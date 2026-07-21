@@ -115,7 +115,7 @@ TOOL_SPEC = {
             "job_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the CAM job from cam.list_jobs."
+                    "Exact internal name of the CAM job from core.inspect scope='domain'."
                 ),
             },
             "label": {
@@ -234,7 +234,7 @@ def run(
     job = service._get_cam_job(str(job_name or "").strip() or None)
     if job is None:
         return _invalid(
-            f"CAM job not found: {job_name}. Use cam.list_jobs for exact names."
+            f"CAM job not found: {job_name}. Use core.inspect scope='domain' for exact names."
         )
     existing_numbers = [
         int(getattr(tc, "ToolNumber", 0))

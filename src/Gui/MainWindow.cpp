@@ -2270,6 +2270,25 @@ void MainWindow::loadWindowSettings()
     std::clog << "Toolbars restored" << std::endl;
 
     OverlayManager::instance()->restore();
+
+    // Workbench modules can create their dock widgets after the first restoreState() pass.
+    // Run duplicate-state repair after the startup workbench docks are present, but before the
+    // event loop can persist another malformed state.
+    QByteArray duplicateRepairState = windowState;
+    const std::string persistedWindowState = d->hGrp->GetASCII("MainWindowState");
+    if (!persistedWindowState.empty()) {
+        // A visible-window restore may already have repaired and replaced the original state.
+        duplicateRepairState = QByteArray::fromBase64(persistedWindowState.c_str());
+    }
+    QTimer::singleShot(0, this, [this, duplicateRepairState]() {
+        Base::StateLocker restoreGuard(d->_restoring);
+        if (!DockWindowManager::repairDuplicateDockState(this, duplicateRepairState)) {
+            return;
+        }
+
+        Base::ConnectionBlocker parameterBlock(d->connParam);
+        d->hGrp->SetASCII("MainWindowState", saveState().toBase64().constData());
+    });
 }
 
 bool MainWindow::isRestoringWindowState() const
@@ -2286,16 +2305,25 @@ void MainWindowP::restoreWindowState(const QByteArray& windowState)
     Base::StateLocker guard(_restoring);
 
     // tmp. disable the report window to suppress some bothering warnings
+    bool restored = false;
     if (Base::Console().isMsgTypeEnabled("ReportOutput", Base::ConsoleSingleton::MsgType_Wrn)) {
         Base::Console().setEnabledMsgType("ReportOutput", Base::ConsoleSingleton::MsgType_Wrn, false);
-        getMainWindow()->restoreState(windowState);
+        restored = getMainWindow()->restoreState(windowState);
         Base::Console().setEnabledMsgType("ReportOutput", Base::ConsoleSingleton::MsgType_Wrn, true);
     }
     else {
-        getMainWindow()->restoreState(windowState);
+        restored = getMainWindow()->restoreState(windowState);
     }
 
+    // Startup restoration happens before the main window is visible. Its deferred pass repairs
+    // the state after workbench dock creation; parameter-driven restores can be repaired here.
+    const bool repaired = restored && getMainWindow()->isVisible()
+        && DockWindowManager::repairDuplicateDockState(getMainWindow(), windowState);
+
     Base::ConnectionBlocker block(connParam);
+    if (repaired) {
+        hGrp->SetASCII("MainWindowState", getMainWindow()->saveState().toBase64().constData());
+    }
     // as a notification for user code on window state restore
     hGrp->SetBool("WindowStateRestored", !hGrp->GetBool("WindowStateRestored", false));
 }

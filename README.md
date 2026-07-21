@@ -67,7 +67,12 @@ Open **Preferences**, then select **VibeCAD > VibeCAD**.
 
 ChatGPT credentials are stored in a private VibeCAD Codex credential directory and refreshed by the bundled, version-pinned app-server. **Logout** asks that runtime to remove the account. VibeCAD never imports credentials from another Codex installation and never falls back to an ambient API key.
 
-ChatGPT subscription turns currently use fixed scripted tool surfaces. In PartDesign, select **VibeScript**, **build123d**, or **OpenSCAD** before sending a subscription-backed request. Native workbench tool stacks remain available through the API-key providers.
+ChatGPT subscription, OpenAI-compatible, Anthropic, and offline/debug turns all
+use the same global modeling-engine and active-workbench resolver. Select
+**Native** or **VibeScript** in any supported modeling workbench before sending
+a request. Part Design additionally offers **build123d** and **OpenSCAD** when
+those engines are enabled. A turn receives only the selected engine's exact
+active-workbench surface; VibeScript and native CAD tools are never combined.
 
 ### Save a Key in the OS Keyring
 
@@ -131,7 +136,7 @@ When using a `.env` file for xAI, use `OPENAI_API_KEY` because the OpenAI-compat
 2. Select the workbench that matches the work you are doing. VibeCAD exposes the focused tool surface for the active workbench.
 3. Open **View > Panels > VibeCAD Assistant** if the assistant is not visible.
 4. Describe the intended result, including the dimensions, interfaces, material, manufacturing process, and constraints that matter.
-5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport.
+5. Use **Attach Image** for a reference design, or paste an image into the message box with `Ctrl+V`. Use **Attach View** to include the current viewport in the next model request only; it is consumed after that delivery.
 6. Click **Send**. While work is running, the same input becomes **Steer**, so corrections stay in the same conversation. **Stop** ends the run after the current provider or CAD step returns.
 7. Save the CAD document normally. Reopening it restores the associated VibeCAD conversations and project records.
 
@@ -141,18 +146,47 @@ Be explicit about functional intent, not only appearance. For an existing model,
 
 The conversation selector at the top of the assistant opens prior conversations for the current CAD document. The new-conversation button starts a clean thread without deleting earlier work. This makes it possible to separate a redesign, manufacturing discussion, or analysis task while retaining the project's history.
 
-When **Intent Memory** is enabled in Preferences, VibeCAD compiles durable project intent after completed conversations. This preserves important requirements without replaying an unlimited chat transcript on every model call.
+Saved conversations remain available to the human in this selector, but VibeCAD does not replay the project transcript or persisted tool traces into a model request. The model receives the current message exactly once. **Intent Memory** remains available as an explicit human project record, but it is not compiled after every turn or injected automatically.
 
-## PartDesign Modeling Engines
+Turn-start CAD context is deliberately small: active workbench/engine/domain, document identity and object count, edit object, and the exact explicit selection. Object inventories, properties, programs, domain APIs, geometry, solver state, and old images are read only when the model calls the bounded `core.inspect` tool. Newly attached reference images and **Attach View** are delivered once. Exact active tool declarations have a hard wire-size limit, as do inspection pages and individual tool results.
 
-The modeling-engine selector appears in the VibeCAD panel while PartDesign is active. The human controls this selection for each saved CAD document.
+## Global Modeling Engine
 
-- **Native:** editable sketches and PartDesign feature history.
-- **VibeScript:** VibeCAD's native scripted modeling engine; enabled by default.
-- **build123d:** optional Python-based scripted modeling, enabled in Preferences.
-- **OpenSCAD:** optional editable OpenSCAD source, enabled in Preferences.
+The modeling-engine selector appears in the VibeCAD panel in every supported user workbench. The human controls this global selection for each saved CAD document; AI tools cannot change it.
 
-Scripted engines keep source, parameters, diagnostics, and accepted outputs with the project. Their temporary preview is not the saved model; inspect it in the **Model Code Editor** and use **Accept** to commit the candidate result.
+- **Native:** only the active workbench's native CAD tools.
+- **VibeScript:** only the active workbench's dedicated source-backed interface; selected by default.
+- **build123d:** optional Part Design-only Python modeling.
+- **OpenSCAD:** optional Part Design-only OpenSCAD modeling.
+
+Native and VibeScript authoring tools are never combined, and tools from different workbenches are never combined. Leaving Part Design while build123d or OpenSCAD is selected visibly changes and persists the global engine as VibeScript. Returning to Part Design does not restore the previous engine.
+
+Scripted engines keep source, inputs, diagnostics, revisions, and accepted outputs with the project. VibeScript runs in an isolated windowless worker and publishes only validated results. The **Model Code Editor** lists programs for the active workbench domain and opens with no program selected.
+
+All 18 supported user-workbench VibeScript interfaces are production-ready:
+Part Design, Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material,
+BIM, Mesh, MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM,
+and TechDraw. Every domain, including Part Design, exposes the same five
+provider-facing mutation tools plus the shared `core.inspect` read interface.
+API inspection and program source contain only that workbench's canonical
+runtime operations and typed outputs.
+
+Geometry, solver, mesh, reconstruction, projection, and toolpath work runs in
+the isolated worker. The live document receives only independently validated,
+precomputed native state under stable program/output identities. This includes
+native sketches and Draft/BIM proxies, Assembly links and joints, sheets and
+material assignments, meshes and point clouds, reconstruction and inspection
+records, Robot trajectories, FEM analyses/results, Path jobs/toolpaths, and
+TechDraw pages/views/dimensions. Failed candidates remain inspectable without
+replacing the accepted revision, and publication/deletion paths explicitly
+restore accepted state when FreeCAD transaction rollback is incomplete.
+
+Part, MeshPart, Points, CAM, and TechDraw deliberately collapse equivalent
+variants behind selectors or one ordered pipeline instead of advertising
+redundant operations. There are no forwarding wrappers for removed Part
+operations; `core.inspect` presents the only canonical runtime methods. Startup,
+test, unknown, or future unimplemented workbenches resolve to an exact core-only
+unavailable surface; VibeCAD never substitutes another workbench's tools.
 
 ## Local Models
 
@@ -171,7 +205,7 @@ The local server must already be running and expose an OpenAI-compatible API. So
 
 - **`not_configured`:** VibeCAD could not find the selected provider's environment variable, a valid key in the selected `.env` file, or a keyring entry.
 - **No ChatGPT subscription is signed in:** open Preferences, select **ChatGPT subscription**, and complete browser or device-code sign-in.
-- **ChatGPT requires a fixed scripted surface:** select VibeScript, build123d, or OpenSCAD for the current workbench. Subscription mode does not expose the mutable native tool stack.
+- **No CAD authoring tools are shown:** select a supported modeling workbench and an engine implemented for it. build123d and OpenSCAD are available only in Part Design.
 - **`configured_unverified`:** a key was found but has not been checked against the configured endpoint. Click **Validate**.
 - **`invalid`:** the endpoint rejected the key. Confirm the selected provider, base URL, credential precedence, and account access.
 - **`offline`:** the key could not be verified because the configured endpoint could not be reached.

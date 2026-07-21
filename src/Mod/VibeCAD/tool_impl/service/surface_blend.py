@@ -30,8 +30,8 @@ TOOL_SPEC = {
         "Create one native Surface blend (GeomFillSurface) spanning two, three, "
         "or four exact boundary edges. Simpler and more predictable than "
         "surface.fill when the boundary is a small set of edges; use "
-        "surface.fill for longer closed loops. Resolve edge names with "
-        "part.find_subelements first - never guess them."
+        "surface.fill for longer closed loops. Use exact edge names from the "
+        "active Surface context; never guess them."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

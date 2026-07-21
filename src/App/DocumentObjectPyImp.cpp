@@ -212,6 +212,35 @@ PyObject* DocumentObjectPy::purgeTouched(PyObject* args)
     Py_Return;
 }
 
+PyObject* DocumentObjectPy::freeze(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    getDocumentObjectPtr()->freeze();
+    Py_Return;
+}
+
+PyObject* DocumentObjectPy::unfreeze(PyObject* args)
+{
+    int noRecompute = 0;
+    if (!PyArg_ParseTuple(args, "|p", &noRecompute)) {
+        return nullptr;
+    }
+    getDocumentObjectPtr()->unfreeze(noRecompute != 0);
+    Py_Return;
+}
+
+PyObject* DocumentObjectPy::isFrozen(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    return Py::new_reference_to(
+        Py::Boolean(getDocumentObjectPtr()->isFreezed())
+    );
+}
+
 PyObject* DocumentObjectPy::enforceRecompute(PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {

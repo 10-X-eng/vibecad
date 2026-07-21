@@ -607,12 +607,33 @@ protected:
     void onChanged(const App::Property* prop) override
     {
         if (prop == &Proxy) {
-            imp->init(Proxy.getValue().ptr());
-            if (ViewProviderT::pcObject && !Proxy.getValue().is(Py::_None())) {
+            const Py::Object pyProxy = Proxy.getValue();
+            imp->init(pyProxy.ptr());
+            if (ViewProviderT::pcObject && !pyProxy.is(Py::_None())) {
+                // FreeCAD uses the exact integer 1 as a visible Python view
+                // provider placeholder. It attaches the C++ view shell, but
+                // there is no Python proxy whose attach() hook can run yet.
+                const Py::Long placeholderValue(1);
+                const bool placeholder = PyLong_CheckExact(pyProxy.ptr())
+                    && PyObject_RichCompareBool(
+                           pyProxy.ptr(), placeholderValue.ptr(), Py_EQ
+                       ) == 1;
+                bool attachmentChanged = false;
                 if (!_attached) {
                     _attached = true;
-                    imp->attach(ViewProviderT::pcObject);
+                    if (!placeholder) {
+                        _pythonProxyAttached = true;
+                        imp->attach(ViewProviderT::pcObject);
+                    }
                     ViewProviderT::attach(ViewProviderT::pcObject);
+                    attachmentChanged = true;
+                }
+                else if (!_pythonProxyAttached && !placeholder) {
+                    _pythonProxyAttached = true;
+                    imp->attach(ViewProviderT::pcObject);
+                    attachmentChanged = true;
+                }
+                if (attachmentChanged) {
                     // needed to load the right display mode after they're known now
                     ViewProviderT::DisplayMode.touch();
                     ViewProviderT::setOverrideMode(viewerMode);
@@ -749,7 +770,10 @@ private:
     App::PropertyPythonObject Proxy;
     mutable std::string defaultMode;
     std::string viewerMode;
+    // The C++ view shell and its Python proxy can be attached at different
+    // times when a document restores the integer placeholder first.
     bool _attached {false};
+    bool _pythonProxyAttached {false};
 };
 
 // Special Feature-Python classes

@@ -49,7 +49,13 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 
 #include <QAction>
+#include <QApplication>
+#include <QByteArray>
+#include <QEventLoop>
 #include <QMenu>
+#include <QTimer>
+#include <deque>
+#include <memory>
 #include <sstream>
 
 #include <Inventor/SoPickedPoint.h>
@@ -73,11 +79,14 @@
 #include <App/Document.h>
 #include <Base/Console.h>
 #include <Base/Parameter.h>
+#include <Base/Sequencer.h>
 #include <Base/TimeInfo.h>
 #include <Base/Tools.h>
 
+#include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Control.h>
+#include <Gui/ProgressBar.h>
 #include <Gui/Selection/SoFCSelectionAction.h>
 #include <Gui/Selection/SoFCUnifiedSelection.h>
 #include <Gui/ViewParams.h>
@@ -110,6 +119,111 @@ App::PropertyQuantityConstraint::Constraints ViewProviderPartExt::angDeflectionR
     = {1.0, 180.0, 0.05};
 const char* ViewProviderPartExt::LightingEnums[] = {"One side", "Two side", nullptr};
 const char* ViewProviderPartExt::DrawStyleEnums[] = {"Solid", "Dashed", "Dotted", "Dashdot", nullptr};
+
+namespace
+{
+struct DeferredVisual
+{
+    std::string documentName;
+    std::string objectName;
+};
+
+std::deque<DeferredVisual> deferredVisuals;
+bool deferredVisualRefreshScheduled = false;
+std::unique_ptr<Base::SequencerLauncher> deferredVisualProgress;
+Gui::ProgressBar* deferredVisualProgressBar = nullptr;
+int deferredVisualProgressMinimumDuration = -1;
+
+void startDeferredVisualProgress()
+{
+    if (deferredVisualProgress || deferredVisuals.empty() || Base::Sequencer().isRunning()) {
+        return;
+    }
+
+    deferredVisualProgressBar = static_cast<Gui::ProgressBar*>(
+        Gui::SequencerBar::instance()->getProgressBar());
+    deferredVisualProgressMinimumDuration = deferredVisualProgressBar->minimumDuration();
+    deferredVisualProgressBar->setMinimumDuration(0);
+
+    const QByteArray text = QApplication::translate(
+                                "PartGui::ViewProviderPartExt",
+                                "Loading model display\u2026")
+                                .toUtf8();
+    deferredVisualProgress =
+        std::make_unique<Base::SequencerLauncher>(text.constData(), deferredVisuals.size());
+
+    // Paint the native progress indicator and wait cursor before tessellating the next shape.
+    qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void advanceDeferredVisualProgress()
+{
+    if (deferredVisualProgress) {
+        deferredVisualProgress->next();
+    }
+}
+
+void finishDeferredVisualProgress()
+{
+    deferredVisualProgress.reset();
+    if (deferredVisualProgressBar) {
+        deferredVisualProgressBar->setMinimumDuration(deferredVisualProgressMinimumDuration);
+        deferredVisualProgressBar = nullptr;
+        deferredVisualProgressMinimumDuration = -1;
+    }
+}
+
+void refreshNextDeferredVisual();
+
+void scheduleNextDeferredVisual(int delay = 0)
+{
+    QTimer::singleShot(delay, qApp, refreshNextDeferredVisual);
+}
+
+void refreshNextDeferredVisual()
+{
+    if (App::Document::isAnyRestoring()) {
+        scheduleNextDeferredVisual(25);
+        return;
+    }
+
+    startDeferredVisualProgress();
+
+    while (!deferredVisuals.empty()) {
+        DeferredVisual identity = std::move(deferredVisuals.front());
+        deferredVisuals.pop_front();
+        auto* document = App::GetApplication().getDocument(identity.documentName.c_str());
+        auto* object = document ? document->getObject(identity.objectName.c_str()) : nullptr;
+        auto* viewProvider = object && Gui::Application::Instance
+            ? Gui::Application::Instance->getViewProvider<ViewProviderPartExt>(object)
+            : nullptr;
+        if (viewProvider) {
+            viewProvider->finishDeferredVisualRestore();
+            advanceDeferredVisualProgress();
+            scheduleNextDeferredVisual();
+            return;
+        }
+        advanceDeferredVisualProgress();
+    }
+
+    finishDeferredVisualProgress();
+    deferredVisualRefreshScheduled = false;
+}
+
+void deferVisualRestore(const ViewProviderPartExt& viewProvider)
+{
+    const auto* object = viewProvider.getObject();
+    const auto* document = object ? object->getDocument() : nullptr;
+    if (!object || !document) {
+        return;
+    }
+    deferredVisuals.push_back({document->getName(), object->getNameInDocument()});
+    if (!deferredVisualRefreshScheduled) {
+        deferredVisualRefreshScheduled = true;
+        scheduleNextDeferredVisual();
+    }
+}
+}  // namespace
 
 ViewProviderPartExt::ViewProviderPartExt()
 {
@@ -985,6 +1099,16 @@ void ViewProviderPartExt::finishRestoring()
         onChanged(&_diffuseColor);
     }
     Gui::ViewProviderGeometryObject::finishRestoring();
+    if (VisualTouched && (isUpdateForced() || Visibility.getValue())) {
+        deferVisualRestore(*this);
+    }
+}
+
+void ViewProviderPartExt::finishDeferredVisualRestore()
+{
+    if (VisualTouched && (isUpdateForced() || Visibility.getValue())) {
+        updateVisual();
+    }
 }
 
 void ViewProviderPartExt::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
@@ -1457,6 +1581,14 @@ void ViewProviderPartExt::setupCoinGeometry(
 
 void ViewProviderPartExt::updateVisual()
 {
+    auto* object = getObject();
+    auto* document = object ? object->getDocument() : nullptr;
+    if (isRestoring()
+        || (document && document->testStatus(App::Document::Status::Restoring))) {
+        VisualTouched = true;
+        return;
+    }
+
     TopoDS_Shape shape = getRenderedShape().getShape();
 
     if (!VisualTouched && lastRenderedShape.IsPartner(shape)) {

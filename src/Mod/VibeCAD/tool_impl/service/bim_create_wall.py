@@ -15,7 +15,7 @@ TOOL_SPEC = {
     "name": "bim.create_wall",
     "description": (
         "Create one native BIM wall by extruding an exact baseline object "
-        "(a Draft wire or line from draft.create_wire) upward. The wall "
+        "(an existing Draft wire or line) upward. The wall "
         "follows the baseline path with the given height and thickness; the "
         "baseline object is consumed as the wall's base and hidden. Draw the "
         "baseline at the level's floor elevation first."
@@ -30,8 +30,8 @@ TOOL_SPEC = {
             "baseline_object": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the baseline object (e.g. a Draft "
-                    "wire 'Wire' from draft.list_objects) the wall follows."
+                    "Exact internal name of the existing baseline object "
+                    "(for example a Draft wire named 'Wire') the wall follows."
                 ),
             },
             "height_mm": {
@@ -154,14 +154,14 @@ def run(
         native_baseline = doc.getObject(baseline_name)
         if native_baseline is None:
             raise RuntimeError(
-                f"Baseline object '{baseline_name}' not found; use "
-                "draft.list_objects for exact names."
+                f"Baseline object '{baseline_name}' not found; provide an "
+                "exact existing document object name."
             )
         shape = getattr(native_baseline, "Shape", None)
         if shape is None or not getattr(shape, "Edges", []):
             raise RuntimeError(
                 f"Baseline object '{baseline_name}' has no edges to follow; "
-                "create it with draft.create_wire first."
+                "provide an existing wire or line baseline."
             )
         level = None
         if level_name:
@@ -169,7 +169,7 @@ def run(
             if level is None:
                 raise RuntimeError(
                     f"Level object '{level_name}' not found; use "
-                    "bim.list_structure for exact names."
+                    "core.inspect scope='domain' for exact names."
                 )
         wall = Arch.makeWall(
             native_baseline,

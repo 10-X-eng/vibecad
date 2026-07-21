@@ -116,18 +116,6 @@ class AssemblyWorkbench(Workbench):
             [QT_TRANSLATE_NOOP("Workbench", "&Assembly")],
             cmdList + cmdListMenuOnly + ["Separator"] + cmdListJoints,
         )
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "Assembly")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for Assembly: {err}\n".format(
-                    err=str(err)
-                )
-            )
 
     def Activated(self):
         # update the translation engine

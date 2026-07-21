@@ -257,9 +257,8 @@ TOOL_SPEC = {
         "Create one native PartDesign Hole from circular geometry in an exact sketch owned by "
         "a solid Body. Uses named depth, counterbore/countersink, drill-point, taper, and thread "
         "settings rather than FreeCAD enum integers; requested thread size/class/fit are validated "
-        "against this FreeCAD installation. While editing the positioning sketch, use "
-        "sketcher.add_hole_pattern to author constrained linear or bolt-circle hole groups in one "
-        "operation."
+        "against this FreeCAD installation. Finish any constrained linear or bolt-circle hole "
+        "pattern in the positioning sketch's own workbench before creating the Hole feature."
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",

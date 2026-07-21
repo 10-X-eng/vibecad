@@ -33,7 +33,9 @@
 #include <App/DocumentObject.h>
 #include <App/FeaturePython.h>
 #include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 #include <Base/BoundBox.h>
+#include <Mod/Part/App/PropertyTopoShape.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
 #include "CosmeticExtension.h"
@@ -133,6 +135,23 @@ public:
     App::PropertyInteger IsoCount;
 
     App::PropertyInteger ScrubCount;
+
+    // Persisted, worker-generated projection state.  These properties are
+    // hidden/read-only because they are an implementation cache, not an
+    // alternate user-editable projection surface.
+    Part::PropertyPartShape PrecomputedProjectionEdges;
+    Part::PropertyPartShape PrecomputedProjectionFaces;
+    App::PropertyIntegerList PrecomputedEdgeClasses;
+    App::PropertyBoolList PrecomputedEdgeVisibility;
+    App::PropertyIntegerList PrecomputedSourceIndices;
+    App::PropertyVector PrecomputedProjectionCentroid;
+
+    void setPrecomputedProjection(const TopoDS_Shape& edges,
+                                  const std::vector<long>& edgeClasses,
+                                  const std::vector<bool>& edgeVisibility,
+                                  const std::vector<long>& sourceIndices,
+                                  const TopoDS_Shape& faces,
+                                  const Base::Vector3d& centroid);
 
     short mustExecute() const override;
     App::DocumentObjectExecReturn* execute() override;
@@ -257,12 +276,14 @@ protected:
     Base::BoundBox3d bbox;
 
     void onChanged(const App::Property* prop) override;
+    void onDocumentRestored() override;
     void unsetupObject() override;
 
     virtual TechDraw::GeometryObjectPtr buildGeometryObject(const TopoDS_Shape& shape,
                                                             const gp_Ax2& viewAxis);
     virtual TechDraw::GeometryObjectPtr makeGeometryForShape(const TopoDS_Shape& shape);//const??
     void partExec(TopoDS_Shape& shape);
+    bool restorePrecomputedProjection();
     virtual void addPoints(void);
 
     void extractFaces();

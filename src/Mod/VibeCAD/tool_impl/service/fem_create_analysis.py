@@ -160,8 +160,8 @@ def run(service: Any, label: str, analysis_type: str) -> dict[str, Any]:
         transaction,
         extra={"operation": "create_analysis", **result},
         next_action=(
-            "Add a material with fem.add_material (find its UUID with "
-            "material.list_materials), then constraints with "
+            "Add a material with fem.add_material using an exact card UUID, "
+            "then constraints with "
             "fem.add_constraint, then a mesh with fem.mesh_analysis."
         ),
     )

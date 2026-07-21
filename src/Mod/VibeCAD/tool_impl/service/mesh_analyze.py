@@ -42,7 +42,7 @@ TOOL_SPEC = {
         "non-manifold edges, self-intersections, inconsistent facet "
         "orientation, invalid points, and the number of separate "
         "components. Run this before mesh.repair to pick repairs and "
-        "before meshpart.shape_from_mesh to confirm the mesh is sound."
+        "before any later conversion to confirm the mesh is sound."
     ),
     "contextual": True,
     "safety": "READ",
@@ -55,7 +55,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the mesh object (Mesh::Feature) "
-                    "to analyze, as returned by mesh.list_meshes."
+                    "to analyze, as returned by core.inspect scope='domain'."
                 ),
             },
         },
@@ -156,8 +156,8 @@ def run(service: Any, object_name: str) -> dict[str, Any]:
     if mesh is None:
         return _invalid(
             f"Object is not a mesh (no Mesh property): {clean_name}. Use "
-            "mesh.list_meshes for mesh names, or meshpart.mesh_from_shape "
-            "to create a mesh from a shaped object."
+            "core.inspect scope='domain' for exact mesh names; conversion from shaped "
+            "objects belongs to its own workbench."
         )
     try:
         summary = analyze_mesh(mesh)

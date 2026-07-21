@@ -63,6 +63,113 @@ PyObject* DrawViewDimensionPy::getText(PyObject* args)
     return pyText;
 }
 
+PyObject* DrawViewDimensionPy::getPrecomputedDimension(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    DrawViewDimension* dimension = getDrawViewDimensionPtr();
+    const auto flags = dimension->getPrecomputedDimensionFlags();
+    if (flags.empty() || !flags[0] || !flags[3]) {
+        throw Py::RuntimeError(
+            "The TechDraw dimension has no valid computed descriptive geometry.");
+    }
+
+    Py::List vectors;
+    for (const Base::Vector3d& vector : dimension->getPrecomputedDimensionVectors()) {
+        vectors.append(Py::asObject(new Base::VectorPy(new Base::Vector3d(vector))));
+    }
+    Py::List scalars;
+    for (double scalar : dimension->getPrecomputedDimensionScalars()) {
+        scalars.append(Py::Float(scalar));
+    }
+    Py::List pyFlags;
+    for (bool flag : flags) {
+        pyFlags.append(Py::Boolean(flag));
+    }
+    Py::Dict result;
+    result.setItem("vectors", vectors);
+    result.setItem("scalars", scalars);
+    result.setItem("flags", pyFlags);
+    return Py::new_reference_to(result);
+}
+
+PyObject* DrawViewDimensionPy::setPrecomputedDimension(PyObject* args)
+{
+    PyObject* snapshot = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &PyDict_Type, &snapshot)) {
+        return nullptr;
+    }
+    if (PyDict_Size(snapshot) != 3) {
+        throw Py::ValueError(
+            "Dimension snapshot must contain exactly vectors, scalars, and flags.");
+    }
+    PyObject* vectorsObject = PyDict_GetItemString(snapshot, "vectors");
+    PyObject* scalarsObject = PyDict_GetItemString(snapshot, "scalars");
+    PyObject* flagsObject = PyDict_GetItemString(snapshot, "flags");
+    if (!vectorsObject || !scalarsObject || !flagsObject) {
+        throw Py::ValueError("Dimension snapshot is missing a required field.");
+    }
+
+    auto sequence = [](PyObject* value, const char* field) {
+        PyObject* result = PySequence_Fast(value, "Dimension metadata must be a sequence.");
+        if (!result) {
+            throw Py::TypeError(std::string("Dimension snapshot ") + field
+                                + " must be a sequence.");
+        }
+        return Py::Object(result, true);
+    };
+
+    Py::Object vectorSequence = sequence(vectorsObject, "vectors");
+    Py::Object scalarSequence = sequence(scalarsObject, "scalars");
+    Py::Object flagSequence = sequence(flagsObject, "flags");
+
+    std::vector<Base::Vector3d> vectors;
+    const Py_ssize_t vectorCount = PySequence_Fast_GET_SIZE(vectorSequence.ptr());
+    vectors.reserve(static_cast<size_t>(vectorCount));
+    PyObject** vectorItems = PySequence_Fast_ITEMS(vectorSequence.ptr());
+    for (Py_ssize_t index = 0; index < vectorCount; ++index) {
+        if (!PyObject_TypeCheck(vectorItems[index], &Base::VectorPy::Type)) {
+            throw Py::TypeError(
+                "Dimension snapshot vectors must contain only App.Vector values.");
+        }
+        vectors.push_back(static_cast<Base::VectorPy*>(vectorItems[index])->value());
+    }
+
+    std::vector<double> scalars;
+    const Py_ssize_t scalarCount = PySequence_Fast_GET_SIZE(scalarSequence.ptr());
+    scalars.reserve(static_cast<size_t>(scalarCount));
+    PyObject** scalarItems = PySequence_Fast_ITEMS(scalarSequence.ptr());
+    for (Py_ssize_t index = 0; index < scalarCount; ++index) {
+        if (PyBool_Check(scalarItems[index])
+            || (!PyFloat_Check(scalarItems[index]) && !PyLong_Check(scalarItems[index]))) {
+            throw Py::TypeError(
+                "Dimension snapshot scalars must contain only finite numbers.");
+        }
+        const double scalar = PyFloat_AsDouble(scalarItems[index]);
+        if (PyErr_Occurred()) {
+            throw Py::ValueError("Dimension snapshot contains an invalid scalar.");
+        }
+        scalars.push_back(scalar);
+    }
+
+    std::vector<bool> flags;
+    const Py_ssize_t flagCount = PySequence_Fast_GET_SIZE(flagSequence.ptr());
+    flags.reserve(static_cast<size_t>(flagCount));
+    PyObject** flagItems = PySequence_Fast_ITEMS(flagSequence.ptr());
+    for (Py_ssize_t index = 0; index < flagCount; ++index) {
+        if (!PyBool_Check(flagItems[index])) {
+            throw Py::TypeError(
+                "Dimension snapshot flags must contain only bools.");
+        }
+        flags.push_back(flagItems[index] == Py_True);
+    }
+
+    getDrawViewDimensionPtr()->setPrecomputedDimension(vectors, scalars, flags);
+    Py_Return;
+}
+
 PyObject* DrawViewDimensionPy::getLinearPoints(PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {

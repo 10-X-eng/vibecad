@@ -50,19 +50,6 @@ class SketcherWorkbench(Workbench):
         except ImportError:
             print("Error in Profiles module")
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "Sketcher")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for Sketcher: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
     def GetClassName(self):
         return "SketcherGui::Workbench"
 

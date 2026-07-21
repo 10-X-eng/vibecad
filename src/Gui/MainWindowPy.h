@@ -61,6 +61,7 @@ public:
     Py::Object removeStatusBarItem(const Py::Tuple&);
 
     Py::Object addDockWindow(const Py::Tuple&, const Py::Dict&);
+    Py::Object registerDockWindow(const Py::Tuple&, const Py::Dict&);
     Py::Object removeDockWindow(const Py::Tuple&);
 
 private:

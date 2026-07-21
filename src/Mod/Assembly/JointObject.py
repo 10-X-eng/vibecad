@@ -193,6 +193,7 @@ class Joint:
 
     def onDocumentRestored(self, joint):
         self.createProperties(joint)
+        ensureViewProviderJoint(joint)
 
     def createProperties(self, joint):
         self.migrationScript(joint)
@@ -881,8 +882,9 @@ class Joint:
     def redrawJointPlacements(self, joint):
         if joint.ViewObject:
             proxy = joint.ViewObject.Proxy
-            if proxy:
-                proxy.redrawJointPlacements(joint)
+            redraw = getattr(proxy, "redrawJointPlacements", None)
+            if callable(redraw):
+                redraw(joint)
 
     """
     So here we want to find a placement that corresponds to a local coordinate system that would be placed at the selected vertex.
@@ -987,8 +989,7 @@ class Joint:
                     part.Placement = plc
             self.partsMovedByPresolved = {}
 
-            if joint.ViewObject:
-                joint.ViewObject.Proxy.redrawJointPlacements(joint)
+            self.redrawJointPlacements(joint)
 
     def preventParallel(self, joint):
         # Angle and perpendicular joints in the solver cannot handle the situation where both JCS are Parallel
@@ -1287,6 +1288,7 @@ class GroundedJoint:
         self.migrationScript(joint)
 
         self.setReadOnly(joint, True)
+        ensureViewProviderGroundedJoint(joint)
 
     def migrationScript(self, joint):
         if (
@@ -1494,6 +1496,40 @@ class ViewProviderGroundedJoint:
 
     def canDelete(self, _obj):
         return True
+
+
+def _ensureViewProvider(joint, provider_type):
+    """Create or restore the native Python view provider for an Assembly joint."""
+
+    if not App.GuiUp:
+        return None
+
+    view = getattr(joint, "ViewObject", None)
+    if view is None:
+        return None
+
+    proxy = getattr(view, "Proxy", None)
+    if isinstance(proxy, provider_type):
+        return proxy
+
+    placeholder = proxy is None or (type(proxy) is int and proxy == 1)
+    if not placeholder:
+        # Preserve a deliberately supplied custom view provider.
+        return proxy
+
+    return provider_type(view)
+
+
+def ensureViewProviderJoint(joint):
+    """Ensure a regular Assembly joint has its native GUI view provider."""
+
+    return _ensureViewProvider(joint, ViewProviderJoint)
+
+
+def ensureViewProviderGroundedJoint(joint):
+    """Ensure a grounded Assembly joint has its native GUI view provider."""
+
+    return _ensureViewProvider(joint, ViewProviderGroundedJoint)
 
 
 class MakeJointSelGate:

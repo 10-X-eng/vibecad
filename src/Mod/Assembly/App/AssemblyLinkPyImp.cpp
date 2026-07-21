@@ -55,3 +55,13 @@ Py::List AssemblyLinkPy::getJoints() const
 
     return ret;
 }
+
+PyObject* AssemblyLinkPy::synchronizeContents(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    getAssemblyLinkPtr()->updateContents();
+    Py_Return;
+}

@@ -39,6 +39,9 @@ In Case of PTP 0-100% Axis speed
 In Case of LIN m/s
 In Case of WAIT s wait time"""
 
+    Acceleration: float
+    """Control the acceleration of the incoming native trajectory segment."""
+
     Tool: int
     """Describe which tool frame to use for that point"""
 

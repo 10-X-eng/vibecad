@@ -52,6 +52,7 @@ void ViewProviderAnnotation::updateData(const App::Property* prop)
     if (prop == &(getViewObject()->Text) || prop == &(getViewObject()->Font)
         || prop == &(getViewObject()->TextColor) || prop == &(getViewObject()->TextSize)
         || prop == &(getViewObject()->LineSpace) || prop == &(getViewObject()->TextStyle)
+        || prop == &(getViewObject()->TextAlignment)
         || prop == &(getViewObject()->MaxWidth)) {
         // redraw QGIVP
         QGIView* qgiv = getQView();

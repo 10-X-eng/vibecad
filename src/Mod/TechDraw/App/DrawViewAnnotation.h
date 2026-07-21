@@ -49,6 +49,7 @@ public:
     App::PropertyLength       TextSize;
     App::PropertyInteger      LineSpace;
     App::PropertyEnumeration  TextStyle; // Plain, Bold, Italic, Bold-Italic
+    App::PropertyEnumeration  TextAlignment; // Left, Center, Right
     App::PropertyFloat        MaxWidth;
     App::PropertyLink         Owner;
 
@@ -76,6 +77,7 @@ protected:
 
 private:
     static const char* TextStyleEnums[];
+    static const char* TextAlignmentEnums[];
 };
 
 using DrawViewAnnotationPython = App::FeaturePythonT<DrawViewAnnotation>;

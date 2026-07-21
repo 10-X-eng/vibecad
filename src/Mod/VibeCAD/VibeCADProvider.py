@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import multiprocessing
 import os
@@ -18,12 +19,18 @@ import time
 from typing import Any, Callable
 
 from VibeCADDebug import capture_provider_request
+from VibeCADModelingSurface import resolve_modeling_surface, validate_surface_names
+from VibeCADVibeScriptDomains import get_vibescript_pack
+from VibeCADWorkbenchTools import get_tool_pack
 
 
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
 CODEX_INLINE_IMAGE_MAX_BYTES = 60_000
 PROVIDER_IMAGE_MAX_EDGE = 1568
 PROVIDER_IMAGE_MIN_EDGE = 512
+MAX_PROVIDER_TOOL_RESULT_BYTES = 40 * 1024
+MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS = 256
+MAX_PROVIDER_INSTRUCTIONS_BYTES = 8 * 1024
 DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
 ANTHROPIC_THINKING_BUDGETS = {
     "minimal": 1024,
@@ -42,39 +49,17 @@ ANTHROPIC_ADAPTIVE_EFFORT = {
 ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
 
 
-VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, a principal mechanical design engineer operating the user's live FreeCAD document through the supplied tools. The requested product and its real use are the authority. A simple solid that only resembles the request is a failure.
+VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, a principal mechanical design engineer operating the user's live FreeCAD document through the supplied tools. The current user message is the authority. A simple solid that only resembles the request is a failure.
 
-Authority order:
-1. The current user message.
-2. Active, provenance-backed INTENT MEMORY.
-3. Verified live CAD state and native diagnostics.
-4. Recent conversation and uncovered turns, which may describe historical CAD states.
-
-Intent Memory carries durable outcomes, requirements, decisions, interfaces, constraints, assumptions, open questions, and rejected directions across conversations. The current user can refine or supersede it. Mutable feature progress and object state belong only to the live document.
+Turn-start context is deliberately sparse and exact: the active workbench/engine/domain, document identity/count/edit object, and explicit selection. Conversation history is not copied into this packet. Absence from it does not mean an object or program does not exist. Use core.inspect to read only the document, selection, object, active domain, program, API, or image details required by the request. Never guess an internal name, stable reference, revision, API member, or document fact.
 
 For a new substantial design, begin with a concise written restatement of the intended outcome and the concrete design you propose before the first CAD write. Cover the parts, interfaces, load/contact/motion paths, fit and swept envelopes, manufacturing approach, critical dimensions, and credible failure modes. Challenge whether it assembles, moves, clears, carries load, and can be manufactured. Once the design is accepted or already present in context, continue it; do not restart requirement refinement. Resolve ordinary engineering choices with defensible defaults. When a customer choice materially changes geometry or function, use conversation.ask_user with useful options and a recommended answer. Questions clarify intent; they are not approval gates.
 
 Preserve an existing document, component structure, editable history, and model identity unless replacement was explicitly requested. In a blank user-created document, create the editable component models needed for the new design. The human owns document creation, opening, saving, and project selection.
 
-Author the geometry the design requires. Use lines only for genuinely straight form; use arcs, conics, and splines for curved form. Use pads and pockets for constant sections, revolves for axisymmetry, lofts and sweeps for changing or guided sections, and patterns for real repetition. Fillets and chamfers finish primary form; they do not replace it. Parts that move relative to one another or are manufactured separately require separate Bodies.
-
-Use only the tools supplied for the active workbench and edit state. Read each structured result and its fresh CAD revision before the next operation.
+Use only the tools supplied for the active workbench and edit state. Read each structured result before the next operation.
 
 A failed or ineffective feature is a stop condition. Diagnose and repair its upstream cause before adding dependent work, and never repeat an unchanged failed call. Verify features against functional intent, mating geometry, motion and clearance envelopes, manufacturing constraints, and visible form, not merely nonzero volume or solid count. Capture the viewport when visual form matters. State incomplete work as incomplete, keep progress prose concise, and never claim verification you did not perform."""
-
-
-VIBESCRIPT_AUTHORING_INSTRUCTIONS = """VIBESCRIPT AUTHORING
-The active PartDesign engine is VibeScript: each model is a parametric Python script executed against the live document inside a transaction. A failed run rolls back completely; a successful run commits real PartDesign features.
-
-Before writing the first script of a session, call vibescript.describe_api and author against the returned reference. Do not guess at the API and do not probe the sandbox by provoking exceptions: print() output is captured and returned as stdout, and policy failures already explain themselves.
-
-The parameters argument is a flat map whose every value is one finite number. Strings, booleans, arrays, and nested objects are rejected. Compute derived values, tables, and interpolation inside source from those numbers.
-
-Scripts receive doc (the live document), params (the validated parameters), and every helper in the API reference. Create bodies and features through the helpers (new_body, new_sketch, SketchBuilder, pad, pocket, revolve, groove, loft, polar_pattern, mirror, fillet) rather than raw document calls; the helpers keep the feature tree ordered and validated. Every new sketch must be fully constrained; for computed geometry use SketchBuilder.apply(fixed=True). Assign result as a dict mapping each expected output name, in order, to a document object owning a shape.
-
-Boolean hygiene: fused solids must never merely touch. Sink or overlap joined geometry by at least 0.5mm so unions meet face-on-face; tangent contact and coincident faces produce defective shells that recompute "successfully" and break the next feature instead. Never pierce a loft's spline surface with a plane face: attach adjoining geometry at the loft's own end-cap section so the shared boundary is planar.
-
-Read each run's structured result: verify shape facts against design intent, use stdout for expected traces, and on failure use failure_stage to distinguish a call rejected before execution from one that executed and rolled back. When a failure carries observed.feature_report, trust its first_defective feature as the root cause: boolean defects surface one feature downstream, so the feature that raised the error is usually a victim, not the culprit. Fix the cause before re-running; never resubmit an unchanged failed script."""
 
 
 def _vibescript_engine_active(context: dict[str, Any]) -> bool:
@@ -92,21 +77,76 @@ def _vibescript_engine_active(context: dict[str, Any]) -> bool:
     return False
 
 
-def _intent_memory_instruction(context: dict[str, Any]) -> str:
-    memory = context.get("intent_memory")
-    if not context.get("intent_memory_enabled") or not isinstance(memory, dict):
+def _vibescript_domain(context: dict[str, Any]) -> str | None:
+    surface = context.get("modeling_surface")
+    if isinstance(surface, dict) and surface.get("engine") == "vibescript":
+        domain = str(surface.get("domain") or "").strip()
+        if domain:
+            return domain
+    domains: set[str] = set()
+    for schema in context.get("provider_tool_schemas") or []:
+        if not isinstance(schema, dict):
+            continue
+        parts = str(schema.get("name") or "").split(".")
+        if not parts or parts[0] != "vibescript":
+            continue
+        if len(parts) == 3:
+            domains.add(parts[1])
+    return next(iter(domains)) if len(domains) == 1 else None
+
+
+def _surface_authoring_instruction(context: dict[str, Any]) -> str:
+    surface = context.get("modeling_surface")
+    if not isinstance(surface, dict) or surface.get("engine") != "native":
+        return ""
+    workbench = str(surface.get("workbench") or context.get("workbench") or "")
+    pack = get_tool_pack(workbench)
+    if pack is None or not surface.get("available"):
         return ""
     return (
-        "VIBECAD INTENT MEMORY\n"
-        "This is generated, provenance-backed project intent, not a new user message. "
-        "Do not rewrite it or store mutable CAD progress in it.\n"
-        + json.dumps(memory, ensure_ascii=True, separators=(",", ":"), default=str)
+        f"ACTIVE NATIVE WORKBENCH: {workbench}\n"
+        f"Domain: {pack.domain}. {pack.instructions}\n"
+        "Use only this workbench's declared native tools. Do not infer or call "
+        "tools from adjacent workbenches."
+    )
+
+
+def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
+    domain = _vibescript_domain(context)
+    workbench = str(context.get("workbench") or "")
+    pack = get_vibescript_pack(workbench)
+    if pack is None or pack.domain != domain:
+        return ""
+    return (
+        f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
+        f"The selected global engine is VibeScript and the only CAD authoring "
+        f"domain is {pack.title}. {pack.instructions}\n\n"
+        "Use core.inspect scope='domain' to discover existing programs and exact "
+        "document references before creating one; inspect and update a matching "
+        "program instead of creating a duplicate.\n\n"
+        "Call core.inspect with scope='api' before writing the first program. Programs "
+        "receive only doc, validated inputs, and the returned domain api. Inputs "
+        "are bounded JSON scalars, arrays, enums, or stable document references; "
+        "raw filesystem paths and arbitrary Python objects are forbidden. Every "
+        "output must have a stable declared name and one of these types: "
+        + ", ".join(pack.output_types)
+        + ". Choose the narrowest lifecycle mutation: edit_source for source-only "
+        "changes, set_inputs for value-only changes, and reconfigure_program only "
+        "when source, input schema, inputs, or declared outputs must change together. "
+        "Use core.inspect scope='program' for source, live identity, and the latest "
+        "working_revision before mutation. A failed candidate "
+        "becomes the working revision while the previous accepted revision stays live; "
+        "inspect it, repair the smallest exact cause, and verify the accepted/live state "
+        "after success. Never call native workbench tools from this mode."
     )
 
 
 def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
     """Ordered system-instruction sections shared by every wire format."""
     sections = [VIBECAD_SYSTEM_INSTRUCTIONS]
+    native_instruction = _surface_authoring_instruction(context)
+    if native_instruction:
+        sections.append(native_instruction)
     if any(
         isinstance(schema, dict)
         and schema.get("name") == "conversation.review_design"
@@ -121,15 +161,21 @@ def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
             "as a user approval gate."
         )
     if _vibescript_engine_active(context):
-        sections.append(VIBESCRIPT_AUTHORING_INSTRUCTIONS)
-    memory = _intent_memory_instruction(context)
-    if memory:
-        sections.append(memory)
+        instruction = _vibescript_authoring_instruction(context)
+        if instruction:
+            sections.append(instruction)
     return sections
 
 
 def _provider_instructions(context: dict[str, Any]) -> str:
-    return "\n\n".join(_system_instruction_sections(context))
+    instructions = "\n\n".join(_system_instruction_sections(context))
+    encoded_bytes = len(instructions.encode("utf-8"))
+    if encoded_bytes > MAX_PROVIDER_INSTRUCTIONS_BYTES:
+        raise ValueError(
+            "VibeCAD provider instructions exceed the deterministic "
+            f"{MAX_PROVIDER_INSTRUCTIONS_BYTES}-byte limit ({encoded_bytes} bytes)."
+        )
+    return instructions
 
 
 def _provider_option(context: dict[str, Any], name: str) -> bool:
@@ -251,45 +297,141 @@ class OpenAIProvider(BaseProvider):
             raise
 
 
+def provider_tool_schema_digest(schemas: list[dict[str, Any]]) -> str:
+    """Return a deterministic digest for one ordered provider schema list."""
+    try:
+        encoded = json.dumps(
+            schemas,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Provider tool schemas are not JSON serializable: {exc}"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _codex_dynamic_tool_surface(
     context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str]]:
-    """Build namespace-grouped app-server tools from the fixed VibeCAD surface."""
+    """Build app-server tools from the frozen turn-start VibeCAD surface."""
 
     surface = context.get("provider_tool_surface")
     if not (
         isinstance(surface, dict)
-        and surface.get("kind") == "scripted"
-        and surface.get("fixed") is True
+        and surface.get("kind") == "turn_start_snapshot"
+        and surface.get("frozen") is True
+    ):
+        reason = str(surface.get("reason") or "") if isinstance(surface, dict) else ""
+        raise ProviderUnavailable(
+            "ChatGPT subscription mode requires a valid frozen turn-start VibeCAD "
+            "tool surface." + (f" {reason}" if reason else "")
+        )
+    expected_surface_fields = {
+        "kind",
+        "frozen",
+        "workbench",
+        "engine",
+        "domain",
+        "surface_id",
+        "available",
+        "unavailable_reason",
+        "tool_names",
+        "schema_count",
+        "schema_sha256",
+    }
+    if set(surface) != expected_surface_fields:
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface has missing or unexpected fields."
+        )
+    schemas = context.get("provider_tool_schemas")
+    if not isinstance(schemas, list) or not schemas:
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface has no provider tool schemas."
+        )
+    if any(not isinstance(schema, dict) for schema in schemas):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains a non-object schema."
+        )
+    schema_names = [str(schema.get("name") or "").strip() for schema in schemas]
+    declared = surface.get("tool_names")
+    if not isinstance(declared, list):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface has no declared tool-name list."
+        )
+    declared_names = [str(name).strip() for name in declared]
+    if any(not name for name in schema_names + declared_names):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains an empty tool name."
+        )
+    if any(
+        not separator or not domain or not operation
+        for name in schema_names
+        for domain, separator, operation in (name.partition("."),)
     ):
         raise ProviderUnavailable(
-            "ChatGPT subscription mode requires a fixed VibeCAD scripted surface. "
-            "Select VibeScript, build123d, or OpenSCAD for this workbench."
+            "Every frozen VibeCAD tool name must use the domain.operation form."
         )
-    schemas = context.get("provider_tool_schemas") or []
-    schema_names = [
-        str(schema.get("name") or "") for schema in schemas if isinstance(schema, dict)
-    ]
-    declared_names = [str(name) for name in surface.get("tool_names") or []]
+    if len(schema_names) != len(set(schema_names)):
+        raise ProviderUnavailable(
+            "The frozen VibeCAD tool surface contains duplicate tool schemas."
+        )
     if schema_names != declared_names:
         raise ProviderUnavailable(
-            "The VibeCAD scripted tool surface changed while the provider context "
-            "was being assembled. Start a new turn from the current surface."
+            "The VibeCAD tool declarations do not match the frozen turn-start "
+            "surface. Start a new turn from the current surface."
         )
+    if surface.get("schema_count") != len(schemas):
+        raise ProviderUnavailable(
+            "The VibeCAD schema count does not match the frozen turn-start surface."
+        )
+    try:
+        schema_digest = provider_tool_schema_digest(schemas)
+    except ValueError as exc:
+        raise ProviderUnavailable(str(exc)) from exc
+    if surface.get("schema_sha256") != schema_digest:
+        raise ProviderUnavailable(
+            "The VibeCAD tool schemas changed after the turn-start surface was frozen."
+        )
+    workbench = str(surface.get("workbench") or "") or None
+    engine = str(surface.get("engine") or "")
+    resolution = resolve_modeling_surface(workbench, engine)
+    if (
+        surface.get("domain") != resolution.domain
+        or surface.get("surface_id") != resolution.surface_id
+        or surface.get("available") is not resolution.available
+        or str(surface.get("unavailable_reason") or "") != resolution.unavailable_reason
+    ):
+        raise ProviderUnavailable(
+            "The modeling-engine/domain declaration does not match the frozen " "VibeCAD surface."
+        )
+    try:
+        validate_surface_names(
+            workbench=workbench,
+            engine=engine,
+            names=schema_names,
+            allowed_names=resolution.tool_names,
+        )
+    except ValueError as exc:
+        raise ProviderUnavailable(str(exc)) from exc
     namespaces: dict[str, dict[str, Any]] = {}
     names: dict[tuple[str, str], str] = {}
-    for index, schema in enumerate(schemas):
-        if not isinstance(schema, dict):
-            raise ValueError(f"Provider tool schema {index} must be an object.")
+    for schema in schemas:
         tool_name = str(schema.get("name") or "").strip()
-        if not tool_name:
-            raise ValueError(f"Provider tool schema {index} is missing name.")
-        domain, separator, operation = tool_name.partition(".")
-        namespace_name = _provider_function_name(domain if separator else "vibecad")
-        function_name = _provider_function_name(operation if separator else tool_name)
+        domain, _, operation = tool_name.partition(".")
+        try:
+            namespace_name = _provider_function_name(domain)
+            function_name = _provider_function_name(operation)
+            input_schema = _provider_tool_parameters(schema)
+        except ValueError as exc:
+            raise ProviderUnavailable(
+                f"Invalid frozen schema for VibeCAD tool {tool_name!r}: {exc}"
+            ) from exc
         key = (namespace_name, function_name)
         if key in names:
-            raise RuntimeError(
+            raise ProviderUnavailable(
                 f"Duplicate Codex dynamic tool name: {namespace_name}.{function_name}"
             )
         names[key] = tool_name
@@ -308,7 +450,7 @@ def _codex_dynamic_tool_surface(
                 "name": function_name,
                 "description": str(schema.get("description") or ""),
                 "deferLoading": False,
-                "inputSchema": _provider_tool_parameters(schema),
+                "inputSchema": input_schema,
             }
         )
     return [namespaces[name] for name in sorted(namespaces)], names
@@ -430,8 +572,8 @@ class ChatGPTSubscriptionProvider(BaseProvider):
         dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(live_context)
         if not dynamic_tools:
             raise ProviderUnavailable(
-                "ChatGPT subscription mode has no scripted VibeCAD tools for the "
-                "current workbench and modeling engine."
+                "ChatGPT subscription mode has no declared VibeCAD tools for the "
+                "current workbench."
             )
 
         state_lock = threading.RLock()
@@ -620,15 +762,10 @@ class ChatGPTSubscriptionProvider(BaseProvider):
             updated_context = _tool_runner_provider_update(tool_runner)
             with state_lock:
                 live_context = updated_context
-            model_result = dict(result)
+            model_result = _provider_visible_tool_result(result)
             model_result["vibecad_state_after"] = _provider_state_after_tool(
                 updated_context, result
             )
-            model_result["vibecad_available_tools"] = [
-                str(schema.get("name") or "")
-                for schema in updated_context.get("provider_tool_schemas") or []
-                if isinstance(schema, dict) and schema.get("name")
-            ]
             content_items: list[dict[str, Any]] = [
                 {
                     "type": "inputText",
@@ -646,6 +783,11 @@ class ChatGPTSubscriptionProvider(BaseProvider):
             ):
                 content_items.extend(
                     _codex_tool_image_content_items(updated_context)
+                )
+            inspected_image_context = _tool_result_image_context(result)
+            if inspected_image_context is not None:
+                content_items.extend(
+                    _codex_tool_image_content_items(inspected_image_context)
                 )
             _emit_provider_progress(
                 progress_callback,
@@ -710,7 +852,7 @@ class ChatGPTSubscriptionProvider(BaseProvider):
             if not self.web_search_enabled:
                 forbidden_capabilities.append("web")
             developer_instructions = (
-                "Operate only through the supplied VibeCAD scripted tools. Do not "
+                "Operate only through the supplied VibeCAD tools. Do not "
                 f"use {', '.join(forbidden_capabilities)} tools."
             )
             if self.skills_enabled and skill_catalog:
@@ -1396,27 +1538,11 @@ def _model_visible_context(
 ) -> dict[str, Any]:
     sections = (
         "workbench",
-        "vibecad_project",
+        "modeling_surface",
         "document",
         "selection",
-        "view",
-        "task_panel",
-        "cad_state",
         "view_screenshot",
         "reference_images",
-        "conversation",
-        "partdesign",
-        "sketcher",
-        "part",
-        "assembly",
-        "surface",
-        "draft",
-        "techdraw",
-        "cam",
-        "fem",
-        "material",
-        "mesh",
-        "spreadsheet",
     )
     return {
         key: _json_safe(context[key])
@@ -1578,30 +1704,179 @@ def _provider_state_after_tool(
     context: dict[str, Any],
     tool_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    cad_state = context.get("cad_state")
-    sketch_open = bool(isinstance(cad_state, dict) and cad_state.get("active_sketch"))
-    compact_cad_state = dict(cad_state) if isinstance(cad_state, dict) else {}
-    if sketch_open:
-        result_has_profile = bool(
-            isinstance(tool_result, dict)
-            and (
-                isinstance(tool_result.get("profile_status"), dict)
-                or isinstance(tool_result.get("sketch_snapshot"), dict)
-            )
-        )
-        compact_cad_state["active_sketch"] = _compact_active_sketch_state(
-            cad_state.get("active_sketch"),
-            include_profile=not result_has_profile,
-        )
-    keys = ["workbench", "cad_revision", "working_set", "cad_state", "selection"]
-    result = {
-        key: _json_safe(context[key])
-        for key in keys
-        if key in context and context[key] not in (None, "", [], {})
+    del tool_result
+    surface = context.get("modeling_surface")
+    if not isinstance(surface, dict):
+        return {"workbench": str(context.get("workbench") or "")}
+    keys = (
+        "workbench",
+        "engine",
+        "domain",
+        "surface_id",
+        "available",
+        "invalidated",
+        "next_turn_required",
+    )
+    return {
+        "surface": {
+            key: _json_safe(surface[key])
+            for key in keys
+            if key in surface and surface[key] not in (None, "", [], {})
+        }
     }
-    if compact_cad_state:
-        result["cad_state"] = _json_safe(compact_cad_state)
+
+
+def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Return an exact normal result or an honest, bounded omission envelope.
+
+    Authoring results are normally small and pass through unchanged. If a tool
+    unexpectedly returns a huge diagnostic or artifact structure, replace the
+    largest complete top-level values with deterministic size descriptors. No
+    CAD value is truncated or sampled, and the model is directed to inspect
+    the now-live state explicitly.
+    """
+
+    visible = dict(result)
+    visible.pop("_vibecad_image_attachment", None)
+    safe = _json_safe(visible)
+    encoded = json.dumps(
+        safe,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) <= MAX_PROVIDER_TOOL_RESULT_BYTES:
+        return safe
+
+    priority_fields = (
+        "ok",
+        "failure_code",
+        "failure_stage",
+        "error",
+        "cancelled",
+        "retry_same_call",
+        "created",
+        "updated",
+        "changed",
+        "deleted",
+        "operation",
+        "document",
+        "object",
+        "object_name",
+        "assembly",
+        "program_id",
+        "model_id",
+        "working_revision",
+        "accepted_revision",
+        "revision",
+        "model_state",
+        "verification",
+        "native_diagnostics",
+        "transaction",
+        "human_steering",
+    )
+    if len(safe) <= MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS:
+        projected = dict(safe)
+        omitted_count = 0
+    else:
+        projected = {key: safe[key] for key in priority_fields if key in safe}
+        omitted_count = len(safe) - len(projected)
+    boundary = {
+        "bounded": True,
+        "reason": "provider_tool_result_byte_limit",
+        "original_json_bytes": len(encoded),
+        "limit_json_bytes": MAX_PROVIDER_TOOL_RESULT_BYTES,
+        "original_sha256": hashlib.sha256(encoded).hexdigest(),
+        "original_top_level_field_count": len(safe),
+        "omitted_top_level_field_count": omitted_count,
+        "recovery": (
+            "Use core.inspect for only the exact live document, domain, object, "
+            "program, or API facts needed next."
+        ),
+    }
+    projected["vibecad_result_boundary"] = boundary
+
+    while _provider_json_bytes(projected) > MAX_PROVIDER_TOOL_RESULT_BYTES:
+        candidates = []
+        for key, value in projected.items():
+            if key in {"ok", "vibecad_result_boundary"}:
+                continue
+            if isinstance(value, dict) and value.get("_vibecad_value_omitted") is True:
+                continue
+            candidates.append((_provider_json_bytes(value), str(key), key, value))
+        if not candidates:
+            break
+        _, _, key, value = sorted(
+            candidates,
+            key=lambda item: (-item[0], item[1]),
+        )[0]
+        projected[key] = _provider_omitted_value(value)
+        omitted_count += 1
+        boundary["omitted_top_level_field_count"] = omitted_count
+
+    if _provider_json_bytes(projected) > MAX_PROVIDER_TOOL_RESULT_BYTES:
+        # This is reachable only for a pathological mapping with enormous key
+        # overhead. Keep the operation verdict and the fixed-size boundary.
+        projected = {
+            **({"ok": safe["ok"]} if "ok" in safe else {}),
+            "vibecad_result_boundary": {
+                **boundary,
+                "omitted_top_level_field_count": len(safe),
+            },
+        }
+    return projected
+
+
+def _provider_json_bytes(value: Any) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _provider_omitted_value(value: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "_vibecad_value_omitted": True,
+        "reason": "provider_tool_result_byte_limit",
+        "json_bytes": _provider_json_bytes(value),
+    }
+    if isinstance(value, dict):
+        result.update({"value_type": "object", "entry_count": len(value)})
+    elif isinstance(value, list):
+        result.update({"value_type": "array", "item_count": len(value)})
+    elif isinstance(value, str):
+        result.update(
+            {
+                "value_type": "string",
+                "characters": len(value),
+                "utf8_bytes": len(value.encode("utf-8", errors="replace")),
+            }
+        )
+    else:
+        result["value_type"] = type(value).__name__
     return result
+
+
+def _tool_result_image_context(result: dict[str, Any]) -> dict[str, Any] | None:
+    attachment = result.get("_vibecad_image_attachment")
+    if not isinstance(attachment, dict) or not str(attachment.get("path") or ""):
+        return None
+    return {
+        "reference_images": {
+            "count": 1,
+            "images": [
+                {
+                    "id": "explicit-inspection",
+                    "name": str(attachment.get("name") or "reference"),
+                    "path": str(attachment["path"]),
+                }
+            ],
+        }
+    }
 
 
 def _json_safe(value: Any) -> Any:
@@ -1738,6 +2013,17 @@ def _openai_request_tools(
     return tools
 
 
+def _validate_provider_wire_surface(context: dict[str, Any]) -> None:
+    """Apply the frozen resolver contract to every online provider transport."""
+
+    # A few isolated transport tests and extension callers still supply schemas
+    # without a session snapshot. Production sessions always include one. When
+    # it is present, use the same strict validation as subscription mode before
+    # serializing schemas for OpenAI-compatible or Anthropic APIs.
+    if "provider_tool_surface" in context:
+        _codex_dynamic_tool_surface(context)
+
+
 def _openai_child_main(
     conn,
     prompt: str,
@@ -1769,6 +2055,7 @@ def _openai_child_main(
     def tool_surface(
         live_context: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        _validate_provider_wire_surface(live_context)
         definitions: list[dict[str, Any]] = []
         names: dict[str, str] = {}
         for index, schema in enumerate(live_context.get("provider_tool_schemas") or []):
@@ -1952,6 +2239,7 @@ def _openai_child_main(
             input_history.extend(_responses_output_as_input(completed_response))
             tool_outputs: list[dict[str, Any]] = []
             repin_context: dict[str, Any] | None = None
+            repin_text = "Current viewport observation captured after the preceding CAD operation."
             for item in calls:
                 function_name = str(getattr(item, "name", "") or "")
                 call_id = str(getattr(item, "call_id", "") or "")
@@ -1994,7 +2282,11 @@ def _openai_child_main(
                         and result.get("new_observation", True)
                     ):
                         repin_context = live_context
-                model_result = dict(result)
+                    inspected_image_context = _tool_result_image_context(result)
+                    if inspected_image_context is not None:
+                        repin_context = inspected_image_context
+                        repin_text = "Explicitly requested project reference image."
+                model_result = _provider_visible_tool_result(result)
                 model_result["vibecad_state_after"] = _provider_state_after_tool(
                     live_context,
                     result,
@@ -2012,7 +2304,7 @@ def _openai_child_main(
             if repin_context is not None:
                 input_history.extend(
                     user_input(
-                        "Current viewport observation captured after the preceding CAD operation.",
+                        repin_text,
                         repin_context,
                     )
                 )
@@ -2214,7 +2506,11 @@ def _screenshot_image_payload(
 ) -> tuple[str, str] | None:
     """Return (mime_type, base64_data) for the captured viewport screenshot."""
     screenshot = context.get("view_screenshot")
-    if not isinstance(screenshot, dict) or not screenshot.get("captured"):
+    if (
+        not isinstance(screenshot, dict)
+        or not screenshot.get("captured")
+        or screenshot.get("pending_attachment") is not True
+    ):
         return None
     return _image_file_payload(
         screenshot.get("path"),
@@ -2379,6 +2675,31 @@ def _anthropic_visual_repin_content(
             }
         )
     return content
+
+
+def _anthropic_inspected_image_content(
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    context = _tool_result_image_context(result)
+    if context is None:
+        return []
+    blocks = _context_image_blocks(context)
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": "Explicitly requested project reference image."}
+    ]
+    for label_text, mime_type, image_data in blocks:
+        content.append({"type": "text", "text": label_text})
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": image_data,
+                },
+            }
+        )
+    return content if len(content) > 1 else []
 
 
 def _anthropic_thinking_config(reasoning_effort: str | None) -> dict[str, Any] | None:
@@ -2654,6 +2975,7 @@ def _anthropic_child_main(
         def build_tool_surface(
             surface_context: dict[str, Any],
         ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+            _validate_provider_wire_surface(surface_context)
             by_name: dict[str, str] = {}
             definitions: list[dict[str, Any]] = []
             for index, schema in enumerate(
@@ -2986,11 +3308,20 @@ def _anthropic_child_main(
                                 live_context, screenshot_summary
                             )
                         )
+                if isinstance(result, dict) and not pending_server_tool:
+                    visual_repin_blocks.extend(
+                        _anthropic_inspected_image_content(result)
+                    )
+                visible_result = (
+                    _provider_visible_tool_result(result)
+                    if isinstance(result, dict)
+                    else result
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(_json_safe(result)),
+                        "content": json.dumps(_json_safe(visible_result)),
                     }
                 )
             messages.append(

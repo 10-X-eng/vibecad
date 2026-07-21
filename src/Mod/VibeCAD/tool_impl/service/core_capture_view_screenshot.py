@@ -470,6 +470,10 @@ def run(
         result = {
             "ok": True,
             "captured": True,
+            # A viewport capture is a message attachment, not durable provider
+            # context.  The session consumes this flag after handing one copy to
+            # the next provider request (or to the screenshot tool result).
+            "pending_attachment": True,
             "path": str(path),
             "file_size": path.stat().st_size,
             "size": result_size,
@@ -485,7 +489,7 @@ def run(
             "sketch_information_overlay_excluded": bool(information_overlay_excluded),
             "sketch_internal_geometry_excluded": bool(internal_geometry_excluded),
             "artifact_role": "visual_verification",
-            "workbench": _active_workbench_name(Gui),
+            "workbench": service.active_workbench_name(),
             "document": document.Name,
             "visual_fingerprint": visual_fingerprint,
             "document_visual_fingerprint": document_visual_fingerprint,
@@ -567,16 +571,12 @@ def _remember_failure(
         allowed_values=allowed_values or [],
         artifact=artifact_state,
         captured=bool(artifact_state.get("created")),
+        pending_attachment=bool(artifact_state.get("created")),
         path=artifact_state.get("path"),
         file_size=int(artifact_state.get("file_size") or 0),
     )
     service._last_view_screenshot = result
     return result
-
-
-def _active_workbench_name(gui: Any) -> str | None:
-    workbench = gui.activeWorkbench()
-    return workbench.name() if workbench else None
 
 
 def _capture_framebuffer(

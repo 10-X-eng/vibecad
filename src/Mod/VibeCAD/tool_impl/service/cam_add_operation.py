@@ -9,28 +9,44 @@ import math
 import pathlib
 
 from VibeCADTransactions import run_freecad_transaction
+import VibeCADReferenceContracts as reference_contracts
 
 from . import domain_runtime
 
 
 _FACE_ITEM_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "object_name": {
-            "type": "string",
-            "description": (
-                "Exact internal name of the job's model object that owns the face."
-            ),
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "object_name": {
+                    "type": "string",
+                    "description": "Exact internal name of the job model clone.",
+                },
+                "face_name": {
+                    "type": "string",
+                    "pattern": "^Face[1-9][0-9]*$",
+                    "description": (
+                        "Exact face on a non-scripted job model clone."
+                    ),
+                },
+            },
+            "required": ["object_name", "face_name"],
+            "additionalProperties": False,
         },
-        "face_name": {
-            "type": "string",
-            "description": (
-                "Exact face name, e.g. 'Face3' from part.find_subelements."
-            ),
+        {
+            "type": "object",
+            "properties": {
+                "object_name": {
+                    "type": "string",
+                    "description": "Exact internal name of the job model clone.",
+                },
+                "selection": reference_contracts.interface_selection_schema(),
+            },
+            "required": ["object_name", "selection"],
+            "additionalProperties": False,
         },
-    },
-    "required": ["object_name", "face_name"],
-    "additionalProperties": False,
+    ]
 }
 
 _BOUNDARY_MAP = {
@@ -60,7 +76,7 @@ TOOL_SPEC = {
             "job_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the CAM job from cam.list_jobs."
+                    "Exact internal name of the CAM job from core.inspect scope='domain'."
                 ),
             },
             "label": {
@@ -326,7 +342,7 @@ def run(
     job = service._get_cam_job(str(job_name or "").strip() or None)
     if job is None:
         return _invalid(
-            f"CAM job not found: {job_name}. Use cam.list_jobs for exact names."
+            f"CAM job not found: {job_name}. Use core.inspect scope='domain' for exact names."
         )
     controllers = list(getattr(getattr(job, "Tools", None), "Group", []) or [])
     if not controllers:
@@ -372,7 +388,7 @@ def run(
         return _invalid(operation_error, stage="operation_preflight")
     doc = service._active_document()
     face_refs, face_details, error = _validate_faces(
-        doc, job, operation.get("faces"), operation_type=op_type
+        service, doc, job, operation.get("faces"), operation_type=op_type
     )
     if error:
         return _invalid(error, stage="base_geometry_preflight", resolved_base=face_details)
@@ -448,6 +464,17 @@ def run(
                 (active.getObject(object_name), faces)
                 for object_name, faces in base.items()
             ]
+        contract_faces = _contract_face_entries(face_details)
+        if any(item.get("selection") for item in contract_faces):
+            reference_contracts.set_contract(
+                op_obj,
+                "cam_reference",
+                {
+                    "job_name": job.Name,
+                    "operation_type": op_type,
+                    "faces": contract_faces,
+                },
+            )
         required_properties = ["ToolController", "StartDepth", "FinalDepth", "Path"]
         if op_type in ("profile", "pocket", "face"):
             required_properties.append("StepDown")
@@ -673,6 +700,7 @@ def _op_factory(op_type: str) -> Any:
 
 
 def _validate_faces(
+    service: Any,
     doc: Any,
     job: Any,
     faces: Any,
@@ -705,10 +733,66 @@ def _validate_faces(
                 f"job models: {sorted(model_names)}. Reference the job's "
                 "model clones, not the original objects."
             )
+        selection = item.get("selection")
+        linked_publication = reference_contracts.published_object(obj)
+        if linked_publication is not None and not isinstance(selection, dict):
+            return [], details, (
+                f"{object_name} clones a regenerating scripted output. Use a "
+                "published semantic interface instead of an exact FaceN name."
+            )
+        if isinstance(selection, dict):
+            if selection.get("type") != "published_interface":
+                return [], details, "CAM face selection.type must be published_interface."
+            interface_name = str(selection.get("interface_name") or "").strip()
+            try:
+                interface = reference_contracts.resolve_interface(
+                    service, obj, interface_name
+                )
+            except reference_contracts.ReferenceContractError as exc:
+                return [], details, f"{object_name}: {exc}"
+            names = list(interface.get("subelements") or [])
+            geometry = list(interface.get("geometry") or [])
+            if not names or len(names) != len(geometry) or any(
+                not name.startswith("Face") for name in names
+            ):
+                return [], details, (
+                    f"CAM interface {interface_name!r} must resolve only to one "
+                    "or more faces."
+                )
+            managed_selection = {
+                "type": "published_interface",
+                "interface_name": interface_name,
+                "model_id": interface["model_id"],
+                "publication_name": interface["publication_name"],
+                "output_key": interface["output_key"],
+            }
+            for resolved_name in names:
+                try:
+                    element = obj.Shape.getElement(resolved_name)
+                except Exception as exc:
+                    return [], details, (
+                        f"The job clone does not expose {resolved_name} from "
+                        f"published interface {interface_name!r}: {exc}"
+                    )
+                reference = (object_name, resolved_name)
+                if reference in refs:
+                    return [], details, f"Duplicate face reference: {object_name}.{resolved_name}"
+                descriptor = _face_descriptor(obj, resolved_name, element)
+                suitability = _face_suitability(operation_type, descriptor)
+                descriptor["operation_suitability"] = suitability
+                descriptor["managed_selection"] = managed_selection
+                details.append(descriptor)
+                if not suitability["ok"]:
+                    return [], details, (
+                        f"{object_name}.{resolved_name} is not valid for a "
+                        f"{operation_type} operation: {suitability['message']}"
+                    )
+                refs.append(reference)
+            continue
         if not face_name.startswith("Face"):
             return [], details, (
                 f"Invalid face name: {face_name}. CAM base geometry must be "
-                "faces, e.g. 'Face3' from part.find_subelements."
+                "an exact existing face name such as 'Face3'."
             )
         shape = getattr(obj, "Shape", None)
         try:
@@ -733,6 +817,143 @@ def _validate_faces(
             )
         refs.append((object_name, face_name))
     return refs, details, None
+
+
+def _contract_face_entries(details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in details:
+        selection = item.get("managed_selection")
+        if isinstance(selection, dict):
+            key = (
+                str(item.get("object") or ""),
+                str(selection.get("model_id") or ""),
+                str(selection.get("interface_name") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"object_name": key[0], "selection": dict(selection)})
+        else:
+            key = (
+                str(item.get("object") or ""),
+                "exact",
+                str(item.get("face") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"object_name": key[0], "face_name": key[2]})
+    return result
+
+
+def rebind_scripted_reference(
+    service: Any,
+    operation_obj: Any,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    job_name = str(contract.get("job_name") or "")
+    job = service._get_cam_job(job_name)
+    if job is None:
+        return _invalid("The CAM job recorded by this operation no longer exists.")
+    faces = contract.get("faces")
+    if not isinstance(faces, list) or not faces:
+        return _invalid("The CAM reference contract contains no faces.")
+    doc = service._active_document()
+    refs, error = _resolve_rebind_faces(service, job, faces)
+    if error:
+        return _invalid(error)
+    grouped: dict[str, list[str]] = {}
+    for object_name, face_name in refs:
+        grouped.setdefault(object_name, []).append(face_name)
+    try:
+        operation_obj.Base = [
+            (doc.getObject(object_name), names)
+            for object_name, names in grouped.items()
+        ]
+        operation_obj.touch()
+    except Exception as exc:
+        return _invalid(
+            "FreeCAD could not rebind the CAM operation.",
+            native_error=str(exc),
+        )
+    actual_refs: list[tuple[str, str]] = []
+    for linked_object, linked_names in list(getattr(operation_obj, "Base", []) or []):
+        for linked_name in list(linked_names or []):
+            actual_refs.append(
+                (
+                    str(getattr(linked_object, "Name", "") or ""),
+                    str(linked_name or ""),
+                )
+            )
+    if sorted(actual_refs) != sorted(refs):
+        return _invalid(
+            "FreeCAD did not retain the rebound CAM base references exactly.",
+            requested_references=refs,
+            actual_references=actual_refs,
+        )
+    reference_contracts.mark_stale(
+        operation_obj,
+        str(contract.get("source_revision") or ""),
+        "A referenced scripted model changed; regenerate and verify this CAM toolpath.",
+    )
+    return {
+        "ok": True,
+        "domain": "cam_reference",
+        "object": operation_obj.Name,
+        "resolved_faces": actual_refs,
+        "toolpath_recompute_deferred": True,
+    }
+
+
+def _resolve_rebind_faces(
+    service: Any,
+    job: Any,
+    faces: list[dict[str, Any]],
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Resolve persisted CAM interfaces without inspecting live face geometry."""
+
+    model_names = {
+        str(getattr(item, "Name", "") or "")
+        for item in list(
+            getattr(getattr(job, "Model", None), "Group", []) or []
+        )
+    }
+    doc = service._active_document()
+    refs: list[tuple[str, str]] = []
+    for item in faces:
+        if not isinstance(item, dict):
+            return [], "The CAM reference contract contains a non-object face entry."
+        object_name = str(item.get("object_name") or "")
+        if object_name not in model_names:
+            return [], f"CAM job model clone no longer exists: {object_name}"
+        obj = doc.getObject(object_name) if doc is not None else None
+        if obj is None:
+            return [], f"CAM job model object no longer exists: {object_name}"
+        selection = item.get("selection")
+        if isinstance(selection, dict):
+            interface_name = str(selection.get("interface_name") or "")
+            try:
+                interface = reference_contracts.resolve_interface(
+                    service, obj, interface_name
+                )
+            except reference_contracts.ReferenceContractError as exc:
+                return [], f"{object_name}: {exc}"
+            names = list(interface.get("subelements") or [])
+            if not names or any(not name.startswith("Face") for name in names):
+                return [], (
+                    f"CAM interface {interface_name!r} must resolve only to one "
+                    "or more faces."
+                )
+            refs.extend((object_name, name) for name in names)
+            continue
+        face_name = str(item.get("face_name") or "")
+        if not face_name.startswith("Face"):
+            return [], f"Invalid persisted CAM face name: {face_name!r}"
+        refs.append((object_name, face_name))
+    if len(refs) != len(set(refs)):
+        return [], "The rebound CAM face contract resolves duplicate faces."
+    return refs, None
 
 
 def _face_descriptor(obj: Any, face_name: str, face: Any) -> dict[str, Any]:

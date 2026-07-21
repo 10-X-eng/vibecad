@@ -27,12 +27,12 @@ TOOL_SPEC = {
             "model_id": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{32}$",
-                "description": "Exact model id returned by build123d.inspect_model.",
+                "description": "Exact model id returned by core.inspect scope='program'.",
             },
             "expected_revision": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
-                "description": "Exact current revision returned by build123d.inspect_model.",
+                "description": "Exact current revision returned by core.inspect scope='program'.",
             },
             "reason": {
                 "type": "string",

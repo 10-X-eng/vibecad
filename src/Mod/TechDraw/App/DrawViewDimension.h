@@ -23,6 +23,8 @@
 #pragma once
 
 #include <App/DocumentObject.h>
+#include <App/PropertyGeo.h>
+#include <App/PropertyStandard.h>
 #include <Base/UnitsApi.h>
 #include <Mod/Part/App/PropertyTopoShapeList.h>
 
@@ -102,6 +104,10 @@ public:
     App::PropertyVector AreaLeaderPoint;
 
     App::PropertyBool ShowUnits;
+
+    App::PropertyVectorList PrecomputedDimensionVectors;
+    App::PropertyFloatList PrecomputedDimensionScalars;
+    App::PropertyBoolList PrecomputedDimensionFlags;
 //NOLINTEND
 
     enum class RefType
@@ -172,6 +178,13 @@ public:
 
 
     virtual pointPair getLinearPoints() const;
+
+    std::vector<Base::Vector3d> getPrecomputedDimensionVectors() const;
+    std::vector<double> getPrecomputedDimensionScalars() const;
+    std::vector<bool> getPrecomputedDimensionFlags() const;
+    void setPrecomputedDimension(const std::vector<Base::Vector3d>& vectors,
+                                 const std::vector<double>& scalars,
+                                 const std::vector<bool>& flags);
 
     virtual void setLinearPoints(Base::Vector3d point0, Base::Vector3d point1)
     {
@@ -267,6 +280,7 @@ protected:
 
     bool validateReferenceForm() const;
     bool autocorrectReferences();
+    bool restorePrecomputedDimension();
 
 private:
     Measure::Measurement* measurement;

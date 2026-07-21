@@ -353,18 +353,6 @@ class CAMWorkbench(Workbench):
             PathPreferencesAdvanced.AdvancedPreferencesPage,
             QT_TRANSLATE_NOOP("QObject", "CAM"),
         )
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "CAM")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for CAM: {err}\n".format(
-                    err=str(err)
-                )
-            )
         Log("Loading CAM workbench... done\n")
 
     def GetClassName(self):

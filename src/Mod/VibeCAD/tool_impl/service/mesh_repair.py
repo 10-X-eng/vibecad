@@ -32,7 +32,7 @@ TOOL_SPEC = {
                 "type": "string",
                 "description": (
                     "Exact internal name of the mesh object (Mesh::Feature) "
-                    "to repair, as returned by mesh.list_meshes."
+                    "to repair, as returned by core.inspect scope='domain'."
                 ),
             },
             "harmonize_normals": {
@@ -112,7 +112,7 @@ def run(
     if getattr(obj, "Mesh", None) is None:
         return _invalid(
             f"Object is not a mesh (no Mesh property): {clean_name}. Use "
-            "mesh.list_meshes for mesh names."
+            "core.inspect scope='domain' for mesh names."
         )
     max_hole_edges = int(fill_holes_max_edges)
     selected = (

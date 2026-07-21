@@ -22,6 +22,7 @@
 
 
 # include <BRepBuilderAPI_MakeVertex.hxx>
+# include <BRep_Builder.hxx>
 # include <BRepBndLib.hxx>
 # include <BRepGProp.hxx>
 # include <BRep_Tool.hxx>
@@ -33,6 +34,7 @@
 # include <TopTools_IndexedMapOfShape.hxx>
 # include <gp_Pnt.hxx>
 # include <TopoDS.hxx>
+# include <TopoDS_Compound.hxx>
 # include <TopoDS_Edge.hxx>
 # include <TopoDS_Shape.hxx>
 # include <TopoDS_Vertex.hxx>
@@ -43,6 +45,7 @@
 #include <Base/VectorPy.h>
 
 #include <Mod/Part/App/TopoShape.h>
+#include <Mod/Part/App/TopoShapePy.h>
 #include <Mod/Part/App/TopoShapeEdgePy.h>
 #include <Mod/Part/App/TopoShapeVertexPy.h>
 
@@ -410,6 +413,147 @@ PyObject* DrawViewPartPy::getProjectedElementDescriptors(PyObject* args)
     result.setItem("edges", edgesOut);
     result.setItem("vertices", verticesOut);
     return Py::new_reference_to(result);
+}
+
+PyObject* DrawViewPartPy::getPrecomputedProjection(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    DrawViewPart* view = getDrawViewPartPtr();
+    if (!view->hasGeometry()) {
+        throw Py::RuntimeError("The TechDraw view has no projected geometry.");
+    }
+
+    BRep_Builder builder;
+    TopoDS_Compound edges;
+    TopoDS_Compound faces;
+    builder.MakeCompound(edges);
+    builder.MakeCompound(faces);
+
+    Py::List edgeClasses;
+    Py::List edgeVisibility;
+    Py::List sourceIndices;
+    for (const auto& edge : view->getEdgeGeometry()) {
+        builder.Add(edges, edge->getOCCEdge());
+        edgeClasses.append(Py::Long(static_cast<long>(edge->getClassOfEdge())));
+        edgeVisibility.append(Py::Boolean(edge->getHlrVisible()));
+        sourceIndices.append(Py::Long(edge->sourceIndex()));
+    }
+    for (const auto& face : view->getFaceGeometry()) {
+        const TopoDS_Face occFace = face->toOccFace();
+        if (!occFace.IsNull()) {
+            builder.Add(faces, occFace);
+        }
+    }
+
+    Py::Dict result;
+    result.setItem(
+        "edges",
+        Py::asObject(new Part::TopoShapePy(new Part::TopoShape(edges))));
+    result.setItem(
+        "faces",
+        Py::asObject(new Part::TopoShapePy(new Part::TopoShape(faces))));
+    result.setItem("edge_classes", edgeClasses);
+    result.setItem("edge_visibility", edgeVisibility);
+    result.setItem("source_indices", sourceIndices);
+    result.setItem(
+        "centroid",
+        Py::asObject(new Base::VectorPy(new Base::Vector3d(view->getOriginalCentroid()))));
+    return Py::new_reference_to(result);
+}
+
+PyObject* DrawViewPartPy::setPrecomputedProjection(PyObject* args)
+{
+    PyObject* snapshot = nullptr;
+    if (!PyArg_ParseTuple(args, "O!", &PyDict_Type, &snapshot)) {
+        return nullptr;
+    }
+    if (PyDict_Size(snapshot) != 6) {
+        throw Py::ValueError(
+            "Projection snapshot must contain exactly edges, faces, edge_classes, "
+            "edge_visibility, source_indices, and centroid.");
+    }
+
+    PyObject* edgesObject = PyDict_GetItemString(snapshot, "edges");
+    PyObject* facesObject = PyDict_GetItemString(snapshot, "faces");
+    PyObject* classesObject = PyDict_GetItemString(snapshot, "edge_classes");
+    PyObject* visibilityObject = PyDict_GetItemString(snapshot, "edge_visibility");
+    PyObject* sourcesObject = PyDict_GetItemString(snapshot, "source_indices");
+    PyObject* centroidObject = PyDict_GetItemString(snapshot, "centroid");
+    if (!edgesObject || !facesObject || !classesObject || !visibilityObject
+        || !sourcesObject || !centroidObject) {
+        throw Py::ValueError("Projection snapshot is missing a required field.");
+    }
+    if (!PyObject_TypeCheck(edgesObject, &Part::TopoShapePy::Type)
+        || !PyObject_TypeCheck(facesObject, &Part::TopoShapePy::Type)) {
+        throw Py::TypeError("Projection snapshot edges and faces must be Part shapes.");
+    }
+    if (!PyObject_TypeCheck(centroidObject, &Base::VectorPy::Type)) {
+        throw Py::TypeError("Projection snapshot centroid must be an App.Vector.");
+    }
+
+    auto sequenceLongs = [](PyObject* value, const char* field) {
+        PyObject* sequence = PySequence_Fast(value, "Projection metadata must be a sequence.");
+        if (!sequence) {
+            throw Py::TypeError(std::string("Projection snapshot ") + field
+                                + " must be a sequence.");
+        }
+        Py::Object sequenceOwner(sequence, true);
+        std::vector<long> result;
+        const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+        result.reserve(static_cast<size_t>(size));
+        PyObject** items = PySequence_Fast_ITEMS(sequence);
+        for (Py_ssize_t index = 0; index < size; ++index) {
+            if (!PyLong_Check(items[index]) || PyBool_Check(items[index])) {
+                throw Py::TypeError(std::string("Projection snapshot ") + field
+                                    + " must contain only integers.");
+            }
+            const long item = PyLong_AsLong(items[index]);
+            if (PyErr_Occurred()) {
+                throw Py::OverflowError(std::string("Projection snapshot ") + field
+                                        + " contains an out-of-range integer.");
+            }
+            result.push_back(item);
+        }
+        return result;
+    };
+    auto sequenceBools = [](PyObject* value, const char* field) {
+        PyObject* sequence = PySequence_Fast(value, "Projection metadata must be a sequence.");
+        if (!sequence) {
+            throw Py::TypeError(std::string("Projection snapshot ") + field
+                                + " must be a sequence.");
+        }
+        Py::Object sequenceOwner(sequence, true);
+        std::vector<bool> result;
+        const Py_ssize_t size = PySequence_Fast_GET_SIZE(sequence);
+        result.reserve(static_cast<size_t>(size));
+        PyObject** items = PySequence_Fast_ITEMS(sequence);
+        for (Py_ssize_t index = 0; index < size; ++index) {
+            if (!PyBool_Check(items[index])) {
+                throw Py::TypeError(std::string("Projection snapshot ") + field
+                                    + " must contain only bools.");
+            }
+            result.push_back(items[index] == Py_True);
+        }
+        return result;
+    };
+
+    const TopoDS_Shape edges =
+        static_cast<Part::TopoShapePy*>(edgesObject)->getTopoShapePtr()->getShape();
+    const TopoDS_Shape faces =
+        static_cast<Part::TopoShapePy*>(facesObject)->getTopoShapePtr()->getShape();
+    const Base::Vector3d centroid =
+        static_cast<Base::VectorPy*>(centroidObject)->value();
+    getDrawViewPartPtr()->setPrecomputedProjection(
+        edges,
+        sequenceLongs(classesObject, "edge_classes"),
+        sequenceBools(visibilityObject, "edge_visibility"),
+        sequenceLongs(sourcesObject, "source_indices"),
+        faces,
+        centroid);
+    Py_Return;
 }
 
 PyObject* DrawViewPartPy::getHiddenVertexes(PyObject *args)

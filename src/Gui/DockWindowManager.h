@@ -26,7 +26,9 @@
 #include <Base/Bitmask.h>
 #include <FCGlobal.h>
 
+class QByteArray;
 class QDockWidget;
+class QMainWindow;
 class QWidget;
 
 namespace Gui
@@ -92,18 +94,19 @@ public:
         QWidget* widget,
         Qt::DockWidgetArea pos = Qt::AllDockWidgetAreas
     );
-    /// Removes and destroys the QDockWidget and returns the widget
-    /// with name \a name added with @ref addDockWindow.
+    /// Removes and destroys the QDockWidget and returns the widget addressed by
+    /// the container registration name or the embedded widget object name.
     QWidget* removeDockWindow(const char* name);
     /// Removes and destroys the QDockWidget that contains \a dock. \a dock
     /// does not get destroyed.
     void removeDockWindow(QWidget* dock);
-    /// Returns the widget with name \a name added with @ref addDockWindow.
+    /// Returns the widget addressed by the container registration name or the
+    /// embedded widget object name.
     /// @note The returned widget is not the QDockWidget instance
     /// returned from @ref addDockWindow. If you want to access the QDockWidget
     /// you get it with parentWidget() of the returned widget.
     QWidget* getDockWindow(const char* name) const;
-    /// Returns the QDockWidget container
+    /// Returns the QDockWidget container addressed by either supported name.
     QDockWidget* getDockContainer(const char* name) const;
     /// Returns a list of all widgets which set to a QDockWidget.
     QList<QWidget*> getDockWindows() const;
@@ -115,6 +118,12 @@ public:
     void retranslate();
 
     bool isOverlayActivated() const;
+
+    /**
+     * Repair duplicate dock records left in a QMainWindow state by late-created docks.
+     * \internal
+     */
+    static bool repairDuplicateDockState(QMainWindow* mainWindow, const QByteArray& state);
 
 private Q_SLOTS:
     /**

@@ -24,6 +24,7 @@
 
 
 #include <memory>
+#include <utility>
 
 #include "kdl_cp/path_line.hpp"
 #include "kdl_cp/path_roundedcomposite.hpp"
@@ -50,10 +51,27 @@ TYPESYSTEM_SOURCE(Robot::Trajectory, Base::Persistence)
 Trajectory::Trajectory() = default;
 
 Trajectory::Trajectory(const Trajectory& Trac)
-    : vpcWaypoints(Trac.vpcWaypoints.size())
-    , pcTrajectory(nullptr)
+    : pcTrajectory(nullptr)
 {
-    operator=(Trac);
+    std::vector<std::unique_ptr<Waypoint>> waypoints;
+    waypoints.reserve(Trac.vpcWaypoints.size());
+    for (const auto* waypoint : Trac.vpcWaypoints) {
+        waypoints.emplace_back(std::make_unique<Waypoint>(*waypoint));
+    }
+    std::unique_ptr<KDL::Trajectory_Composite> trajectory;
+    if (Trac.pcTrajectory) {
+        trajectory.reset(
+            static_cast<KDL::Trajectory_Composite*>(Trac.pcTrajectory->Clone())
+        );
+    }
+    vpcWaypoints.reserve(waypoints.size());
+    for (auto& waypoint : waypoints) {
+        vpcWaypoints.push_back(waypoint.release());
+    }
+    pcTrajectory = trajectory.release();
+    if (!pcTrajectory && !vpcWaypoints.empty()) {
+        generateTrajectory();
+    }
 }
 
 Trajectory::~Trajectory()
@@ -69,22 +87,15 @@ Trajectory& Trajectory::operator=(const Trajectory& Trac)
     if (this == &Trac) {
         return *this;
     }
-
-    for (auto it : vpcWaypoints) {
-        delete it;
-    }
-    vpcWaypoints.clear();
-    vpcWaypoints.resize(Trac.vpcWaypoints.size());
-
-    int i = 0;
-    for (std::vector<Waypoint*>::const_iterator it = Trac.vpcWaypoints.begin();
-         it != Trac.vpcWaypoints.end();
-         ++it, i++) {
-        vpcWaypoints[i] = new Waypoint(**it);
-    }
-
-    generateTrajectory();
+    Trajectory replacement(Trac);
+    swap(replacement);
     return *this;
+}
+
+void Trajectory::swap(Trajectory& other) noexcept
+{
+    vpcWaypoints.swap(other.vpcWaypoints);
+    std::swap(pcTrajectory, other.pcTrajectory);
 }
 
 double Trajectory::getLength(int n) const

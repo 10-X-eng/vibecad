@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="VibeCAD prompt starters">
+  <path d="M13 9h30l9 9v37H13z" fill="#0e1116" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M43 9v10h9" fill="none" stroke="#74c0fc" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M21 29h22M21 38h18M21 47h13" fill="none" stroke="#e8edf2" stroke-width="3" stroke-linecap="round"/>
+  <path d="M18 17v8M14 21h8" fill="none" stroke="#4dabf7" stroke-width="3" stroke-linecap="round"/>
+</svg>

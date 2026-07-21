@@ -660,10 +660,26 @@ def _artifact_summary(contract: dict[str, Any], *, include_source: bool) -> dict
     return summary
 
 
-def model_summaries(doc: Any, project_root: str | Path | None = None) -> list[dict[str, Any]]:
+def editor_model_index_snapshot(doc: Any) -> dict[str, Any]:
+    """Capture native model metadata without filesystem or Shape access."""
+
+    return {
+        "native_models": [
+            _model_summary(obj, include_source=False) for obj in _model_objects(doc)
+        ]
+    }
+
+
+def complete_editor_model_index(
+    snapshot: dict[str, Any],
+    project_root: str | Path | None,
+) -> list[dict[str, Any]]:
+    """Complete a model selector index using project artifacts off the GUI thread."""
+
     summaries = {
-        item["model_id"]: item
-        for item in (_model_summary(obj, include_source=False) for obj in _model_objects(doc))
+        str(item.get("model_id") or ""): dict(item)
+        for item in list(snapshot.get("native_models") or [])
+        if isinstance(item, dict) and str(item.get("model_id") or "")
     }
     root = Path(project_root) if project_root else None
     models_root = root / "openscad" if root else None
@@ -679,7 +695,76 @@ def model_summaries(doc: Any, project_root: str | Path | None = None) -> list[di
             if native is not None:
                 item["object_name"] = native.get("object_name", "")
             summaries[directory.name] = item
-    return sorted(summaries.values(), key=lambda item: (str(item.get("label")), str(item.get("model_id"))))
+    return sorted(
+        summaries.values(),
+        key=lambda item: (str(item.get("label")), str(item.get("model_id"))),
+    )
+
+
+def model_summaries(doc: Any, project_root: str | Path | None = None) -> list[dict[str, Any]]:
+    return complete_editor_model_index(editor_model_index_snapshot(doc), project_root)
+
+
+def editor_model_inspection_snapshot(service: Any, model_id: str) -> dict[str, Any]:
+    """Capture one model's native properties without inspecting its geometry."""
+
+    doc = service._active_document()
+    if doc is None:
+        return _failure("NO_DOCUMENT", "precondition", "No active FreeCAD document.")
+    try:
+        project_root = _project_root(service)
+        container = _find_model(doc, model_id)
+    except OpenSCADFailure as exc:
+        return exc.payload
+    return {
+        "ok": True,
+        "model_id": str(model_id),
+        "project_root": str(project_root),
+        "native_model": (
+            _model_summary(container, include_source=True)
+            if container is not None
+            else None
+        ),
+    }
+
+
+def complete_editor_model_inspection(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Read one model's source contract away from the GUI thread."""
+
+    if snapshot.get("ok") is not True:
+        return dict(snapshot)
+    model_id = str(snapshot.get("model_id") or "")
+    project_root = str(snapshot.get("project_root") or "")
+    native = snapshot.get("native_model")
+    try:
+        contract = _artifact_contract(project_root, model_id)
+    except OpenSCADFailure as exc:
+        return exc.payload
+    if not isinstance(native, dict) and contract is None:
+        return _failure(
+            "MODEL_NOT_FOUND",
+            "precondition",
+            f"No OpenSCAD model has id {model_id!r}.",
+        )
+    model = (
+        _artifact_summary(contract, include_source=True)
+        if contract is not None
+        else dict(native)
+    )
+    if isinstance(native, dict):
+        model["object_name"] = str(native.get("object_name") or "")
+    if contract is not None:
+        model["artifact_directory"] = str(contract["directory"])
+        model["latest_attempt"] = contract["latest_attempt"]
+        accepted = contract["accepted_revision"]
+        if accepted and accepted != contract["working_revision"]:
+            accepted_path = contract["directory"] / "revisions" / f"{accepted}.scad"
+            if accepted_path.is_file():
+                model["accepted_source"] = accepted_path.read_text(encoding="utf-8")
+    return {
+        "ok": True,
+        "model": model,
+    }
 
 
 def _output_objects(container: Any) -> dict[str, tuple[Any, Any]]:

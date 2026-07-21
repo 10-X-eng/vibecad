@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Engine contract tests for the build123d, OpenSCAD, and VibeScript engines.
+"""Engine contract tests for the build123d and OpenSCAD engines.
 
 These tests exercise the pure-Python contract layer of the scripted engines
 without requiring a running FreeCAD, an OpenSCAD binary, or the isolated
-build123d runtime.  Subprocess-facing paths are exercised with stub
-executables so the real process-management and failure-payload code runs end
-to end; the in-process VibeScript engine is exercised against the same stub
-document used for the transactional commit/delete contracts.
+build123d runtime. Subprocess-facing paths are exercised with stub executables
+so the real process-management and failure-payload code runs end to end;
 """
 
 from __future__ import annotations
@@ -23,8 +21,6 @@ import pytest
 
 import VibeCADBuild123d as build123d
 import VibeCADOpenSCAD as openscad
-import VibeCADVibeScript as vibescript
-import vibescript_executor
 
 MODEL_ID = "a" * 32
 
@@ -51,7 +47,7 @@ class TestStageAwareFailureRendering:
                 {
                     "event": "tool_call_completed",
                     "ok": False,
-                    "tool_name": "vibescript.create_model",
+                    "tool_name": "vibescript.partdesign.create_program",
                     "result": {"error": "bad input", "failure_stage": stage},
                 }
             )
@@ -66,7 +62,7 @@ class TestStageAwareFailureRendering:
                 {
                     "event": "tool_call_completed",
                     "ok": False,
-                    "tool_name": "vibescript.create_model",
+                    "tool_name": "vibescript.partdesign.create_program",
                     "result": {"error": "recompute failed", "failure_stage": stage},
                 }
             )
@@ -93,7 +89,7 @@ class TestStageAwareFailureRendering:
                 {
                     "event": "tool_call_completed",
                     "ok": False,
-                    "tool_name": "vibescript.create_model",
+                    "tool_name": "vibescript.partdesign.create_program",
                     "result": result,
                 }
             )
@@ -128,7 +124,7 @@ class TestStageAwareFailureRendering:
             {
                 "event": "provider_tool_result_sent",
                 "ok": False,
-                "tool_name": "vibescript.create_model",
+                "tool_name": "vibescript.partdesign.create_program",
                 "error": "schema mismatch",
                 "failure_stage": "schema",
             }
@@ -138,7 +134,7 @@ class TestStageAwareFailureRendering:
             {
                 "event": "provider_tool_result_sent",
                 "ok": False,
-                "tool_name": "vibescript.create_model",
+                "tool_name": "vibescript.partdesign.create_program",
                 "error": "boolean failed",
                 "failure_stage": "native_recompute",
             }
@@ -148,7 +144,7 @@ class TestStageAwareFailureRendering:
             {
                 "event": "provider_tool_result_sent",
                 "ok": False,
-                "tool_name": "vibescript.create_model",
+                "tool_name": "vibescript.partdesign.create_program",
                 "error": "anything",
             }
         )
@@ -790,9 +786,12 @@ class TestBuild123dExecutionFailures:
 class _StubObject:
     """Minimal stand-in for a FreeCAD document object."""
 
-    def __init__(self, name: str, type_id: str) -> None:
+    def __init__(
+        self, name: str, type_id: str, document: "_StubDocument | None" = None
+    ) -> None:
         self.Name = name
         self.TypeId = type_id
+        self.Document = document
         self.Label = name
         self.PropertiesList: list[str] = []
         self.Group: list[Any] = []
@@ -808,7 +807,9 @@ class _StubObject:
         self.OutListRecursive.append(obj)
 
     def newObject(self, type_id: str, name: str) -> "_StubObject":
-        child = _StubObject(name, type_id)
+        child = _StubObject(name, type_id, self.Document)
+        if self.Document is not None:
+            self.Document.Objects.append(child)
         self.Group.append(child)
         self.OutListRecursive.append(child)
         return child
@@ -848,12 +849,15 @@ class _StubDocument:
 
     def addObject(self, type_id: str, name: str) -> _StubObject:
         self._sequence += 1
-        obj = _StubObject(f"{name}{self._sequence:03d}", type_id)
+        obj = _StubObject(f"{name}{self._sequence:03d}", type_id, self)
         self.Objects.append(obj)
         return obj
 
     def getObject(self, name: str) -> Any | None:
         return next((obj for obj in self.Objects if obj.Name == name), None)
+
+    def findObjects(self, *, Type: str) -> list[Any]:
+        return [obj for obj in self.Objects if obj.TypeId == Type]
 
     def removeObject(self, name: str) -> None:
         if self.fail_remove:
@@ -875,6 +879,7 @@ def _stub_service(
     return SimpleNamespace(
         _active_document=lambda: doc,
         project_context=lambda: {"root": str(project_root)},
+        project_scope_snapshot=lambda: {"root": str(project_root)},
         recompute_diagnostics=lambda: {
             "captured": True,
             "diagnostics": list(diagnostics or []),
@@ -1772,343 +1777,90 @@ class TestOpenSCADResourceBudgets:
 
 
 # ---------------------------------------------------------------------------
-# VibeScript: persisted artifact contract
-# ---------------------------------------------------------------------------
-
-
-VIBESCRIPT_SOURCE = 'result = {"Body": doc.addObject("PartDesign::Body", "Body")}\n'
-
-
-def _write_vibescript_artifact(
-    project_root: Path,
-    *,
-    source: str,
-    parameters: dict[str, Any],
-    working_revision: str,
-) -> Path:
-    directory = project_root / "vibescript" / MODEL_ID
-    directory.mkdir(parents=True)
-    (directory / "model.py").write_text(source, encoding="utf-8")
-    (directory / "parameters.json").write_text(json.dumps(parameters), encoding="utf-8")
-    manifest = {
-        "schema": vibescript.MODEL_SCHEMA,
-        "model_id": MODEL_ID,
-        "label": "Test Model",
-        "outputs": {"Body": {"object": "Body001"}},
-        "output_facts": {},
-        "expected_outputs": ["Body"],
-        "working_revision": working_revision,
-        "accepted_revision": working_revision,
-        "state": "accepted",
-    }
-    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return directory
-
-
-class TestVibeScriptArtifactContract:
-    def test_matching_revision_loads(self, tmp_path: Path) -> None:
-        revision = vibescript.source_revision(VIBESCRIPT_SOURCE, {"a": 1}, ["Body"])
-        _write_vibescript_artifact(
-            tmp_path,
-            source=VIBESCRIPT_SOURCE,
-            parameters={"a": 1},
-            working_revision=revision,
-        )
-        contract = vibescript._artifact_contract(tmp_path, MODEL_ID)
-        assert contract is not None
-        assert contract["working_revision"] == revision
-        assert contract["accepted_revision"] == revision
-        assert contract["state"] == "accepted"
-
-    def test_missing_directory_returns_none(self, tmp_path: Path) -> None:
-        assert vibescript._artifact_contract(tmp_path, MODEL_ID) is None
-
-    def test_revision_mismatch_rejected(self, tmp_path: Path) -> None:
-        _write_vibescript_artifact(
-            tmp_path,
-            source=VIBESCRIPT_SOURCE,
-            parameters={"a": 1},
-            working_revision="0" * 64,
-        )
-        with pytest.raises(vibescript.VibeScriptFailure) as excinfo:
-            vibescript._artifact_contract(tmp_path, MODEL_ID)
-        payload = excinfo.value.payload
-        assert payload["failure_code"] == "MODEL_ARTIFACT_REVISION_MISMATCH"
-        assert payload["observed"]["manifest_revision"] == "0" * 64
-        assert payload["observed"]["calculated_revision"] != "0" * 64
-
-    def test_tampered_source_rejected(self, tmp_path: Path) -> None:
-        revision = vibescript.source_revision(VIBESCRIPT_SOURCE, {}, ["Body"])
-        directory = _write_vibescript_artifact(
-            tmp_path,
-            source=VIBESCRIPT_SOURCE,
-            parameters={},
-            working_revision=revision,
-        )
-        (directory / "model.py").write_text(
-            VIBESCRIPT_SOURCE + "# tampered\n", encoding="utf-8"
-        )
-        with pytest.raises(vibescript.VibeScriptFailure) as excinfo:
-            vibescript._artifact_contract(tmp_path, MODEL_ID)
-        assert (
-            excinfo.value.payload["failure_code"] == "MODEL_ARTIFACT_REVISION_MISMATCH"
-        )
-
-    def test_incomplete_artifact_rejected(self, tmp_path: Path) -> None:
-        directory = tmp_path / "vibescript" / MODEL_ID
-        directory.mkdir(parents=True)
-        (directory / "manifest.json").write_text("{}", encoding="utf-8")
-        with pytest.raises(vibescript.VibeScriptFailure) as excinfo:
-            vibescript._artifact_contract(tmp_path, MODEL_ID)
-        assert excinfo.value.payload["failure_code"] == "MODEL_ARTIFACT_INCOMPLETE"
-
-
-# ---------------------------------------------------------------------------
-# VibeScript: execution budget defaults
-# ---------------------------------------------------------------------------
-
-
-def test_vibescript_engine_timeout_follows_executor_default() -> None:
-    # The wall-clock budget includes native FreeCAD recompute time, so the
-    # default is 120s; the engine must inherit it rather than pin its own.
-    assert vibescript_executor.DEFAULT_MAX_SECONDS == 120.0
-    assert vibescript.DEFAULT_TIMEOUT_SECONDS == vibescript_executor.DEFAULT_MAX_SECONDS
-
-
-# ---------------------------------------------------------------------------
-# VibeScript: transactional delete (shares the stub document)
-# ---------------------------------------------------------------------------
-
-
-class TestVibeScriptTransactionalDelete:
-    def _setup(
-        self, tmp_path: Path
-    ) -> tuple[_StubDocument, _StubObject, SimpleNamespace, str]:
-        revision = vibescript.source_revision(VIBESCRIPT_SOURCE, {}, ["Body"])
-        _write_vibescript_artifact(
-            tmp_path,
-            source=VIBESCRIPT_SOURCE,
-            parameters={},
-            working_revision=revision,
-        )
-        doc = _StubDocument()
-        container = doc.addObject("App::Part", "VibeScriptModel")
-        for prop in (
-            vibescript.PROP_MODEL_ID,
-            vibescript.PROP_SOURCE,
-            vibescript.PROP_REVISION,
-        ):
-            container.addProperty("App::PropertyString", prop, "VibeScript")
-        setattr(container, vibescript.PROP_MODEL_ID, MODEL_ID)
-        setattr(container, vibescript.PROP_REVISION, revision)
-        service = _stub_service(doc, tmp_path)
-        return doc, container, service, revision
-
-    def test_delete_success_commits_transaction_in_order(self, tmp_path: Path) -> None:
-        doc, container, service, revision = self._setup(tmp_path)
-        payload = vibescript.delete_model(
-            service, MODEL_ID, revision, "user requested cleanup"
-        )
-        assert payload["ok"] is True
-        assert doc.transaction_log == ["open:Delete VibeScript model", "commit"]
-        assert doc.getObject(container.Name) is None
-        assert not (tmp_path / "vibescript" / MODEL_ID).exists()
-
-    def test_delete_failure_rolls_back(self, tmp_path: Path) -> None:
-        doc, container, service, revision = self._setup(tmp_path)
-        doc.fail_remove = True
-        payload = vibescript.delete_model(
-            service, MODEL_ID, revision, "user requested cleanup"
-        )
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "DELETE_FAILED"
-        assert doc.transaction_log == ["open:Delete VibeScript model", "abort"]
-        assert doc.getObject(container.Name) is container
-        assert (tmp_path / "vibescript" / MODEL_ID).is_dir()
-
-    def test_delete_stale_revision_rejected_before_transaction(
-        self, tmp_path: Path
-    ) -> None:
-        doc, container, service, _revision = self._setup(tmp_path)
-        payload = vibescript.delete_model(service, MODEL_ID, "stale", "obsolete")
-        assert payload["ok"] is False
-        assert payload["failure_code"] == "STALE_MODEL_REVISION"
-        assert doc.transaction_log == []
-        assert doc.getObject(container.Name) is container
-        assert (tmp_path / "vibescript" / MODEL_ID).is_dir()
-
-
-# ---------------------------------------------------------------------------
-# VibeScript: static excluded-builtin policy
-# ---------------------------------------------------------------------------
-
-
-class TestVibeScriptStaticBuiltinPolicy:
-    """Reads of sandbox-excluded builtins are rejected at validation time.
-
-    The field report hit a NameError 200 lines into geometry because the
-    sandbox excluded a builtin the static validator did not check. These
-    tests lock the static gate, its shadow handling (no false positives on
-    script-defined names), and its agreement with the runtime allowlist.
-    """
-
-    def _violations(self, source: str) -> list[dict[str, Any]]:
-        with pytest.raises(vibescript.VibeScriptFailure) as excinfo:
-            vibescript.validate_source(source)
-        payload = excinfo.value.payload
-        assert payload["failure_code"] == "SOURCE_POLICY_VIOLATION"
-        return payload["observed"]["violations"]
-
-    def test_excluded_builtin_read_rejected_with_line_number(self) -> None:
-        violations = self._violations("x = 1\nchecker = callable\n")
-        assert any(
-            item["line"] == 2 and "callable" in item["reason"] for item in violations
-        )
-
-    @pytest.mark.parametrize("name", ["bytes", "id", "memoryview", "hash"])
-    def test_excluded_builtin_call_rejected(self, name: str) -> None:
-        violations = self._violations(f"value = {name}()\n")
-        assert any(name in item["reason"] for item in violations)
-
-    def test_disallowed_call_reported_once(self) -> None:
-        # ``eval`` is both a disallowed call and an excluded builtin; one
-        # call site must yield exactly one violation, not two.
-        violations = self._violations("eval('1')\n")
-        assert len(violations) == 1
-        assert "eval" in violations[0]["reason"]
-
-    def test_allowed_builtins_and_namespace_names_pass(self) -> None:
-        vibescript.validate_source(
-            "import math\n"
-            "print(hasattr(doc, 'Name'), dir(params), math.pi)\n"
-            "result = {'Body': doc.addObject('PartDesign::Body', 'Body')}\n"
-        )
-
-    def test_script_bound_shadows_are_not_false_positives(self) -> None:
-        vibescript.validate_source(
-            "def helper(callable):\n"
-            "    return callable\n"
-            "bytes = 3\n"
-            "print(bytes)\n"
-            "for id in range(2):\n"
-            "    print(id)\n"
-            "values = [hash for hash in range(2)]\n"
-            "if (memoryview := 5):\n"
-            "    print(memoryview)\n"
-            "result = {'Body': doc.addObject('PartDesign::Body', 'Body')}\n"
-        )
-
-    def test_static_gate_and_runtime_allowlist_agree(self) -> None:
-        # A statically banned name must be exactly a name the sandbox cannot
-        # resolve at runtime: no overlap with the allowlist or the injected
-        # namespace, so static and runtime policy can never contradict.
-        assert not (
-            vibescript._EXCLUDED_BUILTIN_NAMES & vibescript._SANDBOX_BUILTIN_NAMES
-        )
-        assert not (vibescript._EXCLUDED_BUILTIN_NAMES & vibescript._NAMESPACE_NAMES)
-
-
-# ---------------------------------------------------------------------------
-# VibeScript: per-feature failure evidence pass-through
-# ---------------------------------------------------------------------------
-
-
-class TestVibeScriptFeatureReportPassThrough:
-    def test_execution_failure_surfaces_feature_report(self, tmp_path: Path) -> None:
-        """The executor's per-feature evidence reaches the engine payload.
-
-        The report is collected before the transaction abort (objects still
-        exist), then the rollback restores the document; both facts are
-        asserted so the pass-through and the ordering cannot regress.
-        """
-        doc = _StubDocument()
-        service = _stub_service(doc, tmp_path)
-        prepared = vibescript.prepare_execution(
-            service,
-            "vibescript.create_model",
-            {
-                "model_name": "Report Model",
-                "source": (
-                    'body = doc.addObject("PartDesign::Body", "Body")\n'
-                    'raise RuntimeError("downstream victim")\n'
-                ),
-                "parameters": {"width": 10.0},
-                "expected_outputs": ["Body"],
-            },
-        )
-        payload = vibescript.execute_prepared(prepared)
-        assert payload["ok"] is False
-        report = payload["observed"]["feature_report"]
-        names = [entry["object_name"] for entry in report["features"]]
-        assert names and names[0].startswith("Body")
-        # Rollback still ran after evidence collection.
-        assert doc.transaction_log == ["open:VibeScript model", "abort"]
-        assert doc.Objects == []
-
-
-# ---------------------------------------------------------------------------
-# Cross-engine runner API parity
-# ---------------------------------------------------------------------------
-
-
-class TestScriptedEngineParity:
-    """All three scripted engines honor the same runner API and payload keys."""
-
-    RUNNER_API = (
-        "prepare_execution",
-        "execute_prepared",
-        "record_failed_attempt",
-        "cleanup_prepared",
-        "inspect_model",
-        "delete_model",
-        "model_summaries",
-        "stage_editor_source",
-        "revert_working_to_accepted",
-        "restore_output_display_modes",
-        "validate_source",
-        "source_revision",
-    )
-
-    SHARED_FAILURE_KEYS = frozenset(
-        {
-            "ok",
-            "tool",
-            "failure_code",
-            "failure_stage",
-            "error",
-            "requested",
-            "observed",
-        }
-    )
-
-    def test_every_engine_exposes_the_full_runner_api(self) -> None:
-        for module in (build123d, openscad, vibescript):
-            for name in self.RUNNER_API:
-                assert callable(getattr(module, name, None)), (
-                    f"{module.__name__}.{name} is missing from the runner API"
-                )
-
-    def test_source_policy_failures_share_contract_keys(self) -> None:
-        cases = (
-            (build123d, build123d.Build123dFailure, "import os\n", "build123d"),
-            (openscad, openscad.OpenSCADFailure, "   \n", "openscad"),
-            (vibescript, vibescript.VibeScriptFailure, "import os\n", "vibescript"),
-        )
-        for module, failure_type, bad_source, tool in cases:
-            with pytest.raises(failure_type) as excinfo:
-                module.validate_source(bad_source)
-            payload = excinfo.value.payload
-            missing = self.SHARED_FAILURE_KEYS - set(payload)
-            assert not missing, (
-                f"{tool} failure payload missing keys: {sorted(missing)}"
-            )
-            assert payload["ok"] is False
-            assert payload["tool"] == tool
-
-
-# ---------------------------------------------------------------------------
 # VibeScript defaults: enabled by default, default PartDesign engine
 # ---------------------------------------------------------------------------
+
+
+def test_private_vibescript_carriers_are_not_provider_document_objects() -> None:
+    from VibeCADCore import VibeCADService
+    from VibeCADWorkbenchTools import get_tool_pack
+
+    for role in ("implementation", "publication_target", "parameters"):
+        assert VibeCADService._is_private_scripted_object(
+            SimpleNamespace(VibeCADScriptedRole=role)
+        )
+    for role in ("model", "publication", ""):
+        assert not VibeCADService._is_private_scripted_object(
+            SimpleNamespace(VibeCADScriptedRole=role)
+        )
+    part_pack = get_tool_pack("PartWorkbench")
+    assert part_pack is not None
+    assert VibeCADService._object_matches_pack(
+        SimpleNamespace(VibeCADScriptedRole="publication", TypeId="App::Link"),
+        part_pack,
+    )
+    assert not VibeCADService._object_matches_pack(
+        SimpleNamespace(
+            VibeCADScriptedRole="publication_target",
+            TypeId="Part::Feature",
+        ),
+        part_pack,
+    )
+    native = SimpleNamespace(Name="Native", Label="Native", TypeId="Part::Box")
+    published = SimpleNamespace(
+        Name="Published",
+        Label="Published",
+        TypeId="App::Link",
+        VibeCADScriptedRole="publication",
+        VibeCADScriptedEngine="vibescript",
+        VibeCADScriptedModelId="a" * 32,
+        VibeCADScriptedOutputKey="Housing",
+    )
+    private_target = SimpleNamespace(
+        Name="PrivateTarget",
+        Label="Private Target",
+        TypeId="Part::Feature",
+        VibeCADScriptedRole="publication_target",
+    )
+    service = object.__new__(VibeCADService)
+    service._active_document = lambda: SimpleNamespace(
+        Name="ContextDoc",
+        Objects=[native, published, private_target],
+    )
+
+    summary = service.provider_part_summary()
+
+    assert [item["name"] for item in summary["objects"]] == [
+        "Native",
+        "Published",
+    ]
+    assert summary["objects"][1]["published_output_key"] == "Housing"
+
+
+def test_view_attachment_is_one_shot_and_identity_guarded() -> None:
+    from VibeCADCore import VibeCADService
+
+    service = object.__new__(VibeCADService)
+    service._last_view_screenshot = {
+        "captured": True,
+        "path": "/project/screenshots/current.png",
+        "pending_attachment": True,
+    }
+
+    pending = service.view_screenshot_summary()
+    assert pending["pending_attachment"] is True
+    stale = service.consume_view_screenshot_attachment(
+        {"captured": True, "path": "/project/screenshots/older.png"}
+    )
+    assert stale["consumed"] is False
+    assert service.view_screenshot_summary()["captured"] is True
+
+    consumed = service.consume_view_screenshot_attachment(pending)
+    assert consumed == {
+        "consumed": True,
+        "path": "/project/screenshots/current.png",
+    }
+    assert service.view_screenshot_summary() == {"captured": False, "path": None}
 
 
 class _UnsetPreferences:
@@ -2129,9 +1881,50 @@ class _UnsetPreferences:
         return default
 
 
+class _RecordingPreferences(_UnsetPreferences):
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+
+    def GetBool(self, name: str, default: bool = False) -> bool:
+        return bool(self.values.get(name, default))
+
+    def GetString(self, name: str, default: str = "") -> str:
+        return str(self.values.get(name, default))
+
+    def GetFloat(self, name: str, default: float = 0.0) -> float:
+        return float(self.values.get(name, default))
+
+    def GetInt(self, name: str, default: int = 0) -> int:
+        return int(self.values.get(name, default))
+
+    def SetBool(self, name: str, value: bool) -> None:
+        self.values[name] = bool(value)
+
+    def SetString(self, name: str, value: str) -> None:
+        self.values[name] = str(value)
+
+    def SetFloat(self, name: str, value: float) -> None:
+        self.values[name] = float(value)
+
+    def SetInt(self, name: str, value: int) -> None:
+        self.values[name] = int(value)
+
+    def RemBool(self, name: str) -> None:
+        self.values.pop(name, None)
+
+    def RemString(self, name: str) -> None:
+        self.values.pop(name, None)
+
+    def RemFloat(self, name: str) -> None:
+        self.values.pop(name, None)
+
+    def RemInt(self, name: str) -> None:
+        self.values.pop(name, None)
+
+
 class TestVibeScriptDefaults:
     """Lock the out-of-box defaults: the VibeScript preference is enabled and
-    vibescript is the default PartDesign engine. These tests fail if either
+    vibescript is the default global modeling engine. These tests fail if either
     default silently regresses."""
 
     _SCOPE = {"project_id": "f" * 32, "title": "Default Test", "document": {}}
@@ -2140,6 +1933,7 @@ class TestVibeScriptDefaults:
         import VibeCADPreferences as prefs
 
         assert prefs.VibeCADSettings().vibescript_enabled is True
+        assert not hasattr(prefs.VibeCADSettings(), "vibescript_on_bim_enabled")
 
     def test_load_settings_with_unset_key_enables_vibescript(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2147,30 +1941,46 @@ class TestVibeScriptDefaults:
         import VibeCADPreferences as prefs
 
         monkeypatch.setattr(prefs, "preferences", lambda: _UnsetPreferences())
-        assert prefs.load_settings().vibescript_enabled is True
+        settings = prefs.load_settings()
+        assert settings.vibescript_enabled is True
+        assert not hasattr(settings, "vibescript_on_bim_enabled")
+
+    def test_removed_bim_opt_in_is_not_written_or_reset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import VibeCADPreferences as prefs
+
+        stored = _RecordingPreferences()
+        monkeypatch.setattr(prefs, "preferences", lambda: stored)
+        prefs.save_settings(prefs.VibeCADSettings())
+        assert "VibeScriptOnBIMEnabled" not in stored.values
+        prefs.reset_settings()
+        assert "VibeScriptOnBIMEnabled" not in stored.values
 
     def test_default_engine_constant_is_vibescript_and_valid(self) -> None:
-        from VibeCADProject import DEFAULT_PARTDESIGN_ENGINE, PARTDESIGN_ENGINES
+        from VibeCADProject import DEFAULT_MODELING_ENGINE, MODELING_ENGINES
 
-        assert DEFAULT_PARTDESIGN_ENGINE == "vibescript"
-        assert DEFAULT_PARTDESIGN_ENGINE in PARTDESIGN_ENGINES
+        assert DEFAULT_MODELING_ENGINE == "vibescript"
+        assert DEFAULT_MODELING_ENGINE in MODELING_ENGINES
 
     def test_fresh_manifest_seeds_vibescript_engine(self, tmp_path: Path) -> None:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
         manifest = store._default_manifest(dict(self._SCOPE))
-        assert manifest["partdesign_engine"] == "vibescript"
+        assert manifest["modeling_engine"] == "vibescript"
+        assert "partdesign_engine" not in manifest
 
     def test_merge_preserves_explicit_engine_choices(self, tmp_path: Path) -> None:
-        from VibeCADProject import PARTDESIGN_ENGINES, VibeCADProjectStore
+        from VibeCADProject import MODELING_ENGINES, VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
-        for engine in sorted(PARTDESIGN_ENGINES):
+        for engine in sorted(MODELING_ENGINES):
             merged = store._merge_manifest_defaults(
                 {"partdesign_engine": engine}, dict(self._SCOPE)
             )
-            assert merged["partdesign_engine"] == engine
+            assert merged["modeling_engine"] == engine
+            assert "partdesign_engine" not in merged
 
     def test_merge_defaults_missing_or_none_engine_to_vibescript(
         self, tmp_path: Path
@@ -2178,15 +1988,43 @@ class TestVibeScriptDefaults:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
-        for manifest in ({}, {"partdesign_engine": None}):
+        for manifest in ({}, {"modeling_engine": None}, {"partdesign_engine": None}):
             merged = store._merge_manifest_defaults(dict(manifest), dict(self._SCOPE))
-            assert merged["partdesign_engine"] == "vibescript"
+            assert merged["modeling_engine"] == "vibescript"
 
-    def test_partdesign_engine_accessor_falls_back_to_vibescript(
+    def test_modeling_engine_accessor_falls_back_to_vibescript(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from VibeCADProject import VibeCADProjectStore
 
         store = VibeCADProjectStore("test-session", index_path=tmp_path / "index.db")
         monkeypatch.setattr(store, "load_manifest", lambda: {})
-        assert store.partdesign_engine() == "vibescript"
+        assert store.modeling_engine() == "vibescript"
+        assert not hasattr(store, "partdesign_engine")
+        assert not hasattr(store, "set_partdesign_engine")
+
+    def test_engine_only_manifest_reader_supports_legacy_field(
+        self, tmp_path: Path
+    ) -> None:
+        from VibeCADProject import PROJECT_SCHEMA, VibeCADProjectStore
+
+        manifest_path = tmp_path / "project.vibecad.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema": PROJECT_SCHEMA,
+                    "version": 1,
+                    "partdesign_engine": "openscad",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert (
+            VibeCADProjectStore.read_modeling_engine_manifest(manifest_path)
+            == "openscad"
+        )
+        assert (
+            VibeCADProjectStore.read_modeling_engine_manifest(tmp_path / "missing.json")
+            == "vibescript"
+        )
