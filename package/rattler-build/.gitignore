@@ -5,9 +5,11 @@ linux/AppDir/packages.txt
 # Windows bundle staging and versioned output directories
 windows/FreeCAD_*Windows*
 windows/VibeCAD_*Windows*
+windows/VibeCAD-*Windows*/
 osx/FreeCAD.app
 **.AppImage
 **.AppImage.zsync
+**.deb
 **.dmg
 **.7z
 **.exe
