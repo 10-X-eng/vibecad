@@ -66,7 +66,7 @@ public:
     Py::Object fromQPrinter(QPrinter*);
     Py::Object fromQObject(QObject*, const char* className = nullptr);
     Py::Object fromQWidget(QWidget*, const char* className = nullptr);
-    const char* getWrapperName(QObject*) const;
+    static const char* getWrapperName(QObject*);
 
     Py::Object fromQImage(const QImage&);
     QImage* toQImage(PyObject* pyobj);

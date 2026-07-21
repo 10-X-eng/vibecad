@@ -872,7 +872,7 @@ Py::Object PythonWrapper::fromQWidget(QWidget* widget, const char* className)
     throw Py::RuntimeError("Failed to wrap widget");
 }
 
-const char* PythonWrapper::getWrapperName(QObject* obj) const
+const char* PythonWrapper::getWrapperName(QObject* obj)
 {
 #if defined(HAVE_SHIBOKEN) && defined(HAVE_PYSIDE)
     const QMetaObject* meta = obj->metaObject();
@@ -964,8 +964,18 @@ void PythonWrapper::setParent(PyObject* pyWdg, QObject* parent)
 {
 #if defined(HAVE_SHIBOKEN) && defined(HAVE_PYSIDE)
     if (parent) {
+        auto type = getPyTypeObjectForTypeName<QWidget>();
+        if (!type) {
+            // Some Shiboken builds do not resolve Qt widget classes via typeid().name().
+            // Fall back to PySide type names, mirroring fromQWidget().
+            type = getPyTypeObjectForPySideTypeName(getWrapperName(parent));
+        }
+        if (!type) {
+            // Leave the widget unparented on the Python side rather than crash.
+            return;
+        }
         Shiboken::AutoDecRef pyParent(
-            Shiboken::Conversions::pointerToPython(getPyTypeObjectForTypeName<QWidget>(), parent)
+            Shiboken::Conversions::pointerToPython(type, parent)
         );
         Shiboken::Object::setParent(pyParent, pyWdg);
     }
