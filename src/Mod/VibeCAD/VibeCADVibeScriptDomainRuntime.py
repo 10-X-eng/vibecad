@@ -14870,6 +14870,58 @@ def capture_inspection_state(
     return captured
 
 
+
+def capture_editor_inspection_state(service: Any, domain: str, program_id: str) -> dict[str, Any]:
+    """Capture the minimum live state required by the human source editor.
+
+    Provider inspection intentionally captures the broader operation contract.
+    The editor only needs one persisted manifest plus its stable live output
+    identities, so it must not enumerate unrelated document objects or resolve
+    input geometry merely to display source text.
+    """
+
+    clean_domain = str(domain or "").strip().lower()
+    clean_program_id = str(program_id or "").strip().lower()
+    tool_name = f"vibescript.{clean_domain}.inspect_program"
+    if not _PROGRAM_ID.fullmatch(clean_program_id):
+        _raise(tool_name, "INVALID_PROGRAM_ID", "schema", "Invalid program_id.")
+    doc = service._active_document()
+    if doc is None:
+        _raise(tool_name, "NO_DOCUMENT", "precondition", "No active FreeCAD document.")
+    pack = contracts.get_vibescript_pack(service.active_workbench_name())
+    if pack is None or pack.domain != clean_domain:
+        _raise(
+            tool_name,
+            "DOMAIN_SURFACE_CHANGED",
+            "surface",
+            "The active workbench no longer authorizes this editor domain.",
+        )
+    from VibeCADModelingSurface import resolve_service_surface
+
+    resolution = resolve_service_surface(service, service.active_workbench_name())
+    if (
+        resolution.engine != "vibescript"
+        or resolution.workbench != pack.workbench
+        or resolution.domain != clean_domain
+        or not resolution.available
+    ):
+        _raise(
+            tool_name,
+            "DOMAIN_SURFACE_CHANGED",
+            "surface",
+            "The active workbench and modeling engine no longer authorize this editor domain.",
+            observed=resolution.summary(),
+        )
+    scope = service.project_scope_snapshot()
+    return {
+        "tool_name": tool_name,
+        "pack": pack,
+        "program_id": clean_program_id,
+        "project_root": str(scope.get("root") or ""),
+        "live_programs": _live_programs(doc, clean_domain),
+    }
+
+
 def complete_inspection(captured: Mapping[str, Any]) -> dict[str, Any]:
     pack: contracts.VibeScriptWorkbenchPack = captured["pack"]
     program_id = str(captured["program_id"])

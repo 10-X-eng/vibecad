@@ -1541,6 +1541,220 @@ def run_domain_vibescript_operation(
     )
 
 
+
+def build_domain_vibescript_editor_candidate(
+    service: VibeCADService,
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    document_thread_dispatch: DocumentThreadDispatch | None = None,
+    cancellation_check: CancellationCheck | None = None,
+) -> dict[str, Any]:
+    """Build and retain one editor candidate without publishing live objects."""
+
+    from VibeCADVibeScriptDomainRuntime import (
+        DomainRuntimeFailure,
+        abandon_prepared_candidate,
+        capture_operation_state,
+        capture_reference_inputs,
+        finalize_candidate,
+        parse_domain_tool,
+        prepare_candidate,
+        retain_candidate,
+    )
+
+    parsed = parse_domain_tool(tool_name)
+    if parsed is None:
+        return tool_failure(
+            tool_name,
+            "UNKNOWN_DOMAIN_TOOL",
+            "surface",
+            f"Unknown workbench-qualified VibeScript tool: {tool_name}.",
+            requested=args,
+        )
+    pack, operation = parsed
+    if operation not in {"edit_source", "set_inputs", "reconfigure_program"}:
+        return tool_failure(
+            tool_name,
+            "EDITOR_OPERATION_UNSUPPORTED",
+            "precondition",
+            "The editor candidate path accepts only existing-program mutations.",
+            requested=args,
+        )
+    adapter = vibescript_domains.get_domain_adapter(pack.domain)
+    if adapter is None:
+        return tool_failure(
+            tool_name,
+            "DOMAIN_UNAVAILABLE",
+            "surface",
+            f"The {pack.title} VibeScript adapter is unavailable.",
+            requested=args,
+        )
+    prepared = None
+    try:
+        if cancellation_check is not None and cancellation_check():
+            return tool_failure(
+                tool_name,
+                "RUN_CANCELLED",
+                "precondition",
+                "The editor build was superseded before capture.",
+                requested=args,
+                cancelled=True,
+            )
+        captured = _on_document_thread(
+            document_thread_dispatch,
+            lambda: capture_operation_state(service, tool_name, args),
+        )
+        prepared = prepare_candidate(captured)
+        if prepared.get("reference_requirements") and not prepared.get("finalized"):
+            try:
+                snapshots = _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: capture_reference_inputs(service, prepared),
+                )
+                prepared = finalize_candidate(prepared, snapshots)
+            except Exception:
+                abandon_prepared_candidate(prepared)
+                raise
+        execution = adapter.execute_candidate(
+            prepared,
+            cancellation_check=cancellation_check,
+        )
+        if execution.get("ok") is not True:
+            retained = retain_candidate(prepared, status="failed", failure=execution)
+            execution["failed_candidate"] = {
+                "program_id": prepared["program_id"],
+                "revision": prepared["revision"],
+                "attempt_directory": retained["attempt_directory"],
+                "accepted_revision": prepared["accepted_revision_before"],
+            }
+            return execution
+        try:
+            validated = adapter.validate_result(prepared, execution)
+        except DomainRuntimeFailure as exc:
+            retained = retain_candidate(
+                prepared,
+                status="validation_failed",
+                failure=exc.payload,
+            )
+            exc.payload["failed_candidate"] = {
+                "program_id": prepared["program_id"],
+                "revision": prepared["revision"],
+                "attempt_directory": retained["attempt_directory"],
+                "accepted_revision": prepared["accepted_revision_before"],
+            }
+            return exc.payload
+        except Exception as exc:
+            failure = tool_failure(
+                tool_name,
+                "DOMAIN_RESULT_INVALID",
+                "postcondition",
+                str(exc),
+                requested=args,
+                observed={"exception_type": exc.__class__.__name__},
+            )
+            retained = retain_candidate(
+                prepared,
+                status="validation_failed",
+                failure=failure,
+            )
+            failure["failed_candidate"] = {
+                "program_id": prepared["program_id"],
+                "revision": prepared["revision"],
+                "attempt_directory": retained["attempt_directory"],
+                "accepted_revision": prepared["accepted_revision_before"],
+            }
+            return failure
+        retained = retain_candidate(prepared, status="validated")
+        return {
+            "ok": True,
+            "program_id": str(prepared["program_id"]),
+            "program_name": str(prepared["program_name"]),
+            "domain": pack.domain,
+            "working_revision": str(prepared["revision"]),
+            "accepted_revision": str(prepared.get("accepted_revision_before") or ""),
+            "attempt_directory": retained["attempt_directory"],
+            "output_count": len(validated.get("outputs") or []),
+            "stdout": str(validated.get("stdout") or ""),
+            "budget": dict(validated.get("budget") or {}),
+            "_editor_candidate": {
+                "prepared": prepared,
+                "validated": validated,
+            },
+        }
+    except DomainRuntimeFailure as exc:
+        return exc.payload
+    except Exception as exc:
+        if prepared is not None:
+            try:
+                abandon_prepared_candidate(prepared)
+            except Exception:
+                pass
+        return tool_failure(
+            tool_name,
+            "DOMAIN_EDITOR_BUILD_FAILED",
+            "external_process",
+            str(exc),
+            requested=args,
+            observed={"exception_type": exc.__class__.__name__},
+        )
+
+
+def apply_domain_vibescript_editor_candidate(
+    service: VibeCADService,
+    candidate: Mapping[str, Any],
+    *,
+    document_thread_dispatch: DocumentThreadDispatch | None = None,
+    cancellation_check: CancellationCheck | None = None,
+) -> dict[str, Any]:
+    """Publish a previously validated editor candidate, then accept its manifest."""
+
+    from VibeCADVibeScriptDomainRuntime import accept_candidate, retain_candidate
+
+    prepared = candidate.get("prepared")
+    validated = candidate.get("validated")
+    if not isinstance(prepared, Mapping) or not isinstance(validated, Mapping):
+        return tool_failure(
+            "vibescript.editor.apply",
+            "INVALID_EDITOR_CANDIDATE",
+            "precondition",
+            "The editor has no complete validated candidate to apply.",
+        )
+    tool_name = str(prepared.get("tool_name") or "vibescript.editor.apply")
+    if cancellation_check is not None and cancellation_check():
+        return tool_failure(
+            tool_name,
+            "RUN_CANCELLED",
+            "precondition",
+            "The editor apply was superseded before publication.",
+            cancelled=True,
+        )
+    adapter = vibescript_domains.get_domain_adapter(prepared["pack"].domain)
+    if adapter is None:
+        return tool_failure(
+            tool_name,
+            "DOMAIN_UNAVAILABLE",
+            "surface",
+            "The candidate's VibeScript domain is no longer available.",
+        )
+    try:
+        publication = _on_document_thread(
+            document_thread_dispatch,
+            lambda: adapter.publish(service, dict(prepared), dict(validated)),
+        )
+    except Exception as exc:
+        failure = tool_failure(
+            tool_name,
+            "DOMAIN_PUBLICATION_FAILED",
+            "native_call",
+            str(exc),
+            observed={"exception_type": exc.__class__.__name__},
+        )
+        retain_candidate(prepared, status="publication_failed", failure=failure)
+        return failure
+    return accept_candidate(prepared, publication)
+
+
 def make_provider_tool_runner(
     service: VibeCADService,
     *,

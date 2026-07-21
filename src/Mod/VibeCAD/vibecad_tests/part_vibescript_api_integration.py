@@ -17,6 +17,10 @@ if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
 from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
+from VibeCADSession import (  # noqa: E402
+    apply_domain_vibescript_editor_candidate,
+    build_domain_vibescript_editor_candidate,
+)
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     PROP_INPUT_OBJECTS,
     mark_programs_stale_from_source,
@@ -158,9 +162,7 @@ def _exercise_every_export(api) -> dict[str, dict]:
     assert len(helix.Edges) >= 1
     _near(helix.BoundBox.ZLength, 10.0)
     shapes["helix"] = helix
-    segmented_helix = _shape(
-        api.helix(1.5, 60, 3, representation="segmented")
-    )
+    segmented_helix = _shape(api.helix(1.5, 60, 3, representation="segmented"))
     assert segmented_helix.ShapeType == "Wire"
     assert len(segmented_helix.Edges) > 1
     shapes["segmented_helix"] = segmented_helix
@@ -663,9 +665,7 @@ def _exercise_isolated_lifecycle(root: Path, pack) -> dict:
     assert failure_details["operation"] == "fillet"
     assert failure_details["parameter"] == "edges"
     assert failed_execution["retry"]["same_call"] is False
-    assert failed_execution["retry"]["required_changes"] == [
-        failure_details["correction"]
-    ]
+    assert failed_execution["retry"]["required_changes"] == [failure_details["correction"]]
     assert "latest accepted" in failure_details["correction"]
     retain_candidate(failed_prepared, status="failed", failure=failed_execution)
     failed_inspection = complete_inspection(
@@ -700,8 +700,28 @@ def _exercise_isolated_lifecycle(root: Path, pack) -> dict:
             ],
         },
     )
-    _edited, edit_publication, accepted = _run_candidate(edit_capture, service)
-    assert edit_publication["created_objects"] == []
+    live_revision_before_build = str(
+        document.getObject(identities["Housing"]).VibeCADVibeScriptRevision
+    )
+    built = build_domain_vibescript_editor_candidate(
+        service,
+        edit_capture["tool_name"],
+        edit_capture["arguments"],
+    )
+    assert built["ok"] is True, built
+    assert built["accepted_revision"] == accepted["accepted_revision"]
+    assert built["working_revision"] != built["accepted_revision"]
+    assert (
+        str(document.getObject(identities["Housing"]).VibeCADVibeScriptRevision)
+        == live_revision_before_build
+    )
+    editor_candidate = built.pop("_editor_candidate")
+    accepted = apply_domain_vibescript_editor_candidate(
+        service,
+        editor_candidate,
+    )
+    assert accepted["ok"] is True, accepted
+    assert accepted["accepted_revision"] == built["working_revision"]
     assert {
         name: details["object_name"] for name, details in accepted["live_outputs"].items()
     } == identities

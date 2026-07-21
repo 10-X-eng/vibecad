@@ -83,6 +83,27 @@ bool isDockingArea(Qt::DockWidgetArea area)
     }
 }
 
+QDockWidget* findDockByName(const QList<QDockWidget*>& docks, const QString& name)
+{
+    // The container name is the stable registration key used by QMainWindow state.
+    for (auto* dock : docks) {
+        if (dock && dock->objectName() == name) {
+            return dock;
+        }
+    }
+
+    // Native callers historically address dock content by its widget name (for
+    // example "Tasks", "Tree view", and "Model"). Keep that identity distinct
+    // from the stable container key while resolving both through one lookup.
+    for (auto* dock : docks) {
+        if (dock && dock->widget() && dock->widget()->objectName() == name) {
+            return dock;
+        }
+    }
+
+    return nullptr;
+}
+
 }  // namespace
 
 DockWindowItems::DockWindowItems() = default;
@@ -538,14 +559,8 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
  */
 QWidget* DockWindowManager::getDockWindow(const char* name) const
 {
-    for (QList<QDockWidget*>::Iterator it = d->_dockedWindows.begin(); it != d->_dockedWindows.end();
-         ++it) {
-        if ((*it)->objectName() == QString::fromUtf8(name)) {
-            return (*it)->widget();
-        }
-    }
-
-    return nullptr;
+    auto* dock = findDockByName(d->_dockedWindows, QString::fromUtf8(name));
+    return dock ? dock->widget() : nullptr;
 }
 
 /**
@@ -554,14 +569,7 @@ QWidget* DockWindowManager::getDockWindow(const char* name) const
  */
 QDockWidget* DockWindowManager::getDockContainer(const char* name) const
 {
-    for (QList<QDockWidget*>::Iterator it = d->_dockedWindows.begin(); it != d->_dockedWindows.end();
-         ++it) {
-        if ((*it)->objectName() == QLatin1String(name)) {
-            return (*it);
-        }
-    }
-
-    return nullptr;
+    return findDockByName(d->_dockedWindows, QString::fromUtf8(name));
 }
 
 /**
@@ -582,29 +590,24 @@ QList<QWidget*> DockWindowManager::getDockWindows() const
  */
 QWidget* DockWindowManager::removeDockWindow(const char* name)
 {
-    QWidget* widget = nullptr;
-    for (QList<QDockWidget*>::Iterator it = d->_dockedWindows.begin(); it != d->_dockedWindows.end();
-         ++it) {
-        if ((*it)->objectName() == QString::fromUtf8(name)) {
-            QDockWidget* dw = *it;
-            d->_dockedWindows.erase(it);
-
-            if (d->overlayManager) {
-                d->overlayManager->unsetupDockWidget(dw);
-            }
-
-            getMainWindow()->removeDockWidget(dw);
-            // avoid to destruct the embedded widget
-            widget = dw->widget();
-            widget->setParent(nullptr);
-            dw->setWidget(nullptr);
-            disconnect(dw, &QObject::destroyed, this, &DockWindowManager::onDockWidgetDestroyed);
-            disconnect(widget, &QObject::destroyed, this, &DockWindowManager::onWidgetDestroyed);
-            delete dw;  // destruct the QDockWidget, i.e. the parent of the widget
-            break;
-        }
+    QDockWidget* dw = findDockByName(d->_dockedWindows, QString::fromUtf8(name));
+    if (!dw) {
+        return nullptr;
     }
 
+    d->_dockedWindows.removeOne(dw);
+    if (d->overlayManager) {
+        d->overlayManager->unsetupDockWidget(dw);
+    }
+
+    getMainWindow()->removeDockWidget(dw);
+    // avoid to destruct the embedded widget
+    QWidget* widget = dw->widget();
+    widget->setParent(nullptr);
+    dw->setWidget(nullptr);
+    disconnect(dw, &QObject::destroyed, this, &DockWindowManager::onDockWidgetDestroyed);
+    disconnect(widget, &QObject::destroyed, this, &DockWindowManager::onWidgetDestroyed);
+    delete dw;  // destruct the QDockWidget, i.e. the parent of the widget
     return widget;
 }
 

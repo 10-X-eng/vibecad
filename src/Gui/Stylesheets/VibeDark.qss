@@ -1548,6 +1548,33 @@ QTreeWidget#VibeScriptedDiagnostics {
   selection-background-color: #145a92;
   selection-color: #ffffff; }
 
+QScrollArea#VibeScriptedInputs,
+QScrollArea#VibeScriptedInputs > QWidget > QWidget {
+  color: #e8edf2;
+  background-color: #0e1116;
+  border: 0px solid transparent; }
+
+QLabel#VibeScriptedContext {
+  color: #65b8ff;
+  font-weight: 600;
+  padding: 3px 2px; }
+
+QLabel#VibeScriptedCursorStatus {
+  color: #7f8b96;
+  padding: 0px 4px; }
+
+QWidget#VibeScriptedFindBar {
+  background-color: #171c23;
+  border: 1px solid #29313c; }
+
+QWidget#VibeScriptedFindBar QToolButton {
+  min-height: 24px;
+  color: #e8edf2;
+  background-color: #232b35;
+  border: 1px solid #39434f;
+  border-radius: 4px;
+  padding: 2px 7px; }
+
 QComboBox#VibeScriptedModelSelector,
 QComboBox#VibeScriptedFileSelector,
 QComboBox#VibeScriptedFidelitySelector,

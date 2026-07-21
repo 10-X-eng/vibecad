@@ -2712,6 +2712,92 @@ def domain_context_snapshot(service: Any, domain: str) -> dict[str, Any]:
     }
 
 
+
+def domain_program_index_snapshot(service: Any, domain: str) -> dict[str, Any]:
+    """Capture only the identities needed by the human program editor.
+
+    Unlike :func:`domain_context_snapshot`, this function deliberately does not
+    inspect domain objects, detach Shapes, enumerate mesh/point payloads, or
+    construct model-facing context.  The editor uses it to populate one program
+    selector and nothing else.
+    """
+
+    clean_domain = str(domain or "").strip().lower()
+    pack = next(
+        (
+            candidate
+            for candidate in VIBESCRIPT_WORKBENCH_PACKS.values()
+            if candidate.domain == clean_domain
+        ),
+        None,
+    )
+    if pack is None:
+        raise RuntimeError(f"Unknown shared VibeScript domain: {clean_domain!r}.")
+    from VibeCADModelingSurface import resolve_service_surface
+
+    resolution = resolve_service_surface(service, service.active_workbench_name())
+    if (
+        resolution.engine != "vibescript"
+        or resolution.domain != clean_domain
+        or not resolution.available
+    ):
+        raise RuntimeError(f"The live modeling surface does not authorize domain {clean_domain!r}.")
+    scope = service.project_scope_snapshot()
+    doc = service._active_document()
+    native_programs = capture_domain_programs(doc, clean_domain) if doc is not None else []
+    return {
+        "_vibecad_deferred_vibescript_program_index": True,
+        "domain": clean_domain,
+        "workbench": pack.workbench,
+        "surface_id": resolution.surface_id,
+        "project_root": str(scope.get("root") or ""),
+        "document_name": str(getattr(doc, "Name", "") or "") if doc is not None else "",
+        "document_uid": str(getattr(doc, "Uid", "") or "") if doc is not None else "",
+        "native_program_count": len(native_programs),
+        "native_programs": native_programs[:MAX_DOMAIN_CONTEXT_PROGRAMS],
+    }
+
+
+def complete_domain_program_index(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the editor's bounded program manifests away from the GUI thread."""
+
+    if snapshot.get("_vibecad_deferred_vibescript_program_index") is not True:
+        raise RuntimeError("Invalid deferred VibeScript program index snapshot.")
+    # Program persistence and v1 migration are shared with provider context, but
+    # the editor snapshot contains none of the expensive domain-state fields.
+    completed = complete_domain_context(
+        {
+            "_vibecad_deferred_vibescript_domain_context": True,
+            **{
+                key: snapshot.get(key)
+                for key in (
+                    "domain",
+                    "workbench",
+                    "surface_id",
+                    "project_root",
+                    "document_name",
+                    "document_uid",
+                    "native_program_count",
+                    "native_programs",
+                )
+            },
+            "contract": {},
+        }
+    )
+    return {
+        "ok": True,
+        "domain": str(completed.get("domain") or ""),
+        "workbench": str(completed.get("workbench") or ""),
+        "surface_id": str(completed.get("surface_id") or ""),
+        "document": dict(completed.get("document") or {}),
+        "program_count": int(completed.get("program_count") or 0),
+        "program_limit": int(completed.get("program_limit") or 0),
+        "programs_truncated": bool(completed.get("programs_truncated")),
+        "programs_omitted": int(completed.get("programs_omitted") or 0),
+        "programs": list(completed.get("programs") or []),
+    }
+
+
 def _program_artifact_root(project_root: str | Path, domain: str) -> Path:
     return Path(project_root) / "vibescript" / str(domain)
 
