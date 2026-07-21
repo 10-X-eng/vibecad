@@ -37,6 +37,17 @@ def _warn(message: str) -> None:
     App.Console.PrintWarning(f"VibeCAD scripted editor: {message}\n")
 
 
+def _document_restore_active(doc: Any | None) -> bool:
+    is_restoring = getattr(App, "isRestoring", None)
+    if callable(is_restoring):
+        try:
+            if bool(is_restoring()):
+                return True
+        except Exception:
+            pass
+    return doc is not None and bool(getattr(doc, "Restoring", False))
+
+
 def _document_key(doc: Any) -> str:
     return str(getattr(doc, "Uid", "") or getattr(doc, "Name", "") or "")
 
@@ -2345,7 +2356,9 @@ def ensure_scripted_model_editor_registered() -> Any:
 def refresh_scripted_model_editor() -> None:
     global _controller, _refresh_retry_pending
     doc = App.ActiveDocument
-    if doc is not None and bool(getattr(doc, "Recomputing", False)):
+    if _document_restore_active(doc) or (
+        doc is not None and bool(getattr(doc, "Recomputing", False))
+    ):
         if not _refresh_retry_pending:
             from PySide import QtCore
 

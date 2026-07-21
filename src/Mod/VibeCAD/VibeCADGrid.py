@@ -63,6 +63,20 @@ _main_window_filter: Any = None
 _close_suspended = False
 
 
+def _document_restore_active() -> bool:
+    if App is None:
+        return False
+    is_restoring = getattr(App, "isRestoring", None)
+    if callable(is_restoring):
+        try:
+            if bool(is_restoring()):
+                return True
+        except Exception:
+            pass
+    document = getattr(App, "ActiveDocument", None)
+    return document is not None and bool(getattr(document, "Restoring", False))
+
+
 def _nearest_125(value: float) -> float:
     """Return the nearest positive value in the ``1, 2, 5 x 10^n`` series."""
     if not math.isfinite(value) or value <= 0:
@@ -446,6 +460,8 @@ class _AdaptiveGridController:
 
 
 def _update_adaptive_controllers() -> None:
+    if _document_restore_active():
+        return
     for controller in list(_adaptive_controllers):
         if controller.maintain():
             continue
@@ -694,7 +710,7 @@ def _show_grid_in_active_view() -> None:
     grid is toggled on). Views whose grid tracker already exists are skipped
     so a manual grid toggle by the user is never fought.
     """
-    if App is None or not App.GuiUp or _close_suspended:
+    if App is None or not App.GuiUp or _close_suspended or _document_restore_active():
         return
     if not _grid_should_always_show():
         return

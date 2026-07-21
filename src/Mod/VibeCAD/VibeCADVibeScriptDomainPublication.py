@@ -43,6 +43,33 @@ PROP_ASSEMBLY_BOM_RESTORE_TARGET = "VibeCADAssemblyBOMRestoreTarget"
 PROP_ASSEMBLY_BOM_RESTORE_ERROR = "VibeCADAssemblyBOMRestoreError"
 MATERIAL_OWNERSHIP_SCHEMA = "vibecad-material-ownership-v1"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
+_ASSEMBLY_DEPENDENCY_SUFFIX = "__dependencies"
+_ASSEMBLY_DEPENDENCY_OUTPUT_TYPE = "dependency_anchor"
+
+_PERSISTED_INPUT_SNAPSHOT_KEYS = (
+    "document_uid",
+    "object_name",
+    "artifact_kind",
+    "shape_type",
+    "brep_sha256",
+    "brep_bytes",
+    "mesh_sha256",
+    "mesh_bytes",
+    "mesh_segments",
+    "mesh_source_placement_matrix",
+    "artifact_sha256",
+    "artifact_bytes",
+    "attribute_artifacts",
+    "structured",
+    "type_id",
+    "source_kind",
+    "source_program_id",
+    "source_program_domain",
+    "source_revision",
+    "transient_topology",
+    "requires_semantic_interfaces",
+    "reference_contract_sha256",
+)
 
 
 _NATIVE_TYPE_BY_OUTPUT: dict[str, str] = {
@@ -257,6 +284,220 @@ def _add_string_property(obj: Any, name: str, description: str) -> None:
 def _add_property(obj: Any, property_type: str, name: str, description: str) -> None:
     if name not in _properties(obj):
         obj.addProperty(property_type, name, "VibeCAD", description)
+
+
+def compact_persisted_input_snapshots(doc: Any) -> dict[str, Any]:
+    """Remove obsolete full input facts from accepted-revision metadata.
+
+    Runtime execution receives authenticated facts from the candidate input
+    bundle. Persisted live objects need only stable identities and digests.
+    Older documents duplicated the full facts payload on every output, so
+    equal property strings are decoded once and compacted in place.
+    """
+
+    compacted_by_raw: dict[str, str | None] = {}
+    changed_objects: list[str] = []
+    invalid_objects: list[str] = []
+    before_bytes = 0
+    after_bytes = 0
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if PROP_INPUT_SNAPSHOTS not in _properties(obj):
+            continue
+        raw = str(getattr(obj, PROP_INPUT_SNAPSHOTS, "") or "")
+        if raw not in compacted_by_raw:
+            compacted: str | None = raw
+            try:
+                snapshots = json.loads(raw)
+                if not isinstance(snapshots, list) or not all(
+                    isinstance(snapshot, dict) for snapshot in snapshots
+                ):
+                    raise ValueError("input snapshots must be a list of objects")
+                if any("facts" in snapshot for snapshot in snapshots):
+                    compacted = json.dumps(
+                        [
+                            {
+                                key: value
+                                for key, value in snapshot.items()
+                                if key != "facts"
+                            }
+                            for snapshot in snapshots
+                        ],
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+            except (TypeError, ValueError):
+                compacted = None
+            compacted_by_raw[raw] = compacted
+        compacted = compacted_by_raw[raw]
+        if compacted is None:
+            invalid_objects.append(str(getattr(obj, "Name", "") or ""))
+            continue
+        if compacted == raw:
+            continue
+        before_bytes += len(raw.encode("utf-8"))
+        after_bytes += len(compacted.encode("utf-8"))
+        setattr(obj, PROP_INPUT_SNAPSHOTS, compacted)
+        changed_objects.append(str(getattr(obj, "Name", "") or ""))
+    return {
+        "changed_objects": changed_objects,
+        "invalid_objects": invalid_objects,
+        "before_bytes": before_bytes,
+        "after_bytes": after_bytes,
+    }
+
+
+def _assembly_dependency_output_name(assembly_output: str) -> str:
+    return f"{assembly_output}.{_ASSEMBLY_DEPENDENCY_SUFFIX}"
+
+
+def _find_assembly_dependency_anchor(
+    doc: Any,
+    program_id: str,
+    assembly_output: str,
+) -> Any | None:
+    output_name = _assembly_dependency_output_name(assembly_output)
+    matches = [
+        obj
+        for obj in _program_objects(doc, program_id, "assembly")
+        if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
+        == output_name
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Multiple Assembly dependency anchors claim {output_name!r}."
+        )
+    if not matches:
+        return None
+    anchor = matches[0]
+    if str(getattr(anchor, "TypeId", "") or "") != "App::FeaturePython":
+        raise RuntimeError(
+            f"Assembly dependency anchor {anchor.Name!r} is not an App::FeaturePython."
+        )
+    return anchor
+
+
+def _create_assembly_dependency_anchor(
+    doc: Any,
+    program_id: str,
+    assembly_output: str,
+) -> Any:
+    name = _SAFE_NAME.sub(
+        "_",
+        f"VibeAssembly_{program_id[:8]}_{assembly_output}_Dependencies",
+    )[:120]
+    anchor = doc.addObject("App::FeaturePython", name)
+    if anchor is None:
+        raise RuntimeError("FreeCAD did not create the Assembly dependency anchor.")
+    anchor.Label = "VibeScript Assembly dependencies"
+    view = getattr(anchor, "ViewObject", None)
+    if view is not None:
+        view.Visibility = False
+        if hasattr(view, "ShowInTree"):
+            view.ShowInTree = False
+    return anchor
+
+
+def migrate_assembly_dependency_anchors(doc: Any) -> dict[str, Any]:
+    """Move external dependency links off native Assembly containers.
+
+    ``Assembly::AssemblyObject`` enforces GeoFeatureGroup scope for its link
+    properties. Older publications put cross-container dependency links on the
+    assembly itself, causing an out-of-scope warning on every recompute. A
+    hidden top-level ``App::FeaturePython`` owns those invalidation links instead.
+    """
+
+    migrated: list[str] = []
+    created: list[str] = []
+    for assembly in list(getattr(doc, "Objects", []) or []):
+        if str(getattr(assembly, "TypeId", "") or "") != "Assembly::AssemblyObject":
+            continue
+        if (
+            str(getattr(assembly, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+            != "assembly"
+        ):
+            continue
+        direct = list(getattr(assembly, PROP_INPUT_OBJECTS, []) or [])
+        nested = list(getattr(assembly, PROP_NESTED_INPUT_OBJECTS, []) or [])
+        if not direct and not nested:
+            continue
+        program_id = str(
+            getattr(assembly, contracts.PROP_PROGRAM_ID, "") or ""
+        )
+        output_name = str(
+            getattr(assembly, contracts.PROP_PROGRAM_OUTPUT, "") or ""
+        )
+        if not program_id or not output_name:
+            raise RuntimeError(
+                f"Assembly {assembly.Name!r} has dependency links without stable "
+                "VibeScript program metadata."
+            )
+        anchor = _find_assembly_dependency_anchor(
+            doc,
+            program_id,
+            output_name,
+        )
+        if anchor is None:
+            anchor = _create_assembly_dependency_anchor(
+                doc,
+                program_id,
+                output_name,
+            )
+            created.append(str(anchor.Name))
+        view = getattr(anchor, "ViewObject", None)
+        if view is not None:
+            view.Visibility = False
+            if hasattr(view, "ShowInTree"):
+                view.ShowInTree = False
+        string_fields = (
+            contracts.PROP_PROGRAM_ID,
+            contracts.PROP_PROGRAM_DOMAIN,
+            contracts.PROP_PROGRAM_WORKBENCH,
+            contracts.PROP_PROGRAM_REVISION,
+            PROP_DEFINITION,
+            PROP_INPUT_SNAPSHOTS,
+            reference_contracts.PROP_DERIVED_STATE,
+            reference_contracts.PROP_STALE_REASON,
+            reference_contracts.PROP_SOURCE_REVISION,
+        )
+        for name in string_fields:
+            _add_string_property(anchor, name, "Migrated Assembly dependency metadata.")
+            setattr(anchor, name, str(getattr(assembly, name, "") or ""))
+        _add_string_property(
+            anchor,
+            contracts.PROP_PROGRAM_OUTPUT,
+            "Internal Assembly dependency owner.",
+        )
+        setattr(
+            anchor,
+            contracts.PROP_PROGRAM_OUTPUT,
+            _assembly_dependency_output_name(output_name),
+        )
+        _add_string_property(
+            anchor,
+            PROP_OUTPUT_TYPE,
+            "Internal VibeScript publication type.",
+        )
+        setattr(anchor, PROP_OUTPUT_TYPE, _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE)
+        _add_property(
+            anchor,
+            "App::PropertyXLinkList",
+            PROP_INPUT_OBJECTS,
+            "Live document objects used by the accepted Assembly revision.",
+        )
+        setattr(anchor, PROP_INPUT_OBJECTS, direct)
+        _add_property(
+            anchor,
+            "App::PropertyXLinkList",
+            PROP_NESTED_INPUT_OBJECTS,
+            "Nested objects used by the accepted Assembly revision.",
+        )
+        setattr(anchor, PROP_NESTED_INPUT_OBJECTS, nested)
+        setattr(assembly, PROP_INPUT_OBJECTS, [])
+        if PROP_NESTED_INPUT_OBJECTS in _properties(assembly):
+            setattr(assembly, PROP_NESTED_INPUT_OBJECTS, [])
+        migrated.append(str(assembly.Name))
+    return {"migrated_assemblies": migrated, "created_anchors": created}
 
 
 def _ensure_assembly_motion_properties(obj: Any) -> None:
@@ -519,9 +760,15 @@ def _set_metadata(
     for name, description, value in fields:
         _add_string_property(obj, name, description)
         setattr(obj, name, value)
+    input_link_property_type = (
+        "App::PropertyXLinkList"
+        if prepared["pack"].domain == "assembly"
+        and output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE
+        else "App::PropertyLinkList"
+    )
     _add_property(
         obj,
-        "App::PropertyLinkList",
+        input_link_property_type,
         PROP_INPUT_OBJECTS,
         "Live document objects snapshotted as inputs for this accepted output.",
     )
@@ -560,39 +807,19 @@ def _set_metadata(
         snapshots.append(
             {
                 key: reference.get(key)
-                for key in (
-                    "document_uid",
-                    "object_name",
-                    "artifact_kind",
-                    "shape_type",
-                    "brep_sha256",
-                    "brep_bytes",
-                    "mesh_sha256",
-                    "mesh_bytes",
-                    "mesh_segments",
-                    "mesh_source_placement_matrix",
-                    "artifact_sha256",
-                    "artifact_bytes",
-                    "attribute_artifacts",
-                    "structured",
-                    "facts",
-                    "type_id",
-                    "source_kind",
-                    "source_program_id",
-                    "source_program_domain",
-                    "source_revision",
-                    "transient_topology",
-                    "requires_semantic_interfaces",
-                    "reference_contract_sha256",
-                )
+                for key in _PERSISTED_INPUT_SNAPSHOT_KEYS
             }
         )
     dependency_targets = targets
-    if prepared["pack"].domain == "assembly" and output_type != "assembly":
-        # Assembly children cannot safely hold links to sources outside their
-        # container scope.  The top-level assembly owns the dependency links;
-        # every sibling output is still marked stale as one program below.
-        dependency_targets = []
+    if prepared["pack"].domain == "assembly":
+        # Native Assembly containers and children reject links outside their
+        # GeoFeatureGroup scope. A hidden top-level dependency anchor owns all
+        # source links used for downstream invalidation.
+        dependency_targets = (
+            targets
+            if output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE
+            else []
+        )
     setattr(obj, PROP_INPUT_OBJECTS, dependency_targets)
     if prepared["pack"].domain == "assembly":
         _add_property(
@@ -602,7 +829,7 @@ def _set_metadata(
             "Nested native source objects authenticated through an Assembly/App::Part hierarchy.",
         )
         nested_targets: list[Any] = []
-        if output_type == "assembly":
+        if output_type == _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE:
             import FreeCAD as App
 
             documents_by_uid = {
@@ -10495,6 +10722,7 @@ def publish_candidate(
     bim_bases: dict[str, Any] = {}
     created: list[Any] = []
     removed: list[str] = []
+    assembly_dependency_anchor: Any | None = None
     robot_trajectory_swaps: list[dict[str, Any]] = []
     retired_robot_trajectories: list[dict[str, Any]] = []
     transaction_open = False
@@ -10527,6 +10755,20 @@ def publish_candidate(
             ),
             None,
         )
+        if prepared["pack"].domain == "assembly" and assembly_item is not None:
+            assembly_output = str(assembly_item["name"])
+            assembly_dependency_anchor = _find_assembly_dependency_anchor(
+                doc,
+                str(prepared["program_id"]),
+                assembly_output,
+            )
+            if assembly_dependency_anchor is None:
+                assembly_dependency_anchor = _create_assembly_dependency_anchor(
+                    doc,
+                    str(prepared["program_id"]),
+                    assembly_output,
+                )
+                created.append(assembly_dependency_anchor)
         for item in validated["outputs"]:
             output_name = str(item["name"])
             output_type = str(item["type"])
@@ -10690,6 +10932,21 @@ def publish_candidate(
                 _freeze_robot_dressup(obj)
             if assembly_bom:
                 _freeze_object(obj, "Assembly BOM")
+        if assembly_dependency_anchor is not None and assembly_item is not None:
+            assembly_output = str(assembly_item["name"])
+            assembly_dependency_anchor.Label = "VibeScript Assembly dependencies"
+            view = getattr(assembly_dependency_anchor, "ViewObject", None)
+            if view is not None:
+                view.Visibility = False
+                if hasattr(view, "ShowInTree"):
+                    view.ShowInTree = False
+            _set_metadata(
+                assembly_dependency_anchor,
+                prepared,
+                _assembly_dependency_output_name(assembly_output),
+                _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
+                _definition(assembly_item),
+            )
         downstream_refresh = _refresh_external_consumers(
             downstream_uses,
             revision=str(prepared["revision"]),

@@ -1139,13 +1139,16 @@ void NotificationArea::showConfirmationDialog(const QString& notifiername, const
 
 void NotificationArea::showInNotificationArea()
 {
-    // guard to avoid modifying the notification list and indices while creating the tooltip
-    lock_guard<std::mutex> g(pImp->mutexNotification);
+    // Query the widget before taking the notification-data lock. Showing the
+    // widget can make Qt emit a warning, which is routed back through
+    // pushNotification(). Never call into the widget while holding this lock.
+    const bool notificationBoxVisible = NotificationBox::isVisible();
+    std::unique_lock<std::mutex> g(pImp->mutexNotification);
 
     // NOLINTNEXTLINE
     NotificationsAction* na = static_cast<NotificationsAction*>(pImp->notificationaction);
 
-    if (!NotificationBox::isVisible()) {
+    if (!notificationBoxVisible) {
         // The Notification Box may have been closed (by the user by popping it out or by left mouse
         // button) ensure that old notifications are not shown again, even if the timer has not
         // lapsed
@@ -1291,7 +1294,11 @@ void NotificationArea::showInNotificationArea()
             options = options | NotificationBox::Options::HideIfReferenceWidgetDeactivated;
         }
 
-        bool isshown = NotificationBox::showText(
+        // showText() can emit a Qt warning. Warnings are routed back through
+        // pushNotification(), so the notification-data lock must be released
+        // before entering Qt to avoid deadlocking on that reentrant call.
+        g.unlock();
+        const bool isshown = NotificationBox::showText(
             this->mapToGlobal(QPoint()),
             msgw,
             getMainWindow(),
@@ -1301,8 +1308,16 @@ void NotificationArea::showInNotificationArea()
             pImp->notificationWidth
         );
 
-        if (!isshown && !pImp->missedNotifications) {
-            pImp->missedNotifications = true;
+        bool showMissedIcon = false;
+        if (!isshown) {
+            g.lock();
+            if (!pImp->missedNotifications) {
+                pImp->missedNotifications = true;
+                showMissedIcon = true;
+            }
+            g.unlock();
+        }
+        if (showMissedIcon) {
             setIcon(TrayIcon::MissedNotifications);
         }
     }

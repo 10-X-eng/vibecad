@@ -70,6 +70,7 @@ _pending_question_request: list[dict[str, Any]] = []
 _conversation_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
 _conversation_persist_thread: threading.Thread | None = None
 _conversation_persist_lock = threading.RLock()
+_assistant_document_refresh_scheduled = False
 
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
@@ -2713,7 +2714,34 @@ def _refresh_view_status(dock: Any | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _document_restore_active() -> bool:
+    is_restoring = getattr(App, "isRestoring", None)
+    if callable(is_restoring):
+        try:
+            if bool(is_restoring()):
+                return True
+        except Exception:
+            pass
+    try:
+        document = App.ActiveDocument
+    except Exception:
+        document = None
+    return document is not None and bool(getattr(document, "Restoring", False))
+
+
 def _refresh_assistant_for_document_change() -> None:
+    document = App.ActiveDocument
+    if document is not None:
+        try:
+            from VibeCADVibeScriptDomainPublication import (
+                compact_persisted_input_snapshots,
+                migrate_assembly_dependency_anchors,
+            )
+
+            compact_persisted_input_snapshots(document)
+            migrate_assembly_dependency_anchors(document)
+        except Exception as exc:
+            _warn(f"VibeCAD input-snapshot compaction failed: {exc}")
     try:
         from VibeCADScriptedEditor import refresh_scripted_model_editor
 
@@ -2733,12 +2761,27 @@ def _refresh_assistant_for_document_change() -> None:
 
 
 def _schedule_assistant_document_refresh() -> None:
+    global _assistant_document_refresh_scheduled
+    if _assistant_document_refresh_scheduled:
+        return
+    _assistant_document_refresh_scheduled = True
+
     try:
         from PySide import QtCore
 
-        QtCore.QTimer.singleShot(0, _refresh_assistant_for_document_change)
+        def refresh_when_restored() -> None:
+            global _assistant_document_refresh_scheduled
+            if _document_restore_active():
+                QtCore.QTimer.singleShot(100, refresh_when_restored)
+                return
+            _assistant_document_refresh_scheduled = False
+            _refresh_assistant_for_document_change()
+
+        QtCore.QTimer.singleShot(0, refresh_when_restored)
     except Exception:
-        _refresh_assistant_for_document_change()
+        _assistant_document_refresh_scheduled = False
+        if not _document_restore_active():
+            _refresh_assistant_for_document_change()
 
 
 def _document_storage_key(doc: Any) -> str:

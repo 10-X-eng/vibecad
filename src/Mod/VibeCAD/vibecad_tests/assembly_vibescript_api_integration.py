@@ -1790,7 +1790,21 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     diagnostic_payload = json.loads(diagnostics.VibeCADSolverDiagnostics)
     assert diagnostic_payload["native"]["available"] is True
     assert diagnostic_payload["component_count"] == 3
-    assert list(getattr(model, PROP_INPUT_OBJECTS)) == [source_base, source_arm, subassembly]
+    dependency_anchor = next(
+        obj
+        for obj in document.Objects
+        if str(getattr(obj, PROP_OUTPUT_TYPE, "") or "") == "dependency_anchor"
+    )
+    assert dependency_anchor.TypeId == "App::FeaturePython"
+    assert dependency_anchor.getTypeIdOfProperty(PROP_INPUT_OBJECTS) == (
+        "App::PropertyXLinkList"
+    )
+    assert list(getattr(dependency_anchor, PROP_INPUT_OBJECTS)) == [
+        source_base,
+        source_arm,
+        subassembly,
+    ]
+    assert list(getattr(model, PROP_INPUT_OBJECTS)) == []
     for child in (base, arm, module, hinge, mount, diagnostics):
         assert list(getattr(child, PROP_INPUT_OBJECTS)) == []
     ground = next(
