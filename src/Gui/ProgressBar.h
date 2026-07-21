@@ -141,7 +141,7 @@ private:
     friend class ProgressBar;
 };
 
-class ProgressBar: public QProgressBar
+class GuiExport ProgressBar: public QProgressBar
 {
     Q_OBJECT
     Q_PROPERTY(bool userEnabled READ isUserEnabled WRITE setUserEnabled)

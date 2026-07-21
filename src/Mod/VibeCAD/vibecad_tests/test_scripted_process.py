@@ -34,7 +34,7 @@ def test_large_worker_output_cannot_fill_a_parent_pipe(tmp_path: Path) -> None:
     assert result["started"] is True
     assert result["returncode"] == 0
     assert result["timed_out"] is False
-    assert result["stdout"].endswith("STDOUT_END\n")
-    assert result["stderr"].endswith("STDERR_END\n")
+    assert result["stdout"].endswith(f"STDOUT_END{os.linesep}")
+    assert result["stderr"].endswith(f"STDERR_END{os.linesep}")
     assert len(result["stdout"]) <= 16_000
     assert len(result["stderr"]) <= 16_000
