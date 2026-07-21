@@ -50,9 +50,12 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QByteArray>
+#include <QEventLoop>
 #include <QMenu>
 #include <QTimer>
 #include <deque>
+#include <memory>
 #include <sstream>
 
 #include <Inventor/SoPickedPoint.h>
@@ -76,12 +79,14 @@
 #include <App/Document.h>
 #include <Base/Console.h>
 #include <Base/Parameter.h>
+#include <Base/Sequencer.h>
 #include <Base/TimeInfo.h>
 #include <Base/Tools.h>
 
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Control.h>
+#include <Gui/ProgressBar.h>
 #include <Gui/Selection/SoFCSelectionAction.h>
 #include <Gui/Selection/SoFCUnifiedSelection.h>
 #include <Gui/ViewParams.h>
@@ -125,6 +130,48 @@ struct DeferredVisual
 
 std::deque<DeferredVisual> deferredVisuals;
 bool deferredVisualRefreshScheduled = false;
+std::unique_ptr<Base::SequencerLauncher> deferredVisualProgress;
+Gui::ProgressBar* deferredVisualProgressBar = nullptr;
+int deferredVisualProgressMinimumDuration = -1;
+
+void startDeferredVisualProgress()
+{
+    if (deferredVisualProgress || deferredVisuals.empty() || Base::Sequencer().isRunning()) {
+        return;
+    }
+
+    deferredVisualProgressBar = static_cast<Gui::ProgressBar*>(
+        Gui::SequencerBar::instance()->getProgressBar());
+    deferredVisualProgressMinimumDuration = deferredVisualProgressBar->minimumDuration();
+    deferredVisualProgressBar->setMinimumDuration(0);
+
+    const QByteArray text = QApplication::translate(
+                                "PartGui::ViewProviderPartExt",
+                                "Loading model display\u2026")
+                                .toUtf8();
+    deferredVisualProgress =
+        std::make_unique<Base::SequencerLauncher>(text.constData(), deferredVisuals.size());
+
+    // Paint the native progress indicator and wait cursor before tessellating the next shape.
+    qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void advanceDeferredVisualProgress()
+{
+    if (deferredVisualProgress) {
+        deferredVisualProgress->next();
+    }
+}
+
+void finishDeferredVisualProgress()
+{
+    deferredVisualProgress.reset();
+    if (deferredVisualProgressBar) {
+        deferredVisualProgressBar->setMinimumDuration(deferredVisualProgressMinimumDuration);
+        deferredVisualProgressBar = nullptr;
+        deferredVisualProgressMinimumDuration = -1;
+    }
+}
 
 void refreshNextDeferredVisual();
 
@@ -140,6 +187,8 @@ void refreshNextDeferredVisual()
         return;
     }
 
+    startDeferredVisualProgress();
+
     while (!deferredVisuals.empty()) {
         DeferredVisual identity = std::move(deferredVisuals.front());
         deferredVisuals.pop_front();
@@ -150,11 +199,14 @@ void refreshNextDeferredVisual()
             : nullptr;
         if (viewProvider) {
             viewProvider->finishDeferredVisualRestore();
+            advanceDeferredVisualProgress();
             scheduleNextDeferredVisual();
             return;
         }
+        advanceDeferredVisualProgress();
     }
 
+    finishDeferredVisualProgress();
     deferredVisualRefreshScheduled = false;
 }
 
