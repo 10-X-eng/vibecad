@@ -131,7 +131,8 @@ cp build/FreeCAD "${app_name}/Contents/MacOS/FreeCAD"
 
 # Add deployment target suffix to artifact name (e.g., "-macOS11" or "-macOS15")
 deploy_target="${MACOS_DEPLOYMENT_TARGET:-11.0}"
-version_name="VibeCAD_${BUILD_TAG}-macOS${deploy_target%%.*}-$(uname -m)"
+artifact_base="$(python ../../../src/Tools/resolve_release_artifact_name.py ../../..)"
+version_name="${artifact_base}-macOS${deploy_target%%.*}-$(uname -m)"
 application_menu_name="VibeCAD"
 
 echo -e "\################"

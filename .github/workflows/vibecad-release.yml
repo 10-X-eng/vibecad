@@ -248,6 +248,13 @@ jobs:
           # Build the shared AppDir once (cheap: ~20s), then compress the AppImage
           # and the .deb concurrently. Both only read the finalized AppDir and are
           # independent of each other, so they overlap on the runner's cores.
+          artifact_basename="$(
+            python ../../src/Tools/resolve_release_artifact_name.py ../..
+          )"
+          release_version="$(
+            python ../../src/Tools/resolve_release_artifact_name.py ../.. \
+              --component release-version
+          )"
           CREATE_BUNDLE_PHASE=appdir pixi run -e package create_bundle
 
           CREATE_BUNDLE_PHASE=appimage pixi run -e package create_bundle &
@@ -256,7 +263,8 @@ jobs:
           ../linux/build_deb_from_appdir.sh \
             --appdir linux/AppDir \
             --output-dir linux \
-            --version "${BUILD_TAG}" \
+            --version "${release_version}" \
+            --artifact-basename "${artifact_basename}" \
             --arch "$(uname -m)" &
           deb_pid=$!
 

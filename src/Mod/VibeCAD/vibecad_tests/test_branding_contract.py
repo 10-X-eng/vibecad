@@ -382,12 +382,38 @@ def test_windows_bundle_creates_branded_executable() -> None:
     assert "VibeCADCmdPortableLauncher.exe" in bundle_script
     assert '"$SIGN_DIR/FreeCADCmd.exe" --safe-mode --version' in bundle_script
     assert "shimgen.exe" not in bundle_script
-    assert 'version_name="VibeCAD_${BUILD_TAG}-Windows-$(uname -m)"' in bundle_script
+    assert "resolve_release_artifact_name.py" in bundle_script
+    assert 'version_name="${artifact_base}-Windows-$(uname -m)"' in bundle_script
+    assert 'version_name="VibeCAD_${BUILD_TAG}' not in bundle_script
     assert 'rm -rf -- "${copy_dir}" "${version_name}" ".nsis_tmp"' in bundle_script
     assert "add_executable(VibeCADPortableLauncher WIN32" in main_cmake
     assert "add_executable(VibeCADCmdPortableLauncher" in main_cmake
     assert 'L"bin\\\\VibeCAD.exe"' in launcher_source
     assert "CreateProcessW" in launcher_source
+
+
+def test_release_packages_share_canonical_artifact_basename() -> None:
+    linux_bundle = _source("package/rattler-build/linux/create_bundle.sh")
+    macos_bundle = _source("package/rattler-build/osx/create_bundle.sh")
+    windows_bundle = _source("package/rattler-build/windows/create_bundle.sh")
+    release_workflow = _source(".github/workflows/vibecad-release.yml")
+    macos_workflow = _source(".github/workflows/vibecad-macos.yml")
+    deb_builder = _source("package/linux/build_deb_from_appdir.sh")
+
+    for bundle_script, platform_suffix in (
+        (linux_bundle, 'version_name="${artifact_base}-Linux-$(uname -m)"'),
+        (macos_bundle, 'version_name="${artifact_base}-macOS${deploy_target%%.*}-$(uname -m)"'),
+        (windows_bundle, 'version_name="${artifact_base}-Windows-$(uname -m)"'),
+    ):
+        assert "resolve_release_artifact_name.py" in bundle_script
+        assert platform_suffix in bundle_script
+        assert 'version_name="VibeCAD_${BUILD_TAG}' not in bundle_script
+
+    assert '--version "${release_version}"' in release_workflow
+    assert '--artifact-basename "${artifact_basename}"' in release_workflow
+    assert 'deb_path="$output_dir/${artifact_basename}-Linux-${deb_arch}.deb"' in deb_builder
+    assert "package/rattler-build/osx/VibeCAD-*.dmg" in macos_workflow
+    assert "package/rattler-build/osx/VibeCAD_*.dmg" not in macos_workflow
 
 
 def test_assistant_panel_uses_vibecad_product_name() -> None:

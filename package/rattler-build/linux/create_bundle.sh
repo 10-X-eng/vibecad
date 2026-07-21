@@ -4,7 +4,8 @@ set -e
 set -x
 
 conda_env="AppDir/usr"
-version_name="VibeCAD_${BUILD_TAG}-Linux-$(uname -m)"
+artifact_base="$(python ../../../src/Tools/resolve_release_artifact_name.py ../../..)"
+version_name="${artifact_base}-Linux-$(uname -m)"
 
 # Build (and finalize) the AppDir. This is the shared input for both the AppImage
 # and the Debian package, so it is a separate phase that must complete before

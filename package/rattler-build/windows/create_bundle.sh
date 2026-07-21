@@ -10,10 +10,11 @@ if [[ -z "${BUILD_TAG:-}" || ! "${BUILD_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]
   echo "BUILD_TAG must contain only letters, numbers, '.', '_', '+', and '-'." >&2
   exit 1
 fi
-version_name="VibeCAD_${BUILD_TAG}-Windows-$(uname -m)"
+artifact_base="$(python ../../../src/Tools/resolve_release_artifact_name.py ../../..)"
+version_name="${artifact_base}-Windows-$(uname -m)"
 
-# Make local rebuilds behave like the runner's fresh workspace. BUILD_TAG is
-# validated above so cleanup cannot escape the Windows bundle directories.
+# Make local rebuilds behave like the runner's fresh workspace. The artifact
+# resolver validates every dynamic filename component before cleanup runs.
 rm -rf -- "${copy_dir}" "${version_name}" ".nsis_tmp"
 rm -f -- \
   "${version_name}.7z" \

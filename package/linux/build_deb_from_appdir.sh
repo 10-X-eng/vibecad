@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: build_deb_from_appdir.sh --appdir PATH --output-dir PATH --version VERSION [--arch ARCH]
+Usage: build_deb_from_appdir.sh --appdir PATH --output-dir PATH --version VERSION [--arch ARCH] [--artifact-basename NAME]
 
 Builds an installable VibeCAD Debian package from the Linux AppDir produced by
 package/rattler-build/linux/create_bundle.sh.
@@ -14,6 +14,7 @@ appdir=""
 output_dir=""
 version=""
 arch="$(uname -m)"
+artifact_basename=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +34,10 @@ while [[ $# -gt 0 ]]; do
             arch="${2:-}"
             shift 2
             ;;
+        --artifact-basename)
+            artifact_basename="${2:-}"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -47,6 +52,11 @@ done
 
 if [[ -z "$appdir" || -z "$output_dir" || -z "$version" ]]; then
     usage >&2
+    exit 2
+fi
+
+if [[ -n "$artifact_basename" && ! "$artifact_basename" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+    echo "Artifact basename contains unsupported characters: $artifact_basename" >&2
     exit 2
 fi
 
@@ -169,7 +179,12 @@ exit 0
 EOF
 chmod 0755 "$pkgroot/DEBIAN/postrm"
 
-deb_path="$output_dir/${package_name}_${deb_version}_${deb_arch}.deb"
+if [[ -n "$artifact_basename" ]]; then
+    deb_path="$output_dir/${artifact_basename}-Linux-${deb_arch}.deb"
+else
+    # Preserve the original standalone-script behavior for existing callers.
+    deb_path="$output_dir/${package_name}_${deb_version}_${deb_arch}.deb"
+fi
 # Speed up packaging by lowering the xz compression level (dpkg-deb defaults to -6).
 # Staying on xz (rather than switching to zstd) keeps the package installable by the
 # same set of dpkg/apt versions, so the supported OS list is unchanged.

@@ -224,8 +224,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: |
-            package/rattler-build/osx/VibeCAD_*.dmg
-            package/rattler-build/osx/VibeCAD_*.dmg-SHA256.txt
+            package/rattler-build/osx/VibeCAD-*.dmg
+            package/rattler-build/osx/VibeCAD-*.dmg-SHA256.txt
 
   publish:
     name: Publish macOS Prerelease
