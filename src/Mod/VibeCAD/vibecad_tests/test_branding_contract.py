@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import runpy
 import sys
+import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,73 @@ ROOT = Path(__file__).resolve().parents[4]
 
 def _source(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+class TestVibeCADNativePanelStartup(unittest.TestCase):
+    """Exercise the real FreeCAD dock lifecycle when run by the GUI test runner."""
+
+    WORKBENCHES = (
+        "PartDesignWorkbench",
+        "SketcherWorkbench",
+        "PartWorkbench",
+        "DraftWorkbench",
+        "SurfaceWorkbench",
+        "AssemblyWorkbench",
+        "SpreadsheetWorkbench",
+        "MaterialWorkbench",
+        "BIMWorkbench",
+        "MeshWorkbench",
+        "MeshPartWorkbench",
+        "PointsWorkbench",
+        "ReverseEngineeringWorkbench",
+        "InspectionWorkbench",
+        "RobotWorkbench",
+        "FemWorkbench",
+        "CAMWorkbench",
+        "TechDrawWorkbench",
+    )
+
+    def test_every_supported_workbench_creates_vibecad_panels(self) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        import FreeCADGui as Gui
+        from PySide import QtCore, QtWidgets
+
+        main_window = Gui.getMainWindow()
+        self.assertIsNotNone(main_window)
+        for workbench in self.WORKBENCHES:
+            with self.subTest(workbench=workbench):
+                Gui.activateWorkbench(workbench)
+                self.assertEqual(Gui.activeWorkbench().name(), workbench)
+                panel_module = sys.modules.get("VibeCADGui")
+                self.assertIsNotNone(
+                    panel_module,
+                    f"{workbench} did not initialize the shared VibeCAD GUI module",
+                )
+                self.assertIsNotNone(
+                    getattr(panel_module, "_registered_assistant_widget", None),
+                    f"{workbench} did not register the assistant dock content",
+                )
+                assistant = main_window.findChild(
+                    QtWidgets.QDockWidget, "VibeCADAssistantPanel"
+                )
+                editor = main_window.findChild(
+                    QtWidgets.QDockWidget, "VibeCADScriptedModelPanel"
+                )
+                self.assertIsNotNone(assistant)
+                self.assertIsNotNone(assistant.widget())
+                self.assertIsNotNone(editor)
+                self.assertIsNotNone(editor.widget())
+                self.assertTrue(assistant.toggleViewAction().isVisible())
+                self.assertTrue(editor.toggleViewAction().isVisible())
+                self.assertFalse(assistant.isHidden())
+                self.assertEqual(
+                    main_window.dockWidgetArea(assistant),
+                    QtCore.Qt.RightDockWidgetArea,
+                )
 
 
 def test_windows_installer_uses_vibecad_identity() -> None:
@@ -64,14 +132,21 @@ def test_every_runtime_entry_point_uses_only_the_vibecad_config_namespace() -> N
 def test_vibecad_docks_are_registered_before_native_window_restore() -> None:
     gui = _source("src/Mod/VibeCAD/VibeCADGui.py")
     init_gui = _source("src/Mod/VibeCAD/InitGui.py")
+    freecad_gui_init = _source("src/Gui/FreeCADGuiInit.py")
     startup = _source("src/Gui/StartupProcess.cpp")
 
     assert "QtCore.QTimer.singleShot(0, apply_context_debug_preferences)" not in gui
     assert "QtCore.QTimer.singleShot(0, ensure_scripted_model_editor_registered)" not in gui
     assert "ensure_scripted_model_editor_registered()" in gui
     assert "QtCore.QTimer.singleShot(0, _register_startup_assistant)" not in init_gui
-    assert "_register_startup_assistant()" in init_gui
-    assert "register_startup_assistant()" in init_gui
+    assert "VibeCADGui.ensure_commands_registered()" in init_gui
+    shared_initialization = gui.split("def ensure_commands_registered()", 1)[1]
+    assert shared_initialization.index("register_startup_assistant()") < (
+        shared_initialization.index("ensure_scripted_model_editor_registered()")
+    )
+    assert freecad_gui_init.index("InitApplications()") < freecad_gui_init.index(
+        'Gui.activateWorkbench("NoneWorkbench")'
+    )
     execute = startup.split("void StartupPostProcess::execute()", 1)[1].split("}", 1)[0]
     assert execute.index("showMainWindow();") < execute.index("activateWorkbench();")
     show = startup.split("void StartupPostProcess::showMainWindow()", 1)[1].split(
@@ -84,60 +159,40 @@ def test_vibecad_docks_are_registered_before_native_window_restore() -> None:
     )
 
 
-def test_vibecad_docks_use_native_workbench_declarations(monkeypatch) -> None:
+def test_vibecad_docks_use_native_standard_workbench_declarations() -> None:
+    workbench = _source("src/Gui/Workbench.cpp")
+    setup = workbench.split("DockWindowItems* StdWorkbench::setupDockWindows() const", 1)[1]
+    setup = setup.split("return root;", 1)[0]
+
+    assert 'root->addDockWidget("Std_TaskView"' in setup
+    assert '"VibeCADAssistantPanel"' in setup
+    assert '"VibeCADScriptedModelPanel"' in setup
+    assert '"VibeCADContextDebugPanel"' in setup
+    assert "Gui::DockWindowOption::VisibleTabbed" in setup
+    assert "Gui::DockWindowOption::HiddenTabbed" in setup
+
+    for relative_path in ROOT.glob("src/Mod/*/InitGui.py"):
+        if relative_path.parent.name == "VibeCAD":
+            continue
+        source = relative_path.read_text(encoding="utf-8")
+        assert "register_ai_commands_for_workbench" not in source
+        assert "import VibeCADGui" not in source
+
+
+def test_vibecad_connects_one_global_workbench_activation_signal(monkeypatch) -> None:
     import VibeCADGui as panel
 
-    monkeypatch.setattr(
-        panel.Gui,
-        "activeWorkbench",
-        lambda: SimpleNamespace(name=lambda: "AssemblyWorkbench"),
-        raising=False,
+    connected: list[object] = []
+    main_window = SimpleNamespace(
+        workbenchActivated=SimpleNamespace(connect=connected.append)
     )
-    monkeypatch.setattr(panel, "get_tool_pack", lambda _name: object())
-    monkeypatch.setattr(panel, "_find_context_debug_dock", lambda: object())
+    monkeypatch.setattr(panel, "_workbench_activation_connected", False)
+    monkeypatch.setattr(panel.Gui, "getMainWindow", lambda: main_window, raising=False)
 
-    assert panel._VibeCADDockWorkbenchManipulator().modifyDockWindows() == [
-        {
-            "add": panel.DOCK_NAME,
-            "area": "right",
-            "visible": True,
-            "tabbed": True,
-        },
-        {
-            "add": panel.MODEL_CODE_DOCK_NAME,
-            "area": "right",
-            "visible": False,
-            "tabbed": True,
-        },
-        {
-            "add": panel.CONTEXT_DEBUG_DOCK_NAME,
-            "area": "bottom",
-            "visible": True,
-            "tabbed": True,
-        },
-    ]
+    panel._connect_workbench_activation()
+    panel._connect_workbench_activation()
 
-    monkeypatch.setattr(panel, "get_tool_pack", lambda _name: None)
-    assert panel._VibeCADDockWorkbenchManipulator().modifyDockWindows() == []
-
-
-def test_vibecad_installs_native_dock_manipulator_once(monkeypatch) -> None:
-    import VibeCADGui as panel
-
-    installed: list[object] = []
-    monkeypatch.setattr(panel, "_dock_workbench_manipulator", None)
-    monkeypatch.setattr(
-        panel.Gui,
-        "addWorkbenchManipulator",
-        installed.append,
-        raising=False,
-    )
-
-    panel._ensure_dock_workbench_manipulator()
-    panel._ensure_dock_workbench_manipulator()
-
-    assert len(installed) == 1
-    assert installed[0] is panel._dock_workbench_manipulator
+    assert connected == [panel._on_workbench_activated]
 
 
 def test_vibecad_docks_do_not_run_a_manual_layout_restore(monkeypatch) -> None:
@@ -354,6 +409,9 @@ def test_assistant_panel_uses_vibecad_product_name() -> None:
 def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
     config = ROOT / "src/Gui/PreferencePacks/VibeCAD Preferences/VibeCAD Preferences.cfg"
     root = ET.parse(config).getroot()
+    assert not any(
+        node.get("Name") == "BackgroundAutoloadModules" for node in root.iter("FCText")
+    )
     workbench_group = next(
         group
         for group in root.iter("FCParamGroup")
@@ -390,6 +448,21 @@ def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
     assert disabled.isdisjoint(user_workbenches)
 
 
+def test_vibecad_migrates_its_obsolete_background_autoload_before_use() -> None:
+    startup = _source("src/Gui/StartupProcess.cpp")
+    activation = startup.split("void StartupPostProcess::activateWorkbench()", 1)[1].split(
+        "void StartupPostProcess::setStyleSheet()", 1
+    )[0]
+    assert activation.index("migrateVibeCADBackgroundAutoload(wb);") < activation.index(
+        "autoloadModules(wb);"
+    )
+    migration = startup.split(
+        "void StartupPostProcess::migrateVibeCADBackgroundAutoload", 1
+    )[1].split("void StartupPostProcess::autoloadModules", 1)[0]
+    assert 'migrationKey = "VibeCADBackgroundAutoloadModules2026"' in migration
+    assert 'general->RemoveASCII("BackgroundAutoloadModules");' in migration
+
+
 def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> None:
     class ParameterGroup:
         def __init__(self, disabled: str) -> None:
@@ -421,7 +494,6 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     )
     gui = SimpleNamespace(
         ensure_commands_registered=lambda: startup_events.append("commands"),
-        register_startup_assistant=lambda: startup_events.append("assistant"),
     )
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
     monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
@@ -431,7 +503,6 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
     assert startup_events == [
         "commands",
-        "assistant",
         "scheduled:_setup_always_on_grid",
     ]
 

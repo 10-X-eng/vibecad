@@ -108,6 +108,7 @@ def run(service: Any, assembly_name: str, component_name: str) -> dict[str, Any]
             raise RuntimeError("The assembly's native JointGroup disappeared before grounding.")
         ground = native_joint_group.newObject("App::FeaturePython", "GroundedJoint")
         JointObject.GroundedJoint(ground, target)
+        JointObject.ensureViewProviderGroundedJoint(ground)
         active.recompute()
         solver_visible = bool(target_assembly.isPartGrounded(target))
         return {

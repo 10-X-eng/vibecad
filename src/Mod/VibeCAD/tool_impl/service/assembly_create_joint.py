@@ -283,6 +283,7 @@ def run(
         joint_obj = native_joint_group.newObject("App::FeaturePython", "Joint")
         type_index = JointObject.JointTypes.index(native_type)
         JointObject.Joint(joint_obj, type_index)
+        JointObject.ensureViewProviderJoint(joint_obj)
         joint_obj.Label = clean_label
         _apply_joint_parameters(joint_obj, kind, joint)
         joint_obj.Proxy.setJointConnectors(joint_obj, refs)

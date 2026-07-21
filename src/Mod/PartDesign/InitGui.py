@@ -67,19 +67,6 @@ class PartDesignWorkbench(Workbench):
 
         FreeCADGui.addCommand("PartDesign_Sprocket", CommandSprocket())
 
-        try:
-            import VibeCADGui
-
-            VibeCADGui.register_ai_commands_for_workbench(self, "PartDesign")
-        except Exception as err:
-            import FreeCAD as _VibeCADFreeCAD
-
-            _VibeCADFreeCAD.Console.PrintWarning(
-                "VibeCAD AI tools could not be registered for PartDesign: {err}\n".format(
-                    err=str(err)
-                )
-            )
-
     def GetClassName(self):
         return "PartDesignGui::Workbench"
 

@@ -935,6 +935,23 @@ DockWindowItems* StdWorkbench::setupDockWindows() const
     root->addDockWidget("Std_TaskView", Qt::RightDockWidgetArea, Gui::DockWindowOption::VisibleTabbed);
     root->addDockWidget("Std_ReportView", Qt::BottomDockWidgetArea, Gui::DockWindowOption::HiddenTabbed);
     root->addDockWidget("Std_PythonView", Qt::BottomDockWidgetArea, Gui::DockWindowOption::HiddenTabbed);
+    root->addDockWidget(
+        "VibeCADAssistantPanel",
+        Qt::RightDockWidgetArea,
+        Gui::DockWindowOption::VisibleTabbed
+    );
+    root->addDockWidget(
+        "VibeCADScriptedModelPanel",
+        Qt::RightDockWidgetArea,
+        Gui::DockWindowOption::HiddenTabbed
+    );
+    if (DockWindowManager::instance()->findRegisteredDockWindow("VibeCADContextDebugPanel")) {
+        root->addDockWidget(
+            "VibeCADContextDebugPanel",
+            Qt::BottomDockWidgetArea,
+            Gui::DockWindowOption::VisibleTabbed
+        );
+    }
 
     // Dagview through parameter.
     ParameterGrp::handle group = App::GetApplication()

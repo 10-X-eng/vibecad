@@ -489,7 +489,7 @@ def run(
             "sketch_information_overlay_excluded": bool(information_overlay_excluded),
             "sketch_internal_geometry_excluded": bool(internal_geometry_excluded),
             "artifact_role": "visual_verification",
-            "workbench": _active_workbench_name(Gui),
+            "workbench": service.active_workbench_name(),
             "document": document.Name,
             "visual_fingerprint": visual_fingerprint,
             "document_visual_fingerprint": document_visual_fingerprint,
@@ -577,11 +577,6 @@ def _remember_failure(
     )
     service._last_view_screenshot = result
     return result
-
-
-def _active_workbench_name(gui: Any) -> str | None:
-    workbench = gui.activeWorkbench()
-    return workbench.name() if workbench else None
 
 
 def _capture_framebuffer(

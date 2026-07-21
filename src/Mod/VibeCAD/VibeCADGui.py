@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""VibeCAD assistant GUI: native dock panel and shared workbench commands.
+"""VibeCAD assistant GUI: native dock panels and shared commands.
 
-The panel registers through ``MainWindow.addDockWindow`` (DockWindowManager)
-so it gets the same first-class treatment as the Tree and Tasks panels:
-the native overlay title bar, overlay-mode eligibility, visibility
-persistence, and a View -> Panels entry. No hand-rolled placement code.
+VibeCAD's application initializer registers panel content once through
+``DockWindowManager``. ``StdWorkbench`` owns dock creation for every standard
+workbench, exactly as it does for the Tree and Tasks panels. One global
+``MainWindow.workbenchActivated`` connection refreshes the UI; individual
+workbenches contain no VibeCAD registration or activation code.
 """
 
 from __future__ import annotations
@@ -61,7 +62,6 @@ _document_observer = None
 _gui_document_observer_connected = False
 _gui_document_observer = None
 _context_debug_startup_scheduled = False
-_dock_workbench_manipulator = None
 _registered_assistant_widget = None
 _registered_context_debug_widget = None
 _document_save_conversations: dict[str, dict[str, Any]] = {}
@@ -74,55 +74,6 @@ _conversation_persist_lock = threading.RLock()
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
 _PREFERENCES_PATH = "User parameter:BaseApp/Preferences/VibeCAD"
-
-
-class _VibeCADDockWorkbenchManipulator:
-    """Declare VibeCAD panels through the native workbench dock lifecycle."""
-
-    def modifyDockWindows(self) -> list[dict[str, Any]]:
-        try:
-            workbench = Gui.activeWorkbench()
-            workbench_name = workbench.name() if workbench is not None else ""
-        except Exception:
-            return []
-        if get_tool_pack(workbench_name) is None:
-            return []
-        docks: list[dict[str, Any]] = [
-            {
-                "add": DOCK_NAME,
-                "area": "right",
-                "visible": True,
-                "tabbed": True,
-            },
-            {
-                "add": MODEL_CODE_DOCK_NAME,
-                "area": "right",
-                "visible": False,
-                "tabbed": True,
-            },
-        ]
-        if (
-            _registered_context_debug_widget is not None
-            or _find_context_debug_dock() is not None
-        ):
-            docks.append(
-                {
-                    "add": CONTEXT_DEBUG_DOCK_NAME,
-                    "area": "bottom",
-                    "visible": True,
-                    "tabbed": True,
-                }
-            )
-        return docks
-
-
-def _ensure_dock_workbench_manipulator() -> None:
-    global _dock_workbench_manipulator
-    if _dock_workbench_manipulator is not None:
-        return
-    manipulator = _VibeCADDockWorkbenchManipulator()
-    Gui.addWorkbenchManipulator(manipulator)
-    _dock_workbench_manipulator = manipulator
 
 
 class _AssistantRunController:
@@ -3302,8 +3253,6 @@ def show_assistant_for_active_workbench() -> None:
 
 def _on_workbench_activated(workbench_name: str) -> None:
     clean_workbench = str(workbench_name)
-    if get_tool_pack(clean_workbench) is None:
-        return
     transition: dict[str, Any] = {"changed": False}
     if _is_assistant_run_active():
         transition = {
@@ -3360,28 +3309,6 @@ def _connect_workbench_activation() -> None:
         _workbench_activation_connected = True
     except Exception as exc:
         _warn(f"VibeCAD AI assistant could not watch workbench activation: {exc}")
-
-
-def _wrap_workbench_activation(workbench: Any) -> None:
-    if getattr(workbench, "__VibeCADActivatedWrapped__", False):
-        return
-    original = getattr(workbench, "Activated", None)
-
-    def _activated_with_vibecad(*args: Any, **kwargs: Any) -> Any:
-        result = None
-        if callable(original):
-            result = original(*args, **kwargs)
-        try:
-            active = get_service().active_workbench_name()
-            if active:
-                _on_workbench_activated(active)
-        except Exception as exc:
-            _warn(f"VibeCAD assistant could not open after workbench activation: {exc}")
-        return result
-
-    setattr(workbench, "__VibeCADOriginalActivated__", original)
-    setattr(workbench, "Activated", _activated_with_vibecad)
-    setattr(workbench, "__VibeCADActivatedWrapped__", True)
 
 
 # ---------------------------------------------------------------------------
@@ -3495,7 +3422,9 @@ def ensure_preferences_registered() -> None:
 def ensure_commands_registered() -> None:
     global _commands_registered
     ensure_preferences_registered()
-    _ensure_dock_workbench_manipulator()
+    # VibeCAD's application module calls this before the first workbench
+    # activation. Keep it idempotent for in-process module reloads.
+    register_startup_assistant()
     _connect_document_observer()
     _apply_startup_context_debug_preferences()
     if _commands_registered:
@@ -3518,10 +3447,3 @@ def ensure_commands_registered() -> None:
         _warn(f"VibeCAD scripted editor registration failed: {exc}")
     _connect_workbench_activation()
     _commands_registered = True
-
-
-def register_ai_commands_for_workbench(workbench: Any, _workbench_name: str) -> None:
-    """Connect VibeCAD lifecycle handling to an existing workbench."""
-
-    ensure_commands_registered()
-    _wrap_workbench_activation(workbench)

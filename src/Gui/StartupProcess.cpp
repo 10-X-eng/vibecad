@@ -39,9 +39,10 @@
 
 #include <Inventor/SoDB.h>
 
-#include <set>
-#include <string>
 #include <ranges>
+#include <set>
+#include <sstream>
+#include <string>
 
 #include "StartupProcess.h"
 #include "PreferencePackManager.h"
@@ -557,6 +558,8 @@ void StartupPostProcess::activateWorkbench()
         mainWindow->loadWindowSettings();
     }
 
+    migrateVibeCADBackgroundAutoload(wb);
+
     // Now run the background autoload, for workbenches that should be loaded at startup, but not
     // displayed to the user immediately
     autoloadModules(wb);
@@ -586,6 +589,67 @@ void StartupPostProcess::setStyleSheet()
     style = hGrp->GetASCII("StyleSheet", style.c_str());
 
     guiApp.setStyleSheet(QString::fromStdString(style), hGrp->GetBool("TiledBackground", false));
+}
+
+void StartupPostProcess::migrateVibeCADBackgroundAutoload(const QStringList& workbenches)
+{
+    constexpr auto migrationKey = "VibeCADBackgroundAutoloadModules2026";
+    auto migration = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Migration"
+    );
+    if (migration->GetBool(migrationKey, false)) {
+        return;
+    }
+
+    auto general = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/General"
+    );
+    const std::string autoloadCSV = general->GetASCII("BackgroundAutoloadModules", "");
+
+    std::set<std::string> configured;
+    std::stringstream stream(autoloadCSV);
+    std::string workbench;
+    while (std::getline(stream, workbench, ',')) {
+        const auto normalized = QString::fromStdString(workbench).trimmed();
+        if (!normalized.isEmpty()) {
+            configured.insert(normalized.toStdString());
+        }
+    }
+
+    // The original VibeCAD preference pack enabled every then-supported modeling
+    // workbench for background autoload. Applying the Workbenches preference page
+    // rewrote that value to the installed subset, so recognize both persisted forms.
+    const std::set<std::string> legacyPackModules = {
+        "AssemblyWorkbench",
+        "BIMWorkbench",
+        "CAMWorkbench",
+        "CurvesWorkbench",
+        "DraftWorkbench",
+        "FemWorkbench",
+        "MeshWorkbench",
+        "PartDesignWorkbench",
+        "PartWorkbench",
+        "SMWorkbench",
+        "SketcherWorkbench",
+        "SpreadsheetWorkbench",
+        "SurfaceWorkbench",
+        "TechDrawWorkbench",
+    };
+    std::set<std::string> installedLegacyModules;
+    for (const auto& module : legacyPackModules) {
+        if (workbenches.contains(QString::fromStdString(module))) {
+            installedLegacyModules.insert(module);
+        }
+    }
+
+    if (configured == legacyPackModules
+        || (!installedLegacyModules.empty() && configured == installedLegacyModules)) {
+        general->RemoveASCII("BackgroundAutoloadModules");
+        Base::Console().message(
+            "Removed VibeCAD's obsolete all-workbench background autoload preference.\n"
+        );
+    }
+    migration->SetBool(migrationKey, true);
 }
 
 void StartupPostProcess::autoloadModules(const QStringList& wb)

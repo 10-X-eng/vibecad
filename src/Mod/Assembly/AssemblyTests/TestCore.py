@@ -23,6 +23,7 @@
 
 import FreeCAD as App
 import Part
+import tempfile
 import unittest
 
 import UtilsAssembly
@@ -130,6 +131,53 @@ class TestCore(unittest.TestCase):
             groundedjoint.ObjectToGround == box,
             "'{}' failed: ObjectToGround not set correctly.".format(operation),
         )
+
+    @unittest.skipUnless(App.GuiUp, "GUI test requires FreeCAD GUI mode")
+    def test_restore_joint_view_providers_from_placeholder(self):
+        """Restore native joint view providers saved with FreeCAD's placeholder."""
+
+        def assert_restored_view_providers(document):
+            restored_joint = document.getObject("RestoredJoint")
+            restored_ground = document.getObject("RestoredGround")
+            joint_view = restored_joint.ViewObject.Proxy
+            ground_view = restored_ground.ViewObject.Proxy
+            self.assertIsInstance(joint_view, JointObject.ViewProviderJoint)
+            self.assertTrue(hasattr(joint_view, "switch_JCS1"))
+            self.assertTrue(hasattr(joint_view, "switch_JCS2"))
+            joint_view.redrawJointPlacements(restored_joint)
+            self.assertIsInstance(ground_view, JointObject.ViewProviderGroundedJoint)
+            self.assertIs(ground_view.app_obj, restored_ground)
+
+        joint = self.jointgroup.newObject("App::FeaturePython", "RestoredJoint")
+        JointObject.Joint(joint, 1)
+        joint.Detach1 = True
+        joint.Detach2 = True
+
+        box = self.assembly.newObject("Part::Box", "GroundedBox")
+        other_box = self.assembly.newObject("Part::Box", "OtherBox")
+        joint.Reference1 = [box, ["", ""]]
+        joint.Reference2 = [other_box, ["", ""]]
+        grounded = self.jointgroup.newObject("App::FeaturePython", "RestoredGround")
+        JointObject.GroundedJoint(grounded, box)
+        self.doc.recompute()
+        joint.ViewObject.Proxy = 1
+        grounded.ViewObject.Proxy = 1
+
+        temporary = tempfile.TemporaryDirectory(prefix="assembly-joint-view-provider-")
+        self.addCleanup(temporary.cleanup)
+        path = temporary.name + "/joint-view-provider.FCStd"
+        self.doc.saveAs(path)
+        App.closeDocument(self.doc.Name)
+
+        self.doc = App.openDocument(path)
+        assert_restored_view_providers(self.doc)
+
+        # The repaired providers must persist as their native Python classes,
+        # rather than reverting to the integer placeholder on the next load.
+        self.doc.save()
+        App.closeDocument(self.doc.Name)
+        self.doc = App.openDocument(path)
+        assert_restored_view_providers(self.doc)
 
     def test_toggle_grounded_joint(self):
         """test grounding and ungrounding a part, added because of github.com/freecad/freecad/issues/28440"""

@@ -1684,6 +1684,7 @@ def _configure_component(
                 "App::FeaturePython", _SAFE_NAME.sub("_", f"Ground_{item['name']}")
             )
             JointObject.GroundedJoint(existing, obj)
+            JointObject.ensureViewProviderGroundedJoint(existing)
         _set_metadata(
             existing,
             prepared,
@@ -1750,6 +1751,7 @@ def _configure_joint_while_suspended(
         JointObject.Joint(obj, JointObject.JointTypes.index(native))
     elif str(getattr(obj, "JointType", "") or "") != native:
         obj.Proxy.setJointType(obj, native)
+    JointObject.ensureViewProviderJoint(obj)
     if assembly_data:
         obj.Detach1 = True
         obj.Detach2 = True

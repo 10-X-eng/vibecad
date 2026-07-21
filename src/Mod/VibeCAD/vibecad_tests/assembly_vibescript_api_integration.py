@@ -23,6 +23,7 @@ if str(MODULE_ROOT) not in sys.path:
 from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     PROP_INPUT_OBJECTS,
+    PROP_OUTPUT_TYPE,
     delete_live_program,
     mark_programs_stale_from_source,
     publish_candidate,
@@ -150,6 +151,32 @@ def _document_objects(document) -> list[dict[str, str]]:
     ]
 
 
+def _assert_gui_joint_view_providers(document) -> None:
+    if not App.GuiUp:
+        return
+
+    import JointObject
+
+    for obj in document.Objects:
+        if str(getattr(obj, PROP_OUTPUT_TYPE, "") or "") != "joint":
+            continue
+        proxy = obj.ViewObject.Proxy
+        if isinstance(getattr(obj, "Proxy", None), JointObject.GroundedJoint):
+            assert isinstance(proxy, JointObject.ViewProviderGroundedJoint), (
+                obj.Name,
+                type(proxy).__name__,
+            )
+            assert hasattr(proxy, "app_obj"), obj.Name
+            continue
+        assert isinstance(proxy, JointObject.ViewProviderJoint), (
+            obj.Name,
+            type(proxy).__name__,
+        )
+        assert hasattr(proxy, "switch_JCS1"), obj.Name
+        assert hasattr(proxy, "switch_JCS2"), obj.Name
+        proxy.redrawJointPlacements(obj)
+
+
 def _candidate_capture(base: dict, *, operation: str, tool_name: str, arguments: dict) -> dict:
     return {
         **base,
@@ -176,6 +203,7 @@ def _run_candidate(captured: dict, service: _Service):
     validated = validate_candidate(prepared, execution)
     retain_candidate(prepared, status="validated")
     publication = publish_candidate(service, prepared, validated)
+    _assert_gui_joint_view_providers(service._active_document())
     accepted = accept_candidate(prepared, publication)
     assert accepted["model_state"]["status"] == "accepted"
     assert accepted["model_state"]["accepted_is_current"] is True
@@ -2006,6 +2034,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         assert str(getattr(obj, PROP_PROGRAM_ID, "") or "") == prepared["program_id"]
     reopened_hinge = reopened.getObject(identities["Hinge"])
     assert reopened_hinge.Proxy is not None
+    _assert_gui_joint_view_providers(reopened)
     assert reopened_hinge.JointType == "Revolute"
     assert reopened_hinge.Detach1 is True and reopened_hinge.Detach2 is True
     reopened_model = reopened.getObject(identities["Model"])
