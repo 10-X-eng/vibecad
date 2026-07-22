@@ -7006,7 +7006,7 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>圆弧的终止角（对于整圆，
 请将其设置为与起始角相同的值）</translation>
@@ -7188,25 +7188,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 此属性是只读的，因为最终文本取决于'标签类型'，
 和'目标'中定义的对象。
 只有在“标签类型”设置为“自定义”时才显示“自定义文本”。</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>此标签显示的信息类型。
-
-如果选择“自定义”，将使用“自定义文本”的内容。
-对于其他类型，字符串将从“目标”中定义的对象自动计算。
-“标签”和“材质”仅适用于具有这些属性的对象，例如 BIM 对象。
-
-对于“位置”、“长度”和“面积”，这些属性将从“目标”中的主对象提取，
-或者如果指定了子元素，则分别从子元素“顶点N”、“边N”或“面N”中提取。</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7491,11 +7472,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>显示隐藏线</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>引信墙和结构对象的类型和材料</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>镶嵌椭圆和B样条曲线为直线段</translation>
@@ -7597,7 +7573,7 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>椭圆弧的终止角
@@ -8319,11 +8295,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation>自动分组</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>将新的草绘和 BIM 对象添加到选定的图层或组</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8683,11 +8654,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>捕捉中心</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>捕捉到面和圆形边的中心点，以及工作平面代理和建筑部件的放置点</translation>
     </message>
   </context>
   <context>

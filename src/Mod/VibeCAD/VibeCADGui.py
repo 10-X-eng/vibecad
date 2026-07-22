@@ -71,6 +71,7 @@ _conversation_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Que
 _conversation_persist_thread: threading.Thread | None = None
 _conversation_persist_lock = threading.RLock()
 _assistant_document_refresh_scheduled = False
+_legacy_architecture_warning_documents: set[str] = set()
 
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
@@ -2732,6 +2733,7 @@ def _document_restore_active() -> bool:
 def _refresh_assistant_for_document_change() -> None:
     document = App.ActiveDocument
     if document is not None:
+        _warn_for_legacy_architecture(document)
         try:
             from VibeCADVibeScriptDomainPublication import (
                 compact_persisted_input_snapshots,
@@ -2758,6 +2760,39 @@ def _refresh_assistant_for_document_change() -> None:
     _refresh_reference_chips(dock)
     _refresh_view_status(dock)
     _render_assistant_run_state(dock)
+
+
+def _warn_for_legacy_architecture(document: Any) -> None:
+    """Show one non-mutating migration warning for each opened legacy document."""
+
+    document_key = str(getattr(document, "Uid", "") or getattr(document, "Name", ""))
+    if not document_key or document_key in _legacy_architecture_warning_documents:
+        return
+    try:
+        from VibeCADLegacyArchitecture import (
+            find_legacy_architecture_objects,
+            warning_text,
+        )
+
+        legacy_objects = find_legacy_architecture_objects(document)
+    except Exception as exc:
+        _warn(f"VibeCAD legacy-document check failed: {exc}")
+        return
+    if not legacy_objects:
+        return
+    _legacy_architecture_warning_documents.add(document_key)
+    message = warning_text(len(legacy_objects))
+    _warn(message)
+    try:
+        from PySide import QtWidgets
+
+        QtWidgets.QMessageBox.warning(
+            Gui.getMainWindow(),
+            "Unsupported architectural document",
+            message,
+        )
+    except Exception as exc:
+        _warn(f"VibeCAD could not show the legacy-document warning: {exc}")
 
 
 def _schedule_assistant_document_refresh() -> None:
@@ -2899,6 +2934,7 @@ class _VibeCADDocumentObserver:
 
     def slotDeletedDocument(self, doc) -> None:
         document_key = _document_storage_key(doc)
+        _legacy_architecture_warning_documents.discard(document_key)
         _sketch_close_continuation_controller.clear_for_document(document_key)
         _document_save_conversations.pop(document_key, None)
         _document_save_references.pop(document_key, None)

@@ -122,24 +122,7 @@
       <translation>Устаўляе змяняемы тэкставы блок-анатацыю на бягучую старонку</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>Тэхнічны чарцёж</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Выгляд BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Устаўляе выгляд плоскасці перасеку BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2165,12 +2148,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Стварэнне старонкі чарцяжа</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Стварыць выгляд BIM</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Стварыць выяву</translation>
@@ -3324,12 +3301,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Абраць адну суполку выразак і адзін выгляд</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Старонка ўтрымлівае выгляд BIM, які не будзе экспартаваны.
-Ці працягнуць?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Захаваць файл у DXF</translation>
@@ -3364,16 +3335,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Абраць хаця б адзін аб'ект</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Абраць толькі адну плоскасць BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Без плоскасці перасеку BIM у абраным</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -3858,7 +3819,7 @@ If no object is selected, a file browser opens to select an SVG or image file.</
     <message>
       <location filename="../../MDIViewPage.cpp" line="603"/>
       <source>FreeCAD is unable to open file %1 for writing.  The file may be open in another program.</source>
-      <translation>FreeCAD не атрымалася адчыніць файл %1 для запісу. 
+      <translation>FreeCAD не атрымалася адчыніць файл %1 для запісу.
 Магчыма, файл адчынены ў іншай праграме.</translation>
     </message>
     <message>
@@ -5998,7 +5959,7 @@ can override the global &apos;Update with 3D&apos; parameter</source>
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="835"/>
       <source>Uses the 3D camera direction (or normal of a selected face) as the view direction. Otherwise, views will be created as front views.</source>
-      <translation>Ужываецца ў якасці напрамку агляду напрамку трохмернай камеры (ці нармаль да абранай грані). 
+      <translation>Ужываецца ў якасці напрамку агляду напрамку трохмернай камеры (ці нармаль да абранай грані).
 Інакш, выгляды будуць стварацца як выгляды спераду.</translation>
     </message>
     <message>
@@ -10135,14 +10096,7 @@ there is an open task dialog.</source>
       <translation>Лінія</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

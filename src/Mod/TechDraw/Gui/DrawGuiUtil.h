@@ -66,8 +66,6 @@ class TechDrawGuiExport DrawGuiUtil {
     static TechDraw::DrawPage* findPage(Gui::Command* cmd, bool findAny = false);
 
     static bool isDraftObject(App::DocumentObject* obj);
-    static bool isArchObject(App::DocumentObject* obj);
-    static bool isArchSection(App::DocumentObject* obj);
 
     static bool needPage(Gui::Command* cmd, bool findAny = false);
     static bool needView(Gui::Command* cmd, bool partOnly = true);

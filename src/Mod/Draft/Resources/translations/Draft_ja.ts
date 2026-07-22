@@ -6983,7 +6983,7 @@ Trueに設定すると結合、Falseに設定するとコンパウドを作成�
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>円弧の終了角度（完全な円の場合、開始角度と同じ値になります）</translation>
     </message>
@@ -7165,25 +7165,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 このプロパティーは読み取り専用で、「Label Type」、
 「Target」に定義されたオブジェクトによって最終的なテキストが決まります。
 「Label Type」が「Custom」に設定されている場合のみ「Custom Text」が表示されます。</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>このラベルによって表示される情報の種類
-
-「Custom」が選択されている場合、「Custom Text」の内容が使用されます。
-他の種類では「Target」で定義されるオブジェクトから自動計算される文字列になります。
-「Tag」や「Material」は BIMオブジェクトなど、そのプロパティーを持つオブジェクトでのみ動作します。
-
-「位置」「長さ」「面積」のプロパティーは「Target」のメイン・オブジェクト、または
-指定された場合はサブ要素「VertexN」「EdgeN」「FaceN」からそれぞれ抽出されます。</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7467,11 +7448,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>かくれ線を表示</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>壁と構造物を同じ種類とマテリアルに結合</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>楕円とB-スプラインを線分セグメントにテッセレーションする</translation>
@@ -7573,7 +7549,7 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>楕円弧の終了角度（完全な楕円の場合、開始角度と同じ値を設定）</translation>
@@ -8291,11 +8267,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation>自動グループ</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>選択したレイヤーまたはグループに新しいドラフトオブジェクト、BIMオブジェクトを追加</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8654,11 +8625,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>中心スナップ</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>面と円形エッジの中心点、および作業平面プロキシと建築部品の配置点にスナップします。</translation>
     </message>
   </context>
   <context>

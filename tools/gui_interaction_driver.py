@@ -62,7 +62,6 @@ RISKY_WORDS = (
     "homepage",
     "image",
     "import",
-    "ifc",
     "internet",
     "light",
     "load",
@@ -108,7 +107,6 @@ RISKY_WORDS = (
 RISKY_PHRASES = (
     "bill of materials",
     "coordinate system",
-    "bim views manager",
     "close dock window",
     "bottom panel toggle",
     "fit all",

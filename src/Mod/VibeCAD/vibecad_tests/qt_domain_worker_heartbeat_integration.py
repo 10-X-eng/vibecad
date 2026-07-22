@@ -10,9 +10,8 @@ native parametric proxy recompute and array generation, Surface covers B-spline
 interpolation plus native extension, and Assembly covers authenticated reference
 transfer plus a native solver. Spreadsheet covers a large native batch and
 formula recompute. Material covers native catalog loading, full-card hashing,
-and physical-property requirement validation. BIM covers native Arch/Draft
-hierarchy construction, hosted-opening cuts, and detached BREP validation. Mesh
-covers substantial triangle generation, repair, decimation, topology diagnostics,
+and physical-property requirement validation. Mesh covers substantial triangle
+generation, repair, decimation, topology diagnostics,
 and BMS export. MeshPart covers authenticated BREP transfer plus a substantial
 native Mefisto conversion and BMS validation. Points covers a substantial
 canonical transform/filter/voxel pipeline plus authenticated ASC export. Reverse
@@ -488,69 +487,6 @@ def _material_candidate(root: Path, index: int):
             "freecad_home": str(App.getHomePath()),
             "timeout_seconds": 60.0,
             "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
-        }
-    )
-
-
-def _bim_candidate(root: Path, index: int):
-    """Build and cut a representative native Arch hierarchy in the worker."""
-
-    import FreeCAD as App
-
-    pack = get_vibescript_pack("BIMWorkbench")
-    assert pack is not None
-    source = (
-        "total = 0\n"
-        "for value in range(30000):\n"
-        "    total += value % 7\n"
-        "site = api.site(city='Chicago', label='Heartbeat Site')\n"
-        "building = api.building(site, label='Heartbeat Building')\n"
-        "level = api.level(building, 0, height=3200, label='Ground Floor')\n"
-        "wall = api.wall(level, [[0,0],[6000,0]], width=250, height=3000, "
-        "label=str(total))\n"
-        "slab = api.slab(level, [[0,0],[6000,0],[6000,4000],[0,4000]], "
-        "thickness=250, label='Ground Slab')\n"
-        "column = api.structure(level, 350, 350, 3000, "
-        "placement={'position':[300,300,0],'rotation':[0,0,0,1]}, "
-        "role='column', label='Column')\n"
-        "opening = api.opening(wall, 1200, 1500, offset=1200, sill=900, "
-        "label='Opening')\n"
-        "result = {'Site':site,'Building':building,'Level':level,'Wall':wall,"
-        "'Slab':slab,'Column':column,'Opening':opening}\n"
-    )
-    return prepare_candidate(
-        {
-            "tool_name": "vibescript.bim.create_program",
-            "operation": "create_program",
-            "arguments": {
-                "program_name": f"Qt Heartbeat {index}",
-                "source": source,
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-                "inputs": {},
-                "expected_outputs": [
-                    {"name": "Site", "type": "site"},
-                    {"name": "Building", "type": "building"},
-                    {"name": "Level", "type": "level"},
-                    {"name": "Wall", "type": "wall"},
-                    {"name": "Slab", "type": "slab"},
-                    {"name": "Column", "type": "structure"},
-                    {"name": "Opening", "type": "opening"},
-                ],
-            },
-            "pack": pack,
-            "project_root": str(root),
-            "document_name": "QtHeartbeatBIMDocument",
-            "document_uid": "qt-heartbeat-bim-document",
-            "document_revision": "qt-heartbeat-bim-revision",
-            "document_objects": [],
-            "surface": resolve_modeling_surface("BIMWorkbench", "vibescript").summary(),
-            "freecad_home": str(App.getHomePath()),
-            "timeout_seconds": 90.0,
-            "memory_limit_bytes": 3 * 1024 * 1024 * 1024,
         }
     )
 
@@ -1287,7 +1223,6 @@ def main() -> int:
         prepared.append(_surface_candidate(root, len(prepared)))
         prepared.append(_spreadsheet_candidate(root, len(prepared)))
         prepared.append(_material_candidate(root, len(prepared)))
-        prepared.append(_bim_candidate(root, len(prepared)))
         prepared.append(_mesh_candidate(root, len(prepared)))
         prepared.append(_meshpart_candidate(root, len(prepared)))
         prepared.append(_points_candidate(root, len(prepared)))

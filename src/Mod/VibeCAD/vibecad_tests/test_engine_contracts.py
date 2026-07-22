@@ -2028,3 +2028,83 @@ class TestVibeScriptDefaults:
             VibeCADProjectStore.read_modeling_engine_manifest(tmp_path / "missing.json")
             == "vibescript"
         )
+
+    def test_newer_project_manifest_is_imported_without_automatic_rewrite(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from VibeCADProject import VibeCADProjectStore
+
+        manifest_path = tmp_path / "project.vibecad.json"
+        manifest = {
+            "schema": "vibecad-project-v3",
+            "version": 3,
+            "project_id": "f" * 32,
+            "title": "Forward-compatible project",
+            "summary": "",
+            "modeling_engine": "vibescript",
+            "created_at": "2026-07-18T11:22:12Z",
+            "updated_at": "2026-07-22T01:31:35Z",
+            "documents": {"active": {}},
+            "newer_extension": {"preserve": True},
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        original = manifest_path.read_bytes()
+        index_path = tmp_path / "index.db"
+        scope = {
+            "project_id": "f" * 32,
+            "title": "Forward-compatible project",
+            "root": str(tmp_path),
+            "manifest_path": str(manifest_path),
+            "persistent": True,
+            "document_saved": True,
+            "document": {},
+            "index_path": str(index_path),
+        }
+        store = VibeCADProjectStore("test-session", index_path=index_path)
+        monkeypatch.setattr(store, "project_scope", lambda: dict(scope))
+
+        context = store.context()
+
+        assert context["modeling_engine"] == "vibescript"
+        assert manifest_path.read_bytes() == original
+        assert (
+            VibeCADProjectStore.read_modeling_engine_manifest(manifest_path)
+            == "vibescript"
+        )
+
+    def test_explicit_newer_manifest_update_preserves_schema_and_extensions(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from VibeCADProject import VibeCADProjectStore
+
+        manifest_path = tmp_path / "project.vibecad.json"
+        index_path = tmp_path / "index.db"
+        scope = {
+            "project_id": "f" * 32,
+            "title": "Forward-compatible project",
+            "root": str(tmp_path),
+            "manifest_path": str(manifest_path),
+            "persistent": True,
+            "document_saved": True,
+            "document": {},
+            "index_path": str(index_path),
+        }
+        store = VibeCADProjectStore("test-session", index_path=index_path)
+        monkeypatch.setattr(store, "project_scope", lambda: dict(scope))
+        saved = store.save_manifest(
+            {
+                "schema": "vibecad-project-v3",
+                "version": 3,
+                "modeling_engine": "openscad",
+                "newer_extension": {"preserve": True},
+            }
+        )
+
+        persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert saved["schema"] == "vibecad-project-v3"
+        assert saved["version"] == 3
+        assert persisted["newer_extension"] == {"preserve": True}
+        assert persisted["modeling_engine"] == "openscad"

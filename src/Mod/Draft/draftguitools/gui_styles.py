@@ -62,7 +62,7 @@ class ApplyStyle(gui_base_original.Modifier):
         super().Activated(name="Apply style")
         objs = Gui.Selection.getSelection()
         if objs:
-            objs = groups.get_group_contents(objs, addgroups=True, spaces=True, noarchchild=True)
+            objs = groups.get_group_contents(objs, addgroups=True)
             Gui.addModule("Draft")
             cmd_list = [
                 "doc = FreeCAD.ActiveDocument",

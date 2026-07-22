@@ -83,11 +83,6 @@
       <translation>2டி வரைவு ஆவணத்தை உருவாக்குகிறது</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/கட்டிடக்கலை</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>வெற்று கோப்பு</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>ஒரு பேரவை திட்டத்தை உருவாக்குகிறது</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>கட்டடக்கலை திட்டத்தை உருவாக்குகிறது</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>
@@ -234,7 +224,7 @@
       <location filename="../../DlgStartPreferences.ui" line="47"/>
       <source>An optional custom folder to be displayed on the Start page.
 Multiple folders can be added using ";;" to separate paths.</source>
-      <translation>தொடக்கப் பக்கத்தில் காட்டப்படும் விருப்பமான தனிப்பயன் கோப்புறை. 
+      <translation>தொடக்கப் பக்கத்தில் காட்டப்படும் விருப்பமான தனிப்பயன் கோப்புறை.
 ";;" ஐப் பயன்படுத்தி பல கோப்புறைகளைச் சேர்க்கலாம் பாதைகளை பிரிக்க.</translation>
     </message>
     <message>

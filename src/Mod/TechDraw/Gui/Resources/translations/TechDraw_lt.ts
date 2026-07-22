@@ -124,24 +124,7 @@
       <translation type="unfinished">Insert Annotation</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1662"/>
-      <source>TechDraw</source>
-      <translation>Techniniai brėžiniai</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1663"/>
-      <source>Insert BIM Workbench Object</source>
-      <translation type="unfinished">Insert BIM Workbench Object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1664"/>
-      <source>Insert a View of a Section Plane from BIM Workbench</source>
-      <translation type="unfinished">Insert a View of a Section Plane from BIM Workbench</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -1927,15 +1910,6 @@ Left clicking on empty space will validate the current Dimension. Right clicking
       <source>Insert View</source>
       <translation type="unfinished">Insert View</translation>
     </message>
-    <message>
-      <location filename="../../Command.cpp" line="305"/>
-      <source>Insert a View in current page.
-Selected objects, spreadsheets or Arch WB section planes will be added.
-Without a selection, a file browser lets you select a SVG or image file.</source>
-      <translation type="unfinished">Insert a View in current page.
-Selected objects, spreadsheets or Arch WB section planes will be added.
-Without a selection, a file browser lets you select a SVG or image file.</translation>
-    </message>
   </context>
   <context>
     <name>CmdTechDrawWeldSymbol</name>
@@ -1957,11 +1931,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="196"/>
       <source>Drawing create page</source>
       <translation type="unfinished">Drawing create page</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="365"/>
-      <source>Create BIM View</source>
-      <translation type="unfinished">Create BIM View</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="501"/>
@@ -2009,11 +1978,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="1635"/>
       <source>Create DraftView</source>
       <translation type="unfinished">Create DraftView</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1709"/>
-      <source>Create ArchView</source>
-      <translation type="unfinished">Create ArchView</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="347"/>
@@ -2974,16 +2938,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <translation type="unfinished">No profile object found in selection</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1691"/>
-      <source>Please select only 1 BIM Section.</source>
-      <translation type="unfinished">Please select only 1 BIM Section.</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1697"/>
-      <source>No BIM Sections in selection.</source>
-      <translation type="unfinished">No BIM Sections in selection.</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1833"/>
       <source>No Drawing Page</source>
       <translation type="unfinished">No Drawing Page</translation>
@@ -3097,11 +3051,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="1869"/>
       <source>Can not export selection</source>
       <translation type="unfinished">Can not export selection</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1870"/>
-      <source>Page contains DrawViewArch which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains DrawViewArch which will not be exported. Continue?</translation>
     </message>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="2432"/>
@@ -9124,14 +9073,7 @@ there is an open task dialog.</translation>
       <translation>Žymuo</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="68"/>
-      <source>Arch</source>
-      <translation>Arch</translation>
-    </message>
-  </context>
+
   <context>
     <name>DrawViewDraft</name>
     <message>

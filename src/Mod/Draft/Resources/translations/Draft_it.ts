@@ -2514,13 +2514,6 @@ Questo potrebbe fallire per i modelli DXF dopo la versione R12.</translation>
       <translation>Griglia e Snap</translation>
     </message>
     <message>
-      <location filename="../ui/preferences-draftsnap.ui" line="92"/>
-      <source>If checked, the outline of a human figure is displayed at the bottom left
-corner of the grid. Only effective if "Show grid border" is enabled.</source>
-      <translation>Se selezionato, il contorno di una figura umana viene visualizzato nell'angolo in basso a sinistra della griglia.
-Questa opzione ha effetto solo se l'ambiente di lavoro Bim è installato e se "Mostra bordo griglia" è abilitato.</translation>
-    </message>
-    <message>
       <location filename="../ui/preferences-draftsnap.ui" line="132"/>
       <source>Major lines every</source>
       <translation>Linee principali ogni</translation>
@@ -7016,9 +7009,9 @@ imposta 'Vero' se il risultato è una fusione o 'Falso' se è un composto</trans
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Angolo finale dell'arco (per un cerchio completo, 
+      <translation>Angolo finale dell'arco (per un cerchio completo,
                 dare lo stesso valore del Primo Angolo)</translation>
     </message>
     <message>
@@ -7200,30 +7193,11 @@ e dall'oggetto definito in 'Obiettivo'.
 Il 'Testo Personalizzato' viene visualizzato solo se 'Tipo di etichetta' è impostato su 'Personalizzato'.</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Il tipo di informazione visualizzata da questa etichetta.
-
-Se si seleziona "Personalizzato", verrà utilizzato il contenuto di "Testo personalizzato".
-Per gli altri tipi, la stringa verrà calcolata automaticamente dall'oggetto definito in "Destinazione".
-"Tag" e "Materiale" funzionano solo per gli oggetti che possiedono queste proprietà, come gli oggetti BIM.
-
-Per "Posizione", "Lunghezza" e "Area", queste proprietà verranno estratte dall'oggetto principale in "Destinazione"
-oppure dal sottoelemento "VerticeN", "Bordo" o "FacciaN", rispettivamente, se specificato.</translation>
-    </message>
-    <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
-      <translation>Fattore di scala generale che influisce costantemente sull'annotazione 
+      <translation>Fattore di scala generale che influisce costantemente sull'annotazione
 perché scala il testo e le eventuali decorazioni di linea
 nella stessa proporzione.</translation>
     </message>
@@ -7501,11 +7475,6 @@ Questa proprietà è in sola lettura, poiché il numero dipende dai punti in 'Po
       <translation>Visualizza le linee nascoste</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Fusione delle pareti e degli oggetti della struttura dello stesso tipo e materiale</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tessellare ellissi e B-spline in segmenti di linea</translation>
@@ -7607,10 +7576,10 @@ Questa proprietà è in sola lettura, poiché il numero dipende dai punti in 'Po
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Angolo finale dell'arco ellittico 
+      <translation>Angolo finale dell'arco ellittico
 
                 (per un cerchio completo, dare lo stesso valore del Primo Angolo)</translation>
     </message>
@@ -8331,11 +8300,6 @@ Tuttavia, un singolo schizzo con tracce non collegate viene convertito in divers
       <source>Auto-Group</source>
       <translation>Raggruppamento automatico</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Aggiunge nuovi oggetti Draft e BIM al layer o al gruppo selezionato</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8693,11 +8657,6 @@ La direzione di proiezione iniziale è opposta alla direzione di visualizzazione
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Snap Centro</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Snap al punto centrale delle facce e dei bordi circolari e al punto di posizionamento dei piani di lavoro proxy e delle parti di costruzione</translation>
     </message>
   </context>
   <context>

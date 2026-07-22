@@ -122,24 +122,7 @@
       <translation>Fügt einen editierbaren Beschriftungstextblock auf dem aktuellen Zeichnungsblatt ein</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>Tech Draw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM-Ansicht</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Fügt die Ansicht einer BIM-Schnittebene ein</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2138,12 +2121,6 @@ Ist kein Objekt ausgewählt, öffnet sich ein Datei-Browser, um eine SVG- oder e
       <translation>Zeichnungsseite erstellen</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIM-Ansicht erstellen</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Bild erstellen</translation>
@@ -3296,11 +3273,6 @@ Ist kein Objekt ausgewählt, öffnet sich ein Datei-Browser, um eine SVG- oder e
       <translation>Wähle eine Ausschnittgruppe und eine Ansicht</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Das Zeichnungsblatt enthält eine BIM-Ansicht, die nicht exportiert wird. Fortfahren?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>DXF-Datei speichern</translation>
@@ -3334,16 +3306,6 @@ Ist kein Objekt ausgewählt, öffnet sich ein Datei-Browser, um eine SVG- oder e
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Mindestens ein Objekt auswählen</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Nur eine BIM-Schnittebene auswählen</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Die Auswahl enthält keine BIM-Schnittebene</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4844,7 +4806,7 @@ Limit erhöhen, falls erforderlich.</translation>
       <location filename="../../DlgPrefsTechDrawAdvanced.ui" line="373"/>
       <source>Selection area around center marks
 Each unit is approx. 0.1 mm wide</source>
-      <translation>Auswahlbereich rund um die Markierungen der Mittelpunkte 
+      <translation>Auswahlbereich rund um die Markierungen der Mittelpunkte
 Jede Einheit ist etwa 0,1 mm breit</translation>
     </message>
     <message>
@@ -5060,7 +5022,7 @@ always be the right choice.  Flat or square caps are useful
 for using drawings as a 1:1 cutting guide.
 </source>
       <translation>Form der Linienenden. Die Standardeinstellung (Rund) sollte fast
-immer die richtige Wahl sein. Gerade oder quadratische Enden sind nützlich 
+immer die richtige Wahl sein. Gerade oder quadratische Enden sind nützlich
 bei Verwendung von Zeichnungen als 1:1 Schnittvorlage.
 </translation>
     </message>
@@ -10064,14 +10026,7 @@ noch ein Aufgaben-Dialog geöffnet ist.</translation>
       <translation>Linie</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

@@ -392,7 +392,6 @@ def synthetic_summary(work_dir: Path, coverage: dict[str, Any]) -> dict[str, Any
         "freecad_startup_smoke": {
             "result": "ok",
             "returncode": 0,
-            "ifcopenshell_version": "selftest",
             "python_path_contains_venv": True,
             "freecad_version": freecad_version,
             "report": "startup.json",

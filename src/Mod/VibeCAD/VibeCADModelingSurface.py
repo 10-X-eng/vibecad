@@ -37,7 +37,6 @@ CORE_CONVERSATION_VIEW_TOOLS = frozenset(
 HIDDEN_PROVIDER_INSPECTION_TOOLS = frozenset(
     {
         "assembly.list_structure",
-        "bim.list_structure",
         "build123d.inspect_model",
         "cam.list_jobs",
         "draft.list_objects",

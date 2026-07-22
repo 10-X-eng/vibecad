@@ -141,58 +141,6 @@ _BREP_OUTPUT_TYPES = frozenset(
     }
 )
 
-_BIM_ASSIGNED_PROPERTIES = (
-    "Label",
-    "Placement",
-    "Shape",
-    "Group",
-    "Base",
-    "Points",
-    "Closed",
-    "MakeFace",
-    "Address",
-    "PostalCode",
-    "City",
-    "Region",
-    "Country",
-    "Latitude",
-    "Longitude",
-    "Elevation",
-    "IfcType",
-    "CompositionType",
-    "BuildingType",
-    "Height",
-    "LevelOffset",
-    "Width",
-    "Align",
-    "Offset",
-    "Normal",
-    "Length",
-    "HoleDepth",
-    "WindowParts",
-    "Hosts",
-    "VibeCADBIMValidation",
-    contracts.PROP_PROGRAM_ID,
-    contracts.PROP_PROGRAM_DOMAIN,
-    contracts.PROP_PROGRAM_WORKBENCH,
-    contracts.PROP_PROGRAM_REVISION,
-    contracts.PROP_PROGRAM_OUTPUT,
-    PROP_OUTPUT_TYPE,
-    PROP_DEFINITION,
-    PROP_INPUT_OBJECTS,
-    PROP_INPUT_SNAPSHOTS,
-    reference_contracts.PROP_DERIVED_STATE,
-    reference_contracts.PROP_STALE_REASON,
-    reference_contracts.PROP_SOURCE_REVISION,
-)
-_BIM_LINK_PROPERTY_TYPES = frozenset(
-    {
-        "App::PropertyLink",
-        "App::PropertyLinkChild",
-        "App::PropertyLinkList",
-        "App::PropertyLinkListChild",
-    }
-)
 _MESH_ROLLBACK_PROPERTIES = (
     contracts.PROP_PROGRAM_ID,
     contracts.PROP_PROGRAM_DOMAIN,
@@ -1289,83 +1237,6 @@ def _create_draft_object(
     return obj
 
 
-def _create_bim_object(
-    doc: Any,
-    output_type: str,
-    name: str,
-    definition: Mapping[str, Any],
-) -> Any:
-    """Create one native Arch proxy without recompute or geometry generation."""
-
-    import FreeCAD as App
-
-    if output_type == "site":
-        import ArchSite
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchSite._Site(obj)
-        if App.GuiUp:
-            ArchSite._ViewProviderSite(obj.ViewObject)
-    elif output_type in {"building", "level"}:
-        import ArchBuildingPart
-
-        obj = doc.addObject("App::GeometryPython", name)
-        ArchBuildingPart.BuildingPart(obj)
-        if output_type == "building":
-            obj.IfcType = "Building"
-            obj.CompositionType = "ELEMENT"
-            if "BuildingType" not in _properties(obj):
-                obj.addProperty(
-                    "App::PropertyEnumeration",
-                    "BuildingType",
-                    "Building",
-                    "The native IFC building classification.",
-                    locked=True,
-                )
-            obj.BuildingType = ArchBuildingPart.BuildingTypes
-        else:
-            obj.IfcType = "Building Storey"
-            obj.CompositionType = "ELEMENT"
-        if App.GuiUp:
-            ArchBuildingPart.ViewProviderBuildingPart(obj.ViewObject)
-    elif output_type == "wall":
-        import ArchWall
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchWall._Wall(obj)
-        if App.GuiUp:
-            ArchWall._ViewProviderWall(obj.ViewObject)
-    elif output_type in {"slab", "structure"}:
-        import ArchStructure
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchStructure._Structure(obj)
-        if output_type == "slab":
-            obj.IfcType = "Slab"
-        else:
-            role = str(dict(definition.get("properties") or {}).get("role") or "")
-            obj.IfcType = {
-                "column": "Column",
-                "beam": "Beam",
-                "member": "Member",
-            }.get(role, "Beam")
-        if App.GuiUp:
-            ArchStructure._ViewProviderStructure(obj.ViewObject)
-    elif output_type == "opening":
-        import ArchWindow
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        ArchWindow._Window(obj)
-        obj.IfcType = "Opening Element"
-        if App.GuiUp:
-            ArchWindow._ViewProviderWindow(obj.ViewObject)
-    else:
-        raise RuntimeError(f"No native BIM factory exists for {output_type!r}.")
-    if obj is None:
-        raise RuntimeError(f"The native BIM factory returned no {output_type} object.")
-    return obj
-
-
 def _create_object(
     doc: Any,
     prepared: Mapping[str, Any],
@@ -1378,8 +1249,6 @@ def _create_object(
     name = _internal_name(prepared, output_name)
     if prepared["pack"].domain == "draft":
         obj = _create_draft_object(doc, definition, output_type, name)
-    elif prepared["pack"].domain == "bim":
-        obj = _create_bim_object(doc, output_type, name, definition)
     elif prepared["pack"].domain == "fem":
         import ObjectsFem
 
@@ -4903,644 +4772,6 @@ def _configure_robot(
     )
 
 
-def _bim_data(item: Mapping[str, Any]) -> dict[str, Any]:
-    value = item.get("bim_data")
-    if not isinstance(value, dict):
-        raise RuntimeError(
-            f"BIM output {item.get('name')!r} has no validated native data."
-        )
-    return dict(value)
-
-
-def _bim_base_output_name(output_name: str) -> str:
-    return f"{output_name}.__base"
-
-
-def _bim_existing_base(
-    doc: Any,
-    prepared: Mapping[str, Any],
-    output_name: str,
-) -> Any | None:
-    expected = _bim_base_output_name(output_name)
-    matches = [
-        obj
-        for obj in _program_objects(
-            doc,
-            str(prepared["program_id"]),
-            "bim",
-        )
-        if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "") == expected
-    ]
-    if len(matches) > 1:
-        raise RuntimeError(f"Multiple native BIM bases claim output {expected!r}.")
-    return matches[0] if matches else None
-
-
-def _create_bim_base(
-    doc: Any,
-    prepared: Mapping[str, Any],
-    item: Mapping[str, Any],
-) -> Any:
-    output_name = str(item["name"])
-    output_type = str(item["type"])
-    name = _internal_name(prepared, _bim_base_output_name(output_name))
-    return _create_bim_base_named(doc, output_type, name, output_name)
-
-
-def _create_bim_base_named(
-    doc: Any,
-    output_type: str,
-    name: str,
-    output_name: str,
-) -> Any:
-    import FreeCAD as App
-
-    if output_type in {"wall", "slab"}:
-        from draftobjects.wire import Wire
-
-        obj = doc.addObject("Part::FeaturePython", name)
-        obj.addExtension("Part::AttachExtensionPython")
-        Wire(obj)
-        if App.GuiUp:
-            from draftviewproviders.view_wire import ViewProviderWire
-
-            ViewProviderWire(obj.ViewObject)
-    elif output_type == "opening":
-        obj = doc.addObject("Part::Feature", name)
-    else:
-        raise RuntimeError(
-            f"BIM output {output_name!r} of type {output_type!r} cannot own a base."
-        )
-    if obj is None:
-        raise RuntimeError(f"FreeCAD did not create BIM base for {output_name!r}.")
-    return obj
-
-
-def _bim_base_compatible(obj: Any, item: Mapping[str, Any]) -> bool:
-    data = _bim_data(item)
-    if str(getattr(obj, "TypeId", "") or "") != str(data.get("base_native_type") or ""):
-        return False
-    if type(getattr(obj, "Proxy", None)).__name__ != str(
-        data.get("base_proxy_class") or ""
-    ):
-        return False
-    if str(item["type"]) in {"wall", "slab"}:
-        try:
-            from draftutils.utils import get_type
-
-            return str(get_type(obj) or "") == str(data.get("base_arch_type") or "")
-        except Exception:
-            return False
-    return True
-
-
-def _configure_bim_base(
-    obj: Any,
-    item: Mapping[str, Any],
-    prepared: Mapping[str, Any],
-) -> None:
-    data = _bim_data(item)
-    output_name = str(item["name"])
-    output_type = str(item["type"])
-    shape = item.get("detached_bim_base_shape")
-    if shape is None:
-        raise RuntimeError(f"BIM output {output_name!r} has no detached base Shape.")
-    if output_type == "wall":
-        points = data.get("points")
-        if not isinstance(points, list):
-            raise RuntimeError(
-                f"BIM Wall {output_name!r} has no validated baseline points."
-            )
-        obj.Points = [
-            _native_vector(point, f"{output_name} baseline point") for point in points
-        ]
-        obj.Closed = bool(data["closed"])
-        obj.MakeFace = False
-    elif output_type == "slab":
-        points = data.get("boundary")
-        if not isinstance(points, list):
-            raise RuntimeError(f"BIM Slab {output_name!r} has no validated boundary.")
-        obj.Points = [
-            _native_vector(point, f"{output_name} boundary point") for point in points
-        ]
-        obj.Closed = True
-        obj.MakeFace = True
-    obj.Shape = shape
-    obj.Placement = _placement(data["base_placement"])
-    obj.Label = f"{_label(item, output_name)} Profile"
-    _set_metadata(
-        obj,
-        prepared,
-        _bim_base_output_name(output_name),
-        "bim_internal_base",
-        _definition(item),
-    )
-    if not _bim_base_compatible(obj, item):
-        raise RuntimeError(
-            f"Published BIM base for {output_name!r} changed native type."
-        )
-    if (
-        getattr(obj, "Shape", None) is None
-        or obj.Shape.isNull()
-        or not obj.Shape.isValid()
-    ):
-        raise RuntimeError(f"Published BIM base for {output_name!r} is invalid.")
-
-
-def _bim_live_contract(obj: Any) -> tuple[str, str, str, str]:
-    try:
-        from draftutils.utils import get_type
-
-        arch_type = str(get_type(obj) or "")
-    except Exception:
-        arch_type = ""
-    return (
-        str(getattr(obj, "TypeId", "") or ""),
-        type(getattr(obj, "Proxy", None)).__name__,
-        arch_type,
-        str(getattr(obj, "IfcType", "") or ""),
-    )
-
-
-def _bim_object_compatible(obj: Any, item: Mapping[str, Any]) -> bool:
-    data = _bim_data(item)
-    return _bim_live_contract(obj) == (
-        str(data.get("native_type") or ""),
-        str(data.get("proxy_class") or ""),
-        str(data.get("arch_type") or ""),
-        str(data.get("ifc_type") or ""),
-    )
-
-
-def _bim_graph_objects(
-    items: list[dict[str, Any]],
-    outputs: Mapping[str, Any],
-) -> dict[str, Any]:
-    graph: dict[str, Any] = {}
-    for item in items:
-        data = _bim_data(item)
-        graph_id = str(data.get("graph_id") or "")
-        if not graph_id or graph_id in graph:
-            raise RuntimeError(
-                "BIM publication contains missing or duplicate graph identity."
-            )
-        graph[graph_id] = outputs[str(item["name"])]
-    return graph
-
-
-def _bim_prepare_relationships(
-    outputs: Mapping[str, Any],
-    bases: Mapping[str, Any],
-) -> None:
-    managed = {id(obj) for obj in [*outputs.values(), *bases.values()]}
-    for obj in outputs.values():
-        if hasattr(obj, "Group"):
-            obj.Group = [
-                child
-                for child in list(getattr(obj, "Group", []) or [])
-                if id(child) not in managed
-            ]
-
-
-def _copy_bim_property_value(value: Any, property_type: str) -> Any:
-    """Detach every assigned BIM property that FreeCAD transactions may miss."""
-
-    import FreeCAD as App
-
-    if property_type == "Part::PropertyPartShape":
-        return value.copy()
-    if property_type == "App::PropertyPlacement":
-        return App.Placement(value)
-    if property_type == "App::PropertyVector":
-        return App.Vector(value)
-    if property_type == "App::PropertyVectorList":
-        return [App.Vector(item) for item in list(value or [])]
-    if property_type.endswith("List"):
-        return list(value or [])
-    return value
-
-
-def _capture_bim_property_value(value: Any, property_type: str) -> Any:
-    if property_type in {"App::PropertyLink", "App::PropertyLinkChild"}:
-        return str(getattr(value, "Name", "") or "") if value is not None else ""
-    if property_type in {"App::PropertyLinkList", "App::PropertyLinkListChild"}:
-        return [str(item.Name) for item in list(value or [])]
-    return _copy_bim_property_value(value, property_type)
-
-
-def _resolve_bim_link_value(document: Any, value: Any, property_type: str) -> Any:
-    def resolve(name: Any) -> Any:
-        clean_name = str(name or "")
-        if not clean_name:
-            return None
-        target = document.getObject(clean_name)
-        if target is None:
-            raise RuntimeError(f"linked object {clean_name!r} was not restored")
-        return target
-
-    if property_type in {"App::PropertyLink", "App::PropertyLinkChild"}:
-        return resolve(value)
-    return [resolve(item) for item in list(value or [])]
-
-
-def _bim_rollback_states(objects: list[Any]) -> list[dict[str, Any]]:
-    """Capture the accepted assigned state before mutating native BIM objects."""
-
-    states: list[dict[str, Any]] = []
-    for obj in objects:
-        name = str(getattr(obj, "Name", "") or "")
-        if not name:
-            raise RuntimeError(
-                "Cannot capture rollback state for an unnamed BIM object."
-            )
-        properties: dict[str, dict[str, Any]] = {}
-        available = _properties(obj)
-        for property_name in _BIM_ASSIGNED_PROPERTIES:
-            if property_name not in available:
-                continue
-            property_type = str(obj.getTypeIdOfProperty(property_name) or "")
-            properties[property_name] = {
-                "type": property_type,
-                "value": _capture_bim_property_value(
-                    getattr(obj, property_name), property_type
-                ),
-            }
-        states.append(
-            {
-                "document": getattr(obj, "Document", None),
-                "name": name,
-                "type_id": str(getattr(obj, "TypeId", "") or ""),
-                "proxy_class": type(getattr(obj, "Proxy", None)).__name__,
-                "properties": properties,
-            }
-        )
-    return states
-
-
-def _bim_shapes_match(actual: Any, expected: Any) -> bool:
-    if bool(actual.isNull()) != bool(expected.isNull()):
-        return False
-    if actual.isNull():
-        return True
-    try:
-        if actual.isEqual(expected):
-            return True
-    except Exception:
-        pass
-    return (
-        str(actual.ShapeType) == str(expected.ShapeType)
-        and len(actual.Vertexes) == len(expected.Vertexes)
-        and len(actual.Edges) == len(expected.Edges)
-        and len(actual.Faces) == len(expected.Faces)
-        and len(actual.Solids) == len(expected.Solids)
-        and math.isclose(
-            float(actual.Volume),
-            float(expected.Volume),
-            rel_tol=1.0e-12,
-            abs_tol=1.0e-7,
-        )
-        and math.isclose(
-            float(actual.Area), float(expected.Area), rel_tol=1.0e-12, abs_tol=1.0e-7
-        )
-        and math.isclose(
-            float(actual.Length),
-            float(expected.Length),
-            rel_tol=1.0e-12,
-            abs_tol=1.0e-7,
-        )
-    )
-
-
-def _bim_property_values_match(actual: Any, expected: Any, property_type: str) -> bool:
-    if property_type == "Part::PropertyPartShape":
-        return _bim_shapes_match(actual, expected)
-    if property_type == "App::PropertyPlacement":
-        return all(
-            math.isclose(left, right, rel_tol=1.0e-12, abs_tol=1.0e-9)
-            for left, right in zip(_matrix_values(actual), _matrix_values(expected))
-        )
-    if property_type == "App::PropertyVector":
-        return all(
-            math.isclose(float(left), float(right), rel_tol=1.0e-12, abs_tol=1.0e-9)
-            for left, right in zip(
-                (actual.x, actual.y, actual.z),
-                (expected.x, expected.y, expected.z),
-            )
-        )
-    if property_type == "App::PropertyVectorList":
-        actual_items = list(actual or [])
-        expected_items = list(expected or [])
-        return len(actual_items) == len(expected_items) and all(
-            _bim_property_values_match(left, right, "App::PropertyVector")
-            for left, right in zip(actual_items, expected_items)
-        )
-    if property_type in {"App::PropertyLink", "App::PropertyLinkChild"}:
-        return (str(getattr(actual, "Name", "") or "") if actual else "") == str(
-            expected or ""
-        )
-    if property_type in {"App::PropertyLinkList", "App::PropertyLinkListChild"}:
-        return [str(item.Name) for item in list(actual or [])] == list(expected or [])
-    if property_type == "App::PropertyStringList":
-        return list(actual or []) == list(expected or [])
-    try:
-        return actual == expected
-    except Exception:
-        return False
-
-
-def _captured_bim_property(state: Mapping[str, Any], name: str) -> Any:
-    captured = state.get("properties", {}).get(name)
-    if not isinstance(captured, Mapping):
-        raise RuntimeError(
-            f"Accepted BIM object {state.get('name')!r} lost rollback property {name!r}."
-        )
-    return captured.get("value")
-
-
-def _recreate_missing_bim_objects(states: list[dict[str, Any]]) -> list[str]:
-    """Recreate native proxies removed before a failed deletion was raised."""
-
-    output_types: dict[str, str] = {}
-    for state in states:
-        output_name = str(_captured_bim_property(state, contracts.PROP_PROGRAM_OUTPUT))
-        output_type = str(_captured_bim_property(state, PROP_OUTPUT_TYPE))
-        if output_name and output_type != "bim_internal_base":
-            output_types[output_name] = output_type
-
-    recreated: list[str] = []
-    for state in states:
-        document = state["document"]
-        name = str(state["name"])
-        if document is None or document.getObject(name) is not None:
-            continue
-        output_name = str(_captured_bim_property(state, contracts.PROP_PROGRAM_OUTPUT))
-        output_type = str(_captured_bim_property(state, PROP_OUTPUT_TYPE))
-        if output_type == "bim_internal_base":
-            root_name = output_name.partition(".")[0]
-            root_type = output_types.get(root_name)
-            if root_type not in {"wall", "slab", "opening"}:
-                raise RuntimeError(
-                    f"Accepted BIM base {output_name!r} lost its owning output type."
-                )
-            obj = _create_bim_base_named(document, root_type, name, root_name)
-        else:
-            raw_definition = str(_captured_bim_property(state, PROP_DEFINITION) or "")
-            try:
-                definition = json.loads(raw_definition)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Accepted BIM object {output_name!r} has no restorable definition."
-                ) from exc
-            if not isinstance(definition, dict):
-                raise RuntimeError(
-                    f"Accepted BIM object {output_name!r} has malformed rollback definition."
-                )
-            obj = _create_bim_object(document, output_type, name, definition)
-        if str(getattr(obj, "Name", "") or "") != name:
-            raise RuntimeError(
-                f"FreeCAD recreated BIM object {name!r} as {getattr(obj, 'Name', '')!r}."
-            )
-        recreated.append(name)
-    return recreated
-
-
-def _restore_bim_rollback_states(states: list[dict[str, Any]]) -> list[str]:
-    """Restore and verify native BIM assigned state after a failed publication."""
-
-    restored: list[str] = []
-    failures: list[str] = []
-    deferred_links: list[tuple[Any, str, dict[str, Any]]] = []
-    deferred_shapes: list[tuple[Any, str, dict[str, Any]]] = []
-    resolved: list[tuple[Any, dict[str, Any]]] = []
-    try:
-        _recreate_missing_bim_objects(states)
-    except Exception as exc:
-        failures.append(f"native object recreation: {type(exc).__name__}: {exc}")
-    for state in states:
-        document = state["document"]
-        name = str(state["name"])
-        obj = document.getObject(name) if document is not None else None
-        if obj is None:
-            failures.append(f"{name}: accepted object disappeared")
-            continue
-        if str(getattr(obj, "TypeId", "") or "") != str(state["type_id"]):
-            failures.append(f"{name}: native type changed during rollback")
-            continue
-        if type(getattr(obj, "Proxy", None)).__name__ != str(state["proxy_class"]):
-            failures.append(f"{name}: native proxy changed during rollback")
-            continue
-        resolved.append((obj, state))
-        for property_name, captured in state["properties"].items():
-            property_type = str(captured["type"])
-            if property_type == "Part::PropertyPartShape":
-                deferred_shapes.append((obj, property_name, captured))
-            elif property_type in _BIM_LINK_PROPERTY_TYPES:
-                deferred_links.append((obj, property_name, captured))
-            else:
-                try:
-                    if property_name not in _properties(obj):
-                        obj.addProperty(
-                            property_type,
-                            property_name,
-                            "VibeCAD",
-                            "Restored accepted BIM VibeScript state.",
-                        )
-                    setattr(
-                        obj,
-                        property_name,
-                        _copy_bim_property_value(captured["value"], property_type),
-                    )
-                except Exception as exc:
-                    failures.append(
-                        f"{name}.{property_name}: {type(exc).__name__}: {exc}"
-                    )
-    for obj, property_name, captured in deferred_links:
-        try:
-            if property_name not in _properties(obj):
-                obj.addProperty(
-                    str(captured["type"]),
-                    property_name,
-                    "VibeCAD",
-                    "Restored accepted BIM VibeScript state.",
-                )
-            setattr(
-                obj,
-                property_name,
-                _resolve_bim_link_value(
-                    obj.Document, captured["value"], str(captured["type"])
-                ),
-            )
-        except Exception as exc:
-            failures.append(f"{obj.Name}.{property_name}: {type(exc).__name__}: {exc}")
-    for obj, property_name, captured in deferred_shapes:
-        try:
-            setattr(obj, property_name, captured["value"].copy())
-        except Exception as exc:
-            failures.append(f"{obj.Name}.{property_name}: {type(exc).__name__}: {exc}")
-    for obj, state in resolved:
-        name = str(state["name"])
-        for property_name, captured in state["properties"].items():
-            try:
-                actual = getattr(obj, property_name)
-                if not _bim_property_values_match(
-                    actual, captured["value"], str(captured["type"])
-                ):
-                    raise RuntimeError("restored assigned state does not match")
-            except Exception as exc:
-                failures.append(f"{name}.{property_name}: {type(exc).__name__}: {exc}")
-        restored.append(name)
-    if failures:
-        raise RuntimeError(
-            "BIM publication failed and accepted assigned state could not be fully "
-            f"restored: {'; '.join(failures)}"
-        )
-    return restored
-
-
-def _remove_failed_bim_creations(doc: Any, object_names: list[str]) -> list[str]:
-    leftovers = [doc.getObject(name) for name in object_names]
-    return _remove_owned_objects(doc, [obj for obj in leftovers if obj is not None])
-
-
-def _remove_failed_domain_creations(doc: Any, object_names: list[str]) -> list[str]:
-    """Remove live objects created before a domain publication failure."""
-
-    leftovers = [doc.getObject(name) for name in object_names]
-    return _remove_owned_objects(doc, [obj for obj in leftovers if obj is not None])
-
-
-def _bim_apply_group(
-    obj: Any,
-    graph: Mapping[str, Any],
-    graph_ids: Any,
-    *,
-    output_name: str,
-) -> None:
-    if not hasattr(obj, "Group"):
-        if graph_ids:
-            raise RuntimeError(f"BIM output {output_name!r} cannot own a native Group.")
-        return
-    if not isinstance(graph_ids, list):
-        raise RuntimeError(
-            f"BIM output {output_name!r} has malformed Group identities."
-        )
-    current = list(getattr(obj, "Group", []) or [])
-    for graph_id in graph_ids:
-        child = graph.get(str(graph_id))
-        if child is None:
-            raise RuntimeError(
-                f"BIM output {output_name!r} refers to missing child graph {graph_id!r}."
-            )
-        if child not in current:
-            current.append(child)
-    obj.Group = current
-
-
-def _configure_bim(
-    obj: Any,
-    item: Mapping[str, Any],
-    outputs: Mapping[str, Any],
-    bases: Mapping[str, Any],
-    graph: Mapping[str, Any],
-) -> None:
-    import Part
-
-    output_name = str(item["name"])
-    output_type = str(item["type"])
-    data = _bim_data(item)
-    obj.Placement = _placement(data["placement"])
-    if output_type == "site":
-        obj.Address = str(data["address"])
-        obj.PostalCode = str(data["postal_code"])
-        obj.City = str(data["city"])
-        obj.Region = str(data["region"])
-        obj.Country = str(data["country"])
-        obj.Latitude = float(data["latitude"])
-        obj.Longitude = float(data["longitude"])
-        obj.Elevation = float(data["elevation"])
-        obj.Shape = Part.Shape()
-    elif output_type == "building":
-        obj.IfcType = "Building"
-        obj.CompositionType = "ELEMENT"
-        obj.BuildingType = str(data["building_type"])
-        obj.Shape = item["detached_shape"] if data["shape_present"] else Part.Shape()
-    elif output_type == "level":
-        obj.IfcType = "Building Storey"
-        obj.CompositionType = "ELEMENT"
-        obj.Height = float(data["height"])
-        obj.LevelOffset = float(data["level_offset"])
-        obj.Shape = item["detached_shape"] if data["shape_present"] else Part.Shape()
-    elif output_type == "wall":
-        obj.Base = bases[output_name]
-        obj.Width = float(data["width"])
-        obj.Height = float(data["height"])
-        obj.Align = str(data["alignment"]).title()
-        obj.Offset = float(data["offset"])
-        obj.IfcType = "Wall"
-        obj.Shape = item["detached_shape"]
-    elif output_type == "slab":
-        obj.Base = bases[output_name]
-        obj.Height = float(data["thickness"])
-        obj.Normal = _native_vector(data["normal"], f"{output_name} normal")
-        obj.IfcType = "Slab"
-        obj.Shape = item["detached_shape"]
-    elif output_type == "structure":
-        arguments = list(_definition(item).get("arguments") or [])
-        obj.Length = float(data["length"])
-        obj.Width = float(data["width"])
-        obj.Height = float(data["height"])
-        obj.IfcType = str(data["ifc_type"])
-        obj.Shape = item["detached_shape"]
-        if len(arguments) != 4:
-            raise RuntimeError(f"BIM Structure {output_name!r} lost its dimensions.")
-    else:
-        host = graph.get(str(data["host_graph_id"]))
-        if host is None:
-            raise RuntimeError(f"BIM Opening {output_name!r} lost its host Wall.")
-        obj.Base = bases[output_name]
-        obj.Width = float(data["width"])
-        obj.Height = float(data["height"])
-        obj.HoleDepth = float(data["hole_depth"])
-        obj.WindowParts = []
-        obj.Hosts = [host]
-        obj.IfcType = "Opening Element"
-        obj.Shape = Part.Shape()
-    _bim_apply_group(
-        obj,
-        graph,
-        data["group_graph_ids"],
-        output_name=output_name,
-    )
-    if not _bim_object_compatible(obj, item):
-        raise RuntimeError(
-            f"Published BIM output {output_name!r} changed native Arch type."
-        )
-    if output_type in {"wall", "slab", "structure"}:
-        if obj.Shape.isNull() or not obj.Shape.isValid() or len(obj.Shape.Solids) < 1:
-            raise RuntimeError(
-                f"Published BIM output {output_name!r} is not a valid solid."
-            )
-    if output_type == "opening":
-        if (
-            list(obj.Hosts) != [graph[str(data["host_graph_id"])]]
-            or not obj.Shape.isNull()
-        ):
-            raise RuntimeError(
-                f"Published BIM Opening {output_name!r} changed host semantics."
-            )
-    _add_string_property(
-        obj,
-        "VibeCADBIMValidation",
-        "Validated isolated native BIM object, relationship, and geometry state.",
-    )
-    obj.VibeCADBIMValidation = json.dumps(
-        data,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
 def _mesh_assigned_facts(mesh: Any) -> dict[str, Any]:
     box = mesh.BoundBox
     return {
@@ -7849,8 +7080,6 @@ def _configure_object(
     output_type = str(item["type"])
     if prepared["pack"].domain == "draft":
         _configure_draft(doc, obj, item, outputs)
-    elif prepared["pack"].domain == "bim":
-        raise RuntimeError("BIM publication requires its validated hierarchy context.")
     elif prepared["pack"].domain == "surface":
         _configure_surface(obj, item)
     elif prepared["pack"].domain == "mesh":
@@ -10652,17 +9881,6 @@ def publish_candidate(
             ).partition(".")[0]
             in updated_names
         )
-    if prepared["pack"].domain == "bim":
-        updated_names = {str(item["name"]) for item in validated["outputs"]}
-        updated_objects.extend(
-            obj
-            for obj in internal_objects
-            if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "").partition(
-                "."
-            )[0]
-            in updated_names
-            and "." in str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
-        )
     spreadsheet_rollbacks = (
         _spreadsheet_rollback_states(updated_objects)
         if prepared["pack"].domain == "spreadsheet"
@@ -10671,11 +9889,6 @@ def publish_candidate(
     assembly_bom_rollbacks = (
         _assembly_bom_rollback_states(updated_objects)
         if prepared["pack"].domain == "assembly"
-        else []
-    )
-    bim_rollbacks = (
-        _bim_rollback_states(internal_objects)
-        if prepared["pack"].domain == "bim"
         else []
     )
     mesh_rollbacks = (
@@ -10719,7 +9932,6 @@ def publish_candidate(
         internal_objects,
     )
     outputs: dict[str, Any] = {}
-    bim_bases: dict[str, Any] = {}
     created: list[Any] = []
     removed: list[str] = []
     assembly_dependency_anchor: Any | None = None
@@ -10792,8 +10004,6 @@ def publish_candidate(
                 expected_native = str(_fem_data(item).get("native_type") or "")
             if prepared["pack"].domain == "draft":
                 compatible = _draft_object_compatible(obj, item)
-            elif prepared["pack"].domain == "bim":
-                compatible = _bim_object_compatible(obj, item)
             elif output_type == "component_link":
                 compatible = str(getattr(obj, "TypeId", "")) == expected_native
             elif output_type == "joint":
@@ -10806,26 +10016,6 @@ def publish_candidate(
                     f"{getattr(obj, 'TypeId', '')!r} to {expected_native!r}."
                 )
             outputs[output_name] = obj
-        if prepared["pack"].domain == "bim":
-            for item in validated["outputs"]:
-                if str(item["type"]) not in {"wall", "slab", "opening"}:
-                    continue
-                output_name = str(item["name"])
-                base = _bim_existing_base(doc, prepared, output_name)
-                if base is None:
-                    base = _create_bim_base(doc, prepared, item)
-                    created.append(base)
-                elif not _bim_base_compatible(base, item):
-                    raise RuntimeError(
-                        f"Stable BIM base for {output_name!r} cannot change native type."
-                    )
-                bim_bases[output_name] = base
-            _bim_prepare_relationships(outputs, bim_bases)
-            bim_graph = _bim_graph_objects(list(validated["outputs"]), outputs)
-            for item in validated["outputs"]:
-                output_name = str(item["name"])
-                if output_name in bim_bases:
-                    _configure_bim_base(bim_bases[output_name], item, prepared)
         configure_order = list(validated["outputs"])
         if prepared["pack"].domain == "assembly":
             priority = {
@@ -10841,22 +10031,6 @@ def publish_candidate(
             configure_order.sort(key=lambda item: priority.get(str(item["type"]), 7))
         elif prepared["pack"].domain == "draft":
             configure_order = _draft_configure_order(configure_order)
-        elif prepared["pack"].domain == "bim":
-            priority = {
-                "site": 0,
-                "building": 1,
-                "level": 2,
-                "wall": 3,
-                "slab": 4,
-                "structure": 5,
-                "opening": 6,
-            }
-            configure_order.sort(
-                key=lambda item: (
-                    priority.get(str(item["type"]), 7),
-                    int(str(_bim_data(item)["graph_id"]).removeprefix("bim")),
-                )
-            )
         elif prepared["pack"].domain == "inspection":
             priority = {
                 "inspection_feature": 0,
@@ -10908,17 +10082,14 @@ def publish_candidate(
             if assembly_bom:
                 _unfreeze_object(obj, "Assembly BOM")
             obj.Label = _label(item, output_name)
-            if prepared["pack"].domain == "bim":
-                _configure_bim(obj, item, outputs, bim_bases, bim_graph)
-            else:
-                _configure_object(
-                    doc,
-                    obj,
-                    item,
-                    outputs,
-                    prepared,
-                    robot_trajectory_swaps,
-                )
+            _configure_object(
+                doc,
+                obj,
+                item,
+                outputs,
+                prepared,
+                robot_trajectory_swaps,
+            )
             _set_metadata(
                 obj,
                 prepared,
@@ -11040,27 +10211,6 @@ def publish_candidate(
                     f"{publication_error} Explicit Points rollback failure: "
                     f"{' | '.join(rollback_failures)}"
                 ) from publication_error
-        if prepared["pack"].domain == "bim":
-            rollback_failures: list[str] = []
-            if bim_rollbacks:
-                try:
-                    _restore_bim_rollback_states(bim_rollbacks)
-                except Exception as rollback_error:
-                    rollback_failures.append(str(rollback_error))
-            try:
-                _remove_failed_bim_creations(
-                    doc, [name for name in created_names if name]
-                )
-            except Exception as cleanup_error:
-                rollback_failures.append(
-                    "failed candidate objects could not be removed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-            if rollback_failures:
-                raise RuntimeError(
-                    f"{publication_error} Explicit BIM rollback failure: "
-                    f"{' | '.join(rollback_failures)}"
-                ) from publication_error
         if prepared["pack"].domain == "inspection":
             rollback_failures: list[str] = []
             if inspection_rollbacks:
@@ -11157,8 +10307,6 @@ def publish_candidate(
             live_outputs[name]["draft_data"] = dict(item["draft_data"])
         if isinstance(item.get("surface_data"), dict):
             live_outputs[name]["surface_data"] = dict(item["surface_data"])
-        if isinstance(item.get("bim_data"), dict):
-            live_outputs[name]["bim_data"] = dict(item["bim_data"])
         if isinstance(item.get("mesh_data"), dict):
             live_outputs[name]["mesh_data"] = dict(item["mesh_data"])
         if isinstance(item.get("meshpart_data"), dict):
@@ -11191,8 +10339,6 @@ def publish_candidate(
             summary["draft_data"] = dict(item["draft_data"])
         if isinstance(item.get("surface_data"), dict):
             summary["surface_data"] = dict(item["surface_data"])
-        if isinstance(item.get("bim_data"), dict):
-            summary["bim_data"] = dict(item["bim_data"])
         if isinstance(item.get("mesh_data"), dict):
             summary["mesh_data"] = dict(item["mesh_data"])
         if isinstance(item.get("meshpart_data"), dict):
@@ -11503,9 +10649,6 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
     objects = _program_objects(
         doc, str(prepared["program_id"]), prepared["pack"].domain
     )
-    bim_rollbacks = (
-        _bim_rollback_states(objects) if prepared["pack"].domain == "bim" else []
-    )
     mesh_rollbacks = (
         _mesh_rollback_states(objects)
         if prepared["pack"].domain in {"mesh", "meshpart", "reverse_engineering"}
@@ -11590,14 +10733,6 @@ def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, 
                 doc.abortTransaction()
             except Exception:
                 pass
-        if bim_rollbacks:
-            try:
-                _restore_bim_rollback_states(bim_rollbacks)
-            except Exception as rollback_error:
-                raise RuntimeError(
-                    f"{deletion_error} Explicit BIM deletion rollback failure: "
-                    f"{rollback_error}"
-                ) from deletion_error
         if mesh_rollbacks:
             try:
                 _restore_mesh_rollback_states(mesh_rollbacks)

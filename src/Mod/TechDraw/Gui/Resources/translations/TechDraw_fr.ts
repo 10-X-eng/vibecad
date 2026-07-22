@@ -122,24 +122,7 @@
       <translation>Insère une annotation sous forme de bloc de texte modifiable dans la feuille courante.</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Insérer une vue d'un objet BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Insère une vue d'un plan de coupe de l'atelier BIM.</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2163,12 +2146,6 @@ Si aucun objet n'est sélectionné, un navigateur de fichiers s'ouvre pour séle
       <translation>Créer une feuille de dessin</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Créer une vue de l'atelier BIM</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Créer une image</translation>
@@ -3321,11 +3298,6 @@ Si aucun objet n'est sélectionné, un navigateur de fichiers s'ouvre pour séle
       <translation>Sélectionner une fenêtre de rognages et une vue</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>La page contient une vue BIM qui ne sera pas exportée. Faut-il continuer ?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Enregistrer le fichier au format DXF</translation>
@@ -3359,16 +3331,6 @@ Si aucun objet n'est sélectionné, un navigateur de fichiers s'ouvre pour séle
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Sélectionner au moins un objet</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Sélectionner un seul plan de section de l'atelier BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Il n'y a pas de plan de section de l'atelier BIM dans la sélection.</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4745,7 +4707,7 @@ performances sur les modèles complexes.</translation>
       <translation>Le nombre de fois que FreeCAD doit essayer de supprimer les arêtes qui se chevauchent renvoyées par l'algorithme de suppression des lignes cachées.
 - Une valeur de 0 indique qu'aucun nettoyage n'est effectué,
 - Une valeur de 1 indique un seul passage,
-- Une valeur de 2 indique qu'un deuxième passage doit être effectué, 
+- Une valeur de 2 indique qu'un deuxième passage doit être effectué,
 - Les valeurs supérieures à 2 ne sont généralement pas productives.
 Chaque passage augmente le temps nécessaire à la production des dessins.</translation>
     </message>
@@ -5672,7 +5634,7 @@ Cela n'affecte que la barre d'outils ; tous les outils restent disponibles via l
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="627"/>
       <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If this is checked, new dimensions will be set to snap to position.  If not checked, new dimensions will not snap.  Snapping for individual dimensions may be adjusted with the &amp;quot;AllowSnapping&amp;quot; property.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
       <translation>Si cette option est cochée, les nouvelles cotes s'alignent automatiquement sur la position.
-Si elle n'est pas cochée, les nouvelles cotes ne s'alignent pas. 
+Si elle n'est pas cochée, les nouvelles cotes ne s'alignent pas.
 L'alignement de chaque cote peut être ajusté à l'aide de la propriété « AllowSnapping ».</translation>
     </message>
     <message>
@@ -10093,14 +10055,7 @@ there is an open task dialog.</source>
       <translation>Ligne</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

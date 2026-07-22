@@ -31,7 +31,6 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
         "AssemblyWorkbench",
         "SpreadsheetWorkbench",
         "MaterialWorkbench",
-        "BIMWorkbench",
         "MeshWorkbench",
         "MeshPartWorkbench",
         "PointsWorkbench",
@@ -458,7 +457,6 @@ def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
         "AssemblyWorkbench",
         "SpreadsheetWorkbench",
         "MaterialWorkbench",
-        "BIMWorkbench",
         "MeshWorkbench",
         "MeshPartWorkbench",
         "PointsWorkbench",
@@ -544,3 +542,68 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     )
     assert namespace["_restore_vibecad_disabled_workbenches"]() is True
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
+
+
+def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None:
+    class ParameterGroup:
+        def __init__(self, values=None) -> None:
+            self.values = dict(values or {})
+
+        def GetString(self, name: str, default: str) -> str:
+            return str(self.values.get(name, default))
+
+        def SetString(self, name: str, value: str) -> None:
+            self.values[name] = value
+
+        def GetBool(self, name: str, default: bool) -> bool:
+            return bool(self.values.get(name, default))
+
+        def SetBool(self, name: str, value: bool) -> None:
+            self.values[name] = value
+
+    workbenches = ParameterGroup(
+        {
+            "Ordered": "PartWorkbench,BIMWorkbench,DraftWorkbench",
+            "Disabled": "TestWorkbench,BIMWorkbench,NoneWorkbench",
+        }
+    )
+    general = ParameterGroup(
+        {
+            "BackgroundAutoloadModules": "BIMWorkbench,PartWorkbench",
+            "AutoloadModule": "BIMWorkbench",
+            "LastModule": "BIMWorkbench",
+        }
+    )
+    migration = ParameterGroup()
+    groups = {
+        "User parameter:BaseApp/Preferences/Workbenches": workbenches,
+        "User parameter:BaseApp/Preferences/General": general,
+        "User parameter:BaseApp/Preferences/Migration": migration,
+    }
+    warnings: list[str] = []
+    app = SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+        ParamGet=groups.__getitem__,
+    )
+    qt_core = SimpleNamespace(QTimer=SimpleNamespace(singleShot=lambda *_args: None))
+    gui = SimpleNamespace(ensure_commands_registered=lambda: None)
+    monkeypatch.setitem(sys.modules, "FreeCAD", app)
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+
+    init_gui = ROOT / "src/Mod/VibeCAD/InitGui.py"
+    loader_globals = {"App": app}
+    loader_locals = {}
+    exec(
+        compile(init_gui.read_bytes(), str(init_gui), "exec"),
+        loader_globals,
+        loader_locals,
+    )
+
+    assert workbenches.values["Ordered"] == "PartWorkbench,DraftWorkbench"
+    assert workbenches.values["Disabled"] == "TestWorkbench,NoneWorkbench"
+    assert general.values["BackgroundAutoloadModules"] == "PartWorkbench"
+    assert general.values["AutoloadModule"] == "PartDesignWorkbench"
+    assert general.values["LastModule"] == "PartDesignWorkbench"
+    assert migration.values["VibeCADRemovedArchitectureWorkbench2026"] is True
+    assert any("retired architecture workbench" in warning for warning in warnings)

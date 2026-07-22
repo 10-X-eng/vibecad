@@ -229,7 +229,7 @@ class SetAutoGroup(gui_base.GuiCommandSimplest):
             "Pixmap": "Draft_AutoGroup",
             "MenuText": QT_TRANSLATE_NOOP("Draft_AutoGroup", "Auto-Group"),
             "ToolTip": QT_TRANSLATE_NOOP(
-                "Draft_AutoGroup", "Adds new Draft and BIM objects to the selected layer or group"
+                "Draft_AutoGroup", "Adds new Draft objects to the selected layer or group"
             ),
         }
 

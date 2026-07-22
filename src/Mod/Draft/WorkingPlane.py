@@ -1427,16 +1427,10 @@ class PlaneGui(PlaneBase):
         place = FreeCAD.Placement(mtx)
 
         typ = utils.get_type(obj)
-        if typ in ["App::Part", "Part::DatumPlane", "PartDesign::Plane", "Axis", "SectionPlane"]:
+        if typ in ["App::Part", "Part::DatumPlane", "PartDesign::Plane", "Axis"]:
             ret = self.align_to_obj_placement(obj, offset, place, _hist_add)
         elif typ == "WorkingPlaneProxy":
             ret = self.align_to_wp_proxy(obj, offset, place, _hist_add)
-        elif typ == "BuildingPart":
-            ret = self.align_to_wp_proxy(obj, offset, place * obj.Placement, _hist_add)
-        elif typ == "IfcBuildingStorey":
-            pl = FreeCAD.Placement(obj.Placement)
-            pl.move(FreeCAD.Vector(0, 0, obj.Elevation.Value))
-            ret = self.align_to_wp_proxy(obj, offset, place * pl, _hist_add)
         elif shape.isNull():
             ret = self.align_to_obj_placement(obj, offset, place, _hist_add)
         elif shape.ShapeType == "Face":

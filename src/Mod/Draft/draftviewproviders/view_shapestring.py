@@ -47,7 +47,7 @@ class ViewProviderShapeString(ViewProviderDraft):
 
         if (
             not "Draft_Edit" in Gui.listCommands()
-        ):  # Using Draft_Edit to detect if the Draft, Arch or BIM WB has been loaded.
+        ):  # Using Draft_Edit to detect if the Draft workbench has been loaded.
             self.wb_before_edit = Gui.activeWorkbench()
             Gui.activateWorkbench("DraftWorkbench")
         self.task = ShapeStringTaskPanelEdit(vobj)

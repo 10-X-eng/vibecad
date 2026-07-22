@@ -122,24 +122,7 @@
       <translation>Beszúr egy szerkeszthető szöveges blokk száljegyzetet az aktuális oldalra</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>MűszakiRajz</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM nézet</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Beszúr egy BIM szelvény metszősík nézetet</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2134,12 +2117,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Rajz létrehozó oldal</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIM nézet létrehozása</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Kép létrehozása</translation>
@@ -3292,11 +3269,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Egy kivágás csoport és egy nézet kiválasztása</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Az oldal BIM nézetet tartalmaz, amely nem kerül exportálásra. Folytatja?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3330,16 +3302,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Jelöljön ki legalább egy objektumot</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Csak 1 BIM metszősíkot válasszon</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Nincs BIM metszősík a kiválasztásban</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4781,7 +4743,7 @@ Minden egység kb. 0.1 mm széles</translation>
 For large scales, errors may occur due to excessive tiling.
 Increase the limit if necessary.</source>
       <translation>Korlátozza a 64×64 pixeles SVG csempék számát, amelyeket egyetlen felület
-árnyékolására használnak. Nagy méretekben hibák léphetnek fel a túl 
+árnyékolására használnak. Nagy méretekben hibák léphetnek fel a túl
 sok csempe miatt. Növelje a határértéket, ha szükséges.</translation>
     </message>
     <message>
@@ -5819,7 +5781,7 @@ Vetítéscsoportok számára</translation>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="74"/>
       <source>Controls whether or not a page&apos;s &apos;Keep Updated&apos; property
 can override the global &apos;Update with 3D&apos; parameter</source>
-      <translation>Határozza meg, hogy a rajzlapon található &apos;Frissítés megtartása&apos; tulajdonság 
+      <translation>Határozza meg, hogy a rajzlapon található &apos;Frissítés megtartása&apos; tulajdonság
 felülírhatja-e a globális &apos;Frissítés 3D-vel&apos; beállítást</translation>
     </message>
     <message>
@@ -6022,8 +5984,8 @@ felülírhatja-e a globális &apos;Frissítés 3D-vel&apos; beállítást</trans
     <message>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="853"/>
       <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Control when the view boundary frames and labels are displayed.&lt;/p&gt;&lt;p&gt;Auto: Show on hover, On: Always show, Off: Never show.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-      <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Meghatározza, hogy mikor jelennek meg a nézetek keretei és címkéi.&lt;/p&gt;&lt;p&gt;Auto: Mutassa kurzorral rámutatásra, 
-Be: Mindig mutassa, 
+      <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Meghatározza, hogy mikor jelennek meg a nézetek keretei és címkéi.&lt;/p&gt;&lt;p&gt;Auto: Mutassa kurzorral rámutatásra,
+Be: Mindig mutassa,
 Ki: Soha ne mutassa.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
     </message>
     <message>
@@ -6346,7 +6308,7 @@ Gyors, de az eredmény rövid egyenesek gyűjteménye.</translation>
       <location filename="../../MDIViewPage.cpp" line="429"/>
       <source>The printer uses a different orientation than the drawing.
 Do you want to continue?</source>
-      <translation>A nyomtató a rajztól eltérő tájolást használ. 
+      <translation>A nyomtató a rajztól eltérő tájolást használ.
 Szeretné folytatni?</translation>
     </message>
     <message>
@@ -6358,7 +6320,7 @@ Szeretné folytatni?</translation>
       <location filename="../../MDIViewPage.cpp" line="439"/>
       <source>The printer uses a different paper size than the drawing.
 Do you want to continue?</source>
-      <translation>A nyomtató a rajztól eltérő méretű papír méretet használ. 
+      <translation>A nyomtató a rajztól eltérő méretű papír méretet használ.
 Szeretné folytatni?</translation>
     </message>
     <message>
@@ -7413,7 +7375,7 @@ Egyedi: egyedi lépték használata</translation>
 If &apos;Equal tolerance&apos; is checked this is also
 the negated value for &apos;Undertolerance&apos;.</source>
       <translation>Felső tűréshatár értéke
-Ha a &apos;Tűrés egyenlő&apos; bejelölt ez szintén 
+Ha a &apos;Tűrés egyenlő&apos; bejelölt ez szintén
 az &apos;Alsó tűréshatár&apos; által jelzett negatív érték.</translation>
     </message>
     <message>
@@ -7427,7 +7389,7 @@ az &apos;Alsó tűréshatár&apos; által jelzett negatív érték.</translation
 If &apos;Equal tolerance&apos; is checked it will be replaced
 by negative value of &apos;Overtolerance&apos;.</source>
       <translation>Alsó tűréshatár értéke
-Ha az &apos;Azonos tűrés&apos; be van jelölve, ez az érték 
+Ha az &apos;Azonos tűrés&apos; be van jelölve, ez az érték
 megegyezik a &apos;Felső tűréshatár&apos; által negatívvá tett értékkel is.</translation>
     </message>
     <message>
@@ -10069,14 +10031,7 @@ van egy nyitott feladat párbeszédpanel.</translation>
       <translation>Vonal</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

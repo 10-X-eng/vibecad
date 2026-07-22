@@ -7031,7 +7031,7 @@ ezarri 'Egia' fusiorako edo 'Faltsua' konposaturako</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Arkuaren amaierako angelua (zirkulu osorako,
                  eman lehen angeluaren balio bera)</translation>
@@ -7215,25 +7215,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Propietate hau irakurtzeko soilik da, azken testua 'Etiketa mota' parametroaren
 eta 'Helburua' parametroan definitutako objektuaren araberakoa baita.
 'Testu pertsonalizatua' bistaratzeko, 'Etiketa mota' izan behar da 'Pertsonalizatua'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation type="unfinished">The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7518,11 +7499,6 @@ Propietate hau irakurtzeko soilik da, kopuru hori 'Puntu-objektua' elementuaren 
       <translation>Erakutsi ezkutuko lerroak</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Fusionatu mota eta material bereko hormak eta egiturak</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Teselatu elipseak eta B-spline elementuak lerro segmentuetara</translation>
@@ -7624,10 +7600,10 @@ Propietate hau irakurtzeko soilik da, kopuru hori 'Puntu-objektua' elementuaren 
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Arku eliptikoaren amaierako angelua 
+      <translation>Arku eliptikoaren amaierako angelua
                 (zirkulu osoa sortzeko, eman lehen angeluaren balio bera)</translation>
     </message>
     <message>
@@ -8355,11 +8331,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation type="unfinished">Auto-Group</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation type="unfinished">Adds new Draft and BIM objects to the selected layer or group</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8719,11 +8690,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation type="unfinished">Snap Center</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation type="unfinished">Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</translation>
     </message>
   </context>
   <context>

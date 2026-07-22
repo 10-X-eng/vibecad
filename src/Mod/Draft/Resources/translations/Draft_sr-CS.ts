@@ -905,7 +905,7 @@ od dugmadi iznad</translation>
 centered on the current view when pressing one
 of the buttons above</source>
       <translation>Ako je ovo izabrano, radna ravan će biti
-centrirana u odnosu na trenutni pogled kada 
+centrirana u odnosu na trenutni pogled kada
 pritisneš jedno od dugmadi iznad</translation>
     </message>
     <message>
@@ -917,7 +917,7 @@ pritisneš jedno od dugmadi iznad</translation>
       <location filename="../ui/TaskSelectPlane.ui" line="117"/>
       <source>Centers the working plane on the current view when pressing one
 of the buttons above</source>
-      <translation>Pritiskom na jedno od dugmadi iznad 
+      <translation>Pritiskom na jedno od dugmadi iznad
 možeš na trenutnom pogledu centrirati radnu ravan</translation>
     </message>
     <message>
@@ -1550,8 +1550,8 @@ manually in any of the coordinate fields. Setting this to 0 disables the delay.
 If a delay of 1 is set, after entering a numeric value, the mouse will not
 update the field anymore during one second, to avoid moving the mouse
 accidentally and modifying the entered value.</source>
-      <translation>Ovo je vreme tokom kog je miš neaktivan, nakon ručnog unosa brojeva u bilo koje od 
-koordinatnih polja. Podešavanjem na 0 ukida se ovo vreme. Ako je podešena vrednost 1, 
+      <translation>Ovo je vreme tokom kog je miš neaktivan, nakon ručnog unosa brojeva u bilo koje od
+koordinatnih polja. Podešavanjem na 0 ukida se ovo vreme. Ako je podešena vrednost 1,
 miš neće moći uticati na sadržaj polja tokom trajanja jedne sekunde. Ovime se sprečava
  da se nakon unosa brojčane vrednosti, slučajnim pomeranjem miša promeni njena vrednost.</translation>
     </message>
@@ -1958,7 +1958,7 @@ in the Draft Scale Widget. If the scale is 1:100 the multiplier is 100.</source>
       <location filename="../ui/preferences-drafttexts.ui" line="510"/>
       <source>The default unit override for dimensions. Enter a unit such as m
 or cm, leave blank to use the current unit defined in FreeCAD.</source>
-      <translation>Zamena mernih jedinica kota. Unesi mernu jedinicu (npr. m ili cm) kojom 
+      <translation>Zamena mernih jedinica kota. Unesi mernu jedinicu (npr. m ili cm) kojom
 želiš da zameniš trenutno definisanu u FreeCAD-u, u suprotnom ostavi prazno.</translation>
     </message>
     <message>
@@ -2057,7 +2057,7 @@ Jedna jedinica u SVG datoteci će se prevesti kao jedan milimetar.</translation>
       <location filename="../ui/preferences-svg.ui" line="97"/>
       <source>If face generation results in a degenerated face,
 a raw wire from the original shape is added</source>
-      <translation>Ako stvaranje stranice rezultira u neispravnu stranicu, 
+      <translation>Ako stvaranje stranice rezultira u neispravnu stranicu,
 dodaće se žičani okvir originalnog oblika</translation>
     </message>
     <message>
@@ -2256,7 +2256,7 @@ a DXF file.</source>
       <source>If checked, FreeCAD is allowed to download and update the Python libraries
 required by the legacy importer. This can also be done manually by installing
 the 'dxf_library' addon from the Addon Manager.</source>
-      <translation>Dozvoli FreeCAD-u da preuzima i ažurira Python biblioteke koje su 
+      <translation>Dozvoli FreeCAD-u da preuzima i ažurira Python biblioteke koje su
 potrebne za stariji prevodilac uvoznik. Ovo se može uraditi i ručno instaliranjem
 dodatka 'dxf_library' iz Menadžera dodataka.</translation>
     </message>
@@ -2316,8 +2316,8 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for importing and viewing very large files with maximum performance.</source>
-      <translation>Spoji geometriju svakog sloja u jedan oblik koji se ne može uređivati. Blokovi 
-neće biti očuvani; njihova geometrija postaje deo spojenog oblika sloja kome 
+      <translation>Spoji geometriju svakog sloja u jedan oblik koji se ne može uređivati. Blokovi
+neće biti očuvani; njihova geometrija postaje deo spojenog oblika sloja kome
 je pripadao. Najbolje koristiti za brz pregled veoma velikih datoteka.</translation>
     </message>
     <message>
@@ -2424,7 +2424,7 @@ umesto veličine koju imaju u DXF dokumentu. (Važi samo za stari prevodilac uvo
       <location filename="../ui/preferences-dxf.ui" line="442"/>
       <source>If checked, the legacy importer will attempt to join coincident geometric
 objects into wires. This can be slow for large files. (Legacy importer only)</source>
-      <translation>Stari prevodilac uvoznik će pokušati da spoji podudarne geometrijske objekte u žičane okvire. 
+      <translation>Stari prevodilac uvoznik će pokušati da spoji podudarne geometrijske objekte u žičane okvire.
 Ovo može biti sporo za velike datoteke. (Važi samo za stari prevodilac uvoznik)</translation>
     </message>
     <message>
@@ -2438,7 +2438,7 @@ representing that width. (Legacy importer only)</source>
       <location filename="../ui/preferences-dxf.ui" line="482"/>
       <source>If checked, the legacy importer will attempt to create Sketcher objects
 instead of Draft or Part objects. This overrides the 'Import As' setting</source>
-      <translation>Stari prevodilac uvoznik će pokušati da napravi objekte okruženja Skice 
+      <translation>Stari prevodilac uvoznik će pokušati da napravi objekte okruženja Skice
 umesto objekte okruženja Crtanje ili Delovi. Ovo se menja postavkom 'Uvezi kao'</translation>
     </message>
     <message>
@@ -2599,7 +2599,7 @@ Use Draft ToggleGrid to change this for the active view.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="49"/>
       <source>If checked, the grid will be visible during commands in new views.
 Use Draft ToggleGrid to change this for the active view.</source>
-      <translation>Uvek prikaži koordinatnu mrežu u novim pogledima. U aktivnom pogledu možeš promeniti 
+      <translation>Uvek prikaži koordinatnu mrežu u novim pogledima. U aktivnom pogledu možeš promeniti
 ovo stanje pomoću alatke Sakrij/Prikaži koordinatnu mrežu.</translation>
     </message>
     <message>
@@ -6054,7 +6054,7 @@ Please either allow FreeCAD to download these libraries:
 Or download these libraries manually, as explained on
 https://github.com/yorikvanhavre/Draft-dxf-importer
 To enabled FreeCAD to download these libraries, answer Yes.</source>
-      <translation>Biblioteke potrebne za uvoz ili izvoz datoteka u DXF formatu 
+      <translation>Biblioteke potrebne za uvoz ili izvoz datoteka u DXF formatu
 nisu pronađene na ovom sistemu.
 Ili omogući FreeCAD-u da sam preuzima ove biblioteke:
  1 - Pokreni okruženja Crtanje
@@ -6550,7 +6550,7 @@ Linije moraju deliti zajedničku tačku na početku ili na kraju da bi operacija
       <location filename="../../draftguitools/gui_move.py" line="63"/>
       <source>Moves the selected objects.
 If the "Copy" option is active, it creates displaced copies.</source>
-      <translation>Pomeri izabrani objekat. 
+      <translation>Pomeri izabrani objekat.
 Ako je aktivirana opcija kopiranja, napraviće se pomerena kopija.</translation>
     </message>
   </context>
@@ -6604,7 +6604,7 @@ Ako je aktivirana opcija kopiranja, napraviće se pomerena kopija.</translation>
       <location filename="../../draftguitools/gui_rotate.py" line="65"/>
       <source>Rotates the selected objects.
 If the "Copy" option is active, it will create rotated copies.</source>
-      <translation>Zaokreni izabrani objekat. 
+      <translation>Zaokreni izabrani objekat.
 Ako je aktivirana opcija kopiranja, napraviće se zaokrenuta kopija.</translation>
     </message>
   </context>
@@ -7001,9 +7001,9 @@ podesi Tačno za uniju ili Netačno za sastavljeni objekat</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Krajnji ugao luka (za pun krug, 
+      <translation>Krajnji ugao luka (za pun krug,
                 dati istu vrednost kao za prvi ugao)</translation>
     </message>
     <message>
@@ -7147,7 +7147,7 @@ If 'Custom' is chosen, the points of the leader can be specified by
 assigning a custom list to the 'Points' attribute.</source>
       <translation>Pravac ravnog segmenta pokazne linije.
 
-Ako je izabrano 'Sopstveno', tačke pokazne linije se mogu zadati po 
+Ako je izabrano 'Sopstveno', tačke pokazne linije se mogu zadati po
 sopstvenom izboru u osobini 'Tačke'.</translation>
     </message>
     <message>
@@ -7184,25 +7184,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 
 Ovo svojstvo je samo za čitanje, jer konačni tekst zavisi od 'Vrsta oznake' i objekta navedenog u 'Cilj'.
 'Sopstveni tekst' se prikazuje samo ako je 'Vrsta oznake' postavljena na 'Sopstvena'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Vrsta informacija koje prikazuje ova oznaka.
-
-Ako je izabrano 'Sopstveno', koristiće se sadržaj 'Sopstveni tekst'.
-Za druge vrste, znakovni niz će se automatski izračunati iz objekta definisanog u 'Cilj'.
-'Oznaka' i 'Materijal' imaju smisao samo za objekte koji imaju ove osobine, kao što su Arch objekti.
-
-Za 'Položaj', 'Dužina' i 'Površina', ova svojstva će biti izvučena iz 'Cilj' glavnog objekta,
-ili iz podelementa 'VertexN', 'EdgeN', ili 'FaceN', tim redosledom, ako je navedeno.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7486,11 +7467,6 @@ Ova osobina je samo za čitanje, pošto broj zavisi od tačaka u tačkastom obje
       <translation>Prikaži nevidljive linije</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation type="unfinished">Fuse wall and structure objects of same type and material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Aproksimiraj Elipse i B-Splajnove sa segmentima linija</translation>
@@ -7592,10 +7568,10 @@ Ova osobina je samo za čitanje, pošto broj zavisi od tačaka u tačkastom obje
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Krajnji ugao eliptičnog luka 
+      <translation>Krajnji ugao eliptičnog luka
 
                 (za pun krug, dajte istu vrednost kao za početni ugao)</translation>
     </message>
@@ -7673,7 +7649,7 @@ that displays the measured radius or diameter.
 that displays the measured angle.</source>
       <translation>Tačka kroz koju će proći kotna linija, ili njena ekstrapolacija.
 
-- Za linearne kote, ovo kontroliše koliko je blizu kotna linija 
+- Za linearne kote, ovo kontroliše koliko je blizu kotna linija
 merenom objektu.
 - Za radijalne kote, ovo kontroliše pravac kotne linije
 koji prikazuje izmereni poluprečnik ili prečnik.
@@ -8322,11 +8298,6 @@ Međutim, jedna skica sa nespojenim elementima biće konvertovana u nekoliko poj
       <source>Auto-Group</source>
       <translation>Automatsko grupisanje</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Dodaj u izabrani sloj ili grupu nove objekte okruženja Crtanje i BIM</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8687,11 +8658,6 @@ Smer projiciranja je suprotan od trenutnog smera kamere 3D pogleda.</translation
       <source>Snap Center</source>
       <translation>Uhvati centar</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Uhvati za centralnu tačku stranica i kružnih ivica, koordinatni početak zamenskih radnih ravni ili Građevinske delove</translation>
-    </message>
   </context>
   <context>
     <name>Draft_Snap_Extension</name>
@@ -8917,8 +8883,8 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for viewing very large files with maximum performance.</source>
-      <translation>Spoji geometriju svakog sloja u jedan oblik koji se ne može uređivati. Blokovi 
-neće biti očuvani; njihova geometrija postaje deo spojenog oblika sloja kome 
+      <translation>Spoji geometriju svakog sloja u jedan oblik koji se ne može uređivati. Blokovi
+neće biti očuvani; njihova geometrija postaje deo spojenog oblika sloja kome
 je pripadao. Najbolje koristiti za brz pregled veoma velikih datoteka.</translation>
     </message>
     <message>

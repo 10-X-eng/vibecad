@@ -309,8 +309,8 @@ def test_vibescript_context_is_absent_when_its_tools_are_not_surfaced(
         lambda _service, _wb, **_kwargs: [_context_schema("core.inspect")],
     )
     service = _ProviderContextService(
-        "BIMWorkbench",
-        {"cad_state": {}, "bim": {"buildings": []}},
+        "DraftWorkbench",
+        {"cad_state": {}, "draft": {"objects": []}},
         engine="native",
     )
 

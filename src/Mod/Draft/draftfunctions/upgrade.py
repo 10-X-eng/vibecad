@@ -52,7 +52,6 @@ from draftutils.translate import translate
 
 # Delay import of module until first use because it is heavy
 Part = lz.LazyLoader("Part", globals(), "Part")
-Arch = lz.LazyLoader("Arch", globals(), "Arch")
 
 _DEBUG = False
 
@@ -165,7 +164,14 @@ def upgrade(objects, delete=False, force=None):
         """Turn given meshes to parts."""
         result = False
         for mesh in meshes:
-            shp = Arch.getShapeFromMesh(mesh.Mesh)
+            shp = Part.Shape()
+            try:
+                shp.makeShapeFromMesh(mesh.Mesh.Topology, 0.001)
+                shp = shp.removeSplitter()
+                if mesh.Mesh.isSolid() and len(shp.Shells) == 1:
+                    shp = Part.makeSolid(shp.Shells[0])
+            except (Part.OCCError, RuntimeError):
+                shp = None
             if shp:
                 newobj = doc.addObject("Part::Feature", shp.ShapeType)
                 newobj.Shape = shp

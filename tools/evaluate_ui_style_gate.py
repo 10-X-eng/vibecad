@@ -742,20 +742,20 @@ def ctest_gate(summary: dict[str, Any]) -> dict[str, Any]:
     startup_ok = (
         startup.get("result") == "ok"
         and startup.get("returncode") == 0
-        and bool(startup.get("ifcopenshell_version"))
+        and bool(startup.get("freecad_version"))
         and startup.get("python_path_contains_venv") is True
     )
     if failed == 0 and pass_percent == 100 and inventory.get("check_result") == "ok" and startup_ok:
         return check(
             PASS,
-            "CTest is green, disabled/skipped inventory has no new entries, and venv IFC startup works",
+            "CTest is green, disabled/skipped inventory has no new entries, and venv startup works",
             {
                 "run": ctest.get("run"),
                 "inventory_total": ctest.get("inventory_total"),
                 "not_run_count": len(ctest.get("not_run", [])),
                 "approved_not_run_count": inventory.get("approved_not_run_count"),
                 "newly_runnable_count": inventory.get("newly_runnable_count"),
-                "ifcopenshell_version": startup.get("ifcopenshell_version"),
+                "freecad_version": startup.get("freecad_version"),
                 "startup_report": startup.get("report"),
                 "ctest_inventory_selftest": inventory_selftest_evidence,
             },
@@ -763,12 +763,12 @@ def ctest_gate(summary: dict[str, Any]) -> dict[str, Any]:
     if failed == 0 and pass_percent == 100 and inventory.get("check_result") == "ok" and not startup_ok:
         return check(
             FAIL,
-            "CTest is green but venv IFC startup smoke is missing or failed",
+            "CTest is green but venv startup smoke is missing or failed",
             {
                 "startup_present": startup.get("present", False),
                 "startup_result": startup.get("result"),
                 "startup_returncode": startup.get("returncode"),
-                "ifcopenshell_version": startup.get("ifcopenshell_version"),
+                "freecad_version": startup.get("freecad_version"),
                 "python_path_contains_venv": startup.get("python_path_contains_venv"),
                 "startup_report": startup.get("report"),
                 "ctest_inventory_selftest": inventory_selftest_evidence,

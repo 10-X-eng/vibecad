@@ -54,7 +54,6 @@
 #include <Mod/TechDraw/App/DrawProjGroup.h>
 #include <Mod/TechDraw/App/DrawUtil.h>
 #include <Mod/TechDraw/App/DrawSVGTemplate.h>
-#include <Mod/TechDraw/App/DrawViewArch.h>
 #include <Mod/TechDraw/App/DrawViewClip.h>
 #include <Mod/TechDraw/App/DrawViewDetail.h>
 #include <Mod/TechDraw/App/DrawViewDraft.h>
@@ -348,25 +347,6 @@ void CmdTechDrawView::activated(int iMsg)
                 FeatName.c_str(), FeatName.c_str());
             doCommand(Doc, "App.activeDocument().%s.Source = App.activeDocument().%s", FeatName.c_str(),
                 SpreadName.c_str());
-            doCommand(Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)", PageName.c_str(),
-                FeatName.c_str());
-            doCommand(Doc, "if App.activeDocument().%s.Scale: App.activeDocument().%s.Scale = App.activeDocument().%s.Scale",
-                PageName.c_str(), FeatName.c_str(), PageName.c_str());
-            updateActive();
-            commitCommand();
-            viewCreated = true;
-            continue;
-        }
-        else if (DrawGuiUtil::isArchSection(obj)) {
-            std::string FeatName = getUniqueObjectName("BIM view");
-            std::string SourceName = obj->getNameInDocument();
-            openCommand(QT_TRANSLATE_NOOP("Command", "Create BIM view"));
-            doCommand(Doc, "App.activeDocument().addObject('TechDraw::DrawViewArch', '%s')",
-                FeatName.c_str());
-            doCommand(Doc, "App.activeDocument().%s.translateLabel('DrawViewArch', 'BIM view', '%s')",
-                FeatName.c_str(), FeatName.c_str());
-            doCommand(Doc, "App.activeDocument().%s.Source = App.activeDocument().%s", FeatName.c_str(),
-                SourceName.c_str());
             doCommand(Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)", PageName.c_str(),
                 FeatName.c_str());
             doCommand(Doc, "if App.activeDocument().%s.Scale: App.activeDocument().%s.Scale = App.activeDocument().%s.Scale",
@@ -1666,79 +1646,6 @@ void CmdTechDrawDraftView::activated(int iMsg)
 bool CmdTechDrawDraftView::isActive() { return DrawGuiUtil::needPage(this); }
 
 //===========================================================================
-// TechDraw_ArchView
-//===========================================================================
-
-DEF_STD_CMD_A(CmdTechDrawArchView)
-
-CmdTechDrawArchView::CmdTechDrawArchView() : Command("TechDraw_ArchView")
-{
-    // setting the Gui eye-candy
-    sGroup = QT_TR_NOOP("TechDraw");
-    sMenuText = QT_TR_NOOP("BIM View");
-    sToolTipText = QT_TR_NOOP("Inserts a view of a BIM section plane");
-    sWhatsThis = "TechDraw_NewArch";
-    sStatusTip = sToolTipText;
-    sPixmap = "actions/TechDraw_ArchView";
-}
-
-void CmdTechDrawArchView::activated(int iMsg)
-{
-    Q_UNUSED(iMsg);
-
-    const std::vector<App::DocumentObject*> objects =
-        getSelection().getObjectsOfType(App::DocumentObject::getClassTypeId());
-    App::DocumentObject* archObject = nullptr;
-    int archCount = 0;
-    for (auto& obj : objects) {
-        if (obj->isDerivedFrom<TechDraw::DrawPage>() ||
-            obj->isDerivedFrom<TechDraw::DrawView>()) {
-            // skip over TechDraw objects as they are not valid subjects for a ArchView
-            continue;
-        }
-        if (DrawGuiUtil::isArchSection(obj)) {
-            archCount++;
-            archObject = obj;
-        }
-    }
-    if (archCount > 1) {
-        QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
-                             QObject::tr("Select only 1 BIM section plane"));
-        return;
-    }
-
-    if (!archObject) {
-        QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Wrong selection"),
-                             QObject::tr("No BIM section plane in selection"));
-        return;
-    }
-
-    TechDraw::DrawPage* page = DrawGuiUtil::findPage(this);
-    if (!page) {
-        return;
-    }
-    std::string PageName = page->getNameInDocument();
-
-    std::string FeatName = getUniqueObjectName("BIM view");
-    std::string SourceName = archObject->getNameInDocument();
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create BIM view"));
-    doCommand(Doc, "App.activeDocument().addObject('TechDraw::DrawViewArch', '%s')",
-              FeatName.c_str());
-    doCommand(Doc, "App.activeDocument().%s.translateLabel('DrawViewArch', 'BIM view', '%s')",
-              FeatName.c_str(), FeatName.c_str());
-    doCommand(Doc, "App.activeDocument().%s.Source = App.activeDocument().%s", FeatName.c_str(),
-              SourceName.c_str());
-    doCommand(Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)", PageName.c_str(),
-              FeatName.c_str());
-    doCommand(Doc, "if App.activeDocument().%s.Scale: App.activeDocument().%s.Scale = App.activeDocument().%s.Scale",
-        PageName.c_str(), FeatName.c_str(), PageName.c_str());
-    updateActive();
-    commitCommand();
-}
-
-bool CmdTechDrawArchView::isActive() { return DrawGuiUtil::needPage(this); }
-
-//===========================================================================
 // TechDraw_SpreadsheetView
 //===========================================================================
 
@@ -1881,22 +1788,6 @@ void CmdTechDrawExportPageDXF::activated(int iMsg)
         return;
     }
 
-    std::vector<App::DocumentObject*> views = page->getViews();
-    for (auto& v : views) {
-        if (v->isDerivedFrom<TechDraw::DrawViewArch>()) {
-            QMessageBox::StandardButton rc = QMessageBox::question(
-                Gui::getMainWindow(), QObject::tr("Cannot export selection"),
-                QObject::tr("Page contains a BIM view which will not be exported. Continue?"),
-                QMessageBox::StandardButtons(QMessageBox::Yes | QMessageBox::No));
-            if (rc == QMessageBox::No) {
-                return;
-            }
-            else {
-                break;
-            }
-        }
-    }
-
     //WF? allow more than one TD Page per Dxf file??  1 TD page = 1 DXF file = 1 drawing?
     QString defaultDir;
     QString fileName = Gui::FileDialog::getSaveFileName(
@@ -1970,7 +1861,6 @@ void CreateTechDrawCommands()
     rcCmdMgr.addCommand(new CmdTechDrawExportPageSVG());
     rcCmdMgr.addCommand(new CmdTechDrawExportPageDXF());
     rcCmdMgr.addCommand(new CmdTechDrawDraftView());
-    rcCmdMgr.addCommand(new CmdTechDrawArchView());
     rcCmdMgr.addCommand(new CmdTechDrawSpreadsheetView());
     rcCmdMgr.addCommand(new CmdTechDrawBalloon());
     rcCmdMgr.addCommand(new CmdTechDrawProjectShape());
@@ -2107,4 +1997,3 @@ Base::Vector3d checkDirectionVsBasis(Base::Vector3d dir)
     return dir;
 
 }
-

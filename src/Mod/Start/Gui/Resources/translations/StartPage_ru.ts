@@ -83,11 +83,6 @@
       <translation>Создать двухмерный документ верстака Набросок</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/Архитектура</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>Пустой файл</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>Создать проект сборки деталей</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>Создаёт архитектурный проект</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>
@@ -234,9 +224,9 @@
       <location filename="../../DlgStartPreferences.ui" line="47"/>
       <source>An optional custom folder to be displayed on the Start page.
 Multiple folders can be added using ";;" to separate paths.</source>
-      <translation>Необязательная пользовательская папка, которая будет 
+      <translation>Необязательная пользовательская папка, которая будет
 отображаться на начальной странице.
-Можно добавить несколько папок, используя ";;" для 
+Можно добавить несколько папок, используя ";;" для
 разделения путей.</translation>
     </message>
     <message>

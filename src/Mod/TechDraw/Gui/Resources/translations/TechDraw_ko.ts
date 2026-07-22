@@ -122,24 +122,7 @@
       <translation>현재 페이지에 편집 가능한 텍스트 블록 주석을 삽입합니다.</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>기술도면</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM 보기</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>BIM 단면 평면의 보기를 삽입합니다.</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>도면 페이지 생성</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIM 보기 생성</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>이미지 생성</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>클립 그룹 하나와 보기 하나를 선택하세요</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>페이지에 내보내지지 않는 BIM 보기가 포함되어 있습니다. 계속하시겠습니까?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>DXF 파일 저장</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>최소 하나의 객체를 선택하세요</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>BIM 단면 평면을 하나만 선택하세요</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>선택 항목에 BIM 단면 평면이 없습니다</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4568,7 +4530,7 @@ Angle, surface finish, root</source>
       <location filename="../../TaskWeldingSymbol.ui" line="241"/>
       <source>Adds the &apos;Field weld&apos; symbol (flag)
 at the kink in the leader line</source>
-      <translation>지시선의 꺾이는 부분에 &apos;현장 용접' 
+      <translation>지시선의 꺾이는 부분에 &apos;현장 용접'
 기호(깃발)를 추가합니다</translation>
     </message>
     <message>
@@ -5819,7 +5781,7 @@ for ProjectionGroups</source>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="74"/>
       <source>Controls whether or not a page&apos;s &apos;Keep Updated&apos; property
 can override the global &apos;Update with 3D&apos; parameter</source>
-      <translation>페이지의 &apos;최신 상태 유지&apos; 속성이 전역 &apos;3D와 함께 업데이트&apos; 
+      <translation>페이지의 &apos;최신 상태 유지&apos; 속성이 전역 &apos;3D와 함께 업데이트&apos;
 매개변수를 재정의할 수 있는지 여부를 제어합니다</translation>
     </message>
     <message>
@@ -10061,14 +10023,7 @@ there is an open task dialog.</source>
       <translation>선</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

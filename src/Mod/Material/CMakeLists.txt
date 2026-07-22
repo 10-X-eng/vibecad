@@ -258,8 +258,6 @@ SET(MaterialTestLib_Files
 )
 
 SET(MaterialModel_Files
-    Resources/Models/Architectural/Architectural.yml
-    Resources/Models/Architectural/ArchitecturalRendering.yml
     Resources/Models/Costs/Costs.yml
     Resources/Models/Electromagnetic/Electromagnetic.yml
     Resources/Models/Fluid/Fluid.yml

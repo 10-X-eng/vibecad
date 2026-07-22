@@ -6992,9 +6992,9 @@ defina Verdadeiro para fusão ou Falso para o composto</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Ângulo final do arco (para um círculo completo, 
+      <translation>Ângulo final do arco (para um círculo completo,
                 use o mesmo valor do ângulo inicial)</translation>
     </message>
     <message>
@@ -7176,24 +7176,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Esta propriedade é somente leitura, já que o texto final depende do "Tipo de Rótulo",
 e o objeto definido como "Objeto Alvo".
 O "Texto Personalizado" é exibido apenas se o "Tipo de Rótulo" estiver definido como "Personalizado".</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>O tipo de informação exibida por este rótulo.
-
-Se "Personalizado" for escolhido, o conteúdo do "Texto Personalizado" será usado.
-Para outros tipos, a string será calculada automaticamente a partir do objeto definido em "Alvo".
-'Tag' e 'Material' só funcionam para objetos que possuem estas propriedades, como objetos BIM.
-
-Para 'Posição', 'Comprimento' e 'Área' estas propriedades serão extraídas dos objetos principais em 'Alvo', ou de um subelemento, 'VertexN', 'EdgeN' ou 'FaceN', respectivamente, se for especificado.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7478,11 +7460,6 @@ Esta propriedade é somente leitura, já que o número depende dos pontos em "Ob
       <translation>Mostrar linhas ocultas</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Unir paredes e estruturas de objetos do mesmo tipo e material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tesselação de Elipses e B-splines em segmentos de linha</translation>
@@ -7584,10 +7561,10 @@ Esta propriedade é somente leitura, já que o número depende dos pontos em "Ob
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Ângulo final do arco elíptico 
+      <translation>Ângulo final do arco elíptico
                 (para um círculo completo, use o mesmo valor do ângulo inicial)</translation>
     </message>
     <message>
@@ -7756,7 +7733,7 @@ This property is read-only because the value is calculated from
 the 'First Angle' and 'Last Angle' properties.</source>
       <translation>O valor das medições.
 
-Essa propriedade é somente leitura pois o valor é calculado a partir 
+Essa propriedade é somente leitura pois o valor é calculado a partir
 das propriedades "Primeiro Ângulo" e '"Último Ângulo".</translation>
     </message>
     <message>
@@ -8085,7 +8062,7 @@ past the extension lines</source>
       <location filename="../../draftviewproviders/view_dimension.py" line="205"/>
       <source>Length of the extension line
 beyond the dimension line</source>
-      <translation>Comprimento da linha de extensão 
+      <translation>Comprimento da linha de extensão
 além da linha de cota</translation>
     </message>
     <message>
@@ -8312,11 +8289,6 @@ No entanto, um único esboço com traços desconectados é convertido em vários
       <location filename="../../draftguitools/gui_groups.py" line="230"/>
       <source>Auto-Group</source>
       <translation>Auto-Grupo</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Adiciona novos objetos Rascunhos e BIM à camada ou grupo selecionado.</translation>
     </message>
   </context>
   <context>
@@ -8675,11 +8647,6 @@ A direção inicial de projeção é o oposto da direção de visualização atu
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Encaixe Central</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Encaixa no ponto central de faces e arestas circulares, e ao ponto de posicionamento dos intermediários do plano de trabalho e peças de edifício</translation>
     </message>
   </context>
   <context>

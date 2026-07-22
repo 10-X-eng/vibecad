@@ -173,16 +173,6 @@ Py::String UUIDsPy::getElectromagnetic() const
     return Py::String(ModelUUIDs::ModelUUID_Electromagnetic_Default.toStdString());
 }
 
-Py::String UUIDsPy::getArchitectural() const
-{
-    return Py::String(ModelUUIDs::ModelUUID_Architectural_Default.toStdString());
-}
-
-Py::String UUIDsPy::getArchitecturalRendering() const
-{
-    return Py::String(ModelUUIDs::ModelUUID_Rendering_Architectural.toStdString());
-}
-
 Py::String UUIDsPy::getCosts() const
 {
     return Py::String(ModelUUIDs::ModelUUID_Costs_Default.toStdString());

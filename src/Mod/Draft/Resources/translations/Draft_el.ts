@@ -475,7 +475,7 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_CircularArray.ui" line="235"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>Αν επιλεγεί, το αντικείμενο που θα προκύψει θα είναι μια "Διάταξη συνδέσμων" αντί για μια κανονική διάταξη. 
+      <translation>Αν επιλεγεί, το αντικείμενο που θα προκύψει θα είναι μια "Διάταξη συνδέσμων" αντί για μια κανονική διάταξη.
 Μια διάταξη συνδέσμων είναι πιο αποδοτική κατά τη δημιουργία πολλών αντιγράφων, αλλά τα στοιχεία της δεν μπορούν να συγχωνευθούν (ενωθούν) μεταξύ τους.</translation>
     </message>
     <message>
@@ -532,8 +532,8 @@ The number must be at least 1 in each direction.</source>
       <source>Distance between the elements in the Z direction.
 Normally, only the Z value is necessary; the other two values can give an additional shift in their respective directions.
 Negative values will result in copies produced in the negative direction.</source>
-      <translation>Απόσταση μεταξύ των στοιχείων, (πώς θα απλώνονται τα αντίγραφα καθ' ύψος στον άξονα Z). 
-Συνήθως, μόνο η τιμή Z είναι απαραίτητη· οι άλλες δύο τιμές μπορούν να δώσουν μια επιπλέον μετατόπιση στις αντίστοιχες κατευθύνσεις τους. 
+      <translation>Απόσταση μεταξύ των στοιχείων, (πώς θα απλώνονται τα αντίγραφα καθ' ύψος στον άξονα Z).
+Συνήθως, μόνο η τιμή Z είναι απαραίτητη· οι άλλες δύο τιμές μπορούν να δώσουν μια επιπλέον μετατόπιση στις αντίστοιχες κατευθύνσεις τους.
 Οι αρνητικές τιμές θα οδηγήσουν σε αντίγραφα στην αρνητική κατεύθυνση.</translation>
     </message>
     <message>
@@ -636,7 +636,7 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_OrthoArray.ui" line="454"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>Αν επιλεγεί, το αντικείμενο που θα προκύψει θα είναι μια "Διάταξη συνδέσμων" αντί για μια κανονική διάταξη. 
+      <translation>Αν επιλεγεί, το αντικείμενο που θα προκύψει θα είναι μια "Διάταξη συνδέσμων" αντί για μια κανονική διάταξη.
 Μια διάταξη συνδέσμων είναι πιο αποδοτική κατά τη δημιουργία πολλών αντιγράφων, αλλά τα στοιχεία της δεν μπορούν να συγχωνευθούν (ενωθούν) μεταξύ τους.</translation>
     </message>
     <message>
@@ -658,7 +658,7 @@ A Link array is more efficient when creating multiple copies, but it cannot be f
       <source>Sweeping angle of the polar distribution.
 A negative angle produces a polar pattern in the opposite direction.
 The maximum absolute value is 360 degrees.</source>
-      <translation>Αυτή η ρύθμιση καθορίζει πόσο «ανοιχτή» θα είναι η βεντάλια της κυκλικής σας διάταξης. 
+      <translation>Αυτή η ρύθμιση καθορίζει πόσο «ανοιχτή» θα είναι η βεντάλια της κυκλικής σας διάταξης.
 Γωνία κάλυψης: Είναι το συνολικό τόξο πάνω στο οποίο θα απλωθούν τα αντίγραφά σας. Αν βάλετε 360°, τα αντικείμενα θα σχηματίσουν έναν πλήρη κύκλο, αν βάλετε 180° τα αντικείμενα θα απλωθούν σε έναν ημικύκλιο.
 Οι θετικές τιμές απλώνουν τα αντικείμενα αριστερόστροφα, ενώ οι αρνητικές τιμές (π. χ. -90°) τα απλώνουν δεξιόστροφα.
 Η μέγιστη απόλυτη τιμή είναι οι 360 μοίρες.</translation>
@@ -732,7 +732,7 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_PolarArray.ui" line="197"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>Αν επιλεγεί, το αντικείμενο που θα προκύψει θα είναι μια "Διάταξη συνδέσμων" αντί για μια κανονική διάταξη. 
+      <translation>Αν επιλεγεί, το αντικείμενο που θα προκύψει θα είναι μια "Διάταξη συνδέσμων" αντί για μια κανονική διάταξη.
 Μια διάταξη συνδέσμων είναι πιο αποδοτική κατά τη δημιουργία πολλών αντιγράφων, αλλά τα στοιχεία της δεν μπορούν να συγχωνευθούν (ενωθούν) μεταξύ τους.</translation>
     </message>
     <message>
@@ -7019,9 +7019,9 @@ set True for fusion or False for compound</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation type="unfinished">End angle of the arc (for a full circle, 
+      <translation type="unfinished">End angle of the arc (for a full circle,
                 give it same value as First Angle)</translation>
     </message>
     <message>
@@ -7201,25 +7201,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 This property is read-only, as the final text depends on 'Label Type',
 and the object defined in 'Target'.
 The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation type="unfinished">The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7503,11 +7484,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>Εμφανίστε τις κρυφές γραμμές</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation type="unfinished">Fuse wall and structure objects of same type and material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation type="unfinished">Tessellate Ellipses and B-splines into line segments</translation>
@@ -7609,10 +7585,10 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation type="unfinished">End angle of the elliptical arc 
+      <translation type="unfinished">End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</translation>
     </message>
@@ -8341,11 +8317,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation type="unfinished">Auto-Group</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation type="unfinished">Adds new Draft and BIM objects to the selected layer or group</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8705,11 +8676,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation type="unfinished">Snap Center</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation type="unfinished">Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</translation>
     </message>
   </context>
   <context>

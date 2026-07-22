@@ -83,11 +83,6 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../../StartView.cpp" line="225"/>
-        <source>BIM/Architecture</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
         <location filename="../../StartView.cpp" line="205"/>
         <source>Empty File</source>
         <translation type="unfinished"></translation>
@@ -115,11 +110,6 @@
     <message>
         <location filename="../../StartView.cpp" line="218"/>
         <source>Creates an assembly project</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="../../StartView.cpp" line="226"/>
-        <source>Creates an architectural project</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

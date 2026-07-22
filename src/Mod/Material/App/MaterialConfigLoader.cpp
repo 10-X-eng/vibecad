@@ -192,13 +192,6 @@ void MaterialConfigLoader::addVectorRendering(const QMap<QString, QString>& fcma
     QString viewFillPattern = value(fcmat, "VectorRendering/ViewFillPattern", "");
     QString viewLinewidth = value(fcmat, "VectorRendering/ViewLinewidth", "");
 
-    // Defined by the Render WB
-    QString aSection = value(fcmat, "Architectural/SectionColor", "");
-
-    if (!aSection.isEmpty()) {
-        sectionColor = aSection;
-    }
-
     if (sectionFillPattern.length() + sectionLinewidth.length() + sectionColor.length()
             + viewColor.length() + viewFillPattern.length() + viewLinewidth.length()
         > 0) {
@@ -227,17 +220,6 @@ void MaterialConfigLoader::addRendering(const QMap<QString, QString>& fcmat,
     QString textureScaling = value(fcmat, "Rendering/TextureScaling", "");
     QString fragmentShader = value(fcmat, "Rendering/FragmentShader", "");
     QString vertexShader = value(fcmat, "Rendering/VertexShader", "");
-
-    // Defined by the Render WB
-    QString aDiffuse = value(fcmat, "Architectural/DiffuseColor", "");
-    QString aTransparency = value(fcmat, "Architectural/Transparency", "");
-
-    if (!aDiffuse.isEmpty()) {
-        diffuseColor = aDiffuse;
-    }
-    if (!aTransparency.isEmpty()) {
-        transparency = aTransparency;
-    }
 
     // Check which model we need
     bool useTexture = false;
@@ -852,41 +834,6 @@ void MaterialConfigLoader::addCosts(const QMap<QString, QString>& fcmat,
     }
 }
 
-void MaterialConfigLoader::addArchitectural(const QMap<QString, QString>& fcmat,
-                                            const std::shared_ptr<Material>& finalModel)
-{
-    QString color = value(fcmat, "Architectural/Color", "");
-    QString environmentalEfficiencyClass =
-        value(fcmat, "Architectural/EnvironmentalEfficiencyClass", "");
-    QString executionInstructions = value(fcmat, "Architectural/ExecutionInstructions", "");
-    QString finish = value(fcmat, "Architectural/Finish", "");
-    QString fireResistanceClass = value(fcmat, "Architectural/FireResistanceClass", "");
-    QString model = value(fcmat, "Architectural/Model", "");
-    QString soundTransmissionClass = value(fcmat, "Architectural/SoundTransmissionClass", "");
-    QString unitsPerQuantity = value(fcmat, "Architectural/UnitsPerQuantity", "");
-
-    if (environmentalEfficiencyClass.length() + executionInstructions.length()
-            + fireResistanceClass.length() + model.length() + soundTransmissionClass.length()
-            + unitsPerQuantity.length()
-        > 0) {
-        finalModel->addPhysical(ModelUUIDs::ModelUUID_Architectural_Default);
-    }
-    if (color.length() + finish.length() > 0) {
-        finalModel->addAppearance(ModelUUIDs::ModelUUID_Rendering_Architectural);
-    }
-
-    // Now add the data
-    setPhysicalValue(finalModel, "EnvironmentalEfficiencyClass", environmentalEfficiencyClass);
-    setPhysicalValue(finalModel, "ExecutionInstructions", executionInstructions);
-    setPhysicalValue(finalModel, "FireResistanceClass", fireResistanceClass);
-    setPhysicalValue(finalModel, "Model", model);
-    setPhysicalValue(finalModel, "SoundTransmissionClass", soundTransmissionClass);
-    setPhysicalValue(finalModel, "UnitsPerQuantity", unitsPerQuantity);
-
-    setAppearanceValue(finalModel, "Color", color);
-    setAppearanceValue(finalModel, "Finish", finish);
-}
-
 void MaterialConfigLoader::addElectromagnetic(const QMap<QString, QString>& fcmat,
                                               const std::shared_ptr<Material>& finalModel)
 {
@@ -1095,7 +1042,6 @@ MaterialConfigLoader::getMaterialFromPath(const std::shared_ptr<MaterialLibraryL
     addFluid(fcmat, finalModel);
     addThermal(fcmat, finalModel);
     addElectromagnetic(fcmat, finalModel);
-    addArchitectural(fcmat, finalModel);
     addCosts(fcmat, finalModel);
     addRendering(fcmat, finalModel);
     addVectorRendering(fcmat, finalModel);

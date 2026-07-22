@@ -49,7 +49,6 @@ from draftutils import params
 from draftutils import utils
 from draftutils.translate import translate
 from draftguitools import gui_base_original
-from draftguitools import gui_edit_arch_objects as edit_arch
 from draftguitools import gui_edit_draft_objects as edit_draft
 from draftguitools import gui_edit_part_objects as edit_part
 from draftguitools import gui_edit_sketcher_objects as edit_sketcher
@@ -214,7 +213,6 @@ class Edit(gui_base_original.Modifier):
         self._mousePressedCB = None
 
         # this stores the DisplayMode of the object to restore it after editing
-        # only used by Arch Structure
         self.objs_formats = {}
 
         # settings (get updated in Activated)
@@ -241,13 +239,6 @@ class Edit(gui_base_original.Modifier):
         )  # Backward compatibility
         self.gui_tools_repository.add("LinearDimension", edit_draft.DraftDimensionGuiTools())
         self.gui_tools_repository.add("Label", edit_draft.DraftLabelGuiTools())
-
-        self.gui_tools_repository.add("Wall", edit_arch.ArchWallGuiTools())
-        self.gui_tools_repository.add("Window", edit_arch.ArchWindowGuiTools())
-        self.gui_tools_repository.add("Structure", edit_arch.ArchStructureGuiTools())
-        self.gui_tools_repository.add("Space", edit_arch.ArchSpaceGuiTools())
-        self.gui_tools_repository.add("PanelCut", edit_arch.ArchPanelCutGuiTools())
-        self.gui_tools_repository.add("PanelSheet", edit_arch.ArchPanelSheetGuiTools())
 
         self.gui_tools_repository.add("Part::Line", edit_part.PartLineGuiTools())
         self.gui_tools_repository.add("Part::Box", edit_part.PartBoxGuiTools())

@@ -122,24 +122,7 @@
       <translation>Geçerli sayfaya düzenlenebilir bir metin bloğu açıklaması ekler</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TeknikÇizim</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM Görünümü</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Bir BIM kesit düzleminin görünümünü ekler</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ Hiç nesne seçilmemişse, bir SVG veya görüntü dosyası seçmek için dosya 
       <translation>Çizim oluşturma sayfası</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIM görünümü oluştur</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Görüntü oluştur</translation>
@@ -3293,11 +3270,6 @@ Hiç nesne seçilmemişse, bir SVG veya görüntü dosyası seçmek için dosya 
       <translation>Bir kırpma grubu ve bir görünüm seçin</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Sayfa, dışa aktarılmayacak bir BIM görünümü içeriyor. Devam edilsin mi?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ Hiç nesne seçilmemişse, bir SVG veya görüntü dosyası seçmek için dosya 
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>En az bir nesne seçin</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Yalnızca 1 BIM kesit düzlemi seçin</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Seçimde BIM kesit düzlemi yok</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4691,7 +4653,7 @@ Bu dizin sembol seçimi için kullanılacaktır.</translation>
 line segments returned by the hidden line removal algorithm.
 Faces must be detected in order to use hatching, but there
 can be a performance penalty in complex models.</source>
-      <translation>İşaretliyse, TechDraw, gizli çizgi kaldırma algoritması tarafından 
+      <translation>İşaretliyse, TechDraw, gizli çizgi kaldırma algoritması tarafından
 döndürülen çizgi segmentlerini kullanarak yüzeyler oluşturmaya çalışacaktır.
 Taramayı kullanmak için yüzeylerin algılanması gerekir,
 ancak karmaşık modellerde performans kaybı olabilir.</translation>
@@ -10063,14 +10025,7 @@ bu ölçüyü şu anda silemezsiniz.</translation>
       <translation>Çizgi</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

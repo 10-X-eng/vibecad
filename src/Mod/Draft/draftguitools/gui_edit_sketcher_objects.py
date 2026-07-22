@@ -48,8 +48,7 @@ class SketcherSketchObjectGuiTools(GuiTools):
         pass
 
     def get_edit_points(self, obj):
-        """Return the list of edipoints for the given single line sketch.
-        (WallTrace)
+        """Return the list of edit points for the given single-line sketch.
         0 : startpoint
         1 : endpoint
         """
@@ -77,7 +76,7 @@ class SketcherSketchObjectGuiTools(GuiTools):
         """Move a single line sketch vertex a certain displacement.
 
         (single segment sketch object, node index as Int, App.Vector)
-        move a single line sketch (WallTrace) vertex according to a given App.Vector
+        Move a single-line sketch vertex according to a given App.Vector.
         0 : startpoint
         1 : endpoint
         """

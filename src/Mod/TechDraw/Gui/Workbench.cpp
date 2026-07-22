@@ -232,7 +232,6 @@ Gui::MenuItem* Workbench::setupMenuBar() const
 
     *other << "TechDraw_ActiveView";
     *other << "TechDraw_DraftView";
-    *other << "TechDraw_ArchView";
     *other << "TechDraw_SpreadsheetView";
 
     // hatching

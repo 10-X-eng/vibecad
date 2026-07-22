@@ -7035,7 +7035,7 @@ ange True för fusion eller False för sammansättning</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Slutvinkel för bågen (för en hel cirkel,
                 ge den samma värde som första vinkeln)</translation>
@@ -7219,25 +7219,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Denna egenskap är skrivskyddad, eftersom den slutliga texten beror på "Etikettyp",
 och det objekt som definieras i 'Target'.
 Den "Anpassade texten" visas endast om "Etikettyp" är inställd på "Anpassad".</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Den typ av information som visas av denna etikett.
-
-Om "Custom" väljs kommer innehållet i "Custom Text" att användas.
-För andra typer beräknas strängen automatiskt från det objekt som definieras i "Target".
-"Tag" och "Material" fungerar endast för objekt som har dessa egenskaper, t.ex. BIM-objekt.
-
-För 'Position', 'Längd' och 'Area' kommer dessa egenskaper att extraheras från huvudobjektet i 'Target',
-eller från underelementet 'VertexN', 'EdgeN' respektive 'FaceN', om det är specificerat.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7522,11 +7503,6 @@ Denna egenskap är skrivskyddad, eftersom antalet beror på punkterna i "Point O
       <translation>Visa dolda linjer</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Sammanslagning av vägg- och konstruktionsobjekt av samma typ och material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tessellera ellipser och B-splines till linjesegment</translation>
@@ -7628,7 +7604,7 @@ Denna egenskap är skrivskyddad, eftersom antalet beror på punkterna i "Point O
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Slutvinkel för den elliptiska bågen
@@ -8360,11 +8336,6 @@ En enda skiss med avskurna spår konverteras dock till flera enskilda Draft-obje
       <source>Auto-Group</source>
       <translation>Automatisk grupp</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Lägger till nya Draft- och BIM-objekt till det valda lagret eller den valda gruppen</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8724,11 +8695,6 @@ Den initiala projektionsriktningen är den motsatta till den aktuella aktiva vyr
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Fäst mot centrum</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Snäpper till mittpunkten för ytor och cirkulära kanter, och till placeringspunkten för arbetsplansproxyer och byggnadsdelar</translation>
     </message>
   </context>
   <context>

@@ -6678,7 +6678,7 @@ set True for fusion or False for compound</source>
     </message>
     <message>
         <location filename="../../draftobjects/circle.py" line="50"/>
-        <source>End angle of the arc (for a full circle, 
+        <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6837,18 +6837,6 @@ depending on the value of &apos;Straight Direction&apos;.</source>
 This property is read-only, as the final text depends on &apos;Label Type&apos;,
 and the object defined in &apos;Target&apos;.
 The &apos;Custom Text&apos; is displayed only if &apos;Label Type&apos; is set to &apos;Custom&apos;.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="../../draftobjects/label.py" line="226"/>
-        <source>The type of information displayed by this label.
-
-If &apos;Custom&apos; is chosen, the contents of &apos;Custom Text&apos; will be used.
-For other types, the string will be calculated automatically from the object defined in &apos;Target&apos;.
-&apos;Tag&apos; and &apos;Material&apos; only work for objects that have these properties, like BIM objects.
-
-For &apos;Position&apos;, &apos;Length&apos;, and &apos;Area&apos; these properties will be extracted from the main object in &apos;Target&apos;,
-or from the subelement &apos;VertexN&apos;, &apos;EdgeN&apos;, or &apos;FaceN&apos;, respectively, if it is specified.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -7110,11 +7098,6 @@ This property is read-only, as the number depends on the points in &apos;Point O
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../../draftobjects/shape2dview.py" line="92"/>
-        <source>Fuse wall and structure objects of same type and material</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
         <location filename="../../draftobjects/shape2dview.py" line="97"/>
         <source>Tessellate Ellipses and B-splines into line segments</source>
         <translation type="unfinished"></translation>
@@ -7216,7 +7199,7 @@ This property is read-only, as the number depends on the points in &apos;Point O
     </message>
     <message>
         <location filename="../../draftobjects/ellipse.py" line="49"/>
-        <source>End angle of the elliptical arc 
+        <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
         <translation type="unfinished"></translation>
@@ -7910,11 +7893,6 @@ However, a single sketch with disconnected traces is converted into several indi
         <source>Auto-Group</source>
         <translation type="unfinished"></translation>
     </message>
-    <message>
-        <location filename="../../draftguitools/gui_groups.py" line="216"/>
-        <source>Adds new Draft and BIM objects to the selected layer or group</source>
-        <translation type="unfinished"></translation>
-    </message>
 </context>
 <context>
     <name>Draft_AddConstruction</name>
@@ -8266,11 +8244,6 @@ The initial projection direction is the opposite of the current active view dire
     <message>
         <location filename="../../draftguitools/gui_snaps.py" line="180"/>
         <source>Snap Center</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="../../draftguitools/gui_snaps.py" line="181"/>
-        <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
         <translation type="unfinished"></translation>
     </message>
 </context>

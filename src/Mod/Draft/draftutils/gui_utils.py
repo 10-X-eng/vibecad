@@ -94,11 +94,7 @@ def autogroup(obj):
     which contains the group to use to automatically store
     new created objects.
 
-    Originally, it worked with standard groups (`App::DocumentObjectGroup`),
-    and Arch Workbench containers like `'Site'`, `'Building'`, `'Floor'`,
-    and `'BuildingPart'`.
-
-    Now it works with Draft Layers.
+    It works with standard groups, Draft Layers, and active Parts.
 
     Parameters
     ----------
@@ -116,13 +112,6 @@ def autogroup(obj):
     if Gui.draftToolBar.isConstructionMode():
         return
 
-    # check first for objects that do autogroup themselves
-    # at the moment only Arch_BuildingPart, which is an App::GeometryPython
-    for par in App.ActiveDocument.findObjects(Type="App::GeometryPython"):
-        if hasattr(par.Proxy, "autogroup"):
-            if par.Proxy.autogroup(par, obj):
-                return
-
     # autogroup code
     if Gui.draftToolBar.autogroup is not None:
         active_group = App.ActiveDocument.getObject(Gui.draftToolBar.autogroup)
@@ -132,8 +121,7 @@ def autogroup(obj):
         elif utils.get_type(active_group) == "Layer":
             if not obj in active_group.Group:
                 active_group.Group += [obj]
-            # No return statement here as objects can be in a layer and in
-            # a normal group or group-like BIM object at the same time.
+            # No return here: objects can be in a layer and an active Part.
         elif obj in active_group.InListRecursive:
             return
         else:
@@ -144,25 +132,7 @@ def autogroup(obj):
                     active_group.Group += [obj]
             return
 
-    if Gui.ActiveDocument.ActiveView.getActiveObject("NativeIFC") is not None:
-        # NativeIFC handling
-        try:
-            from nativeifc import ifc_tools
-
-            parent = Gui.ActiveDocument.ActiveView.getActiveObject("NativeIFC")
-            ifc_tools.aggregate(obj, parent)
-        except:
-            pass
-
-    elif Gui.ActiveDocument.ActiveView.getActiveObject("Arch") is not None:
-        # add object to active Arch Container
-        active_arch_obj = Gui.ActiveDocument.ActiveView.getActiveObject("Arch")
-        if obj in active_arch_obj.InListRecursive:
-            # do not autogroup if obj points to active_arch_obj to prevent cyclic references
-            return
-        active_arch_obj.addObject(obj)
-
-    elif Gui.ActiveDocument.ActiveView.getActiveObject("part") is not None:
+    if Gui.ActiveDocument.ActiveView.getActiveObject("part") is not None:
         # add object to active part and change it's placement accordingly
         # so object does not jump to different position, works with App::Link
         # if not scaled. Modified accordingly to realthunder suggestions
@@ -997,76 +967,6 @@ def end_all_events():
     )  # 100ms (50ms is too short) timer guarantees the loop below runs at least that long
     while not ender.delay_is_done:
         QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)
-
-
-def toggle_working_plane(obj, action=None, restore=False, dialog=None):
-    """Toggle the active state of a working plane object.
-
-    This function handles the common logic for activating and deactivating
-    working plane objects like BuildingParts and WorkingPlaneProxies.
-    It can be used by different modules that need to implement similar
-    working plane activation behavior.
-
-    Parameters
-    ----------
-    obj : App::DocumentObject
-        The object to activate or deactivate as a working plane.
-    action : QAction, optional
-        The action button that triggered this function, to update its checked state.
-    restore : bool, optional
-        If True, will restore the previous working plane when deactivating.
-        Defaults to False.
-    dialog : QDialog, optional
-        If provided, will update the checked state of the activate button in the dialog.
-
-    Returns
-    -------
-    bool
-        True if the object was activated, False if it was deactivated.
-    """
-
-    # Determine the appropriate context based on object type
-    context = "Arch"
-    obj_type = utils.get_type(obj)
-    if obj_type == "IfcBuildingStorey":
-        context = "NativeIFC"
-
-    # Check if the object is already active in its context
-    is_active_arch = Gui.ActiveDocument.ActiveView.getActiveObject("Arch") == obj
-    is_active_ifc = Gui.ActiveDocument.ActiveView.getActiveObject("NativeIFC") == obj
-    is_active = is_active_arch or is_active_ifc
-    if is_active:
-        # Deactivate the object
-        if is_active_arch:
-            Gui.ActiveDocument.ActiveView.setActiveObject("Arch", None)
-        if is_active_ifc:
-            Gui.ActiveDocument.ActiveView.setActiveObject("NativeIFC", None)
-
-        if (
-            hasattr(obj, "ViewObject")
-            and hasattr(obj.ViewObject, "Proxy")
-            and hasattr(obj.ViewObject.Proxy, "setWorkingPlane")
-        ):
-            obj.ViewObject.Proxy.setWorkingPlane(restore=True)
-        if action:
-            action.setChecked(False)
-        if dialog and hasattr(dialog, "buttonActive"):
-            dialog.buttonActive.setChecked(False)
-        return False
-    else:
-        # Activate the object
-        Gui.ActiveDocument.ActiveView.setActiveObject(context, obj)
-        if (
-            hasattr(obj, "ViewObject")
-            and hasattr(obj.ViewObject, "Proxy")
-            and hasattr(obj.ViewObject.Proxy, "setWorkingPlane")
-        ):
-            obj.ViewObject.Proxy.setWorkingPlane()
-        if action:
-            action.setChecked(True)
-        if dialog and hasattr(dialog, "buttonActive"):
-            dialog.buttonActive.setChecked(True)
-        return True
 
 
 ## @}

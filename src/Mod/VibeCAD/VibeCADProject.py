@@ -23,7 +23,12 @@ import uuid
 from VibeCADIntentMemory import DESIGN_DOCUMENT_NAME, read_memory, write_memory
 
 
-PROJECT_SCHEMA = "vibecad-project-v2"
+PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_PREFIX = "vibecad-project-v"
+PROJECT_SCHEMA = f"{PROJECT_SCHEMA_PREFIX}{PROJECT_SCHEMA_VERSION}"
+PROJECT_SCHEMA_PATTERN = re.compile(
+    rf"^{re.escape(PROJECT_SCHEMA_PREFIX)}(?P<version>[1-9][0-9]*)$"
+)
 CONVERSATIONS_DIR_NAME = "conversations"
 CONVERSATION_INDEX_NAME = "index.json"
 LEGACY_CONVERSATION_NAME = "conversation.json"
@@ -178,6 +183,33 @@ def _read_json_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError(f"VibeCAD {label} at {path} is not a JSON object.")
     return data
+
+
+def _project_manifest_schema(
+    manifest: dict[str, Any],
+    *,
+    source: str | Path | None = None,
+    allow_missing: bool = False,
+) -> tuple[str, int]:
+    """Return a namespaced project schema without assuming its generation.
+
+    Project schema generations are independent of application releases. Newer
+    manifests remain usable when the fields consumed by this build are still
+    compatible, so reject only objects outside the VibeCAD project namespace.
+    """
+
+    raw_schema = manifest.get("schema")
+    if raw_schema is None and allow_missing:
+        return PROJECT_SCHEMA, PROJECT_SCHEMA_VERSION
+    schema = str(raw_schema or "").strip()
+    match = PROJECT_SCHEMA_PATTERN.fullmatch(schema)
+    if match is not None:
+        return schema, int(match.group("version"))
+    location = f" at {source}" if source is not None else ""
+    raise RuntimeError(
+        f"VibeCAD project manifest{location} uses incompatible schema identifier "
+        f"{raw_schema!r}; expected {PROJECT_SCHEMA_PREFIX}N."
+    )
 
 
 def _clean_conversation_turns(
@@ -743,16 +775,8 @@ class VibeCADProjectStore:
         scope = self.project_scope()
         path = Path(str(scope["manifest_path"]))
         if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise RuntimeError(
-                    f"VibeCAD project manifest could not be read from {path}: {exc}"
-                ) from exc
-            if not isinstance(data, dict) or data.get("schema") != PROJECT_SCHEMA:
-                raise RuntimeError(
-                    f"VibeCAD project manifest at {path} has an invalid schema."
-                )
+            data = _read_json_object(path, "project manifest")
+            _project_manifest_schema(data, source=path)
             return self._merge_manifest_defaults(data, scope)
         return self._default_manifest(scope)
 
@@ -770,7 +794,14 @@ class VibeCADProjectStore:
 
     def context(self) -> dict[str, Any]:
         scope = self.project_scope()
-        manifest = self.save_manifest(self.load_manifest())
+        manifest = self.load_manifest()
+        if manifest.get("schema") == PROJECT_SCHEMA:
+            manifest = self.save_manifest(manifest)
+        else:
+            # Reading a compatible newer manifest must not silently rewrite it
+            # as this build's older generation. Keep the project index useful
+            # while leaving the source manifest untouched.
+            self._update_index(manifest, scope)
         return {
             "schema": "vibecad-project-context-v2",
             "project_id": manifest["project_id"],
@@ -841,16 +872,8 @@ class VibeCADProjectStore:
         path = Path(str(manifest_path))
         if not path.is_file():
             return DEFAULT_MODELING_ENGINE
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise RuntimeError(
-                f"VibeCAD project manifest could not be read from {path}: {exc}"
-            ) from exc
-        if not isinstance(data, dict) or data.get("schema") != PROJECT_SCHEMA:
-            raise RuntimeError(
-                f"VibeCAD project manifest at {path} has an invalid schema."
-            )
+        data = _read_json_object(path, "project manifest")
+        _project_manifest_schema(data, source=path)
         engine = str(
             data.get("modeling_engine")
             or data.get("partdesign_engine")
@@ -878,7 +901,7 @@ class VibeCADProjectStore:
     def _default_manifest(self, scope: dict[str, Any]) -> dict[str, Any]:
         return {
             "schema": PROJECT_SCHEMA,
-            "version": 2,
+            "version": PROJECT_SCHEMA_VERSION,
             "project_id": scope["project_id"],
             "title": scope["title"],
             "summary": "",
@@ -891,23 +914,35 @@ class VibeCADProjectStore:
     def _merge_manifest_defaults(
         self, manifest: dict[str, Any], scope: dict[str, Any]
     ) -> dict[str, Any]:
+        schema, schema_version = _project_manifest_schema(
+            manifest,
+            allow_missing=True,
+        )
         default = self._default_manifest(scope)
-        merged = dict(default)
+        merged = dict(manifest)
         migrated_engine = manifest.get("modeling_engine")
         if migrated_engine is None:
             migrated_engine = manifest.get("partdesign_engine")
-        merged.update(
-            {
-                key: value
-                for key, value in manifest.items()
-                if key in default and value is not None
-            }
-        )
-        merged["schema"] = PROJECT_SCHEMA
-        merged["version"] = 2
+        for key, value in default.items():
+            if merged.get(key) is None:
+                merged[key] = value
+        merged["schema"] = schema
+        if schema == PROJECT_SCHEMA:
+            merged["version"] = PROJECT_SCHEMA_VERSION
+        elif not (
+            type(merged.get("version")) is int and int(merged["version"]) > 0
+        ):
+            merged["version"] = schema_version
         merged["modeling_engine"] = str(migrated_engine or DEFAULT_MODELING_ENGINE).strip().lower()
+        merged.pop("partdesign_engine", None)
         merged["project_id"] = scope["project_id"]
-        merged["documents"] = dict(merged.get("documents") or {})
+        documents = merged.get("documents")
+        if documents is not None and not isinstance(documents, dict):
+            raise RuntimeError(
+                "VibeCAD project manifest has an incompatible documents field; "
+                "expected a JSON object."
+            )
+        merged["documents"] = dict(documents or {})
         merged["documents"]["active"] = scope.get("document", {})
         return merged
 

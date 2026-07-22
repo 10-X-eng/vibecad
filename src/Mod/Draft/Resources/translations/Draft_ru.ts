@@ -636,9 +636,9 @@ This only works if "Link array" is off.</source>
       <location filename="../ui/TaskPanel_OrthoArray.ui" line="454"/>
       <source>If checked, the resulting object will be a "Link array" instead of a regular array.
 A Link array is more efficient when creating multiple copies, but it cannot be fused together.</source>
-      <translation>Если флажок установлен, результирующий объект будет 
+      <translation>Если флажок установлен, результирующий объект будет
 "Массивом ссылок" вместо обычного массива.
-Массив ссылок более эффективен 
+Массив ссылок более эффективен
 при создании множества копий, но их нельзя объединить вместе.</translation>
     </message>
     <message>
@@ -661,7 +661,7 @@ A Link array is more efficient when creating multiple copies, but it cannot be f
 A negative angle produces a polar pattern in the opposite direction.
 The maximum absolute value is 360 degrees.</source>
       <translation>Угол охвата полярного распределения.
-Отрицательный угол создаёт полярный массив в 
+Отрицательный угол создаёт полярный массив в
 противоположном направлении.
 Максимальное абсолютное значение составляет 360 градусов.</translation>
     </message>
@@ -919,7 +919,7 @@ of the buttons above</source>
       <location filename="../ui/TaskSelectPlane.ui" line="117"/>
       <source>Centers the working plane on the current view when pressing one
 of the buttons above</source>
-      <translation>Центрирует рабочую плоскость в текущем виде при нажатии 
+      <translation>Центрирует рабочую плоскость в текущем виде при нажатии
 на одну из кнопок выше</translation>
     </message>
     <message>
@@ -1470,12 +1470,12 @@ Values between 6 and 8 are usually considered the best trade-off.</source>
 will automatically align with the current view whenever a command is started.
 Additionally it will align to preselected planar faces, or when points on planar
 faces are picked during commands.</source>
-      <translation>Рабочая плоскость по умолчанию для новых видов. Если 
+      <translation>Рабочая плоскость по умолчанию для новых видов. Если
 установлено значение "Автоматически", рабочая плоскость
-будет автоматически выравниваться по текущему виду при 
+будет автоматически выравниваться по текущему виду при
 каждом запуске команды.
-Кроме того, она будет выравниваться по предварительно 
-выбранным плоским граням или при выборе точек на плоских 
+Кроме того, она будет выравниваться по предварительно
+выбранным плоским граням или при выборе точек на плоских
 гранях во время выполнения команд.</translation>
     </message>
     <message>
@@ -1497,14 +1497,14 @@ faces are picked during commands.</source>
       <location filename="../ui/preferences-draft.ui" line="112"/>
       <source>If checked, a widget indicating the current working
 plane orientation appears when picking points</source>
-      <translation>Если этот флажок установлен, то при выборе точек отображается 
+      <translation>Если этот флажок установлен, то при выборе точек отображается
 виджет, указывающий текущую ориентацию рабочей плоскости</translation>
     </message>
     <message>
       <location filename="../ui/preferences-draft.ui" line="129"/>
       <source>If checked, the layers drop-down list also includes groups.
 Objects can then automatically be added to groups as well.</source>
-      <translation>Если этот флажок установлен, раскрывающийся список слоев 
+      <translation>Если этот флажок установлен, раскрывающийся список слоев
 также включает группы.
 После этого объекты также могут автоматически добавляться
  в группы.</translation>
@@ -1538,7 +1538,7 @@ Draft modification commands.</source>
 Only for the splitFaces and makeShell options.</source>
       <translation>Если этот флажок установлен, при Разделении и Объединении
 в Наброске будут сохранены цвета исходных граней.
-Только для операций splitFaces (разделить Поверхность) 
+Только для операций splitFaces (разделить Поверхность)
 и makeShell (создать Оболочку).</translation>
     </message>
     <message>
@@ -1551,7 +1551,7 @@ Only for the splitFaces and makeShell options.</source>
       <source>If checked, Draft Downgrade and Draft Upgrade will keep face names.
 Only for the splitFaces and makeShell options.</source>
       <translation>Если этот флажок установлен, при Разделении и Объединении объектов Наброска имена граней сохранятся.
-Только для операций splitFaces (разделить Поверхность) 
+Только для операций splitFaces (разделить Поверхность)
 и makeShell (создать Оболочку).</translation>
     </message>
     <message>
@@ -1566,12 +1566,12 @@ manually in any of the coordinate fields. Setting this to 0 disables the delay.
 If a delay of 1 is set, after entering a numeric value, the mouse will not
 update the field anymore during one second, to avoid moving the mouse
 accidentally and modifying the entered value.</source>
-      <translation>Это задержка, в течение которой мышь неактивна после ввода 
-чисел вручную в любое из полей координат. Установка 
+      <translation>Это задержка, в течение которой мышь неактивна после ввода
+чисел вручную в любое из полей координат. Установка
 значения 0 отключает задержку.
-Если установлена задержка в 1, то после ввода числового 
-значения мышь больше не будет обновлять поле в течение 
-одной секунды, чтобы избежать случайного перемещения мыши 
+Если установлена задержка в 1, то после ввода числового
+значения мышь больше не будет обновлять поле в течение
+одной секунды, чтобы избежать случайного перемещения мыши
 и изменения введённого значения.</translation>
     </message>
     <message>
@@ -1704,7 +1704,7 @@ This allows indicating a direction and then type a distance.</source>
       <location filename="../ui/preferences-draftvisual.ui" line="75"/>
       <source>An optional directory with custom SVG files containing
 pattern definitions to be added to the standard patterns</source>
-      <translation>Дополнительный каталог с пользовательскими файлами SVG, содержащими определения шаблонов, которые будут добавлены 
+      <translation>Дополнительный каталог с пользовательскими файлами SVG, содержащими определения шаблонов, которые будут добавлены
 к стандартным шаблонам</translation>
     </message>
     <message>
@@ -1979,9 +1979,9 @@ in the Draft Scale Widget. If the scale is 1:100 the multiplier is 100.</source>
       <location filename="../ui/preferences-drafttexts.ui" line="510"/>
       <source>The default unit override for dimensions. Enter a unit such as m
 or cm, leave blank to use the current unit defined in FreeCAD.</source>
-      <translation>Переопределение единиц измерения по умолчанию для размеров. 
-Введите единицу измерения, например м или см, оставьте поле 
-пустым, чтобы использовать текущую единицу измерения, 
+      <translation>Переопределение единиц измерения по умолчанию для размеров.
+Введите единицу измерения, например м или см, оставьте поле
+пустым, чтобы использовать текущую единицу измерения,
 определенную в FreeCAD.</translation>
     </message>
     <message>
@@ -2010,10 +2010,10 @@ or cm, leave blank to use the current unit defined in FreeCAD.</source>
 value defines the gap between the ends of the extension lines and the measured
 points. A positive value defines the maximum length of the extension lines. Only
 used for linear dimensions.</source>
-      <translation>Длина выносных линий по умолчанию. Для сплошных выносных 
+      <translation>Длина выносных линий по умолчанию. Для сплошных выносных
 линий используйте значение 0. Отрицательное значение определяет
- расстояние между концами выносных линий и измеряемыми 
-точками. Положительное значение определяет максимальную 
+ расстояние между концами выносных линий и измеряемыми
+точками. Положительное значение определяет максимальную
 длину выносных линий. Используется только для линейных размеров.</translation>
     </message>
     <message>
@@ -2279,8 +2279,8 @@ a DXF file.</source>
       <source>If checked, FreeCAD is allowed to download and update the Python libraries
 required by the legacy importer. This can also be done manually by installing
 the 'dxf_library' addon from the Addon Manager.</source>
-      <translation>Если этот флажок установлен, FreeCAD разрешено загружать и 
-обновлять библиотеки Python, требуемые устаревшим 
+      <translation>Если этот флажок установлен, FreeCAD разрешено загружать и
+обновлять библиотеки Python, требуемые устаревшим
 импортером. Это также можно сделать вручную, установив
 дополнение 'dxf_library' из менеджера дополнений.</translation>
     </message>
@@ -2298,7 +2298,7 @@ workbench. </source>
       <translation>Создаёт полностью параметрические объекты верстака Набросок.
 Определения блоков импортируются как повторно используемые
 объекты (Составные объекты верстака Деталь), а экземпляры
-становятся "ссылками" на объекты, сохраняя структуру блока. 
+становятся "ссылками" на объекты, сохраняя структуру блока.
 Лучше всего подходит для полной интеграции с верстаком Набросок. </translation>
     </message>
     <message>
@@ -2320,11 +2320,11 @@ workbench. </source>
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing and Part workbench integration.</source>
-      <translation>Создаёт параметрические объекты верстака Деталь (например, 
-Part::Line, Part::Circle). Определения блоков импортируются как 
-повторно используемые объекты (Составные объекты верстака 
-Деталь), а экземпляры становятся объектами "App::Link", сохраняя 
-структуру блока. Лучше всего подходит для постобработки на основе 
+      <translation>Создаёт параметрические объекты верстака Деталь (например,
+Part::Line, Part::Circle). Определения блоков импортируются как
+повторно используемые объекты (Составные объекты верстака
+Деталь), а экземпляры становятся объектами "App::Link", сохраняя
+структуру блока. Лучше всего подходит для постобработки на основе
 скриптов и интеграции с верстаком Деталь.</translation>
     </message>
     <message>
@@ -2337,10 +2337,10 @@ Part::Line, Part::Circle). Определения блоков импортир�
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Создаёт непараметрическую форму для каждого объекта DXF. 
-Определения блоков импортируются как повторно используемые 
-объекты (Составные объекты верстака Деталь), а экземпляры 
-становятся объектами "App::Link", сохраняя структуру блока. 
+      <translation>Создаёт непараметрическую форму для каждого объекта DXF.
+Определения блоков импортируются как повторно используемые
+объекты (Составные объекты верстака Деталь), а экземпляры
+становятся объектами "App::Link", сохраняя структуру блока.
 Хорошо подходит для создания привязок и измерений.</translation>
     </message>
     <message>
@@ -2376,9 +2376,9 @@ shape. Best for importing and viewing very large files with maximum performance.
 between the DXF file's unit and millimeters. Example: for files in
 millimeters: 1, in centimeters: 10, in meters: 1000, in inches: 25.4,
 in feet: 304.8</source>
-      <translation>Коэффициент масштабирования для файлов DXF при импорте. 
-Коэффициент равен преобразованию между единицей DXF файла 
-и миллиметрами. Пример: для файлов в миллиметрах: 1, 
+      <translation>Коэффициент масштабирования для файлов DXF при импорте.
+Коэффициент равен преобразованию между единицей DXF файла
+и миллиметрами. Пример: для файлов в миллиметрах: 1,
 в сантиметрах: 10, в метрах: 1000, в дюймах: 25.4, в футах: 304.8</translation>
     </message>
     <message>
@@ -2423,7 +2423,7 @@ These are often used for hatches and dimensions</source>
       <location filename="../ui/preferences-dxf.ui" line="360"/>
       <source>If checked, the boundaries of hatch objects will be imported as closed wires.
 (Legacy importer only)</source>
-      <translation>Если этот флажок установлен, границы штриховки будут 
+      <translation>Если этот флажок установлен, границы штриховки будут
 импортированы в виде замкнутых контуров.
 (Только для устаревшего импортёра)</translation>
     </message>
@@ -2442,15 +2442,15 @@ These are often used for hatches and dimensions</source>
       <source>If checked, colors will be set as specified in the DXF file whenever
 possible. Otherwise, default FreeCAD colors are applied</source>
       <translation>Если этот флажок установлен, цвета будут установлены в соответствии
- с указанными в файле DXF, когда это возможно. В противном случае 
+ с указанными в файле DXF, когда это возможно. В противном случае
 будут применены цвета FreeCAD по умолчанию</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="411"/>
       <source>If checked, imported texts will get the standard Draft text size, instead of
 the size defined in the DXF document. (Legacy importer only)</source>
-      <translation>Если этот флажок установлен, импортированные тексты будут иметь 
-стандартный размер текста верстака Набросок вместо размера, 
+      <translation>Если этот флажок установлен, импортированные тексты будут иметь
+стандартный размер текста верстака Набросок вместо размера,
 заданного в файле DXF. (Только для устаревшего импортёра)</translation>
     </message>
     <message>
@@ -2462,24 +2462,24 @@ the size defined in the DXF document. (Legacy importer only)</source>
       <location filename="../ui/preferences-dxf.ui" line="442"/>
       <source>If checked, the legacy importer will attempt to join coincident geometric
 objects into wires. This can be slow for large files. (Legacy importer only)</source>
-      <translation>Если этот флажок установлен, устаревший импортёр будет пытаться 
-соединить совпадающие геометрические объекты в кривые. При 
-работе с большими файлами это может замедлить процесс. (Только 
+      <translation>Если этот флажок установлен, устаревший импортёр будет пытаться
+соединить совпадающие геометрические объекты в кривые. При
+работе с большими файлами это может замедлить процесс. (Только
 для устаревшего импортёра)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="462"/>
       <source>If checked, polylines that have a width property will be rendered as faces
 representing that width. (Legacy importer only)</source>
-      <translation>Если этот флажок установлен, полилинии, имеющие свойство 
-ширины, будут отображаться как грани, представляющие эту ширину. 
+      <translation>Если этот флажок установлен, полилинии, имеющие свойство
+ширины, будут отображаться как грани, представляющие эту ширину.
 (Только для устаревшего импортёра)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="482"/>
       <source>If checked, the legacy importer will attempt to create Sketcher objects
 instead of Draft or Part objects. This overrides the 'Import As' setting</source>
-      <translation>Если этот флажок установлен, устаревший импортёр попытается 
+      <translation>Если этот флажок установлен, устаревший импортёр попытается
 создать объекты верстака Эскиз вместо объектов верстаков Набросок или Деталь. Это переопределяет параметр "Импортировать как"</translation>
     </message>
     <message>
@@ -2541,13 +2541,6 @@ This might fail for post DXF R12 templates.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="14"/>
       <source>Grid and Snapping</source>
       <translation>Сетка и привязка</translation>
-    </message>
-    <message>
-      <location filename="../ui/preferences-draftsnap.ui" line="92"/>
-      <source>If checked, the outline of a human figure is displayed at the bottom left
-corner of the grid. Only effective if "Show grid border" is enabled.</source>
-      <translation>Если этот флажок установлен, контур человеческой фигуры отображается в левом нижнем углу сетки.
-Этот параметр эффективен только в том случае, если установлено рабочее место BIM и включен параметр «Показать границу сетки».</translation>
     </message>
     <message>
       <location filename="../ui/preferences-draftsnap.ui" line="132"/>
@@ -2615,7 +2608,7 @@ Major grid lines are thicker than minor grid lines.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="26"/>
       <source>If checked, the grid will always be visible in new views.
 Use Draft ToggleGrid to change this for the active view.</source>
-      <translation>Если этот флажок установлен, сетка будет всегда отображаться 
+      <translation>Если этот флажок установлен, сетка будет всегда отображаться
 в новых видах. Используйте Набросок Переключить Сетку, чтобы изменить это для активного вида.</translation>
     </message>
     <message>
@@ -2626,7 +2619,7 @@ Use Draft ToggleGrid to change this for the active view.</source>
     <message>
       <location filename="../ui/preferences-draft.ui" line="303"/>
       <source>The maximum number of objects Draft Edit is allowed to process at the same time</source>
-      <translation>Максимальное количество объектов, которые могут обрабатываться 
+      <translation>Максимальное количество объектов, которые могут обрабатываться
 одновременно в режиме редактирования верстака Набросок</translation>
     </message>
     <message>
@@ -2655,8 +2648,8 @@ Use Draft ToggleGrid to change this for the active view.</source>
       <location filename="../ui/preferences-draftsnap.ui" line="69"/>
       <source>If checked, an additional border is displayed around the grid,
 showing the main square size in the bottom left corner</source>
-      <translation>Если этот флажок установлен, вокруг сетки отображается 
-дополнительная рамка, показывающая размер основного 
+      <translation>Если этот флажок установлен, вокруг сетки отображается
+дополнительная рамка, показывающая размер основного
 квадрата в левом нижнем углу</translation>
     </message>
     <message>
@@ -3282,7 +3275,7 @@ if they match the X, Y or Z axis of the global coordinate system</source>
       <location filename="../../DraftGui.py" line="721"/>
       <source>Coordinates relative to last point or to coordinate system origin
 if is the first point to set</source>
-      <translation>Координаты относительно предыдущей точки или относительно 
+      <translation>Координаты относительно предыдущей точки или относительно
 центра системы координат если это первая задаваемая точка</translation>
     </message>
     <message>
@@ -3320,7 +3313,7 @@ if is the first point to set</source>
       <source>Coordinates relative to global coordinate system.
 Uncheck to use working plane coordinate system</source>
       <translation>Координаты относительно глобальной системы координат.
-Снимите флажок, чтобы использовать систему координат 
+Снимите флажок, чтобы использовать систему координат
 рабочей плоскости</translation>
     </message>
     <message>
@@ -3346,7 +3339,7 @@ Uncheck to use working plane coordinate system</source>
     <message>
       <location filename="../../DraftGui.py" line="773"/>
       <source>If checked, an OCC-style offset will be performed instead of the classic offset</source>
-      <translation>Если флажок установлен, будет выполняться смещение 
+      <translation>Если флажок установлен, будет выполняться смещение
 в стиле OCC вместо классического смещения</translation>
     </message>
     <message>
@@ -6106,7 +6099,7 @@ Please either allow FreeCAD to download these libraries:
 Or download these libraries manually, as explained on
 https://github.com/yorikvanhavre/Draft-dxf-importer
 To enabled FreeCAD to download these libraries, answer Yes.</source>
-      <translation>Библиотеки импорта/экспорта DXF, необходимые FreeCAD для работы 
+      <translation>Библиотеки импорта/экспорта DXF, необходимые FreeCAD для работы
 с форматом DXF, не были найдены в этой системе.
 Пожалуйста, разрешите FreeCAD загрузить эти библиотеки:
   1 - Запустите верстак Набросок
@@ -6460,13 +6453,13 @@ https://github.com/yorikvanhavre/Draft-dxf-importer
     <message>
       <location filename="../../draftguitools/gui_offset.py" line="333"/>
       <source>Offset direction is not defined. Move the mouse on either side of the object first to indicate a direction.</source>
-      <translation>Направление смещения не определено. Сначала переместите 
+      <translation>Направление смещения не определено. Сначала переместите
 мышь на любую сторону от объекта, чтобы указать направление.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/pointarray.py" line="225"/>
       <source>Point object does not have a discrete point, it cannot be used for an array</source>
-      <translation>Точечный объект не имеет привязки к конкретной точке, 
+      <translation>Точечный объект не имеет привязки к конкретной точке,
 его нельзя использовать для массива</translation>
     </message>
     <message>
@@ -6505,7 +6498,7 @@ from menu Tools → Addon Manager</source>
     <message>
       <location filename="../../importSVG.py" line="1328"/>
       <source>Unknown SVG export style, switching to Translated</source>
-      <translation>Неизвестный стиль экспорта SVG, 
+      <translation>Неизвестный стиль экспорта SVG,
 переход в режим Translated</translation>
     </message>
     <message>
@@ -6874,12 +6867,12 @@ The result of the operation depends on the types of objects, which may be able t
 For example, it can join the selected objects into one, convert simple edges into parametric polylines,
 convert closed edges into filled faces and parametric polygons, and merge faces into a single face.</source>
       <translation>Преобразует выбранные объекты в более сложные фигуры.
-Результат операции зависит от типов объектов, которые могут 
+Результат операции зависит от типов объектов, которые могут
 быть преобразованы несколько раз подряд.
-Например, он может объединить выбранные объекты в один, 
+Например, он может объединить выбранные объекты в один,
 преобразовать простые рёбра в параметрические полилинии,
-преобразовать замкнутые рёбра в заполненные грани и 
-параметрические многоугольники, а также объединить грани 
+преобразовать замкнутые рёбра в заполненные грани и
+параметрические многоугольники, а также объединить грани
 в одну грань.</translation>
     </message>
   </context>
@@ -6910,7 +6903,7 @@ It can also create an offset copy of the original object.</source>
       <source>Heals faulty Draft objects saved with an earlier version of FreeCAD.
 If an object is selected it tries to heal only that object,
 otherwise it tries to heal all objects in the active document.</source>
-      <translation>Исправляет ошибки в объектах Наброска, сохранённых в более 
+      <translation>Исправляет ошибки в объектах Наброска, сохранённых в более
 ранней версии FreeCAD.
 Если выбран объект, то исправляется только этот объект,
 иначе исправляются все объекты в активном документе.</translation>
@@ -6929,7 +6922,7 @@ otherwise it tries to heal all objects in the active document.</source>
 The result of the operation depends on the types of objects, which may be downgraded several times in a row.
 For example, a 3D solid is deconstructed into separate faces, wires, and then edges. Faces can also be subtracted.</source>
       <translation>Преобразует выбранные объекты в более простые формы.
-Результат операции зависит от типов объектов, которые могут 
+Результат операции зависит от типов объектов, которые могут
 быть деградированы несколько раз подряд.
 Например, трёхмерное тело деконструируется на отдельные грани, кривые, а затем рёбра. Грани также могут быть извлечены.</translation>
     </message>
@@ -7047,7 +7040,7 @@ It is a list of strings; each element in the list will be displayed in its own l
       <location filename="../../draftobjects/clone.py" line="63"/>
       <source>If Clones includes several objects,
 set True for fusion or False for compound</source>
-      <translation>Если клоны включают несколько объектов, установите значение 
+      <translation>Если клоны включают несколько объектов, установите значение
 Истина для слияния или Ложь для создания составного объекта</translation>
     </message>
     <message>
@@ -7062,9 +7055,9 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Конечный угол дуги (для полного круга 
+      <translation>Конечный угол дуги (для полного круга
                 укажите то же значение, что и для первого угла)</translation>
     </message>
     <message>
@@ -7177,7 +7170,7 @@ as 'Text', depending on 'Label Type'.
       <translation>Объект и, опционально, подэлемент, свойства которого будут
 отображаться в поле "Текст" в зависимости от "Типа метки".
 
-"Цель" не будет использоваться, если "Тип Метки" имеет значение 
+"Цель" не будет использоваться, если "Тип Метки" имеет значение
 "Пользовательский".</translation>
     </message>
     <message>
@@ -7196,8 +7189,8 @@ can be set as a list of arbitrary points.</source>
 Первой точкой должна быть позиция текста, то есть "Размещение",
 и последней точкой должен быть кончик линии, то есть "Целевая точка". Средняя точка рассчитывается автоматически в зависимости от выбранного "Прямого направления" и величины и указателя "Прямого расстояния".
 
-Если для параметра "Прямое направление" установлено значение 
-"Пользовательский", то свойство "Точки" можно задать в виде 
+Если для параметра "Прямое направление" установлено значение
+"Пользовательский", то свойство "Точки" можно задать в виде
 списка произвольных точек.</translation>
     </message>
     <message>
@@ -7220,9 +7213,9 @@ to the left or below the 'Text', otherwise to the right or above it,
 depending on the value of 'Straight Direction'.</source>
       <translation>Длина прямого сегмента линии выноски.
 
-Это ориентировочное расстояние; если оно отрицательное, линия 
-будет прочерчена слева или ниже "Текста", в противном случае — 
-справа или выше него, в зависимости от значения "Прямого 
+Это ориентировочное расстояние; если оно отрицательное, линия
+будет прочерчена слева или ниже "Текста", в противном случае —
+справа или выше него, в зависимости от значения "Прямого
 направления".</translation>
     </message>
     <message>
@@ -7244,33 +7237,10 @@ and the object defined in 'Target'.
 The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
       <translation>Текст, отображаемый этой меткой.
 
-Это свойство доступно только для чтения, так как окончательный 
+Это свойство доступно только для чтения, так как окончательный
 текст зависит от "Типа метки" и объекта, определенного в "Цели".
-"Пользовательский текст" отображается только в том случае, если 
+"Пользовательский текст" отображается только в том случае, если
 "Тип метки" установлен в "Пользовательский".</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Тип информации, отображаемой этой меткой.
-
-Если выбрано "Пользовательский", будет использовано содержимое
-"Пользовательского текста".
-Для других типов текст будет сформирован автоматически на основе 
-объекта, определенного в "Цели".
-"Теги" и "Материал" работают только для объектов, которые имеют 
-эти свойства, например, БИМ-объекты.
-
-Для "Позиции", "Длины" и "Площади" эти свойства будут извлечены из
- главного объекта в "Цели" или из подэлемента "Вершина N", "Ребро N"
- или "Грань N" соответственно, если это указано.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7285,9 +7255,9 @@ in the same proportion.</source>
 When using a saved style some of the view properties will become read-only;
 they will only be editable by changing the style through the 'Annotation style editor' tool.</source>
       <translation>Стиль аннотации, который будет применён к этому объекту.
-При использовании сохраненного стиля некоторые свойства 
-просмотра станут доступны только для чтения; их можно будет 
-изменить только с помощью инструмента "Редактор стилей 
+При использовании сохраненного стиля некоторые свойства
+просмотра станут доступны только для чтения; их можно будет
+изменить только с помощью инструмента "Редактор стилей
 аннотаций".</translation>
     </message>
     <message>
@@ -7302,7 +7272,7 @@ they will only be editable by changing the style through the 'Annotation style e
 If these are present, the copies will be created along these subelements only.
 Leave this property empty to create copies along the entire 'Path Object'.</source>
       <translation>Список подключенных рёбер в "Path Object - Объекте пути".
-Если они присутствуют, копии будут созданы только вдоль 
+Если они присутствуют, копии будут созданы только вдоль
 этих подэлементов.
 Оставьте это свойство пустым, чтобы создать копии вдоль
  всего "Объекта пути".</translation>
@@ -7310,7 +7280,7 @@ Leave this property empty to create copies along the entire 'Path Object'.</sour
     <message>
       <location filename="../../draftobjects/patharray.py" line="296"/>
       <source>Force use of 'Vertical Vector' as local Z-direction when using 'Original' or 'Tangent' alignment mode</source>
-      <translation>Принудительное использование "Вертикального вектора" в качестве 
+      <translation>Принудительное использование "Вертикального вектора" в качестве
 локального направления Z при использовании режима выравнивания
  "Original - Оригинал" или "Tangent - Касательная"</translation>
     </message>
@@ -7323,9 +7293,9 @@ Leave this property empty to create copies along the entire 'Path Object'.</sour
       <location filename="../../draftobjects/patharray.py" line="281"/>
       <source>Additional translation that will be applied to each copy.
 This is useful to adjust for the difference between shape centre and shape reference point.</source>
-      <translation>Дополнительное смещение, которое будет применяться к 
+      <translation>Дополнительное смещение, которое будет применяться к
 каждой копии.
-Это полезно для корректировки разницы между центром 
+Это полезно для корректировки разницы между центром
 фигуры и опорной точкой фигуры.</translation>
     </message>
     <message>
@@ -7347,16 +7317,16 @@ This is useful to adjust for the difference between shape centre and shape refer
 
 To get better results with 'Original' or 'Tangent' you may have to set 'Force Vertical' to true.</source>
       <translation>Метод ориентации копий вдоль траектории.
-- Оригинал: X — касательная кривой, Y — нормаль, Z — вектор 
+- Оригинал: X — касательная кривой, Y — нормаль, Z — вектор
 пересечения.
-- Френе: выравнивает объект в соответствии с локальной системой 
+- Френе: выравнивает объект в соответствии с локальной системой
 координат вдоль пути.
-- Касательная: аналогично "Оригинальному", но локальная ось X 
+- Касательная: аналогично "Оригинальному", но локальная ось X
 предварительно выровнена вдоль "Вектора касательной".
 
-Для получения лучших результатов с "Оригинальным" или 
-"Касательным" режимами вам может потребоваться установить 
-параметр "Force Vertical - Принудительная вертикаль" в значение 
+Для получения лучших результатов с "Оригинальным" или
+"Касательным" режимами вам может потребоваться установить
+параметр "Force Vertical - Принудительная вертикаль" в значение
 истина.</translation>
     </message>
     <message>
@@ -7371,13 +7341,13 @@ To get better results with 'Original' or 'Tangent' you may have to set 'Force Ve
  - Fixed spacing: start at "Start offset" and place new copies after traveling a fixed distance along the path.
  - Fixed count and spacing: same as "Fixed spacing", but also stop at given number of copies.</source>
       <translation>Как распределяются копии.
- - Фиксированное количество (Fixed count): доступная длина пути (за 
+ - Фиксированное количество (Fixed count): доступная длина пути (за
 вычетом начального и конечного смещений) равномерно делится на n.
- - Фиксированный интервал (Fixed spacing): стартует с "Start offset - 
-Начального смещения" и размещает новые копии на фиксированном 
+ - Фиксированный интервал (Fixed spacing): стартует с "Start offset -
+Начального смещения" и размещает новые копии на фиксированном
 расстоянии вдоль пути.
- - Фиксированное количество и интервал (Fixed count and spacing): 
-то же, что и "Фиксированный интервал", но при этом останавливается 
+ - Фиксированное количество и интервал (Fixed count and spacing):
+то же, что и "Фиксированный интервал", но при этом останавливается
 при достижении заданного количества копий.</translation>
     </message>
     <message>
@@ -7388,7 +7358,7 @@ To get better results with 'Original' or 'Tangent' you may have to set 'Force Ve
     <message>
       <location filename="../../draftobjects/patharray.py" line="359"/>
       <source>Use repeating spacing patterns instead of uniform spacing.</source>
-      <translation>Использовать повторяющиеся шаблоны интервалов 
+      <translation>Использовать повторяющиеся шаблоны интервалов
 вместо равномерных интервалов.</translation>
     </message>
     <message>
@@ -7410,9 +7380,9 @@ To get better results with 'Original' or 'Tangent' you may have to set 'Force Ve
       <location filename="../../draftobjects/patharray.py" line="327"/>
       <source>Orient the copies along the path depending on the 'Align Mode'.
 Otherwise the copies will have the same orientation as the original Base object.</source>
-      <translation>Ориентирует копии вдоль пути в зависимости от "Align Mode - Режима 
+      <translation>Ориентирует копии вдоль пути в зависимости от "Align Mode - Режима
 выравнивания".
-В противном случае копии будут иметь ту же ориентацию, что и 
+В противном случае копии будут иметь ту же ориентацию, что и
 исходный Base object - Базовый объект.</translation>
     </message>
     <message>
@@ -7422,12 +7392,12 @@ Otherwise the copies will have the same orientation as the original Base object.
 - Polar: places the copies along a circular arc, up to a specified angle, and with certain orientation defined by a center and an axis.
 - Circular: places the copies in concentric circles around the base object.</source>
       <translation>Тип создаваемого массива.
-- Ортогональный: размещает копии в направлении глобальных 
+- Ортогональный: размещает копии в направлении глобальных
 осей X, Y, Z.
-- Полярный: размещает копии по дуге окружности, в пределах 
-заданного угла и с определённой ориентацией, задаваемой 
+- Полярный: размещает копии по дуге окружности, в пределах
+заданного угла и с определённой ориентацией, задаваемой
 центром и осью.
-- Круговой: размещает копии по концентрическим окружностям 
+- Круговой: размещает копии по концентрическим окружностям
 вокруг базового объекта.</translation>
     </message>
     <message>
@@ -7436,7 +7406,7 @@ Otherwise the copies will have the same orientation as the original Base object.
       <location filename="../../draftobjects/pointarray.py" line="86"/>
       <location filename="../../draftobjects/pathtwistedarray.py" line="120"/>
       <source>Specifies if the copies should be fused together if they touch each other (slower)</source>
-      <translation>Указывает, должны ли копии быть объединены (слиты вместе), 
+      <translation>Указывает, должны ли копии быть объединены (слиты вместе),
 если они касаются друг друга (работает медленнее)</translation>
     </message>
     <message>
@@ -7472,7 +7442,7 @@ Otherwise the copies will have the same orientation as the original Base object.
     <message>
       <location filename="../../draftobjects/array.py" line="216"/>
       <source>The axis direction around which the elements in a polar or a circular array will be created</source>
-      <translation>Направление оси, вокруг которой будут созданы элементы 
+      <translation>Направление оси, вокруг которой будут созданы элементы
 полярного или кругового массива</translation>
     </message>
     <message>
@@ -7487,13 +7457,13 @@ The 'Axis' passes through this point.</source>
       <source>The axis object that overrides the value of 'Axis' and 'Center', for example, a datum line.
 Its placement, position and rotation, will be used when creating polar and circular arrays.
 Leave this property empty to be able to set 'Axis' and 'Center' manually.</source>
-      <translation>Объект оси, который переопределяет значение параметров 
+      <translation>Объект оси, который переопределяет значение параметров
 "Axis - Ось" и "Center - Центр", например, опорная линия.
 
-Её размещение, положение и поворот будут использоваться 
+Её размещение, положение и поворот будут использоваться
 при создании полярных и круговых массивов.
 
-Оставьте поле пустым, чтобы иметь возможность установить 
+Оставьте поле пустым, чтобы иметь возможность установить
 параметры "Ось" и "Центр" вручную.</translation>
     </message>
     <message>
@@ -7524,13 +7494,13 @@ Leave this property empty to be able to set 'Axis' and 'Center' manually.</sourc
     <message>
       <location filename="../../draftobjects/array.py" line="301"/>
       <source>Number of concentric circle. The 'Base' object counts as one circle.</source>
-      <translation>Количество круговых слоёв. Объект "Base - База" считается 
+      <translation>Количество круговых слоёв. Объект "Base - База" считается
 одним слоем.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/array.py" line="313"/>
       <source>A parameter that determines how many symmetry planes the circular array will have</source>
-      <translation>Параметр, определяющий, количество плоскостей симметрии 
+      <translation>Параметр, определяющий, количество плоскостей симметрии
 кругового массива</translation>
     </message>
     <message>
@@ -7538,7 +7508,7 @@ Leave this property empty to be able to set 'Axis' and 'Center' manually.</sourc
       <source>Total number of elements in the array.
 This property is read-only, as the number depends on the parameters of the array.</source>
       <translation>Общее количество элементов в массиве.
-Это свойство доступно только для чтения, так как количество 
+Это свойство доступно только для чтения, так как количество
 зависит от параметров массива.</translation>
     </message>
     <message>
@@ -7556,13 +7526,13 @@ This property is read-only, as the number depends on the parameters of the array
       <source>Number of copies in the array.
 This property is read-only, as the number depends on the points in 'Point Object'.</source>
       <translation>Количество копий в массиве.
-Это свойство доступно только для чтения, так как количество зависит 
+Это свойство доступно только для чтения, так как количество зависит
 от точек в "Point Object - Объекте Точек".</translation>
     </message>
     <message>
       <location filename="../../draftobjects/pointarray.py" line="103"/>
       <source>Additional placement, shift and rotation, that will be applied to each copy</source>
-      <translation>Дополнительное размещение, сдвиг и разворот, которые будут 
+      <translation>Дополнительное размещение, сдвиг и разворот, которые будут
 применены к каждой копии</translation>
     </message>
     <message>
@@ -7589,11 +7559,6 @@ This property is read-only, as the number depends on the points in 'Point Object
       <location filename="../../draftobjects/shape2dview.py" line="90"/>
       <source>Show hidden lines</source>
       <translation>Показать скрытые линии</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Выполнить слияние стенок и структурных объектов одного типа и материала</translation>
     </message>
     <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
@@ -7628,15 +7593,15 @@ This property is read-only, as the number depends on the points in 'Point Object
     <message>
       <location filename="../../draftobjects/shape2dview.py" line="142"/>
       <source>If this is True, only solid geometry is handled. This overrides the base object's Only Solids property</source>
-      <translation>Если значение Истина, обрабатывается только твёрдотельная 
-геометрия. Это переопределяет свойство "Только твёрдотельные 
+      <translation>Если значение Истина, обрабатывается только твёрдотельная
+геометрия. Это переопределяет свойство "Только твёрдотельные
 объекты" базового объекта</translation>
     </message>
     <message>
       <location filename="../../draftobjects/shape2dview.py" line="148"/>
       <source>If this is True, the contents are clipped to the borders of the section plane, if applicable. This overrides the base object's Clip property</source>
-      <translation>Если значение Истина, содержимое обрезается по границам секущей 
-плоскости, если применимо. Это переопределяет свойство 
+      <translation>Если значение Истина, содержимое обрезается по границам секущей
+плоскости, если применимо. Это переопределяет свойство
 "Clip - Обрезка" базового объекта</translation>
     </message>
     <message>
@@ -7701,10 +7666,10 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Конечный угол эллиптической дуги 
+      <translation>Конечный угол эллиптической дуги
 
                 (для полной окружности, задайте такое же значение, как и первый угол)</translation>
     </message>
@@ -7837,7 +7802,7 @@ is the radius or diameter, depending on the 'Diameter' property.</source>
       <location filename="../../draftobjects/dimension.py" line="287"/>
       <source>When measuring circular arcs, it determines whether to display
 the radius or the diameter value</source>
-      <translation>При измерении дуг окружности определяет, что 
+      <translation>При измерении дуг окружности определяет, что
 отображать: значение радиуса или диаметра</translation>
     </message>
     <message>
@@ -7860,11 +7825,11 @@ The arc is drawn counter-clockwise.</source>
 
 This is normally the point where two line segments, or their extensions
 intersect, resulting in the measured 'Angle' between them.</source>
-      <translation>Центральная точка размерной линии, представляющей собой 
+      <translation>Центральная точка размерной линии, представляющей собой
 дугу окружности.
 
-Обычно это точка, в которой пересекаются два отрезка линии 
-или их продолжения, в результате чего между ними образуется 
+Обычно это точка, в которой пересекаются два отрезка линии
+или их продолжения, в результате чего между ними образуется
 измеренный "Угол".</translation>
     </message>
     <message>
@@ -8114,7 +8079,7 @@ the 'First Angle' and 'Last Angle' properties.</source>
     <message>
       <location filename="../../draftviewproviders/view_layer.py" line="157"/>
       <source>The line color of the objects contained within this layer, when used on a TechDraw page</source>
-      <translation>Цвет линии объектов, содержащихся в этом слое, при использовании 
+      <translation>Цвет линии объектов, содержащихся в этом слое, при использовании
 на листе Технического Чертежа</translation>
     </message>
     <message>
@@ -8168,7 +8133,7 @@ Leave blank for system default.
 Use 'arch' to force US arch notation</source>
       <translation>Единица измерения.
 Оставьте поле пустым, чтобы использовать значение по умолчанию.
-Используйте "arch", чтобы принудительно использовать американскую 
+Используйте "arch", чтобы принудительно использовать американскую
 систему измерения</translation>
     </message>
     <message>
@@ -8313,7 +8278,7 @@ beyond the dimension line</source>
     <message>
       <location filename="../../draftguitools/gui_beziers.py" line="74"/>
       <source>Creates an n-degree Bézier curve. The more points, the higher the degree.</source>
-      <translation>Создаёт кривую Безье n-й степени. Чем больше точек, тем 
+      <translation>Создаёт кривую Безье n-й степени. Чем больше точек, тем
 выше степень.</translation>
     </message>
   </context>
@@ -8328,10 +8293,10 @@ beyond the dimension line</source>
       <location filename="../../draftguitools/gui_beziers.py" line="271"/>
       <source>Creates a Bézier curve made of 2nd degree (quadratic) and 3rd degree (cubic) segments. Clicking and dragging allows to define segments.
 Control points and properties of each knot can be edited after creation.</source>
-      <translation>Создаёт кривую Безье, состоящую из сегментов 2-й степени 
-(квадратичных) и 3-й степени (кубических). Щелчок и перетаскивание 
+      <translation>Создаёт кривую Безье, состоящую из сегментов 2-й степени
+(квадратичных) и 3-й степени (кубических). Щелчок и перетаскивание
 позволяют задавать сегменты.
-Контрольные точки и свойства каждого узла можно редактировать 
+Контрольные точки и свойства каждого узла можно редактировать
 после создания.</translation>
     </message>
   </context>
@@ -8372,7 +8337,7 @@ Control points and properties of each knot can be edited after creation.</source
       <location filename="../../draftguitools/gui_dimension_ops.py" line="69"/>
       <source>Flips the normal direction of the selected dimensions (linear, radial, angular).
 If other objects are selected they are ignored.</source>
-      <translation>Переворачивает нормальное направление выбранных размеров 
+      <translation>Переворачивает нормальное направление выбранных размеров
 (линейных, радиальных, угловых).
 Если выбраны другие объекты, они игнорируются.</translation>
     </message>
@@ -8389,9 +8354,9 @@ If other objects are selected they are ignored.</source>
       <source>Converts bidirectionally between Draft objects and sketches.
 Multiple selected Draft objects are converted into a single sketch.
 However, a single sketch with disconnected traces is converted into several individual Draft objects.</source>
-      <translation>Осуществляет двунаправленное преобразование между объектами 
+      <translation>Осуществляет двунаправленное преобразование между объектами
 верстаков Набросок и Эскиз.
-Несколько выбранных объектов Наброска преобразуются в один 
+Несколько выбранных объектов Наброска преобразуются в один
 Эскиз.
 Однако один Эскиз с разобщёнными участками преобразуется в несколько отдельных объектов Наброска.</translation>
     </message>
@@ -8432,7 +8397,7 @@ However, a single sketch with disconnected traces is converted into several indi
     <message>
       <location filename="../../draftguitools/gui_groups.py" line="183"/>
       <source>Selects the contents of selected groups. For selected non-group objects, the contents of the group they are in are selected.</source>
-      <translation>Выбирает содержимое отмеченных групп. Для выбранных объектов, 
+      <translation>Выбирает содержимое отмеченных групп. Для выбранных объектов,
 вне групп, выбирается содержимое группы, в которой они находятся.</translation>
     </message>
   </context>
@@ -8442,12 +8407,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <location filename="../../draftguitools/gui_groups.py" line="230"/>
       <source>Auto-Group</source>
       <translation>Авто-группа</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Добавляет новые объекты Наброска и БИМ (BIM) к выбранному 
-слою или группе</translation>
     </message>
   </context>
   <context>
@@ -8535,11 +8494,11 @@ The slope will always change the Z value, therefore this command only works well
 straight Draft lines that are drawn on the XY-plane.</source>
       <translation>Устанавливает наклон выбранной линии путём изменения
 значения Z одной из её точек.
-Если выбрана ломаная линия, то преобразование наклона будет 
+Если выбрана ломаная линия, то преобразование наклона будет
 применено к каждому из её сегментов.
 
-Наклон всегда изменяет значение Z, поэтому эта команда 
-хорошо работает только для прямых линий Наброска, 
+Наклон всегда изменяет значение Z, поэтому эта команда
+хорошо работает только для прямых линий Наброска,
 построенных на плоскости XY.</translation>
     </message>
   </context>
@@ -8657,7 +8616,7 @@ straight Draft lines that are drawn on the XY-plane.</source>
     <message>
       <location filename="../../draftguitools/gui_selectplane.py" line="66"/>
       <source>Defines the working plane from 3 vertices, 1 or more shapes, or an object</source>
-      <translation>Определяет рабочую плоскость по 3 вершинам, 1 или более 
+      <translation>Определяет рабочую плоскость по 3 вершинам, 1 или более
 фигурам или объекту</translation>
     </message>
   </context>
@@ -8671,7 +8630,7 @@ straight Draft lines that are drawn on the XY-plane.</source>
     <message>
       <location filename="../../draftguitools/gui_setstyle.py" line="70"/>
       <source>Sets the default style and can apply the style to objects</source>
-      <translation>Устанавливает стиль по умолчанию и может применять 
+      <translation>Устанавливает стиль по умолчанию и может применять
 стиль к объектам</translation>
     </message>
   </context>
@@ -8687,7 +8646,7 @@ straight Draft lines that are drawn on the XY-plane.</source>
       <source>Creates a 2D projection of the selected objects on the XY-plane.
 The initial projection direction is the opposite of the current active view direction.</source>
       <translation>Создаёт 2D-проекцию выбранных объектов на плоскости XY.
-Начальное направление проекции диаметрально противоположно 
+Начальное направление проекции диаметрально противоположно
 текущему активному направлению вида.</translation>
     </message>
   </context>
@@ -8766,7 +8725,7 @@ The initial projection direction is the opposite of the current active view dire
     <message>
       <location filename="../../draftguitools/gui_snaps.py" line="147"/>
       <source>Snaps to the intersection of 2 edges, and the intersection of a face and an edge</source>
-      <translation>Привязывается к пересечению двух рёбер и к пересечению 
+      <translation>Привязывается к пересечению двух рёбер и к пересечению
 грани и ребра</translation>
     </message>
   </context>
@@ -8815,11 +8774,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>К центру</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Привязка к центральной точке граней и круговых рёбер, а также к точке размещения прокси рабочей плоскости и строительных элементов</translation>
     </message>
   </context>
   <context>
@@ -9009,11 +8963,11 @@ The initial projection direction is the opposite of the current active view dire
 reusable objects (Part Compounds) and instances become `App::Link` objects,
 maintaining the block structure. Best for full integration with the Draft
 workbench.</source>
-      <translation>Создаёт полностью параметрические объекты Наброска. 
-Значения блоков импортируются как объекты 
-многократного использования (Составные объекты верстака 
+      <translation>Создаёт полностью параметрические объекты Наброска.
+Значения блоков импортируются как объекты
+многократного использования (Составные объекты верстака
 Деталь), а экземпляры становятся "ссылками" на объекты,
-сохраняя структуру блоков. Лучше всего подходит для 
+сохраняя структуру блоков. Лучше всего подходит для
 полной интеграции с верстаком Набросок.</translation>
     </message>
     <message>
@@ -9027,10 +8981,10 @@ workbench.</source>
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing.</source>
-      <translation>Создаёт параметрические объекты верстака Деталь (например, 
-Part::Line, Part::Circle). Блоки определяются как повторно используемые 
-объекты (Составные объекты верстака Деталь), а экземпляры 
-становятся объектами "App::Link", сохраняя структуру блока. 
+      <translation>Создаёт параметрические объекты верстака Деталь (например,
+Part::Line, Part::Circle). Блоки определяются как повторно используемые
+объекты (Составные объекты верстака Деталь), а экземпляры
+становятся объектами "App::Link", сохраняя структуру блока.
 Лучше всего подходит для постобработки на основе скриптов.</translation>
     </message>
     <message>
@@ -9043,10 +8997,10 @@ Part::Line, Part::Circle). Блоки определяются как повто
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Создаёт непараметрическую форму для каждого объекта DXF. 
-Определения блоков импортируются как повторно используемые 
-объекты (Составные объекты верстака Деталь), а экземпляры 
-становятся объектами "App::Link", сохраняя структуру блока. 
+      <translation>Создаёт непараметрическую форму для каждого объекта DXF.
+Определения блоков импортируются как повторно используемые
+объекты (Составные объекты верстака Деталь), а экземпляры
+становятся объектами "App::Link", сохраняя структуру блока.
 Хорошо подходит для создания привязок и измерений.</translation>
     </message>
     <message>
@@ -9059,9 +9013,9 @@ objects, maintaining the block structure. Good for referencing and measuring.</s
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for viewing very large files with maximum performance.</source>
-      <translation>Объединяет всю геометрию по слоям в одну нередактируемую фигуру. 
-Структуры блоков не сохраняются; их геометрия становится частью 
-фигуры самого слоя. Оптимально подходит для просмотра очень 
+      <translation>Объединяет всю геометрию по слоям в одну нередактируемую фигуру.
+Структуры блоков не сохраняются; их геометрия становится частью
+фигуры самого слоя. Оптимально подходит для просмотра очень
 больших файлов с максимальной производительностью.</translation>
     </message>
     <message>

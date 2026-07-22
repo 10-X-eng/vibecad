@@ -12,7 +12,7 @@ from .TechDrawTestUtilities import createPageWithSVGTemplate
 
 class DrawViewScaleTypeTest(unittest.TestCase):
     """Regression test for issue #30186: a symbol-style view (DrawViewSymbol and
-    its DraftView / ArchView subclasses) whose ScaleType is set to 'Page' must
+    its DraftView subclass) whose ScaleType is set to 'Page' must
     keep that ScaleType across a save/reload cycle instead of reverting to
     'Custom'."""
 

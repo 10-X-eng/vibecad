@@ -25,10 +25,6 @@ if(BUILD_ADDONMGR)
   endif()
 endif(BUILD_ADDONMGR)
 
-if(BUILD_BIM)
-  add_subdirectory(BIM)
-endif(BUILD_BIM)
-
 if(BUILD_ASSEMBLY)
   add_subdirectory(Assembly)
 endif(BUILD_ASSEMBLY)

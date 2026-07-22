@@ -1243,7 +1243,7 @@ orijentacija. Ako nije odabrana nijedna točka, ravnina
       <location filename="../ui/TaskPanel_SetStyle.ui" line="298"/>
       <source>The annotation scale multiplier is the inverse of the scale set in the
 Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>Množilac skale oznake je inverzna vrijednost skale postavljene u 
+      <translation>Množilac skale oznake je inverzna vrijednost skale postavljene u
 skalarnoj napomeni . Ako je skala 1:100, množitelj je 100.</translation>
     </message>
     <message>
@@ -1511,7 +1511,7 @@ faces are picked during commands.</source>
       <location filename="../ui/preferences-draft.ui" line="112"/>
       <source>If checked, a widget indicating the current working
 plane orientation appears when picking points</source>
-      <translation>Ako je označeno, dodatak pokazuje orijentaciju trenutne radne površine, 
+      <translation>Ako je označeno, dodatak pokazuje orijentaciju trenutne radne površine,
 pojavljuje se tijekom odabira točaka</translation>
     </message>
     <message>
@@ -1536,7 +1536,7 @@ Objects can then automatically be added to groups as well.</source>
 Note that this is not fully supported, and many objects will not be editable with
 Draft modification commands.</source>
       <translation>Ako je označeno, naredbe Nacrta  stvaraju primitivne dijelove umjesto objekata nacrta.
-Imajte na umu da to nije u potpunosti podržano i mnogi objekti neće se moći uređivati 
+Imajte na umu da to nije u potpunosti podržano i mnogi objekti neće se moći uređivati
 pomoću Modifikatora Nacrta.</translation>
     </message>
     <message>
@@ -1548,7 +1548,7 @@ pomoću Modifikatora Nacrta.</translation>
       <location filename="../ui/preferences-draft.ui" line="222"/>
       <source>If checked, Draft Downgrade and Draft Upgrade will keep face colors.
 Only for the splitFaces and makeShell options.</source>
-      <translation>Ako je označeno, vraćanje na stariju verziju nacrta i nadogradi nacrt zadržat će boje lica. 
+      <translation>Ako je označeno, vraćanje na stariju verziju nacrta i nadogradi nacrt zadržat će boje lica.
 Samo za opcije splitFaces i makeShell.</translation>
     </message>
     <message>
@@ -1560,7 +1560,7 @@ Samo za opcije splitFaces i makeShell.</translation>
       <location filename="../ui/preferences-draft.ui" line="239"/>
       <source>If checked, Draft Downgrade and Draft Upgrade will keep face names.
 Only for the splitFaces and makeShell options.</source>
-      <translation>Ako je označeno, vraćanje na stariju verziju nacrta i nadogradi nacrt zadržat će imena lica. 
+      <translation>Ako je označeno, vraćanje na stariju verziju nacrta i nadogradi nacrt zadržat će imena lica.
 Samo za opcije splitFaces i makeShell.</translation>
     </message>
     <message>
@@ -1645,7 +1645,7 @@ slučajno i mijenjanje unesene vrijednosti.</translation>
       <location filename="../ui/preferences-draft.ui" line="171"/>
       <source>If checked, Length input, instead of the X coordinate, will have the initial focus.
 This allows indicating a direction and then type a distance.</source>
-      <translation>Ako je označeno, polje za unos duljine, umjesto koordinate X, dobit će početni fokus. 
+      <translation>Ako je označeno, polje za unos duljine, umjesto koordinate X, dobit će početni fokus.
 To omogućuje da se navede smjer i zatim unese udaljenost.</translation>
     </message>
     <message>
@@ -1712,7 +1712,7 @@ To omogućuje da se navede smjer i zatim unese udaljenost.</translation>
       <location filename="../ui/preferences-draftvisual.ui" line="75"/>
       <source>An optional directory with custom SVG files containing
 pattern definitions to be added to the standard patterns</source>
-      <translation>Jedan opcionalni direktorij s prilagođenim SVG datotekama koje 
+      <translation>Jedan opcionalni direktorij s prilagođenim SVG datotekama koje
 sadrže definicije uzoraka koje će se dodati standardnim uzorcima</translation>
     </message>
     <message>
@@ -1839,7 +1839,7 @@ sadrže definicije uzoraka koje će se dodati standardnim uzorcima</translation>
       <location filename="../ui/preferences-drafttexts.ui" line="39"/>
       <source>The default annotation scale multiplier. This is the inverse of the scale set
 in the Draft Scale Widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>Zadani množitelj skale oznake. Ovo je inverzna vrijednost skale postavljene u 
+      <translation>Zadani množitelj skale oznake. Ovo je inverzna vrijednost skale postavljene u
 dodatku za skaliranja Nacrta. Ako je skala 1:100, množitelj je 100.</translation>
     </message>
     <message>
@@ -1987,7 +1987,7 @@ dodatku za skaliranja Nacrta. Ako je skala 1:100, množitelj je 100.</translatio
       <location filename="../ui/preferences-drafttexts.ui" line="510"/>
       <source>The default unit override for dimensions. Enter a unit such as m
 or cm, leave blank to use the current unit defined in FreeCAD.</source>
-      <translation>Predefinirano mjenjanje jedinica dimenzija. Unesite jedinicu kao što su m ili cm, 
+      <translation>Predefinirano mjenjanje jedinica dimenzija. Unesite jedinicu kao što su m ili cm,
 ostavite prazno da biste koristili trenutnu mjernu jedinicu definiranu u FreeCAD-u.
 </translation>
     </message>
@@ -2085,7 +2085,7 @@ Jedna jedinica u SVG datoteci će se interpretirati kao jedan milimetar.</transl
       <location filename="../ui/preferences-svg.ui" line="97"/>
       <source>If face generation results in a degenerated face,
 a raw wire from the original shape is added</source>
-      <translation>Ako stvaranje stranice rezultira u neispravnu stranicu, 
+      <translation>Ako stvaranje stranice rezultira u neispravnu stranicu,
 dodaće se žičani okvir originalnog oblika</translation>
     </message>
     <message>
@@ -2338,8 +2338,8 @@ naknadnu obradu temeljenu na skriptama i integraciju u Radni prostor.</translati
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Stvara neparametarski oblik za svaki DXF entitet. Definicije blokova se uvoze 
-kao objekti za višekratnu upotrebu (Part Compounds), a instance postaju 
+      <translation>Stvara neparametarski oblik za svaki DXF entitet. Definicije blokova se uvoze
+kao objekti za višekratnu upotrebu (Part Compounds), a instance postaju
 objekti `App::Link`, zadržavajući strukturu bloka. Dobro za referenciranje i mjerenje.</translation>
     </message>
     <message>
@@ -2352,8 +2352,8 @@ objekti `App::Link`, zadržavajući strukturu bloka. Dobro za referenciranje i m
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for importing and viewing very large files with maximum performance.</source>
-      <translation>Spaja svu geometriju po sloju u jedan oblik koji se ne može uređivati. 
-Blok strukture se ne čuvaju; njihova geometrija postaje dio oblika sloja. 
+      <translation>Spaja svu geometriju po sloju u jedan oblik koji se ne može uređivati.
+Blok strukture se ne čuvaju; njihova geometrija postaje dio oblika sloja.
 Najbolje za uvoz i pregled vrlo velikih datoteka s maksimalnim performansama.</translation>
     </message>
     <message>
@@ -2400,7 +2400,7 @@ Primjer: za datoteke u milimetrima: 1, centimetrima: 10, metrima: 1000, u inčim
       <location filename="../ui/preferences-dxf.ui" line="323"/>
       <source>If checked, entities from the paper space will also be imported. By default,
 only model space is imported</source>
-      <translation>Ako je označeno, entiteti iz prostora papira također će se uvesti. 
+      <translation>Ako je označeno, entiteti iz prostora papira također će se uvesti.
 Prema zadanim postavkama, uvozi se samo prostor modela.</translation>
     </message>
     <message>
@@ -2424,7 +2424,7 @@ These are often used for hatches and dimensions</source>
       <location filename="../ui/preferences-dxf.ui" line="360"/>
       <source>If checked, the boundaries of hatch objects will be imported as closed wires.
 (Legacy importer only)</source>
-      <translation>Ako je označeno, granice objekata šrafure bit će uvezene kao zatvorene žice. 
+      <translation>Ako je označeno, granice objekata šrafure bit će uvezene kao zatvorene žice.
 (Samo za Legacy verzije uvoznika)</translation>
     </message>
     <message>
@@ -2441,14 +2441,14 @@ These are often used for hatches and dimensions</source>
       <location filename="../ui/preferences-dxf.ui" line="388"/>
       <source>If checked, colors will be set as specified in the DXF file whenever
 possible. Otherwise, default FreeCAD colors are applied</source>
-      <translation>Ako je označeno, boje će biti postavljene kako je navedeno u DXF 
+      <translation>Ako je označeno, boje će biti postavljene kako je navedeno u DXF
 datoteci kad god je to moguće. Inače se primjenjuju zadane FreeCAD boje.</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="411"/>
       <source>If checked, imported texts will get the standard Draft text size, instead of
 the size defined in the DXF document. (Legacy importer only)</source>
-      <translation>Ako je označeno, uvezeni tekstovi će dobiti standardnu ​​veličinu teksta Nacrta, 
+      <translation>Ako je označeno, uvezeni tekstovi će dobiti standardnu ​​veličinu teksta Nacrta,
 umjesto veličine definirane u DXF dokumentu. (Samo za uvoz Legacy verzija)</translation>
     </message>
     <message>
@@ -2466,14 +2466,14 @@ objects into wires. This can be slow for large files. (Legacy importer only)</so
       <location filename="../ui/preferences-dxf.ui" line="462"/>
       <source>If checked, polylines that have a width property will be rendered as faces
 representing that width. (Legacy importer only)</source>
-      <translation>Ako je označeno, polilinije koje imaju svojstvo širine prikazivat će se 
+      <translation>Ako je označeno, polilinije koje imaju svojstvo širine prikazivat će se
 kao površine koje predstavljaju tu širinu. (Samo za uvoz Legacy verzija)</translation>
     </message>
     <message>
       <location filename="../ui/preferences-dxf.ui" line="482"/>
       <source>If checked, the legacy importer will attempt to create Sketcher objects
 instead of Draft or Part objects. This overrides the 'Import As' setting</source>
-      <translation>Ako je označeno, Legacy program za uvoz pokušat će stvoriti 
+      <translation>Ako je označeno, Legacy program za uvoz pokušat će stvoriti
 objekte Skiciranja umjesto objekata Nacrta ili Dio. To poništava postavku 'Uvezi kao'.</translation>
     </message>
     <message>
@@ -2540,7 +2540,7 @@ Ovo možda neće uspjeti za predloške DXF R12.</translation>
       <location filename="../ui/preferences-draftsnap.ui" line="92"/>
       <source>If checked, the outline of a human figure is displayed at the bottom left
 corner of the grid. Only effective if "Show grid border" is enabled.</source>
-      <translation>Ako je označeno, obris ljudske figure prikazuje se u donjem lijevom kutu mreže. 
+      <translation>Ako je označeno, obris ljudske figure prikazuje se u donjem lijevom kutu mreže.
 Opcija je učinkovita samo ako je  opcija "Prikaži granicu mreže" uključena.</translation>
     </message>
     <message>
@@ -2552,7 +2552,7 @@ Opcija je učinkovita samo ako je  opcija "Prikaži granicu mreže" uključena.<
       <location filename="../ui/preferences-draftsnap.ui" line="145"/>
       <source>The number of squares between major grid lines.
 Major grid lines are thicker than minor grid lines.</source>
-      <translation>Broj kvadrata između glavnih linija mreže. 
+      <translation>Broj kvadrata između glavnih linija mreže.
 Ove linije su deblje od normalnih linija mreže.</translation>
     </message>
     <message>
@@ -2620,7 +2620,7 @@ Koristite Nacrt Pokaži/Sakrij rešetku za promjenu ove opcije za aktivni pogled
     <message>
       <location filename="../ui/preferences-draft.ui" line="303"/>
       <source>The maximum number of objects Draft Edit is allowed to process at the same time</source>
-      <translation>Najveći broj objekata za uređivanje Nacrta koji se  može istovremeno obraditi   
+      <translation>Najveći broj objekata za uređivanje Nacrta koji se  može istovremeno obraditi
 </translation>
     </message>
     <message>
@@ -2649,7 +2649,7 @@ Koristite Nacrt Pokaži/Sakrij rešetku za promjenu ove opcije za aktivni pogled
       <location filename="../ui/preferences-draftsnap.ui" line="69"/>
       <source>If checked, an additional border is displayed around the grid,
 showing the main square size in the bottom left corner</source>
-      <translation>Ako je potvrđeno, oko rešetke se prikazuje dodatan obrub koji u 
+      <translation>Ako je potvrđeno, oko rešetke se prikazuje dodatan obrub koji u
 donjem lijevom uglu prikazuje veličinu glavnog kvadrata
 
 </translation>
@@ -3598,7 +3598,7 @@ https://wiki.freecad.org/Import_Export_Preferences</translation>
       <source>Error during DWG conversion.
 Try moving the DWG file to a directory path without spaces and non-english characters,
 or try saving to a lower DWG version.</source>
-      <translation>Pogreška tijekom DWG pretvorbe. 
+      <translation>Pogreška tijekom DWG pretvorbe.
 Pokušajte premjestiti DWG datoteku na put direktorija bez razmaka i neengleskih znakova
 ili pokušajte spremiti u nižu DWG verziju.</translation>
     </message>
@@ -5920,7 +5920,7 @@ Konačni kut bit će osnovni kut plus ovaj iznos.</translation>
       <location filename="../../draftutils/params.py" line="225"/>
       <source>Do you want to update the SVG pattern options
 of existing objects in all opened documents?</source>
-      <translation>Da li želite ažurirati opcije SVG uzorak objekta 
+      <translation>Da li želite ažurirati opcije SVG uzorak objekta
 postojećih objekata u svim otvorenim dokumentima?</translation>
     </message>
     <message>
@@ -6105,7 +6105,7 @@ Please either allow FreeCAD to download these libraries:
 Or download these libraries manually, as explained on
 https://github.com/yorikvanhavre/Draft-dxf-importer
 To enabled FreeCAD to download these libraries, answer Yes.</source>
-      <translation>Biblioteke za uvoz/izvoz DXF-a potrebne FreeCAD-u za obradu 
+      <translation>Biblioteke za uvoz/izvoz DXF-a potrebne FreeCAD-u za obradu
 DXF formata nisu pronađene na ovom sustavu.
 Molimo vas da dopustite FreeCAD-u preuzimanje ovih biblioteka:
 1 - Učitaj radnu površinu za nacrte
@@ -7052,9 +7052,9 @@ označi Točno za spajanje ili Netočno za složeni spoj</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Krajnji kut luka (za puni krug, 
+      <translation>Krajnji kut luka (za puni krug,
                dodaj istu vrijednost kao za prvi kut)</translation>
     </message>
     <message>
@@ -7238,25 +7238,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Ovo svojstvo je samo za čitanje, budući da konačni tekst ovisi o 'Vrsta Oznake',
 i objekt definiran u 'Odredište'.
 'Prilagođen tekst' prikazuje se samo ako je 'Vrsta Oznake' postavljena na 'Prilagođeno'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Vrsta informacija koje prikazuje ova oznaka.
-
-Ako je odabrano 'Prilagođeno', koristit će se sadržaj 'Prilagođenog teksta'.
-Za ostale vrste, niz će se automatski izračunati iz objekta definiranog u 'Cilj'.
-'Oznaka' i 'Materijal' rade samo za objekte koji imaju ta svojstva, poput BIM objekata.
-
-Za 'Položaj', 'Duljina' i 'Površina' ova će se svojstva izdvojiti iz glavnog objekta u 'Cilj' 
-ili iz pod elementa 'VertexN', 'EdgeN' ili 'FaceN', ako je navedeno.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7541,11 +7522,6 @@ Ovo svojstvo je samo za čitanje, budući da broj ovisi o točkama sadržanim un
       <translation>Prikaži skrivene linije</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Spoji zid i objekte strukture ako su istog tipa i materijala</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Oblaganje elipsa i B-krive u linijske segmente</translation>
@@ -7649,10 +7625,10 @@ Ovo svojstvo je samo za čitanje, budući da broj ovisi o točkama sadržanim un
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Završni kut eliptičnog luka 
+      <translation>Završni kut eliptičnog luka
              (za puni krug, dajte mu istu vrijednost kao i Početni Kut)</translation>
     </message>
     <message>
@@ -8384,11 +8360,6 @@ Međutim, jedna Skica  s nepovezanim tragovima pretvara se u nekoliko pojedinač
       <source>Auto-Group</source>
       <translation>Auto-Grupiraj</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Dodaje nove Nacrte i BIM objekte odabranom sloju ili grupi</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8749,11 +8720,6 @@ Početni smjer projekcije je suprotan smjeru trenutnog aktivnog prikaza.</transl
       <source>Snap Center</source>
       <translation>Uhvati se na središte</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Uhvati se na središnju točku lica i kružnih rubova te na točku postavljanja zamjenskih radnih ravnina i dijelova zgrade</translation>
-    </message>
   </context>
   <context>
     <name>Draft_Snap_Extension</name>
@@ -8957,8 +8923,8 @@ zadržavajući strukturu blokova. Najbolje za potpunu integraciju s Nacrt radnom
 definitions are imported as reusable objects (Part Compounds) and instances
 become `App::Link` objects, maintaining the block structure. Best for
 script-based post-processing.</source>
-      <translation>Stvara parametarske objekte (npr. Part::Line, Part::Circle). Definicije blokova 
-se uvoze kao objekti za višekratnu upotrebu (Sastavljeni Dio), a instance postaju 
+      <translation>Stvara parametarske objekte (npr. Part::Line, Part::Circle). Definicije blokova
+se uvoze kao objekti za višekratnu upotrebu (Sastavljeni Dio), a instance postaju
 objekti `App::Link`, zadržavajući strukturu blokova. Najbolje za
 naknadnu obradu temeljenu na skriptama.</translation>
     </message>
@@ -8972,8 +8938,8 @@ naknadnu obradu temeljenu na skriptama.</translation>
       <source>Creates a non-parametric shape for each DXF entity. Block definitions are
 imported as reusable objects (Part Compounds) and instances become `App::Link`
 objects, maintaining the block structure. Good for referencing and measuring.</source>
-      <translation>Stvara neparametarski oblik za svaki DXF entitet. Definicije blokova se uvoze 
-kao objekti za višekratnu upotrebu (Part Compounds), a instance postaju 
+      <translation>Stvara neparametarski oblik za svaki DXF entitet. Definicije blokova se uvoze
+kao objekti za višekratnu upotrebu (Part Compounds), a instance postaju
 objekti `App::Link`, zadržavajući strukturu bloka. Dobro za referenciranje i mjerenje.</translation>
     </message>
     <message>
@@ -8986,8 +8952,8 @@ objekti `App::Link`, zadržavajući strukturu bloka. Dobro za referenciranje i m
       <source>Merges all geometry per layer into a single, non-editable shape. Block
 structures are not preserved; their geometry becomes part of the layer's
 shape. Best for viewing very large files with maximum performance.</source>
-      <translation>Spaja svu geometriju po sloju u jedan oblik koji se ne može uređivati. 
-Blok strukture se ne čuvaju; njihova geometrija postaje dio oblika sloja. 
+      <translation>Spaja svu geometriju po sloju u jedan oblik koji se ne može uređivati.
+Blok strukture se ne čuvaju; njihova geometrija postaje dio oblika sloja.
 Najbolje za pregled vrlo velikih datoteka s maksimalnim performansama.</translation>
     </message>
     <message>

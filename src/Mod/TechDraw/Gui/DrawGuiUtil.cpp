@@ -449,68 +449,6 @@ bool DrawGuiUtil::isDraftObject(App::DocumentObject* obj)
     return result;
 }
 
-bool DrawGuiUtil::isArchObject(App::DocumentObject* obj)
-{
-    bool result = false;
-    App::PropertyPythonObject* proxy =
-        dynamic_cast<App::PropertyPythonObject*>(obj->getPropertyByName("Proxy"));
-
-    if (proxy) {
-        // if no proxy, can not be Arch obj
-        // if has proxy, might be Arch obj
-        Py::Object proxyObj = proxy->getValue();
-        std::stringstream ss;
-        Base::PyGILStateLocker lock;
-        try {
-            if (proxyObj.hasAttr("__module__")) {
-                Py::String mod(proxyObj.getAttr("__module__"));
-                ss << (std::string)mod;
-                // does this have to be an ArchSection, or can it be any Arch object?
-                if (ss.str().find("Arch") != std::string::npos) {
-                    result = true;
-                }
-            }
-        }
-        catch (Py::Exception&) {
-            Base::PyException e;  // extract the Python error text
-            e.reportException();
-            result = false;
-        }
-    }
-    return result;
-}
-
-bool DrawGuiUtil::isArchSection(App::DocumentObject* obj)
-{
-    bool result = false;
-    App::PropertyPythonObject* proxy =
-        dynamic_cast<App::PropertyPythonObject*>(obj->getPropertyByName("Proxy"));
-
-    if (proxy) {
-        // if no proxy, can not be Arch obj
-        // if has proxy, might be Arch obj
-        Py::Object proxyObj = proxy->getValue();
-        std::stringstream ss;
-        Base::PyGILStateLocker lock;
-        try {
-            if (proxyObj.hasAttr("__module__")) {
-                Py::String mod(proxyObj.getAttr("__module__"));
-                ss << (std::string)mod;
-                // does this have to be an ArchSection, or can it be other Arch objects?
-                if (ss.str().find("ArchSectionPlane") != std::string::npos) {
-                    result = true;
-                }
-            }
-        }
-        catch (Py::Exception&) {
-            Base::PyException e;  // extract the Python error text
-            e.reportException();
-            result = false;
-        }
-    }
-    return result;
-}
-
 bool DrawGuiUtil::needPage(Gui::Command* cmd, bool findAny)
 {
     if (findAny) {

@@ -12,19 +12,19 @@
       FreeCAD is an open-source parametric 3D modeler built to help you design real-world objects of
       any size. With parametric modeling, you can easily modify your designs by adjusting parameters
       in the model history. FreeCAD is suitable for a wide range of uses, from product design and
-      mechanical engineering to architecture and 3D printing.
+      mechanical engineering to product design and 3D printing.
     </p>
     <p>
       The software allows you to create constrained 2D sketches, which can be used as the basis for more
       complex 3D models. It includes tools to adjust dimensions, extract design details, and produce
       production-ready technical drawings. FreeCAD is available on Windows, Mac, and Linux, and
-      supports various file formats like STEP, IGES, STL, SVG, DXF, OBJ, IFC, and more, making it easy to
+      supports various file formats like STEP, IGES, STL, SVG, DXF, and OBJ, making it easy to
       fit into existing workflows. It also supports customization through Python scripting for those
       who want to automate tasks or develop custom features.
     </p>
     <p>
       FreeCAD offers several specialized workbenches, including tools for Finite Element Analysis
-      (FEA), Building Information Modeling (BIM), CAM / CNC and robot movement simulation. You can expand its
+      (FEA), CAM / CNC and robot movement simulation. You can expand its
       capabilities with add-ons, plugins, and macros created by the FreeCAD community, which can be
       installed directly from the application. This flexibility makes it a practical choice for both
       professionals and hobbyists.
@@ -40,10 +40,6 @@
       <image>https://raw.githubusercontent.com/FreeCAD/FreeCAD/main/.github/images/assembly.png</image>
     </screenshot>
     <screenshot>
-      <caption>BIM</caption>
-      <image>https://raw.githubusercontent.com/FreeCAD/FreeCAD/main/.github/images/bim.png</image>
-    </screenshot>
-    <screenshot>
       <caption>FEM</caption>
       <image>https://raw.githubusercontent.com/FreeCAD/FreeCAD/main/.github/images/fem.png</image>
     </screenshot>
@@ -51,7 +47,6 @@
   <keywords>
     <keyword>engineering</keyword>
     <keyword translate="no">cad</keyword>
-    <keyword translate="no">bim</keyword>
     <keyword translate="no">fea</keyword>
 	<keyword translate="no">fem</keyword>
     <keyword translate="no">cam</keyword>
@@ -61,7 +56,6 @@
     <keyword translate="no">3d-printing</keyword>
     <keyword translate="no">opencascade</keyword>
 	<keyword translate="no">parametric-modeler</keyword>
-    <keyword>architecture</keyword>
 	<keyword>assembly</keyword>
 	<keyword>part</keyword>
     <keyword translate="no">coin</keyword>

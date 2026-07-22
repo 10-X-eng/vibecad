@@ -319,10 +319,6 @@ def create_domain_api(
         from vibescript_material_api import MaterialDomainAPI
 
         return MaterialDomainAPI(exports, output_types)
-    if clean_domain == "bim":
-        from vibescript_bim_api import BIMDomainAPI
-
-        return BIMDomainAPI(exports, output_types)
     if clean_domain == "mesh":
         from vibescript_mesh_api import MeshDomainAPI
 

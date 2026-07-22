@@ -904,7 +904,6 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         surface_validation = None
         spreadsheet_validation = None
         material_validation = None
-        bim_validation = None
         mesh_validation = None
         meshpart_validation = None
         points_validation = None
@@ -964,16 +963,6 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 [dict(item) for item in expected_outputs],
                 document_uid=str(request.get("document_uid") or ""),
                 material_targets=targets,
-            )
-        elif domain == "bim":
-            from vibescript_bim_worker import validate_and_build_bim
-
-            outputs, bim_validation = validate_and_build_bim(
-                document,
-                result,
-                [dict(item) for item in expected_outputs],
-                root,
-                max_shape_subelements=shape_detail_limit,
             )
         elif domain == "mesh":
             from vibescript_mesh_worker import validate_and_build_meshes
@@ -1106,8 +1095,6 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             response["spreadsheet_validation"] = spreadsheet_validation
         elif domain == "material":
             response["material_validation"] = material_validation
-        elif domain == "bim":
-            response["bim_validation"] = bim_validation
         elif domain == "mesh":
             response["mesh_validation"] = mesh_validation
         elif domain == "meshpart":

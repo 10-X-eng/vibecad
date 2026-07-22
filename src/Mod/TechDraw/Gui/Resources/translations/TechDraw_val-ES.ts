@@ -124,24 +124,7 @@
       <translation>Insereix Anotació</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1640"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1641"/>
-      <source>Insert BIM Workbench Object</source>
-      <translation type="unfinished">Insert BIM Workbench Object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1642"/>
-      <source>Insert a View of a Section Plane from BIM Workbench</source>
-      <translation type="unfinished">Insert a View of a Section Plane from BIM Workbench</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -1933,15 +1916,6 @@ Left clicking on empty space will validate the current Dimension. Right clicking
       <translation>Insereix vista</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="304"/>
-      <source>Insert a View in current page.
-Selected objects, spreadsheets or Arch WB section planes will be added.
-Without a selection, a file browser lets you select a SVG or image file.</source>
-      <translation type="unfinished">Insert a View in current page.
-Selected objects, spreadsheets or Arch WB section planes will be added.
-Without a selection, a file browser lets you select a SVG or image file.</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="430"/>
       <source>If you want to insert a view from existing objects, please select them before invoking this tool. Without a selection, a file browser will open, to insert a SVG or image file.</source>
       <translation type="unfinished">If you want to insert a view from existing objects, please select them before invoking this tool. Without a selection, a file browser will open, to insert a SVG or image file.</translation>
@@ -1972,11 +1946,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="195"/>
       <source>Drawing create page</source>
       <translation type="unfinished">Drawing create page</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="364"/>
-      <source>Create BIM View</source>
-      <translation type="unfinished">Create BIM View</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="489"/>
@@ -2023,11 +1992,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="1613"/>
       <source>Create DraftView</source>
       <translation type="unfinished">Create DraftView</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1687"/>
-      <source>Create ArchView</source>
-      <translation type="unfinished">Create ArchView</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="346"/>
@@ -2983,16 +2947,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <translation type="unfinished">No profile object found in selection</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1669"/>
-      <source>Please select only 1 BIM Section.</source>
-      <translation type="unfinished">Please select only 1 BIM Section.</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1675"/>
-      <source>No BIM Sections in selection.</source>
-      <translation type="unfinished">No BIM Sections in selection.</translation>
-    </message>
-    <message>
       <location filename="../../CommandDecorate.cpp" line="370"/>
       <location filename="../../CommandDecorate.cpp" line="377"/>
       <location filename="../../CommandDecorate.cpp" line="384"/>
@@ -3106,11 +3060,6 @@ Without a selection, a file browser lets you select a SVG or image file.</transl
       <location filename="../../Command.cpp" line="1836"/>
       <source>Can not export selection</source>
       <translation>No es pot exportar la selecció</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1837"/>
-      <source>Page contains DrawViewArch which will not be exported. Continue?</source>
-      <translation>La pàgina conté DrawViewArch que no s'exportaran. Voleu continuar?</translation>
     </message>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="2432"/>
@@ -4865,11 +4814,11 @@ Then you need to increase the tile limit.</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawAnnotation.ui" line="682"/>
       <source>Shape of line end caps.  The default (round) should almost
-always be the right choice.   Flat or square caps are useful 
+always be the right choice.   Flat or square caps are useful
 if you are planning to use a drawing as a 1:1 cutting guide.
 </source>
       <translation type="unfinished">Shape of line end caps.  The default (round) should almost
-always be the right choice.   Flat or square caps are useful 
+always be the right choice.   Flat or square caps are useful
 if you are planning to use a drawing as a 1:1 cutting guide.
 </translation>
     </message>
@@ -9243,14 +9192,7 @@ there is an open task dialog.</translation>
       <translation>Símbol</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="68"/>
-      <source>Arch</source>
-      <translation>Arquitectura</translation>
-    </message>
-  </context>
+
   <context>
     <name>DrawViewDraft</name>
     <message>

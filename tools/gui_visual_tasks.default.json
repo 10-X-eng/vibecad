@@ -84,7 +84,7 @@
     },
     {
       "name": "draft-edit-rectangle",
-      "coverage": ["draft-bim-panel"],
+      "coverage": ["draft-panel"],
       "workbench": "DraftWorkbench",
       "file": "data/examples/draft_test_objects.FCStd",
       "select_object": "Rectangle",
@@ -95,33 +95,10 @@
       "close_after_capture": true
     },
     {
-      "name": "bim-edit-window",
-      "coverage": ["draft-bim-panel"],
-      "workbench": "BIMWorkbench",
-      "file": "data/examples/BIMExample.FCStd",
-      "edit_object": "Window",
-      "required_widget_class_contains": ["Gui::TaskView::TaskBox"],
-      "capture": "main_window",
-      "wait_ms": 1800,
-      "close_after_capture": true
-    },
-    {
       "name": "techdraw-edit-page",
       "coverage": ["techdraw-page-view"],
       "workbench": "TechDrawWorkbench",
-      "file": "data/examples/ArchDetail.FCStd",
-      "edit_object": "Page",
-      "required_widget_class_contains": ["TechDrawGui::QGVPage"],
-      "capture": "main_window",
-      "wait_ms": 1800,
-      "close_after_capture": true
-    },
-    {
-      "name": "techdraw-edit-draft-view",
-      "coverage": ["techdraw-page-view"],
-      "workbench": "TechDrawWorkbench",
-      "file": "data/examples/ArchDetail.FCStd",
-      "edit_object": "DraftView",
+      "python": "doc = App.newDocument('GuiVisualTechDraw')\npage = doc.addObject('TechDraw::DrawPage', 'Page')\ndoc.recompute()\nGui.ActiveDocument.setEdit(page.Name)",
       "required_widget_class_contains": ["TechDrawGui::QGVPage"],
       "capture": "main_window",
       "wait_ms": 1800,

@@ -1471,7 +1471,7 @@ will automatically align with the current view whenever a command is started.
 Additionally it will align to preselected planar faces, or when points on planar
 faces are picked during commands.</source>
       <translation>Privzeta delovna ravnina novih pogledov. Če je nastavljena na "Samodejno",
-bo delovna ravnina samodejno prilagojena trenutnemu pogledu ob vsakem 
+bo delovna ravnina samodejno prilagojena trenutnemu pogledu ob vsakem
 začetem ukazu. Dodatno se bo prilagajala predizbranim ravninskim ploskvam
 oz. med ukazi izbranim točkam, ki so v ravnini.</translation>
     </message>
@@ -1519,7 +1519,7 @@ V tem primeru je tudi mogoče predmete samodejno dodati skupinam.</translation>
       <source>If checked, Draft commands will create Part primitives instead of Draft objects.
 Note that this is not fully supported, and many objects will not be editable with
 Draft modification commands.</source>
-      <translation>Če je označeno, bodo z izrisovalnimi orodji namesto izrisnih (Draft) predmetov 
+      <translation>Če je označeno, bodo z izrisovalnimi orodji namesto izrisnih (Draft) predmetov
 ustvarjeni delovi (Part) osnovniki. Vedite, da ta možnost ni popolnoma podprta
 in da številnih predmetov ne bo mogoče urejati s Preoblikovalniki izrisa.</translation>
     </message>
@@ -1696,7 +1696,7 @@ This allows indicating a direction and then type a distance.</translation>
       <location filename="../ui/preferences-draftvisual.ui" line="75"/>
       <source>An optional directory with custom SVG files containing
 pattern definitions to be added to the standard patterns</source>
-      <translation>Neobvezna mapo z datotekami SVG po meri, ki vsebujejo vzorce, 
+      <translation>Neobvezna mapo z datotekami SVG po meri, ki vsebujejo vzorce,
 kateri bodo dodani med stalne vzorce</translation>
     </message>
     <message>
@@ -2652,7 +2652,7 @@ ki v spodnjem levem vogalu prikazuje velikost glavnega polja</translation>
       <location filename="../ui/preferences-draftsnap.ui" line="112"/>
       <source>If checked, the two main axes of the grid are colored red, green or blue
 if they match the X, Y or Z axis of the global coordinate system</source>
-      <translation>Če je označno, se glavni osi na mreži, v primeru, da se ujemata z osmi 
+      <translation>Če je označno, se glavni osi na mreži, v primeru, da se ujemata z osmi
 občega koordinatnega sistema, obarvajo rdeče, zeleno ali modro</translation>
     </message>
     <message>
@@ -3259,7 +3259,7 @@ občega koordinatnega sistema, obarvajo rdeče, zeleno ali modro</translation>
       <location filename="../../DraftGui.py" line="721"/>
       <source>Coordinates relative to last point or to coordinate system origin
 if is the first point to set</source>
-      <translation>Sorednice (koordinate) odnosno na zadnjo točko ali na 
+      <translation>Sorednice (koordinate) odnosno na zadnjo točko ali na
 izhodišče koordinatnega sistema, če je treba določiti prvo točko</translation>
     </message>
     <message>
@@ -7030,9 +7030,9 @@ vklopite, če želite združevanje oz. izklopite, če želite sestavljanje</tran
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Končni kot loka (za poln krog je 
+      <translation>Končni kot loka (za poln krog je
                 vrednost enaka začetnemu kotu)</translation>
     </message>
     <message>
@@ -7176,7 +7176,7 @@ If 'Custom' is chosen, the points of the leader can be specified by
 assigning a custom list to the 'Points' attribute.</source>
       <translation>Smer ravnega odseka opisnice.
 
-Če je izbrana "Po meri", lahko točke opisnice določite 
+Če je izbrana "Po meri", lahko točke opisnice določite
 v značilki "Točke" kot seznam točk po meri.</translation>
     </message>
     <message>
@@ -7216,30 +7216,11 @@ Ta lastnost je le za branje, saj je besedilo odvisno od
 "Besedilo po meri" je prikazano le, če je "Vrsta oznake" nastavljena na "Po meri".</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation type="unfinished">The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
-    </message>
-    <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
-      <translation>Obči količnik velikosti, ki vpliva enotno na pripise, 
+      <translation>Obči količnik velikosti, ki vpliva enotno na pripise,
 ker v enakem razmerju prevelikosti besedilo in črtne olepšave,
 če obstajajo.</translation>
     </message>
@@ -7517,11 +7498,6 @@ Ta lastnost je le za branje, saj je število odvisno od števila točk v "Točko
       <translation>Prikaži skrite črte</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Zlij steno s konstrukcijskimi predmeti enake vrste in snovi</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Razdeli elipse in B-zlepke na črtne odseke</translation>
@@ -7623,10 +7599,10 @@ Ta lastnost je le za branje, saj je število odvisno od števila točk v "Točko
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Končni kot eliptičnega loka 
+      <translation>Končni kot eliptičnega loka
                 (za sklenjeno elipso mora vrednost biti enaka začetnemu kotu)</translation>
     </message>
     <message>
@@ -8350,11 +8326,6 @@ However, a single sketch with disconnected traces is converted into several indi
       <source>Auto-Group</source>
       <translation type="unfinished">Auto-Group</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation type="unfinished">Adds new Draft and BIM objects to the selected layer or group</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8714,11 +8685,6 @@ The initial projection direction is the opposite of the current active view dire
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation type="unfinished">Snap Center</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation type="unfinished">Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</translation>
     </message>
   </context>
   <context>

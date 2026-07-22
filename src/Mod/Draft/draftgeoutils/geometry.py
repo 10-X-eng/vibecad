@@ -687,7 +687,7 @@ def placement_from_face(face, vec_z=App.Vector(0, 0, 1), rotated=False, tol=-1):
         Defaults to `False`.
         If `False` the v vector of the face defines the Y axis of the placement.
         If `True` the -v vector of the face defines the Z axis of the placement
-        (used by Arch_Window).
+        This alternate orientation is useful for vertically oriented profiles.
         The u vector defines the X axis in both cases.
     tol: float, optional
         Defaults to -1.

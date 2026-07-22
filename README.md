@@ -163,10 +163,10 @@ Native and VibeScript authoring tools are never combined, and tools from differe
 
 Scripted engines keep source, inputs, diagnostics, revisions, and accepted outputs with the project. VibeScript runs in an isolated windowless worker and publishes only validated results. The **Model Code Editor** lists programs for the active workbench domain and opens with no program selected.
 
-All 18 supported user-workbench VibeScript interfaces are production-ready:
+All 17 supported user-workbench VibeScript interfaces are production-ready:
 Part Design, Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material,
-BIM, Mesh, MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM,
-and TechDraw. Every domain, including Part Design, exposes the same five
+Mesh, MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM, and
+TechDraw. Every domain, including Part Design, exposes the same five
 provider-facing mutation tools plus the shared `core.inspect` read interface.
 API inspection and program source contain only that workbench's canonical
 runtime operations and typed outputs.
@@ -174,7 +174,7 @@ runtime operations and typed outputs.
 Geometry, solver, mesh, reconstruction, projection, and toolpath work runs in
 the isolated worker. The live document receives only independently validated,
 precomputed native state under stable program/output identities. This includes
-native sketches and Draft/BIM proxies, Assembly links and joints, sheets and
+native sketches and Draft proxies, Assembly links and joints, sheets and
 material assignments, meshes and point clouds, reconstruction and inspection
 records, Robot trajectories, FEM analyses/results, Path jobs/toolpaths, and
 TechDraw pages/views/dimensions. Failed candidates remain inspectable without
@@ -219,6 +219,10 @@ The local server must already be running and expose an OpenAI-compatible API. So
 VibeCAD is under active development. The current focus is reliable, readable AI-assisted part design with explicit human control over the document, workbench, modeling engine, and design direction.
 
 Release packaging details are documented in [docs/vibecad-release-packaging.md](docs/vibecad-release-packaging.md).
+
+The removed BIM and architectural surface, existing-document behavior, and
+rollback path are documented in
+[docs/bim-architecture-removal.md](docs/bim-architecture-removal.md).
 
 ## Credits
 

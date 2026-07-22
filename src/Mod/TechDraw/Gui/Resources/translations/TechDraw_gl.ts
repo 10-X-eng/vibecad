@@ -124,24 +124,7 @@
       <translation>Insire apuntamento</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1417"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1418"/>
-      <source>Insert Arch Workbench Object</source>
-      <translation type="unfinished">Insert Arch Workbench Object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1419"/>
-      <source>Insert a View of a Section Plane from Arch Workbench</source>
-      <translation type="unfinished">Insert a View of a Section Plane from Arch Workbench</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -1986,11 +1969,6 @@
       <translation type="unfinished">Create DraftView</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1464"/>
-      <source>Create ArchView</source>
-      <translation type="unfinished">Create ArchView</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1514"/>
       <source>Create spreadsheet view</source>
       <translation type="unfinished">Create spreadsheet view</translation>
@@ -2849,16 +2827,6 @@
       <translation>Escolma canda menos un obxecto.</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1446"/>
-      <source>Please select only 1 Arch Section.</source>
-      <translation type="unfinished">Please select only 1 Arch Section.</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1452"/>
-      <source>No Arch Sections in selection.</source>
-      <translation type="unfinished">No Arch Sections in selection.</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1503"/>
       <source>Select exactly one Spreadsheet object.</source>
       <translation>Escolme só un obxecto Folla de cálculo.</translation>
@@ -2877,11 +2845,6 @@
       <location filename="../../Command.cpp" line="1613"/>
       <source>Can not export selection</source>
       <translation type="unfinished">Can not export selection</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1614"/>
-      <source>Page contains DrawViewArch which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains DrawViewArch which will not be exported. Continue?</translation>
     </message>
     <message>
       <location filename="../../CommandCreateDims.cpp" line="212"/>
@@ -4625,11 +4588,11 @@ when hatching a face with a PAT pattern</translation>
     <message>
       <location filename="../../DlgPrefsTechDrawAnnotation.ui" line="843"/>
       <source>Shape of line end caps.  The default (round) should almost
-always be the right choice.   Flat or square caps are useful 
+always be the right choice.   Flat or square caps are useful
 if you are planning to use a drawing as a 1:1 cutting guide.
 </source>
       <translation type="unfinished">Shape of line end caps.  The default (round) should almost
-always be the right choice.   Flat or square caps are useful 
+always be the right choice.   Flat or square caps are useful
 if you are planning to use a drawing as a 1:1 cutting guide.
 </translation>
     </message>
@@ -4839,10 +4802,10 @@ if you are planning to use a drawing as a 1:1 cutting guide.
     </message>
     <message>
       <location filename="../../DlgPrefsTechDrawColors.ui" line="84"/>
-      <source>If checked FreeCAD will use a single color for all text and lines. 
+      <source>If checked FreeCAD will use a single color for all text and lines.
 
 </source>
-      <translation type="unfinished">If checked FreeCAD will use a single color for all text and lines. 
+      <translation type="unfinished">If checked FreeCAD will use a single color for all text and lines.
 
 </translation>
     </message>
@@ -5024,18 +4987,18 @@ Multiplier of &apos;Font Size&apos;</translation>
     </message>
     <message>
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="527"/>
-      <source>Controls the size of gap between dimension point and start of extension line for ISO dimensions. 
-Value * linewidth is the gap. 
+      <source>Controls the size of gap between dimension point and start of extension line for ISO dimensions.
+Value * linewidth is the gap.
 Normally, no gap is used. If using a gap, the recommended value 8.</source>
-      <translation type="unfinished">Controls the size of gap between dimension point and start of extension line for ISO dimensions. 
-Value * linewidth is the gap. 
+      <translation type="unfinished">Controls the size of gap between dimension point and start of extension line for ISO dimensions.
+Value * linewidth is the gap.
 Normally, no gap is used. If using a gap, the recommended value 8.</translation>
     </message>
     <message>
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="548"/>
-      <source>Controls the size of gap between dimension point and start of extension line for ASME dimensions. Value * linewidth is the gap. 
+      <source>Controls the size of gap between dimension point and start of extension line for ASME dimensions. Value * linewidth is the gap.
 Normally, no gap is used. If a gap is used, the recommended value is 6.</source>
-      <translation type="unfinished">Controls the size of gap between dimension point and start of extension line for ASME dimensions. Value * linewidth is the gap. 
+      <translation type="unfinished">Controls the size of gap between dimension point and start of extension line for ASME dimensions. Value * linewidth is the gap.
 Normally, no gap is used. If a gap is used, the recommended value is 6.</translation>
     </message>
     <message>
@@ -8863,14 +8826,7 @@ there is an open task dialog.</translation>
       <translation type="unfinished">Symbol</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="66"/>
-      <source>Arch</source>
-      <translation>Arquitectura</translation>
-    </message>
-  </context>
+
   <context>
     <name>DrawViewDraft</name>
     <message>

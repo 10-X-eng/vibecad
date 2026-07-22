@@ -495,7 +495,7 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
     // Canonical status-bar order (slot + order). Items always appear in this fixed
     // sequence regardless of the order they register at runtime. The menu uses the
     // same order. Workbenches use the 550-699 band so they land just left of the
-    // Bottom Panel Toggle; see also Draft/BIM/Tux and ToolBarManager::setupStatusBar.
+    // Bottom Panel Toggle; see also Draft/Tux and ToolBarManager::setupStatusBar.
     //   Left : Preselection(0), Progress(50), Input Hints(100)
     //   Right: Quick Measure(400), ToolBarArea(500), [workbench 550-699],
     //          Bottom Panel Toggle(700), Notifications(800), Navigation Styles(900),

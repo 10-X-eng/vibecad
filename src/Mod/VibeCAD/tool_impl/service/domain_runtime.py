@@ -1207,11 +1207,6 @@ def cam_summary(service: Any, job_name: str | None = None) -> dict[str, Any]:
     }
 
 
-def bim_summary(service: Any) -> dict[str, Any]:
-    objects = [service._bim_object_summary(obj) for obj in service._bim_objects()]
-    return {"object_count": len(objects), "objects": objects}
-
-
 def assembly_summary(service: Any) -> dict[str, Any]:
     doc = service._active_document()
     assemblies = [service._assembly_summary(obj) for obj in service._assembly_objects()]

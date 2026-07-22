@@ -1627,6 +1627,7 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     }
 
     long lastId = 0;
+    bool warnedRemovedArchitecture = false;
     for (int i = 0; i < Cnt; i++) {
         reader.readElement("Object");
         std::string type = reader.getAttribute<const char*>("type");
@@ -1705,6 +1706,14 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
         }
         catch (const Base::Exception& e) {
             Base::Console().error("Cannot create object '%s': (%s)\n", name.c_str(), e.what());
+            if (!warnedRemovedArchitecture && type == "TechDraw::DrawViewArch") {
+                warnedRemovedArchitecture = true;
+                Base::Console().warning(
+                    "This document contains an architectural TechDraw view whose type has been "
+                    "removed. The document is unsupported and may be incomplete; close it without "
+                    "saving and use an earlier release to export neutral geometry.\n"
+                );
+            }
         }
     }
     if (!testStatus(Status::Importing)) {

@@ -241,9 +241,7 @@ def build_report(
                     "newly_runnable_count"
                 ),
                 "startup_report": summary.get("freecad_startup_smoke", {}).get("report"),
-                "ifcopenshell_version": summary.get("freecad_startup_smoke", {}).get(
-                    "ifcopenshell_version"
-                ),
+                "freecad_version": summary.get("freecad_startup_smoke", {}).get("freecad_version"),
             },
             gate_blockers(core),
         ),

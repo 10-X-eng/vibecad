@@ -170,41 +170,6 @@
       Type: 'Float'
       URL: 'https://en.wikipedia.org/wiki/Permeability_(electromagnetism)'
       Description: "The ratio to the permeability of the vacuum"
-- Architectural:
-    Color:
-      Type:  'String'
-      URL: ''
-      Description: " "
-    EnvironmentalEfficiencyClass:
-      Type: 'String'
-      URL: ''
-      Description: " "
-    ExecutionInstructions:
-      Type: 'String'
-      URL: ''
-      Description: " "
-    Finish:
-      Type: 'String'
-      URL: ''
-      Description: " "
-    FireResistanceClass:
-      Type: 'String'
-      URL: ''
-      Description: " "
-    Model:
-      Type: 'String'
-      URL: ''
-      Description: " "
-    SoundTransmissionClass:
-      URL: ''
-      Description: " "
-      Type: 'String'
-      URL: ''
-      Description: " "
-    UnitsPerQuantity:
-      Type: 'Float'
-      URL: ''
-      Description: " "
 - Rendering:
     AmbientColor:
       Type: 'Color'

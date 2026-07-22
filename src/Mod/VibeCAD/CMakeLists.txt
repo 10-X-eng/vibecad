@@ -14,6 +14,7 @@ set(VibeCAD_Scripts
     VibeCADGeometry.py
     VibeCADGui.py
     VibeCADInspection.py
+    VibeCADLegacyArchitecture.py
     VibeCADIntentMemory.py
     VibeCADIntentMemoryCompiler.py
     VibeCADModelingSurface.py
@@ -54,8 +55,6 @@ set(VibeCAD_Scripts
     vibescript_spreadsheet_worker.py
     vibescript_material_api.py
     vibescript_material_worker.py
-    vibescript_bim_api.py
-    vibescript_bim_worker.py
     vibescript_mesh_api.py
     vibescript_mesh_worker.py
     vibescript_meshpart_api.py

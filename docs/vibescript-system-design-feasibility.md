@@ -32,8 +32,8 @@ exposed only after its real native worker, validator, publisher, persistence
 lifecycle, save/reopen behavior, diagnostics, and integration tests pass the
 production-readiness gate.
 
-All 18 supported user-workbench domains currently pass that gate: Part Design,
-Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material, BIM, Mesh,
+All 17 supported user-workbench domains currently pass that gate: Part Design,
+Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material, Mesh,
 MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM, and
 TechDraw. `NoneWorkbench`, `TestWorkbench`, unknown workbenches, and any future
 domain without a complete implementation still resolve to a precise core-only
@@ -337,7 +337,6 @@ reads artifacts on the document thread.
 | Assembly | `assembly` | `assembly`, `component_link`, `joint`, `solver_diagnostics`, `motion`, `simulation`, `exploded_view`, `bom` | Production-ready for rigid and authenticated flexible hierarchies, worker-generated kinematics, native exploded views, and native frozen BOMs |
 | Spreadsheet | `spreadsheet` | `sheet` | Production-ready |
 | Material | `material` | `material_assignment`, `appearance` | Production-ready |
-| BIM | `bim` | `site`, `building`, `level`, `wall`, `slab`, `structure`, `opening` | Production-ready |
 | Mesh | `mesh` | `mesh` | Production-ready |
 | MeshPart | `meshpart` | `mesh`, `solid`, `shell`, `face`, `wire`, `compound` | Production-ready |
 | Points | `points` | `points` | Production-ready |
@@ -347,9 +346,6 @@ reads artifacts on the document thread.
 | FEM | `fem` | `analysis`, `solver`, `material`, `constraint`, `load_case`, `mesh`, `result` | Production-ready |
 | CAM | `cam` | `job`, `stock`, `tool`, `operation`, `toolpath` | Production-ready |
 | TechDraw | `techdraw` | `page`, `template`, `view`, `projection`, `dimension`, `annotation` | Production-ready |
-
-BIM follows the same production gate as every other domain and has no special
-opt-in preference. No domain pack is selected on startup surfaces.
 
 Every domain publisher must use the corresponding native FreeCAD object types
 rather than generic stand-ins: `Sketcher::SketchObject`,
@@ -558,47 +554,6 @@ FreeCAD transaction rollback is incomplete. Retiring or deleting an output
 restores its original target state without opening the catalog. The provider
 context contains a bounded path-free catalog index and bounded target capability,
 current-card, display-state, and exact-display-mode records.
-
-### BIM production contract
-
-The BIM domain exports exactly `site`, `building`, `level`, `wall`, `slab`,
-`structure`, and `opening`. Calls create immutable graph values with explicit
-parent identities: Site contains Building, Building contains Building Storey,
-the Storey contains walls, slabs, and structures, and every opening names one
-host wall. Every referenced graph node must also be returned as a declared
-stable output. Wall and slab profiles reject duplicate or self-intersecting
-segments, structure dimensions are strictly positive, and hosted openings must
-fit one wall segment and cannot overlap another opening on that segment.
-
-The isolated `FreeCADCmd` worker reconstructs the graph through the exported
-API and creates real `ArchSite._Site`, `ArchBuildingPart.BuildingPart`,
-`ArchWall._Wall`, `ArchStructure._Structure`, and `ArchWindow._Window` proxies.
-Wall and slab profiles are real Draft Wires. The worker recomputes the hierarchy,
-cuts openings, checks native TypeId, proxy, Draft type and IFC type, verifies
-solid and opening-cut volumes, and exports detached primary and profile BREPs.
-The host independently canonicalizes the graph and validates every artifact,
-placement, topology fact, volume, hierarchy link, and bounded global diagnostic
-before document-thread publication.
-
-Publication creates the same native proxy classes without recompute, transfers
-only detached validated Shapes, and updates stable program/output identities in
-place. Wall, slab, and opening profiles have stable hidden managed identities.
-Managed `Group`, `Base`, and `Hosts` links are exact while human-created members
-inside a managed spatial group are retained. Compatible whole-object consumers
-survive regeneration; foreign transient subelement consumers block mutation.
-Because FreeCAD transaction abort does not reliably restore assigned Shapes or
-deleted Python proxies, BIM captures the complete accepted assigned state before
-mutation. Failed publication explicitly restores and verifies Shapes,
-placements, dimensions, profiles, hierarchy links, hosts, metadata, and accepted
-revision. Failed deletion recreates any already removed native proxy under its
-stable name and restores the same verified state before returning the error.
-
-`core.inspect` domain scope returns a bounded native BIM inventory with exact
-native, proxy, Draft and IFC types; placements and editable dimensions; Base, Group,
-parent-group and Hosts links; and managed-program identities. It never recomputes
-or generates topology. BIM has no separate preference or opt-in: selecting the
-global VibeScript engine in BIM resolves directly to these five mutation tools
-and the shared inspector.
 
 ### Mesh production contract
 
@@ -912,9 +867,9 @@ stale, and reject unmanaged subelement references before mutation.
 
 ## Verification
 
-Automated contracts cover the complete 18-workbench resolver matrix and assert
+Automated contracts cover the complete 17-workbench resolver matrix and assert
 that only production-ready packs expose authoring tools. They also cover exact
-single-domain schemas, removal of the BIM opt-in, unsupported startup surfaces,
+single-domain schemas, unsupported startup surfaces,
 Part Design schema digests, v1 migration, source/input policy, subscription
 snapshot integrity, and duplicate/mixed/stale call rejection.
 
@@ -928,7 +883,7 @@ Qt event-loop heartbeat executes every production domain worker while all
 subprocess waits remain on a background thread. Its substantial cases include
 Part booleans/lofts, a 120-geometry Sketcher solve, a 1,200-instance Draft array,
 Surface interpolation, an 800-cell Spreadsheet batch, native Material catalog
-hashing, BIM opening cuts, a 9,800-facet Mesh repair, Mefisto conversion, a
+hashing, a 9,800-facet Mesh repair, Mefisto conversion, a
 40,000-point pipeline, reconstruction and inspection fitting, Robot simulation,
 FEM deck generation, CAM generation/simulation/postprocessing, six-direction
 TechDraw projection with dimension evaluation, and a native Assembly solve.
@@ -1004,18 +959,6 @@ stable references, and published-interface hints. Its native BOM path verifies
 built-in/property/custom columns, hierarchy controls, quantity aggregation,
 copy-ready row overrides, authenticated literal cells, stable identity,
 save/reopen, and deletion without live auto-generation.
-
-The BIM integration creates a native Site, Building, Building Storey, Wall,
-Slab, Column, and hosted Opening Element plus stable Draft/profile bases. It
-checks exact native/proxy/Draft/IFC contracts, hierarchy and host links, opening
-volume subtraction, failed-candidate retention, in-place input regeneration,
-foreign group-member preservation, bounded on-demand inspection, and stable
-whole-object consumers. Injected mid-publication and mid-deletion failures prove
-explicit state restoration after native mutation. The accepted hierarchy is
-then saved, closed, reopened, recomputed, reference-guarded, and deleted. The Qt
-heartbeat includes the same native BIM worker path and remains responsive while
-Arch recompute, opening cuts, validation, and BREP transfer run outside the GUI
-thread.
 
 The Mesh integration exercises explicit API signatures and bounds, quaternion
 normalization, bounded self-intersection detail, hole filling, native repair,

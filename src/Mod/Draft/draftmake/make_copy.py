@@ -85,7 +85,7 @@ def make_copy(obj, force=None, reparent=False, simple_copy=False):
                 if par.isDerivedFrom("App::DocumentObjectGroup") or par.isDerivedFrom("App::Part"):
                     par.addObject(newobj)
                 else:
-                    # That's the case of Arch_BuildingParts or Draft_Layers for example
+                    # That's the case of Draft Layers, for example.
                     if "Group" in par.PropertiesList:
                         if obj in par.Group:
                             group = par.Group

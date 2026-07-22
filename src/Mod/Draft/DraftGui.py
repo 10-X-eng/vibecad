@@ -2135,12 +2135,12 @@ class FacebinderTaskPanel:
         # buttons
         self.addButton = QtWidgets.QPushButton(self.form)
         self.addButton.setObjectName("addButton")
-        self.addButton.setIcon(QtGui.QIcon(":/icons/Arch_Add.svg"))
+        self.addButton.setIcon(QtGui.QIcon(":/icons/list-add.svg"))
         self.grid.addWidget(self.addButton, 3, 0, 1, 1)
 
         self.delButton = QtWidgets.QPushButton(self.form)
         self.delButton.setObjectName("delButton")
-        self.delButton.setIcon(QtGui.QIcon(":/icons/Arch_Remove.svg"))
+        self.delButton.setIcon(QtGui.QIcon(":/icons/list-remove.svg"))
         self.grid.addWidget(self.delButton, 3, 1, 1, 1)
 
         self.addButton.clicked.connect(self.addElement)

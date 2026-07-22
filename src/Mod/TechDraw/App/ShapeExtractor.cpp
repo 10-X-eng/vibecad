@@ -315,7 +315,7 @@ std::vector<TopoDS_Shape> ShapeExtractor::getShapesFromObject(const App::Documen
                 result.insert(result.end(), shapes.begin(), shapes.end());
             }
         }
-    //the next 2 bits are mostly for Arch module objects
+    // Support generic Python/group objects that expose Group or Shape properties.
     } else if (gProp) {       //has a Group property
         App::PropertyLinkList* list = dynamic_cast<App::PropertyLinkList*>(gProp);
         if (list) {
@@ -491,5 +491,4 @@ bool ShapeExtractor::checkShape(const App::DocumentObject* shapeObj, TopoDS_Shap
     }
     return true;
 }
-
 

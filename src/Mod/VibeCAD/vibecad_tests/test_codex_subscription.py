@@ -92,10 +92,10 @@ def test_turn_start_surface_preserves_pure_vibescript_behavior() -> None:
 
 
 def test_turn_start_surface_accepts_native_tools_without_a_scripted_engine() -> None:
-    schemas = [_tool_schema("core.inspect"), _tool_schema("bim.create_wall")]
-    surface = session._turn_start_tool_surface("BIMWorkbench", schemas)
+    schemas = [_tool_schema("core.inspect"), _tool_schema("draft.create_wire")]
+    surface = session._turn_start_tool_surface("DraftWorkbench", schemas)
     assert surface["engine"] == "native"
-    assert surface["tool_names"] == ["core.inspect", "bim.create_wall"]
+    assert surface["tool_names"] == ["core.inspect", "draft.create_wire"]
 
 
 def test_turn_start_surface_rejects_multiple_scripted_engines() -> None:

@@ -37,7 +37,6 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
         "AssemblyWorkbench",
         "SpreadsheetWorkbench",
         "MaterialWorkbench",
-        "BIMWorkbench",
         "MeshWorkbench",
         "MeshPartWorkbench",
         "PointsWorkbench",
@@ -52,7 +51,7 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
 
 
 def test_complete_native_and_vibescript_surface_matrix() -> None:
-    assert len(USER_WORKBENCHES) == 18
+    assert len(USER_WORKBENCHES) == 17
     observed_ready = set()
     for workbench in USER_WORKBENCHES:
         native_pack = WORKBENCH_TOOL_PACKS[workbench]
@@ -1897,183 +1896,6 @@ def test_assembly_occurrence_global_placement_failure_is_never_silently_local() 
     assert "same stable occurrence_path" in failure.value.details["correction"]
 
 
-def test_bim_api_is_explicit_hierarchical_and_generated_from_runtime() -> None:
-    from vibescript_domain_api import create_domain_api
-
-    pack = domains.get_vibescript_pack("BIMWorkbench")
-    assert pack is not None
-    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
-    adapter = domains.get_domain_adapter(pack.domain)
-    assert adapter is not None
-    description = adapter.describe_api()
-
-    assert description["api_contract"] == "vibecad-vibescript-bim-api-v1"
-    assert tuple(api.exported_names) == pack.api_exports
-    assert [item["name"] for item in description["runtime_exports"]] == list(
-        pack.api_exports
-    )
-    assert all(item["description"] for item in description["runtime_exports"])
-    assert all(
-        "*args" not in item["signature"] and "**properties" not in item["signature"]
-        for item in description["runtime_exports"]
-    )
-    assert set(description["native_object_contracts"]) == set(pack.output_types)
-    selection = description["operation_selection"]
-    assert selection["continuous_wall_run"].startswith("api.wall")
-    assert selection["rectangular_structural_member"].startswith("api.structure")
-    assert "single canonical selector" in selection["rectangular_structural_member"]
-    assert "not a visible door" in selection["hosted_wall_void"]
-    assert "seven exports are distinct" in selection["redundancy_contract"]
-    assert description["composition_contract"]["construction_order"][-1].startswith(
-        "Return every graph node once"
-    )
-    assert "read-only" in description["domain_context"]["document_bim_objects"]
-    assert (
-        "next_write_expected_revision"
-        in description["model_verification_contract"]["failure_repair"]
-    )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
-    assert "door/window fills" in description["capability_boundary"]["not_yet_exposed"]
-    assert (
-        len(
-            json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        )
-        < 32_000
-    )
-    for pattern in description["recommended_patterns"]:
-        domains.validate_program_source(pattern["source"])
-
-    site = api.site(city="Chicago", latitude=41.8781, longitude=-87.6298)
-    building = api.building(site)
-    level = api.level(building, 0, height=3200)
-    wall = api.wall(level, [[0, 0], [6000, 0]], width=250, height=3000)
-    slab = api.slab(
-        level,
-        [[0, 0], [6000, 0], [6000, 4000], [0, 4000]],
-        thickness=250,
-    )
-    column = api.structure(level, 350, 350, 3000, role="column")
-    opening = api.opening(wall, 1200, 1500, offset=1200, sill=900)
-
-    values = (site, building, level, wall, slab, column, opening)
-    assert [value.output_type for value in values] == list(pack.output_types)
-    assert [value.properties["graph_id"] for value in values] == [
-        f"bim{index}" for index in range(1, 8)
-    ]
-    assert opening.arguments[0] is wall
-    assert wall.arguments[0] is level
-    with pytest.raises(TypeError):
-        wall.properties["width"] = 1
-
-
-def test_bim_api_rejects_invalid_hierarchy_geometry_and_opening_fit() -> None:
-    from vibescript_domain_api import create_domain_api
-    from vibescript_bim_worker import BIMCandidateError, validate_bim_graph
-
-    pack = domains.get_vibescript_pack("BIMWorkbench")
-    assert pack is not None
-    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
-    site = api.site()
-    building = api.building(site)
-    level = api.level(building, 0, height=3000)
-    wall = api.wall(level, [[0, 0], [4000, 0]], width=200, height=2800)
-
-    with pytest.raises(ValueError, match=r"api\.building.*BIM site") as source_failure:
-        api.building(level)
-    assert source_failure.value.details["stage"] == "source_validation"
-    assert source_failure.value.details["operation"] == "building"
-    assert source_failure.value.details["parameter"] == "site"
-    assert (
-        "Change only the failing source expression"
-        in source_failure.value.details["correction"]
-    )
-    with pytest.raises(ValueError, match=r"api\.wall.*segments 0 and 2 intersect"):
-        api.wall(level, [[0, 0], [4, 4], [0, 4], [4, 0]], closed=True)
-    with pytest.raises(ValueError, match=r"api\.slab.*non-zero planar area"):
-        api.slab(level, [[0, 0], [1, 0], [2, 0]])
-    with pytest.raises(ValueError, match=r"api\.structure.*greater than 0"):
-        api.structure(level, 0, 1, 1)
-    with pytest.raises(ValueError, match=r"api\.opening.*segment.*inclusive range"):
-        api.opening(wall, 1, 1, segment=-1)
-
-    expected_outputs = [
-        {"name": "Site", "type": "site"},
-        {"name": "Building", "type": "building"},
-        {"name": "Level", "type": "level"},
-        {"name": "Wall", "type": "wall"},
-        {"name": "Opening", "type": "opening"},
-    ]
-
-    def validate_opening(opening) -> None:
-        validate_bim_graph(
-            {
-                "Site": site,
-                "Building": building,
-                "Level": level,
-                "Wall": wall,
-                "Opening": opening,
-            },
-            expected_outputs,
-            require_domain_values=True,
-        )
-
-    with pytest.raises(
-        BIMCandidateError, match=r"extends beyond wall segment"
-    ) as fit_failure:
-        validate_opening(api.opening(wall, 3900, 100, offset=200))
-    assert fit_failure.value.details["stage"] == "opening_fit"
-    assert "adjust offset/width" in fit_failure.value.details["correction"]
-    with pytest.raises(BIMCandidateError, match=r"extends above wall"):
-        validate_opening(api.opening(wall, 100, 2500, sill=500))
-
-    first = api.opening(wall, 100, 100, offset=100)
-    touching = api.opening(wall, 100, 100, offset=200)
-    pair_outputs = [
-        *expected_outputs[:-1],
-        {"name": "First", "type": "opening"},
-        {"name": "Second", "type": "opening"},
-    ]
-    pair_result = {
-        "Site": site,
-        "Building": building,
-        "Level": level,
-        "Wall": wall,
-        "First": first,
-        "Second": touching,
-    }
-    assert validate_bim_graph(
-        pair_result,
-        pair_outputs,
-        require_domain_values=True,
-    )["ordered_names"][-2:] == ["First", "Second"]
-    overlapping = api.opening(wall, 100, 100, offset=199.5)
-    with pytest.raises(BIMCandidateError, match=r"overlap on wall segment"):
-        validate_bim_graph(
-            {**pair_result, "Second": overlapping},
-            pair_outputs,
-            require_domain_values=True,
-        )
-
-
-def test_bim_worker_errors_always_provide_one_model_repair() -> None:
-    from vibescript_bim_worker import BIMCandidateError
-
-    failure = BIMCandidateError(
-        "Malformed graph.",
-        details={"stage": "graph_contract", "path": "result['Wall']"},
-    )
-    assert "result['Wall']" in failure.details["correction"]
-    assert "never construct, copy, or mutate" in failure.details["correction"]
-
-    explicit = BIMCandidateError(
-        "Worker storage unavailable.",
-        details={"stage": "artifact_export", "correction": "Repair fixture storage."},
-    )
-    assert explicit.details["correction"] == "Repair fixture storage."
-
-
 def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     from vibescript_domain_api import create_domain_api
     from vibescript_mesh_worker import validate_mesh_definition
@@ -2770,45 +2592,6 @@ def test_material_document_thread_boundary_never_opens_catalog_or_recomputes() -
     assert "native_material" in validation_source
 
 
-def test_bim_document_thread_boundary_only_applies_validated_native_state() -> None:
-    import VibeCADVibeScriptDomainPublication as publication
-    import VibeCADVibeScriptDomainRuntime as runtime
-
-    document_thread_sources = (
-        inspect.getsource(publication._create_bim_object),
-        inspect.getsource(publication._create_bim_base_named),
-        inspect.getsource(publication._configure_bim_base),
-        inspect.getsource(publication._configure_bim),
-        inspect.getsource(publication._restore_bim_rollback_states),
-    )
-    for source in document_thread_sources:
-        for forbidden in (
-            ".execute(",
-            ".recompute(",
-            "subprocess",
-            ".wait(",
-            "read_text(",
-            "write_text(",
-            "exportBrep(",
-            "importBrep(",
-            "makeBox(",
-            "makePolygon(",
-            "makeCompound(",
-            ".cut(",
-            ".fuse(",
-            ".solve(",
-        ):
-            assert forbidden not in source
-    assert "detached_shape" in document_thread_sources[3]
-    assert "detached_bim_base_shape" in inspect.getsource(
-        publication._configure_bim_base
-    )
-
-    worker_validation_source = inspect.getsource(runtime._validate_bim_execution)
-    assert "detached_shape" in worker_validation_source
-    assert "_bim_import_base_artifact" in worker_validation_source
-
-
 def test_mesh_document_thread_boundary_only_assigns_detached_native_state() -> None:
     import VibeCADVibeScriptDomainPublication as publication
     import VibeCADVibeScriptDomainRuntime as runtime
@@ -3361,14 +3144,6 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
             {
                 "vibescript_material_api.py",
                 "vibescript_material_worker.py",
-            },
-        ),
-        (
-            "bim",
-            {
-                "vibescript_bim_api.py",
-                "vibescript_bim_worker.py",
-                "vibescript_part_worker.py",
             },
         ),
         ("mesh", {"vibescript_mesh_api.py", "vibescript_mesh_worker.py"}),

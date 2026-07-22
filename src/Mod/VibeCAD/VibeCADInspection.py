@@ -21,7 +21,6 @@ _HEAVY_PROPERTIES = frozenset({"Mesh", "Points", "Proxy", "Shape", "ViewObject"}
 
 _NATIVE_DOMAIN_READ_ALIASES: dict[str, tuple[str, dict[str, Any]]] = {
     "AssemblyWorkbench": ("assembly.list_structure", {}),
-    "BIMWorkbench": ("bim.list_structure", {}),
     "CAMWorkbench": ("cam.list_jobs", {}),
     "DraftWorkbench": ("draft.list_objects", {}),
     "FemWorkbench": ("fem.list_analysis", {}),

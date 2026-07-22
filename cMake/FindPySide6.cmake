@@ -38,9 +38,6 @@ if(PySide6_FOUND)
     endif()
 
     set(_pyside6_qtsvgwidgets_consumers)
-    if(BUILD_BIM)
-        list(APPEND _pyside6_qtsvgwidgets_consumers BUILD_BIM)
-    endif()
     if(BUILD_MATERIAL)
         list(APPEND _pyside6_qtsvgwidgets_consumers BUILD_MATERIAL)
     endif()
@@ -60,7 +57,7 @@ if(PySide6_FOUND)
 " --------------------------------------------------------
  PySide6.QtSvgWidgets Python module not found.
  This configuration enables modules that require it: ${_pyside6_qtsvgwidgets_consumer_list}
- BIM and Material use it for SVG previews.
+ Material uses it for SVG previews.
  Install python3-pyside6.qtsvgwidgets or provide a PySide6 installation
  that includes QtSvgWidgets.
  Python executable: ${Python3_EXECUTABLE}

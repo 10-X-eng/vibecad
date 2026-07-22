@@ -122,24 +122,7 @@
       <translation>தற்போதைய பக்கத்தில் திருத்தக்கூடிய உரைத் தொகுதி சிறுகுறிப்பைச் செருகும்</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>டெக் டிரா</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIM காட்சி</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>BIM பிரிவு விமானத்தின் காட்சியைச் செருகுகிறது</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -379,8 +362,8 @@
       <source>Inserts new contextual dimensions to the selection.
 Depending on your selection you might have several dimensions available. You can cycle through them using the M key.
 Left clicking on empty space will validate the current dimension. Right clicking or pressing Esc will cancel.</source>
-      <translation>தேர்வில் புதிய சூழல் பரிமாணங்களைச் செருகுகிறது. 
-உங்கள் தேர்வைப் பொறுத்து பல பரிமாணங்கள் கிடைக்கலாம். M விசையைப் பயன்படுத்தி நீங்கள் அவற்றைச் சுழற்றலாம். 
+      <translation>தேர்வில் புதிய சூழல் பரிமாணங்களைச் செருகுகிறது.
+உங்கள் தேர்வைப் பொறுத்து பல பரிமாணங்கள் கிடைக்கலாம். M விசையைப் பயன்படுத்தி நீங்கள் அவற்றைச் சுழற்றலாம்.
 வெறுமை இடத்தில் இடது சொடுக்கு செய்தால் தற்போதைய பரிமாணத்தை சரிபார்க்கும். வலது சொடுக்கு அல்லது தப்பி அழுத்தினால் ரத்து செய்யப்படும்.</translation>
     </message>
   </context>
@@ -2104,7 +2087,7 @@ Left clicking on empty space will validate the current dimension. Right clicking
       <location filename="../../Command.cpp" line="300"/>
       <source>Inserts a new view into the current page based on the selected object in the tree view or 3D view.
 If no object is selected, a file browser opens to select an SVG or image file.</source>
-      <translation>ட்ரீ வியூ அல்லது 3டி பார்வையில் தேர்ந்தெடுக்கப்பட்ட பொருளின் அடிப்படையில் தற்போதைய பக்கத்தில் புதிய காட்சியைச் செருகும். 
+      <translation>ட்ரீ வியூ அல்லது 3டி பார்வையில் தேர்ந்தெடுக்கப்பட்ட பொருளின் அடிப்படையில் தற்போதைய பக்கத்தில் புதிய காட்சியைச் செருகும்.
 எந்த பொருளும் தேர்ந்தெடுக்கப்படவில்லை என்றால், SVG அல்லது படக் கோப்பைத் தேர்ந்தெடுக்க கோப்பு உலாவி திறக்கும்.</translation>
     </message>
   </context>
@@ -2133,12 +2116,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="193"/>
       <source>Drawing create page</source>
       <translation>வரைதல் பக்கத்தை உருவாக்குதல்</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIM காட்சியை உருவாக்கவும்</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="488"/>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>ஒரு கிளிப் குழுவையும் ஒரு பார்வையையும் தேர்ந்தெடுக்கவும்</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>பக்கம் ஏற்றுமதி செய்யப்படாத BIM காட்சியைக் கொண்டுள்ளது. தொடரவா?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>குறைந்தபட்சம் ஒரு பொருளைத் தேர்ந்தெடுக்கவும்</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>1 BIM பிரிவு விமானத்தை மட்டும் தேர்ந்தெடுக்கவும்</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>தேர்வில் BIM பிரிவு வானூர்தி இல்லை</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4303,7 +4265,7 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../ViewProviderLeader.cpp" line="209"/>
       <source>You cannot delete this leader line because
 it has a weld symbol that would become broken.</source>
-      <translation>ஏனெனில் இந்த லீடர் லைனை உங்களால் நீக்க முடியாது 
+      <translation>ஏனெனில் இந்த லீடர் லைனை உங்களால் நீக்க முடியாது
 அது உடைந்து போகும் ஒரு வெல்ட் அடையாளம் உள்ளது.</translation>
     </message>
     <message>
@@ -4356,21 +4318,21 @@ it has a weld symbol that would become broken.</source>
       <location filename="../../ViewProviderPage.cpp" line="211"/>
       <source>The page is not empty, therefore the
 following referencing objects might be lost:</source>
-      <translation>பக்கம் காலியாக இல்லை, எனவே தி 
+      <translation>பக்கம் காலியாக இல்லை, எனவே தி
 பின்வரும் குறிப்பு பொருள்கள் இழக்கப்படலாம்:</translation>
     </message>
     <message>
       <location filename="../../ViewProviderProjGroup.cpp" line="139"/>
       <source>The group cannot be deleted because its items have the following
 section or detail views, or leader lines that would get broken:</source>
-      <translation>குழுவை நீக்க முடியாது, ஏனெனில் அதன் உருப்படிகள் பின்வருவனவற்றைக் கொண்டுள்ளன 
+      <translation>குழுவை நீக்க முடியாது, ஏனெனில் அதன் உருப்படிகள் பின்வருவனவற்றைக் கொண்டுள்ளன
 பிரிவு அல்லது விவரக் காட்சிகள் அல்லது லீடர் கோடுகள் உடைந்து போகும்:</translation>
     </message>
     <message>
       <location filename="../../ViewProviderProjGroup.cpp" line="154"/>
       <source>The projection group is not empty, therefore
 the following referencing objects might be lost:</source>
-      <translation>எனவே, திட்டக் குழு காலியாக இல்லை 
+      <translation>எனவே, திட்டக் குழு காலியாக இல்லை
 பின்வரும் குறிப்பு பொருள்கள் இழக்கப்படலாம்:</translation>
     </message>
     <message>
@@ -4382,7 +4344,7 @@ the following referencing objects might be lost:</source>
       <location filename="../../ViewProviderWeld.cpp" line="140"/>
       <source>You cannot delete this weld symbol because
 it has a tile weld that would become broken.</source>
-      <translation>நீங்கள் இந்த வெல்ட் சின்னத்தை நீக்க முடியாது ஏனெனில் 
+      <translation>நீங்கள் இந்த வெல்ட் சின்னத்தை நீக்க முடியாது ஏனெனில்
 அதில் ஒரு ஓடு வெல்ட் உள்ளது, அது உடைந்து விடும்.</translation>
     </message>
   </context>
@@ -4489,14 +4451,14 @@ it has a tile weld that would become broken.</source>
       <location filename="../../TaskWeldingSymbol.ui" line="42"/>
       <source>Text above arrow side symbol
 Angle, surface finish, root</source>
-      <translation>அம்புக்குறி பக்க சின்னத்தின் மேல் உரை 
+      <translation>அம்புக்குறி பக்க சின்னத்தின் மேல் உரை
 கோணம், மேற்பரப்பு பூச்சு, வேர்</translation>
     </message>
     <message>
       <location filename="../../TaskWeldingSymbol.ui" line="50"/>
       <source>Text before arrow side symbol
 Preparation depth, (weld size)</source>
-      <translation>அம்புக்குறி பக்க சின்னத்திற்கு முன் உரை 
+      <translation>அம்புக்குறி பக்க சின்னத்திற்கு முன் உரை
 தயாரிப்பு ஆழம், (வெல்ட் அளவு)</translation>
     </message>
     <message>
@@ -4514,14 +4476,14 @@ Preparation depth, (weld size)</source>
       <location filename="../../TaskWeldingSymbol.ui" line="92"/>
       <source>Text after arrow side symbol
 Number of welds × length, (gap)</source>
-      <translation>அம்புக்குறியின் பக்கச் சின்னத்திற்குப் பின் உரை 
+      <translation>அம்புக்குறியின் பக்கச் சின்னத்திற்குப் பின் உரை
 வெல்ட்களின் எண்ணிக்கை × நீளம், (இடைவெளி)</translation>
     </message>
     <message>
       <location filename="../../TaskWeldingSymbol.ui" line="121"/>
       <source>Text before other side symbol
 Preparation depth, (weld size)</source>
-      <translation>மறுபக்க சின்னத்திற்கு முன் உரை 
+      <translation>மறுபக்க சின்னத்திற்கு முன் உரை
 தயாரிப்பு ஆழம், (வெல்ட் அளவு)</translation>
     </message>
     <message>
@@ -4533,7 +4495,7 @@ Preparation depth, (weld size)</source>
       <location filename="../../TaskWeldingSymbol.ui" line="171"/>
       <source>Text after other side symbol
 Number of welds × length, (gap)</source>
-      <translation>மறுபக்க சின்னத்திற்குப் பிறகு உரை 
+      <translation>மறுபக்க சின்னத்திற்குப் பிறகு உரை
 வெல்ட்களின் எண்ணிக்கை × நீளம், (இடைவெளி)</translation>
     </message>
     <message>
@@ -4550,7 +4512,7 @@ Number of welds × length, (gap)</source>
       <location filename="../../TaskWeldingSymbol.ui" line="163"/>
       <source>Text below arrow side symbol
 Angle, surface finish, root</source>
-      <translation>அம்புக்குறி பக்க சின்னத்திற்கு கீழே உரை 
+      <translation>அம்புக்குறி பக்க சின்னத்திற்கு கீழே உரை
 கோணம், மேற்பரப்பு பூச்சு, வேர்</translation>
     </message>
     <message>
@@ -4567,7 +4529,7 @@ Angle, surface finish, root</source>
       <location filename="../../TaskWeldingSymbol.ui" line="241"/>
       <source>Adds the &apos;Field weld&apos; symbol (flag)
 at the kink in the leader line</source>
-      <translation>&apos;ஃபீல்ட் வெல்ட்&apos; சின்னத்தை (கொடி) சேர்க்கிறது 
+      <translation>&apos;ஃபீல்ட் வெல்ட்&apos; சின்னத்தை (கொடி) சேர்க்கிறது
 தலைவர் வரிசையில் கின்க்கில்</translation>
     </message>
     <message>
@@ -4579,7 +4541,7 @@ at the kink in the leader line</source>
       <location filename="../../TaskWeldingSymbol.ui" line="252"/>
       <source>Adds the &apos;All around&apos; symbol (circle)
 at the kink in the leader line</source>
-      <translation>&apos;அனைத்தும்&apos; சின்னத்தைச் சேர்க்கிறது (வட்டம்) 
+      <translation>&apos;அனைத்தும்&apos; சின்னத்தைச் சேர்க்கிறது (வட்டம்)
 தலைவர் வரிசையில் கின்க்கில்</translation>
     </message>
     <message>
@@ -4616,7 +4578,7 @@ at the kink in the leader line</source>
       <location filename="../../TaskWeldingSymbol.ui" line="304"/>
       <source>Directory path for welding symbols.
 This directory will be used for the symbol selection.</source>
-      <translation>வெல்டிங் சின்னங்களுக்கான அடைவு பாதை. 
+      <translation>வெல்டிங் சின்னங்களுக்கான அடைவு பாதை.
 இந்த அடைவு அடையாளம் தேர்வுக்கு பயன்படுத்தப்படும்.</translation>
     </message>
   </context>
@@ -4692,9 +4654,9 @@ This directory will be used for the symbol selection.</source>
 line segments returned by the hidden line removal algorithm.
 Faces must be detected in order to use hatching, but there
 can be a performance penalty in complex models.</source>
-      <translation>சரிபார்க்கப்பட்டால், TechDraw ஐப் பயன்படுத்தி முகங்களை உருவாக்க முயற்சிக்கும் 
-மறைக்கப்பட்ட வரி அகற்றும் வழிமுறையால் வரிப் பகுதிகள் திரும்பப் பெறப்பட்டன. 
-குஞ்சு பொரிப்பதைப் பயன்படுத்த முகங்கள் கண்டறியப்பட வேண்டும், ஆனால் அங்கே 
+      <translation>சரிபார்க்கப்பட்டால், TechDraw ஐப் பயன்படுத்தி முகங்களை உருவாக்க முயற்சிக்கும்
+மறைக்கப்பட்ட வரி அகற்றும் வழிமுறையால் வரிப் பகுதிகள் திரும்பப் பெறப்பட்டன.
+குஞ்சு பொரிப்பதைப் பயன்படுத்த முகங்கள் கண்டறியப்பட வேண்டும், ஆனால் அங்கே
 சிக்கலான மாதிரிகளில் செயல்திறன் அபராதமாக இருக்கலாம்.</translation>
     </message>
     <message>
@@ -4761,7 +4723,7 @@ can be a performance penalty in complex models.</source>
       <location filename="../../DlgPrefsTechDrawAdvanced.ui" line="421"/>
       <source>Size of selection area around edges
 Each unit is approximately 0.1mm wide</source>
-      <translation>விளிம்புகளைச் சுற்றியுள்ள தேர்வுப் பகுதியின் அளவு 
+      <translation>விளிம்புகளைச் சுற்றியுள்ள தேர்வுப் பகுதியின் அளவு
 ஒவ்வொரு அலகும் தோராயமாக 0.1மிமீ அகலம் கொண்டது</translation>
     </message>
     <message>
@@ -4779,8 +4741,8 @@ Each unit is approximately 0.1mm wide</source>
       <source>Limits the number of 64×64 pixel SVG tiles used to hatch a single face.
 For large scales, errors may occur due to excessive tiling.
 Increase the limit if necessary.</source>
-      <translation>ஒரு முகத்தை அடைக்கப் பயன்படுத்தப்படும் 64×64 படப்புள்ளி SVG டைல்களின் எண்ணிக்கையைக் கட்டுப்படுத்துகிறது. 
-பெரிய செதில்களுக்கு, அதிகப்படியான டைலிங் காரணமாக பிழைகள் ஏற்படலாம். 
+      <translation>ஒரு முகத்தை அடைக்கப் பயன்படுத்தப்படும் 64×64 படப்புள்ளி SVG டைல்களின் எண்ணிக்கையைக் கட்டுப்படுத்துகிறது.
+பெரிய செதில்களுக்கு, அதிகப்படியான டைலிங் காரணமாக பிழைகள் ஏற்படலாம்.
 தேவைப்பட்டால் வரம்பை அதிகரிக்கவும்.</translation>
     </message>
     <message>
@@ -4844,14 +4806,14 @@ Increase the limit if necessary.</source>
       <location filename="../../DlgPrefsTechDrawAdvanced.ui" line="373"/>
       <source>Selection area around center marks
 Each unit is approx. 0.1 mm wide</source>
-      <translation>மையக் குறிகளைச் சுற்றியுள்ள பகுதிகளைத் தேர்ந்தெடுக்கவும் 
+      <translation>மையக் குறிகளைச் சுற்றியுள்ள பகுதிகளைத் தேர்ந்தெடுக்கவும்
 ஒவ்வொரு அலகு சுமார். 0.1 மிமீ அகலம்</translation>
     </message>
     <message>
       <location filename="../../DlgPrefsTechDrawAdvanced.ui" line="282"/>
       <source>Maximum hatch line segments to use
 when hatching a face with a PAT pattern</source>
-      <translation>பயன்படுத்த வேண்டிய அதிகபட்ச அட்ச் லைன் பிரிவுகள் 
+      <translation>பயன்படுத்த வேண்டிய அதிகபட்ச அட்ச் லைன் பிரிவுகள்
 PAT வடிவத்துடன் முகத்தை குஞ்சு பொரிக்கும் போது</translation>
     </message>
     <message>
@@ -5059,8 +5021,8 @@ PAT வடிவத்துடன் முகத்தை குஞ்சு �
 always be the right choice.  Flat or square caps are useful
 for using drawings as a 1:1 cutting guide.
 </source>
-      <translation>வரி முனை தொப்பிகளின் வடிவம். இயல்புநிலை (சுற்று) கிட்டத்தட்ட இருக்க வேண்டும் 
-எப்போதும் சரியான தேர்வாக இருக்கும். பிளாட் அல்லது சதுர தொப்பிகள் பயனுள்ளதாக இருக்கும் 
+      <translation>வரி முனை தொப்பிகளின் வடிவம். இயல்புநிலை (சுற்று) கிட்டத்தட்ட இருக்க வேண்டும்
+எப்போதும் சரியான தேர்வாக இருக்கும். பிளாட் அல்லது சதுர தொப்பிகள் பயனுள்ளதாக இருக்கும்
 1:1 வெட்டு வழிகாட்டியாக வரைபடங்களைப் பயன்படுத்துவதற்கு.
 </translation>
     </message>
@@ -5526,7 +5488,7 @@ for using drawings as a 1:1 cutting guide.
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="257"/>
       <source>Tolerance text scale
 Multiplier of &apos;Font size&apos;</source>
-      <translation>சகிப்புத்தன்மை உரை அளவுகோல் 
+      <translation>சகிப்புத்தன்மை உரை அளவுகோல்
 &apos;எழுத்துரு அளவு&apos; இன் பெருக்கல்</translation>
     </message>
     <message>
@@ -5587,7 +5549,7 @@ Multiplier of &apos;Font size&apos;</source>
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="466"/>
       <source>Controls the gap size between the dimension point and the start of the extension line for ASME dimensions. Value multiplied by the line width is the gap.
  Normally, no gap is used. If using a gap, the recommended value is 6.</source>
-      <translation>ASME பரிமாணங்களுக்கான பரிமாணப் புள்ளிக்கும் நீட்டிப்புக் கோட்டின் தொடக்கத்திற்கும் இடையே உள்ள இடைவெளி அளவைக் கட்டுப்படுத்துகிறது. வரி அகலத்தால் பெருக்கப்படும் மதிப்பு இடைவெளி. 
+      <translation>ASME பரிமாணங்களுக்கான பரிமாணப் புள்ளிக்கும் நீட்டிப்புக் கோட்டின் தொடக்கத்திற்கும் இடையே உள்ள இடைவெளி அளவைக் கட்டுப்படுத்துகிறது. வரி அகலத்தால் பெருக்கப்படும் மதிப்பு இடைவெளி.
 பொதுவாக, எந்த இடைவெளியும் பயன்படுத்தப்படாது. இடைவெளியைப் பயன்படுத்தினால், பரிந்துரைக்கப்படும் மதிப்பு 6 ஆகும்.</translation>
     </message>
     <message>
@@ -5599,7 +5561,7 @@ Multiplier of &apos;Font size&apos;</source>
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="498"/>
       <source>Controls the gap size between dimension line and dimension text.
  Value multiplied by the line width is the line spacing.</source>
-      <translation>பரிமாணக் கோட்டிற்கும் பரிமாண உரைக்கும் இடையே உள்ள இடைவெளி அளவைக் கட்டுப்படுத்துகிறது. 
+      <translation>பரிமாணக் கோட்டிற்கும் பரிமாண உரைக்கும் இடையே உள்ள இடைவெளி அளவைக் கட்டுப்படுத்துகிறது.
 வரி அகலத்தால் பெருக்கப்படும் மதிப்பு வரி இடைவெளி.</translation>
     </message>
     <message>
@@ -5614,10 +5576,10 @@ Multiplier of &apos;Font size&apos;</source>
 ‘Separated tools’ displays individual tools for each dimension type.
 ‘Both’ enables both the unified tool and the individual tools.
 This affects only the toolbar; all tools remain available via the menu and shortcuts.</source>
-      <translation>கருவிப்பட்டியில் காட்டப்பட்டுள்ள பரிமாணக் கருவிகளின் வகையைத் தேர்ந்தெடுக்கவும்: 
+      <translation>கருவிப்பட்டியில் காட்டப்பட்டுள்ள பரிமாணக் கருவிகளின் வகையைத் தேர்ந்தெடுக்கவும்:
 அனைத்து பரிமாண வகைகளுக்கும் (தூரம், எக்ச்/ஒய், கோணம், ஆரம்) மற்றவற்றுடன் கீழ்தோன்றும் ஒரு ஒருங்கிணைந்த கருவியை ‘ஒற்றை கருவி’ வழங்குகிறது.
- &apos;பிரிக்கப்பட்ட கருவிகள்&apos; ஒவ்வொரு பரிமாண வகைக்கும் தனிப்பட்ட கருவிகளைக் காட்டுகிறது. 
-&apos;இரண்டும்&apos; ஒருங்கிணைந்த கருவி மற்றும் தனிப்பட்ட கருவிகள் இரண்டையும் செயல்படுத்துகிறது. 
+ &apos;பிரிக்கப்பட்ட கருவிகள்&apos; ஒவ்வொரு பரிமாண வகைக்கும் தனிப்பட்ட கருவிகளைக் காட்டுகிறது.
+&apos;இரண்டும்&apos; ஒருங்கிணைந்த கருவி மற்றும் தனிப்பட்ட கருவிகள் இரண்டையும் செயல்படுத்துகிறது.
 இது கருவிப்பட்டியை மட்டுமே பாதிக்கிறது; அனைத்தும் கருவிகள் remain available வழிமம் the பட்டியல் and shortcuts.</translation>
     </message>
     <message>
@@ -5632,7 +5594,7 @@ This affects only the toolbar; all tools remain available via the menu and short
 &apos;Diameter&apos;: The tool will apply diameter to all.
 &apos;Radius&apos;: The tool will apply radius to all.</source>
       <translation>While using the dimension கருவி you சி-வைகாசி choose how பெறுநர் கைப்பிடி circles and arcs:
- &apos;ஆட்டோ&apos;: கருவி வளைவுகளுக்கு ஆரம் மற்றும் வட்டங்களுக்கு விட்டம் ஆகியவற்றைப் பயன்படுத்தும். 
+ &apos;ஆட்டோ&apos;: கருவி வளைவுகளுக்கு ஆரம் மற்றும் வட்டங்களுக்கு விட்டம் ஆகியவற்றைப் பயன்படுத்தும்.
 &apos;Diameter&apos;: The கருவி will இடு விட்டம் பெறுநர் all.
  &apos;ஆரம்&apos;: கருவி அனைத்துக்கும் ஆரம் பொருந்தும்.</translation>
     </message>
@@ -5728,7 +5690,7 @@ This affects only the toolbar; all tools remain available via the menu and short
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="105"/>
       <source>Keep drawing pages in sync with changes of 3D model in real time.
 This can slow down the response time.</source>
-      <translation>நிகழ்நேரத்தில் 3D மாதிரியின் மாற்றங்களுடன் ஒத்திசைவில் பக்கங்களை வரையவும். 
+      <translation>நிகழ்நேரத்தில் 3D மாதிரியின் மாற்றங்களுடன் ஒத்திசைவில் பக்கங்களை வரையவும்.
 This can slow down the response time.</translation>
     </message>
     <message>
@@ -5818,7 +5780,7 @@ for ProjectionGroups</source>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="74"/>
       <source>Controls whether or not a page&apos;s &apos;Keep Updated&apos; property
 can override the global &apos;Update with 3D&apos; parameter</source>
-      <translation>ஒரு பக்கத்தின் &apos;புதுப்பித்த நிலையில் வைத்திரு&apos; பண்பைக் கட்டுப்படுத்துகிறது 
+      <translation>ஒரு பக்கத்தின் &apos;புதுப்பித்த நிலையில் வைத்திரு&apos; பண்பைக் கட்டுப்படுத்துகிறது
 உலகளாவிய &apos;3D உடன் புதுப்பித்தல்&apos; அளவுருவை மேலெழுத முடியும்</translation>
     </message>
     <message>
@@ -5840,7 +5802,7 @@ can override the global &apos;Update with 3D&apos; parameter</source>
       <location filename="../../DlgPrefsTechDrawGeneral.ui" line="181"/>
       <source>* This font is also used for dimensions.
    Changes have no effect on existing dimensions.</source>
-      <translation>* இந்த எழுத்துரு பரிமாணங்களுக்கும் பயன்படுத்தப்படுகிறது. 
+      <translation>* இந்த எழுத்துரு பரிமாணங்களுக்கும் பயன்படுத்தப்படுகிறது.
 Changes have இல்லை விளைவு on existing dimensions.</translation>
     </message>
     <message>
@@ -6085,7 +6047,7 @@ Changes have இல்லை விளைவு on existing dimensions.</transla
       <location filename="../../DlgPrefsTechDrawHLR.ui" line="66"/>
       <source>Use an approximation to find hidden lines.
 Fast, but result is a collection of short straight lines.</source>
-      <translation>மறைக்கப்பட்ட வரிகளைக் கண்டறிய தோராயத்தைப் பயன்படுத்தவும். 
+      <translation>மறைக்கப்பட்ட வரிகளைக் கண்டறிய தோராயத்தைப் பயன்படுத்தவும்.
 வேகமானது, ஆனால் இதன் விளைவாக குறுகிய நேர்கோடுகளின் தொகுப்பாகும்.</translation>
     </message>
     <message>
@@ -6343,7 +6305,7 @@ Fast, but result is a collection of short straight lines.</source>
       <location filename="../../MDIViewPage.cpp" line="429"/>
       <source>The printer uses a different orientation than the drawing.
 Do you want to continue?</source>
-      <translation>அச்சுப்பொறி வரைபடத்தை விட வேறுபட்ட நோக்குநிலையைப் பயன்படுத்துகிறது. 
+      <translation>அச்சுப்பொறி வரைபடத்தை விட வேறுபட்ட நோக்குநிலையைப் பயன்படுத்துகிறது.
 தொடர வேண்டுமா?</translation>
     </message>
     <message>
@@ -6609,8 +6571,8 @@ Do you want to continue?</source>
          - Points: equidistant from both points
          </source>
       <translation>
-இடையே மையக்கோடு: 
-- கோடுகள்: இரண்டு கோடுகளிலிருந்தும் சம தூரம் மற்றும் அவற்றுக்கிடையே பாதி கோணத்தில் 
+இடையே மையக்கோடு:
+- கோடுகள்: இரண்டு கோடுகளிலிருந்தும் சம தூரம் மற்றும் அவற்றுக்கிடையே பாதி கோணத்தில்
 - புள்ளிகள்: இரண்டு புள்ளிகளிலிருந்தும் சம தூரம்</translation>
     </message>
     <message>
@@ -7303,9 +7265,9 @@ Do you want to continue?</source>
 Automatic: if the detail view is larger than the page,
                    it will be scaled down to fit into the page
 Custom: custom scale factor is used</source>
-      <translation>பக்கம்: பக்கத்தின் அளவுகோல் பயன்படுத்தப்படுகிறது 
-தானியங்கு: விவரக் காட்சி பக்கத்தை விட பெரியதாக இருந்தால், 
-பக்கத்திற்கு பொருந்தும் வகையில் அது குறைக்கப்படும் 
+      <translation>பக்கம்: பக்கத்தின் அளவுகோல் பயன்படுத்தப்படுகிறது
+தானியங்கு: விவரக் காட்சி பக்கத்தை விட பெரியதாக இருந்தால்,
+பக்கத்திற்கு பொருந்தும் வகையில் அது குறைக்கப்படும்
 தனிப்பயன்: தனிப்பயன் அளவு காரணி பயன்படுத்தப்படுகிறது</translation>
     </message>
     <message>
@@ -7407,8 +7369,8 @@ Custom: custom scale factor is used</source>
       <source>Overtolerance value
 If &apos;Equal tolerance&apos; is checked this is also
 the negated value for &apos;Undertolerance&apos;.</source>
-      <translation>அதிகப்படியான சகிப்புத்தன்மை மதிப்பு 
-&apos;சம சகிப்புத்தன்மை&apos; சரிபார்க்கப்பட்டால், இதுவும் 
+      <translation>அதிகப்படியான சகிப்புத்தன்மை மதிப்பு
+&apos;சம சகிப்புத்தன்மை&apos; சரிபார்க்கப்பட்டால், இதுவும்
 சகிப்புத்தன்மையின்மை&apos;க்கான நிராகரிக்கப்பட்ட மதிப்பு.</translation>
     </message>
     <message>
@@ -7421,8 +7383,8 @@ the negated value for &apos;Undertolerance&apos;.</source>
       <source>Undertolerance value
 If &apos;Equal tolerance&apos; is checked it will be replaced
 by negative value of &apos;Overtolerance&apos;.</source>
-      <translation>சகிப்புத்தன்மை மதிப்பு 
-&apos;சம சகிப்புத்தன்மை&apos; சரிபார்க்கப்பட்டால் அது மாற்றப்படும் 
+      <translation>சகிப்புத்தன்மை மதிப்பு
+&apos;சம சகிப்புத்தன்மை&apos; சரிபார்க்கப்பட்டால் அது மாற்றப்படும்
 &apos;அதிக சகிப்புத்தன்மை&apos;யின் எதிர்மறை மதிப்பு.</translation>
     </message>
     <message>
@@ -7764,8 +7726,8 @@ by negative value of &apos;Overtolerance&apos;.</source>
       <source>First pick the start point of the line,
 then at least one more point.
 You can pick further points to get line segments.</source>
-      <translation>முதலில் வரியின் தொடக்கப் புள்ளியைத் தேர்ந்தெடுக்கவும். 
-பின்னர் குறைந்தது ஒரு புள்ளி. 
+      <translation>முதலில் வரியின் தொடக்கப் புள்ளியைத் தேர்ந்தெடுக்கவும்.
+பின்னர் குறைந்தது ஒரு புள்ளி.
 வரிப் பிரிவுகளைப் பெற நீங்கள் மேலும் புள்ளிகளைத் தேர்ந்தெடுக்கலாம்.</translation>
     </message>
     <message>
@@ -8180,7 +8142,7 @@ You can pick further points to get line segments.</source>
       <location filename="../../TaskProjGroup.ui" line="583"/>
       <source>Distributes projections automatically
 using the given X/Y spacings</source>
-      <translation>கணிப்புகளை தானாக விநியோகிக்கிறது 
+      <translation>கணிப்புகளை தானாக விநியோகிக்கிறது
 கொடுக்கப்பட்ட X/Y இடைவெளிகளைப் பயன்படுத்தி</translation>
     </message>
     <message>
@@ -9231,7 +9193,7 @@ using the given X/Y spacings</source>
       <location filename="../../ViewProviderBalloon.cpp" line="187"/>
       <source>You cannot delete this balloon now because
 there is an open task dialog.</source>
-      <translation>இந்த பலூனை நீங்கள் இப்போது நீக்க முடியாது ஏனெனில் 
+      <translation>இந்த பலூனை நீங்கள் இப்போது நீக்க முடியாது ஏனெனில்
 ஒரு திறந்த பணி உரையாடல் உள்ளது.</translation>
     </message>
     <message>
@@ -9909,7 +9871,7 @@ there is an open task dialog.</source>
       <location filename="../../ViewProviderDimension.cpp" line="326"/>
       <source>You cannot delete this dimension now because
 there is an open task dialog.</source>
-      <translation>இந்த பரிமாணத்தை உங்களால் இப்போது நீக்க முடியாது ஏனெனில் 
+      <translation>இந்த பரிமாணத்தை உங்களால் இப்போது நீக்க முடியாது ஏனெனில்
 ஒரு திறந்த பணி உரையாடல் உள்ளது.</translation>
     </message>
     <message>
@@ -10064,14 +10026,7 @@ there is an open task dialog.</source>
       <translation>வரி</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

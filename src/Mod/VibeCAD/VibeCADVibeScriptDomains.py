@@ -39,8 +39,6 @@ MAX_DRAFT_CONTEXT_POINTS = 128
 MAX_SPREADSHEET_CONTEXT_SHEETS = 32
 MAX_SPREADSHEET_CONTEXT_CELLS = 128
 MAX_MATERIAL_CONTEXT_TARGETS = 512
-MAX_BIM_CONTEXT_OBJECTS = 256
-MAX_BIM_CONTEXT_RELATIONSHIPS = 64
 MAX_MESH_CONTEXT_OBJECTS = 128
 MAX_POINTS_CONTEXT_OBJECTS = 128
 MAX_POINTS_CONTEXT_SAMPLE = 8
@@ -375,15 +373,6 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "Resolve material cards and keep physical assignments distinct from "
         "display-only appearance.",
         ("material", "assign", "appearance"),
-        production_ready=True,
-    ),
-    "BIMWorkbench": _pack(
-        "BIMWorkbench",
-        "bim",
-        "BIM",
-        ("site", "building", "level", "wall", "slab", "structure", "opening"),
-        "Define native BIM, Draft, and Arch objects with explicit spatial and host relationships.",
-        ("site", "building", "level", "wall", "slab", "structure", "opening"),
         production_ready=True,
     ),
     "MeshWorkbench": _pack(
@@ -1414,126 +1403,6 @@ def _material_document_snapshot(doc: Any) -> dict[str, Any]:
         "targets_truncated": len(capable) > len(targets),
         "targets_omitted": max(0, len(capable) - len(targets)),
         "targets": targets,
-    }
-
-
-def _bim_document_snapshot(doc: Any) -> dict[str, Any]:
-    """Capture bounded native hierarchy and editable BIM properties without recompute."""
-
-    try:
-        from draftutils.utils import get_type
-    except Exception:
-        get_type = lambda _obj: ""  # noqa: E731
-    supported = {"Site", "BuildingPart", "Wall", "Structure", "Window"}
-    all_objects: list[tuple[Any, str]] = []
-    for obj in list(getattr(doc, "Objects", []) or []):
-        try:
-            arch_type = str(get_type(obj) or "")
-        except Exception:
-            arch_type = ""
-        if arch_type in supported and str(getattr(obj, "IfcType", "") or "") in {
-            "Site",
-            "Building",
-            "Building Storey",
-            "Wall",
-            "Slab",
-            "Column",
-            "Beam",
-            "Member",
-            "Opening Element",
-        }:
-            all_objects.append((obj, arch_type))
-    captured = []
-    for obj, arch_type in all_objects[:MAX_BIM_CONTEXT_OBJECTS]:
-        placement = getattr(obj, "Placement", None)
-        position = getattr(placement, "Base", None)
-        rotation = getattr(placement, "Rotation", None)
-        group = list(getattr(obj, "Group", []) or [])
-        hosts = list(getattr(obj, "Hosts", []) or [])
-        parents = [
-            parent
-            for parent in list(getattr(obj, "InList", []) or [])
-            if hasattr(parent, "Group")
-            and obj in list(getattr(parent, "Group", []) or [])
-        ]
-        base = getattr(obj, "Base", None) if hasattr(obj, "Base") else None
-        item: dict[str, Any] = {
-            "name": str(getattr(obj, "Name", "") or ""),
-            "label": str(getattr(obj, "Label", "") or ""),
-            "type_id": str(getattr(obj, "TypeId", "") or ""),
-            "proxy_class": type(getattr(obj, "Proxy", None)).__name__,
-            "arch_type": arch_type,
-            "ifc_type": str(getattr(obj, "IfcType", "") or ""),
-            "placement": {
-                "position": [
-                    float(getattr(position, axis, 0.0)) for axis in ("x", "y", "z")
-                ],
-                "rotation": [
-                    float(value)
-                    for value in getattr(rotation, "Q", (0.0, 0.0, 0.0, 1.0))
-                ],
-            },
-            "group_count": len(group),
-            "group": [
-                str(getattr(child, "Name", "") or "")
-                for child in group[:MAX_BIM_CONTEXT_RELATIONSHIPS]
-            ],
-            "group_truncated": len(group) > MAX_BIM_CONTEXT_RELATIONSHIPS,
-            "parent_groups": [
-                str(getattr(parent, "Name", "") or "")
-                for parent in parents[:MAX_BIM_CONTEXT_RELATIONSHIPS]
-            ],
-            "parent_groups_truncated": len(parents) > MAX_BIM_CONTEXT_RELATIONSHIPS,
-            "host_count": len(hosts),
-            "hosts": [
-                str(getattr(host, "Name", "") or "")
-                for host in hosts[:MAX_BIM_CONTEXT_RELATIONSHIPS]
-            ],
-            "hosts_truncated": len(hosts) > MAX_BIM_CONTEXT_RELATIONSHIPS,
-            "base": (
-                {
-                    "name": str(getattr(base, "Name", "") or ""),
-                    "label": str(getattr(base, "Label", "") or ""),
-                    "type_id": str(getattr(base, "TypeId", "") or ""),
-                    "proxy_class": type(getattr(base, "Proxy", None)).__name__,
-                }
-                if base is not None
-                else None
-            ),
-            "shape_present": bool(
-                hasattr(obj, "Shape") and not getattr(obj, "Shape").isNull()
-            ),
-            "program_id": str(getattr(obj, PROP_PROGRAM_ID, "") or ""),
-            "program_output": str(getattr(obj, PROP_PROGRAM_OUTPUT, "") or ""),
-            "program_revision": str(getattr(obj, PROP_PROGRAM_REVISION, "") or ""),
-        }
-        dimensions = {}
-        for property_name in (
-            "Length",
-            "Width",
-            "Height",
-            "Offset",
-            "LevelOffset",
-            "Elevation",
-            "HoleDepth",
-        ):
-            if not hasattr(obj, property_name):
-                continue
-            try:
-                value = getattr(obj, property_name)
-                dimensions[property_name] = float(getattr(value, "Value", value))
-            except Exception as exc:
-                dimensions[f"{property_name}Error"] = str(exc)
-        if dimensions:
-            item["dimensions_mm"] = dimensions
-        captured.append(item)
-    return {
-        "object_count": len(all_objects),
-        "object_limit": MAX_BIM_CONTEXT_OBJECTS,
-        "objects_truncated": len(all_objects) > len(captured),
-        "objects_omitted": max(0, len(all_objects) - len(captured)),
-        "relationship_limit_per_object": MAX_BIM_CONTEXT_RELATIONSHIPS,
-        "objects": captured,
     }
 
 
@@ -2605,11 +2474,6 @@ def domain_context_snapshot(service: Any, domain: str) -> dict[str, Any]:
             if clean_domain == "material" and doc is not None
             else None
         ),
-        "bim_document": (
-            _bim_document_snapshot(doc)
-            if clean_domain == "bim" and doc is not None
-            else None
-        ),
         "mesh_document": (
             _mesh_document_snapshot(doc)
             if clean_domain == "mesh" and doc is not None
@@ -3460,19 +3324,6 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 "error": f"{type(exc).__name__}: {exc}",
                 "correction": "Repair or install the native FreeCAD Material catalog.",
             }
-    raw_bim = snapshot.get("bim_document")
-    if domain == "bim" and isinstance(raw_bim, Mapping):
-        result["document_bim_objects"] = {
-            key: raw_bim.get(key)
-            for key in (
-                "object_count",
-                "object_limit",
-                "objects_truncated",
-                "objects_omitted",
-                "relationship_limit_per_object",
-                "objects",
-            )
-        }
     raw_inspection = snapshot.get("inspection_document")
     if domain == "inspection" and isinstance(raw_inspection, Mapping):
         result["document_inspections"] = {

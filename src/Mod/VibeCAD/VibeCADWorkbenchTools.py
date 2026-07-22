@@ -116,14 +116,6 @@ ASSEMBLY_PACK_TOOL_NAMES: tuple[str, ...] = (
     "assembly.solve",
 )
 
-BIM_PACK_TOOL_NAMES: tuple[str, ...] = (
-    "bim.list_structure",
-    "bim.create_spatial_structure",
-    "bim.create_wall",
-    "bim.create_structure",
-    "bim.add_window",
-)
-
 TECHDRAW_PACK_TOOL_NAMES: tuple[str, ...] = (
     "techdraw.list_pages",
     "techdraw.create_page",
@@ -208,24 +200,6 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         ("Assembly::AssemblyObject",),
         ({"name": "assembly", "object_type": "Assembly::AssemblyObject"},),
         tool_names=ASSEMBLY_PACK_TOOL_NAMES,
-    ),
-    "BIMWorkbench": WorkbenchToolPack(
-        "BIMWorkbench",
-        "BIM",
-        "Model buildings top-down: create the spatial structure (site, "
-        "building, levels) first, then elements assigned to levels. Walls "
-        "follow existing wire baselines and slabs extrude existing closed "
-        "profiles, addressed by their exact active-document names. If a "
-        "required profile is absent, ask the human to prepare it in its owning "
-        "workbench before continuing. Openings cut their host wall "
-        "automatically; verify them with a screenshot.",
-        ("BIM_", "Arch_", "Draft_"),
-        ("Arch::", "BIM::"),
-        (
-            {"name": "building", "object_type": "App::DocumentObjectGroup"},
-            {"name": "level", "object_type": "App::DocumentObjectGroup"},
-        ),
-        tool_names=BIM_PACK_TOOL_NAMES,
     ),
     "CAMWorkbench": WorkbenchToolPack(
         "CAMWorkbench",

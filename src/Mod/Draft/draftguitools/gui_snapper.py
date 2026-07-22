@@ -71,10 +71,10 @@ UNSNAPPABLES = ("Image::ImagePlane",)
 
 
 class Snapper:
-    """Classes to manage snapping in Draft and Arch.
+    """Classes to manage snapping in Draft.
 
-    The Snapper objects contains all the functionality used by draft
-    and arch module to manage object snapping. It is responsible for
+    The Snapper object contains all the functionality used by Draft to manage
+    object snapping. It is responsible for
     finding snap points and displaying snap markers. Usually You
     only need to invoke it's snap() function, all the rest is taken
     care of.
@@ -349,9 +349,9 @@ class Snapper:
             self.trackLine.p2(fp)
             self.trackLine.setColor()
             self.trackLine.on()
-        # Set the arch point tracking
+        # Update point tracking dimensions.
         if lastpoint:
-            self.setArchDims(lastpoint, fp)
+            self.setDimensions(lastpoint, fp)
 
         self.spoint = fp
         self.running = False
@@ -396,10 +396,6 @@ class Snapper:
             if utils.get_type(obj) == "Polygon":
                 # Special snapping for polygons: add the center
                 snaps.extend(self.snapToPolygon(obj))
-
-            elif utils.get_type(obj) == "BuildingPart" and self.isEnabled("Center"):
-                # snap to the base placement of empty BuildingParts
-                snaps.append([obj.Placement.Base, "center", self.toWP(obj.Placement.Base)])
 
             if (not self.maxEdges) or (len(shape.Edges) <= self.maxEdges):
                 if "Edge" in comp:
@@ -457,16 +453,9 @@ class Snapper:
         elif utils.get_type(obj).startswith("Points::"):
             snaps.extend(self.snapToEndpoints(obj.Points, point))
 
-        elif utils.get_type(obj) in ("WorkingPlaneProxy", "BuildingPart") and self.isEnabled(
-            "Center"
-        ):
-            # snap to the center of WPProxies or to the base
-            # placement of no empty BuildingParts
+        elif utils.get_type(obj) == "WorkingPlaneProxy" and self.isEnabled("Center"):
+            # snap to the center of working-plane proxies
             snaps.append([obj.Placement.Base, "center", self.toWP(obj.Placement.Base)])
-
-        elif utils.get_type(obj) == "SectionPlane":
-            # snap to corners of section planes
-            snaps.extend(self.snapToEndpoints(obj.Shape))
 
         # updating last objects list
         # objects must be added even if no snap has been found for the object
@@ -531,9 +520,9 @@ class Snapper:
             # set the cursor
             self.setCursor(winner[1])
 
-            # set the arch point tracking
+            # Update point tracking dimensions.
             if lastpoint:
-                self.setArchDims(lastpoint, fp)
+                self.setDimensions(lastpoint, fp)
 
         # return the final point
         self.spoint = fp
@@ -626,12 +615,6 @@ class Snapper:
                 if not ob.isDerivedFrom("Part::Feature"):
                     continue
                 edges = ob.Shape.Edges
-                if utils.get_type(ob) == "Wall":
-                    for so in [ob] + ob.Additions:
-                        if utils.get_type(so) == "Wall":
-                            if so.Base:
-                                edges.extend(so.Base.Shape.Edges)
-                                edges.reverse()
                 if (not self.maxEdges) or (len(edges) <= self.maxEdges):
                     for e in edges:
                         if geo_general.geomType(e) != "Line":
@@ -1130,36 +1113,10 @@ class Snapper:
     def snapToSpecials(self, obj, lastpoint=None, eline=None):
         """Return special snap locations, if any."""
         snaps = []
-        if self.isEnabled("Special"):
-
-            if utils.get_type(obj) == "Wall":
-                # special snapping for wall: snap to its base shape if it is linear
-                if obj.Base:
-                    if not obj.Base.Shape.Solids:
-                        for v in obj.Base.Shape.Vertexes:
-                            snaps.append([v.Point, "special", self.toWP(v.Point)])
-
-            elif utils.get_type(obj) == "Structure":
-                # special snapping for struct: only to its base point
-                if obj.Base:
-                    if not obj.Base.Shape.Solids:
-                        for v in obj.Base.Shape.Vertexes:
-                            snaps.append([v.Point, "special", self.toWP(v.Point)])
-                else:
-                    b = obj.Placement.Base
-                    snaps.append([b, "special", self.toWP(b)])
-                if obj.ViewObject.ShowNodes:
-                    for edge in obj.Proxy.getNodeEdges(obj):
-                        snaps.extend(self.snapToEndpoints(edge))
-                        snaps.extend(self.snapToMidpoint(edge))
-                        snaps.extend(self.snapToPerpendicular(edge, lastpoint))
-                        snaps.extend(self.snapToIntersection(edge))
-                        snaps.extend(self.snapToElines(edge, eline))
-
-            elif hasattr(obj, "SnapPoints"):
-                for p in obj.SnapPoints:
-                    p2 = obj.Placement.multVec(p)
-                    snaps.append([p2, "special", p2])
+        if self.isEnabled("Special") and hasattr(obj, "SnapPoints"):
+            for p in obj.SnapPoints:
+                p2 = obj.Placement.multVec(p)
+                snaps.append([p2, "special", p2])
 
         return snaps
 
@@ -1177,7 +1134,7 @@ class Snapper:
         np = (edge.Vertexes[0].Point).add(nv)
         return np
 
-    def setArchDims(self, p1, p2):
+    def setDimensions(self, p1, p2):
         """Show arc dimensions between 2 points."""
         if self.isEnabled("Dimensions"):
             if not self.dim1:
@@ -1283,7 +1240,7 @@ class Snapper:
             self.trackLine.p2(locked)
             self.trackLine.setColor()
             self.trackLine.on()
-            self.setArchDims(lastpoint, locked)
+            self.setDimensions(lastpoint, locked)
         return locked
 
     def off(self):

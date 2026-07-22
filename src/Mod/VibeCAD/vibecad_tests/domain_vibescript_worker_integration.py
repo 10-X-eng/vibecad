@@ -455,11 +455,6 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
             "label='Initial Label')}\n",
         ),
         (
-            "BIMWorkbench",
-            "site",
-            "result = {'Result': api.site(label='Initial Label')}\n",
-        ),
-        (
             "MeshWorkbench",
             "mesh",
             "result = {'Result': api.mesh(triangles=[[[0,0,0],[1,0,0],[0,1,0]]], "

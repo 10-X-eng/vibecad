@@ -2629,7 +2629,7 @@ Utiliser Activer/désactiver la grille de Draft pour modifier ce paramètre pour
       <location filename="../ui/preferences-draftsnap.ui" line="69"/>
       <source>If checked, an additional border is displayed around the grid,
 showing the main square size in the bottom left corner</source>
-      <translation>Si cette option est cochée, une bordure supplémentaire sera affichée autour de la grille, indiquant la 
+      <translation>Si cette option est cochée, une bordure supplémentaire sera affichée autour de la grille, indiquant la
 taille du carré principal dans le coin inférieur gauche.</translation>
     </message>
     <message>
@@ -6849,7 +6849,7 @@ For example, it can join the selected objects into one, convert simple edges int
 convert closed edges into filled faces and parametric polygons, and merge faces into a single face.</source>
       <translation>Agréger des objets sélectionnés en formes plus complexes.
 Le résultat de l'opération dépend des types d'objets, qui peuvent être agrégés plusieurs fois d'affilée.
-Par exemple, des objets sélectionnés peuvent être agrégés en un seul, convertir de simples arêtes en 
+Par exemple, des objets sélectionnés peuvent être agrégés en un seul, convertir de simples arêtes en
 polylignes paramétriques, convertir des arêtes fermées en faces remplies et en polygones paramétriques,
 et fusionner des faces en une seule face.</translation>
     </message>
@@ -7030,7 +7030,7 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Angle de fin de l’arc
 Pour un cercle complet, donner la même valeur que l'angle de départ</translation>
@@ -7161,7 +7161,7 @@ can be set as a list of arbitrary points.</source>
 
 - Le premier point doit être la position du texte, c'est-à-dire la « Position ».
 - Le dernier point doit être l'extrémité de la ligne, c'est-à-dire le « Point cible ».
-- Le point médian est calculé automatiquement en fonction du choix de la « Direction du segment rectiligne » et de la valeur et du signe de la 
+- Le point médian est calculé automatiquement en fonction du choix de la « Direction du segment rectiligne » et de la valeur et du signe de la
 « Longueur du segment rectiligne ».
 
 Si « Direction du segment rectiligne » est défini sur « Personnalisé », la propriété « Points » peut être définie sous la forme d'une liste de
@@ -7212,24 +7212,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Cette propriété est en lecture seule, car le texte final dépend de "Label Type" et
 de l'objet défini dans "Target".
 Le "texte personnalisé" n'est affiché que si "Label Type" est défini sur "Custom".</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Le type d'informations affichées par cette étiquette.
-
-Si « Personnalisé » est sélectionné, le contenu de « Custom Text » sera utilisé.
-Pour les autres types, la chaîne de caractères sera calculée automatiquement à partir de l'objet défini
-dans « Target ». « Balise » et « Matériau » ne fonctionnent que pour les objets qui possèdent ces propriétés, comme les objets BIM.
-
-Pour « Position », « Longueur » et « Surface », ces propriétés seront extraites de l'objet principal dans « Target », ou respectivement du sous-élément « VertexN », « EdgeN » ou « FaceN », si spécifié.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7519,11 +7501,6 @@ Cette propriété est en lecture seule, car le nombre dépend des points contenu
       <translation>Afficher les lignes masquées</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Fusionner les objets mur et les objets structure de même type et matériau</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Approximer les ellipses et les B-splines par des segments de ligne</translation>
@@ -7627,7 +7604,7 @@ Ceci écrase la propriété "Clip" de l'objet de référence.</translation>
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Angle de fin de l’arc elliptique
@@ -7702,7 +7679,7 @@ is to the measured object.
 that displays the measured radius or diameter.
 - For angular dimensions, this controls the radius of the dimension arc
 that displays the measured angle.</source>
-      <translation>Un point à travers lequel la ligne de la dimension, ou une extrapolation de celle-ci, passera : 
+      <translation>Un point à travers lequel la ligne de la dimension, ou une extrapolation de celle-ci, passera :
 
 - Pour les dimensions linéaires, cette propriété détermine la proximité de la ligne de dimension avec l'objet mesuré,
 - Pour les dimensions radiales, elle détermine la direction de ligne de dimension qui affiche le rayon ou le diamètre mesuré,
@@ -8342,11 +8319,6 @@ contenu du groupe auquel ils appartiennent est sélectionné.</translation>
       <source>Auto-Group</source>
       <translation>Grouper automatiquement</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Ajoute de nouveaux objets Draft et BIM au calque ou au groupe sélectionné.</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8706,12 +8678,6 @@ La direction de projection initiale est opposée à la direction de la vue activ
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Aimanter au centre</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Aimante au point central des faces et des arêtes circulaires, ainsi qu'au point de placement des
-proxys du plan de travail et des pièces de construction.</translation>
     </message>
   </context>
   <context>

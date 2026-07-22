@@ -103,11 +103,6 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_material_api.py",
         "vibescript_material_worker.py",
     ),
-    "bim": (
-        "vibescript_bim_api.py",
-        "vibescript_bim_worker.py",
-        "vibescript_part_worker.py",
-    ),
     "mesh": (
         "vibescript_mesh_api.py",
         "vibescript_mesh_worker.py",
@@ -3032,661 +3027,14 @@ def _validate_material_execution(
     return dict(global_validation)
 
 
-_BIM_NATIVE_CONTRACTS: dict[str, tuple[str, str, str, str]] = {
-    "site": ("Part::FeaturePython", "_Site", "Site", "Site"),
-    "building": ("App::GeometryPython", "BuildingPart", "BuildingPart", "Building"),
-    "level": (
-        "App::GeometryPython",
-        "BuildingPart",
-        "BuildingPart",
-        "Building Storey",
-    ),
-    "wall": ("Part::FeaturePython", "_Wall", "Wall", "Wall"),
-    "slab": ("Part::FeaturePython", "_Structure", "Structure", "Slab"),
-    "opening": ("Part::FeaturePython", "_Window", "Window", "Opening Element"),
-}
-_BIM_ROLE_IFC = {"column": "Column", "beam": "Beam", "member": "Member"}
 
-
-def _bim_float(value: Any, *, path: str) -> float:
+def _finite_float(value: Any, *, path: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{path} must be a finite number.")
     result = float(value)
     if not math.isfinite(result):
         raise ValueError(f"{path} must be finite.")
     return result
-
-
-def _bim_close(
-    observed: Any,
-    expected: Any,
-    *,
-    path: str,
-    tolerance: float = 1.0e-7,
-) -> None:
-    first = _bim_float(observed, path=path)
-    second = _bim_float(expected, path=path)
-    limit = max(tolerance, abs(second) * tolerance)
-    if abs(first - second) > limit:
-        raise ValueError(f"{path} differs: worker={first!r}, expected={second!r}.")
-
-
-def _bim_vector(
-    observed: Any,
-    expected: Any,
-    *,
-    path: str,
-    length: int,
-    tolerance: float = 1.0e-7,
-) -> None:
-    if not isinstance(observed, list) or not isinstance(expected, (list, tuple)):
-        raise ValueError(f"{path} must be an array.")
-    if len(observed) != length or len(expected) != length:
-        raise ValueError(f"{path} must contain exactly {length} values.")
-    for index, (first, second) in enumerate(zip(observed, expected)):
-        _bim_close(first, second, path=f"{path}[{index}]", tolerance=tolerance)
-
-
-def _bim_placement(
-    observed: Any,
-    expected_position: Sequence[float],
-    expected_rotation: Sequence[float],
-    *,
-    path: str,
-) -> None:
-    if not isinstance(observed, dict) or set(observed) != {"position", "rotation"}:
-        raise ValueError(f"{path} must contain exactly position and rotation.")
-    _bim_vector(
-        observed["position"],
-        expected_position,
-        path=f"{path}.position",
-        length=3,
-    )
-    rotation = list(observed["rotation"])
-    expected = list(expected_rotation)
-    if len(rotation) != 4:
-        raise ValueError(f"{path}.rotation must contain four quaternion values.")
-    # Unit quaternions q and -q encode the same placement.  Native FreeCAD
-    # currently returns the positive form, but validation remains geometric.
-    direct = max(abs(float(a) - float(b)) for a, b in zip(rotation, expected))
-    inverse = max(abs(float(a) + float(b)) for a, b in zip(rotation, expected))
-    if min(direct, inverse) > 1.0e-7:
-        raise ValueError(f"{path}.rotation differs from the requested placement.")
-
-
-def _bim_polygon_area(points: Sequence[Sequence[float]]) -> float:
-    return abs(
-        0.5
-        * sum(
-            float(points[index][0]) * float(points[(index + 1) % len(points)][1])
-            - float(points[(index + 1) % len(points)][0]) * float(points[index][1])
-            for index in range(len(points))
-        )
-    )
-
-
-def _bim_opening_base_placement(
-    wall_definition: Mapping[str, Any],
-    opening_properties: Mapping[str, Any],
-) -> tuple[list[float], list[float]]:
-    points = list(wall_definition["arguments"])[1]
-    segment = int(opening_properties["segment"])
-    first = points[segment]
-    second = points[(segment + 1) % len(points)]
-    dx = float(second[0]) - float(first[0])
-    dy = float(second[1]) - float(first[1])
-    length = math.hypot(dx, dy)
-    tangent_x = dx / length
-    tangent_y = dy / length
-    offset = float(opening_properties["offset"])
-    theta = math.atan2(tangent_y, tangent_x)
-    sine = math.sin(theta / 2.0)
-    cosine = math.cos(theta / 2.0)
-    root_half = math.sqrt(0.5)
-    return (
-        [
-            float(first[0]) + tangent_x * offset,
-            float(first[1]) + tangent_y * offset,
-            float(opening_properties["sill"]),
-        ],
-        [
-            cosine * root_half,
-            sine * root_half,
-            sine * root_half,
-            cosine * root_half,
-        ],
-    )
-
-
-def _bim_import_base_artifact(
-    prepared: Mapping[str, Any],
-    item: dict[str, Any],
-    data: Mapping[str, Any],
-) -> None:
-    import Part
-
-    staging = Path(str(prepared["staging"])).resolve()
-    relative = str(data.get("base_artifact_path") or "")
-    path = (staging / relative).resolve()
-    if staging not in path.parents or not path.is_file():
-        raise ValueError(f"BIM output {item.get('name')!r} base BREP is missing.")
-    shape = Part.Shape()
-    shape.importBrep(str(path))
-    if shape.isNull() or not shape.isValid():
-        raise ValueError(f"BIM output {item.get('name')!r} base BREP is invalid.")
-    reported = data.get("base_facts")
-    if not isinstance(reported, dict):
-        raise ValueError(f"BIM output {item.get('name')!r} base facts are missing.")
-    detail_limit = int(reported.get("subelement_detail_limit", -1))
-    if not 0 <= detail_limit <= 256:
-        raise ValueError(
-            f"BIM output {item.get('name')!r} base detail limit is invalid."
-        )
-    facts = _detached_shape_facts(shape, max_subelements=detail_limit)
-    for key in (
-        "shape_type",
-        "solids",
-        "shells",
-        "faces",
-        "wires",
-        "edges",
-        "vertices",
-    ):
-        if reported.get(key) != facts.get(key):
-            raise ValueError(
-                f"BIM output {item.get('name')!r} base topology changed during "
-                f"artifact transfer ({key})."
-            )
-    item["detached_bim_base_shape"] = shape
-
-
-def _validate_bim_execution(
-    prepared: Mapping[str, Any],
-    execution: Mapping[str, Any],
-    outputs: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Rebuild the graph and verify native Arch state independently of the worker."""
-
-    from vibescript_bim_worker import VALIDATION_SCHEMA, validate_bim_graph
-
-    validation = execution.get("bim_validation")
-    validation_fields = {
-        "schema",
-        "native_object_count",
-        "native_base_count",
-        "site_count",
-        "building_count",
-        "level_count",
-        "wall_count",
-        "slab_count",
-        "structure_count",
-        "opening_count",
-        "outputs",
-    }
-    if not isinstance(validation, dict) or set(validation) != validation_fields:
-        raise ValueError("The BIM worker validation summary has malformed fields.")
-    if validation.get("schema") != VALIDATION_SCHEMA:
-        raise ValueError("The BIM worker validation schema is unsupported.")
-    definitions = {str(item["name"]): item.get("definition") for item in outputs}
-    graph = validate_bim_graph(
-        definitions,
-        list(prepared["expected_outputs"]),
-        require_domain_values=False,
-    )
-    graph_names: dict[str, str] = graph["graph_names"]
-    parent_by_name: dict[str, str] = graph["parent_by_name"]
-    definitions = graph["definitions"]
-    graph_id_by_name = {
-        name: str(dict(payload["properties"])["graph_id"])
-        for name, payload in definitions.items()
-    }
-
-    level_by_element: dict[str, str] = {}
-    for name, payload in definitions.items():
-        if payload["operation"] in {"wall", "slab", "structure"}:
-            level_by_element[name] = parent_by_name[name]
-    for name, payload in definitions.items():
-        if payload["operation"] == "opening":
-            level_by_element[name] = level_by_element[parent_by_name[name]]
-
-    expected_groups: dict[str, list[str]] = {name: [] for name in definitions}
-    for child, parent in parent_by_name.items():
-        operation = str(definitions[child]["operation"])
-        if operation == "opening":
-            parent = level_by_element[child]
-        expected_groups[parent].append(graph_id_by_name[child])
-    expected_groups = {
-        name: sorted(values, key=lambda value: int(value.removeprefix("bim")))
-        for name, values in expected_groups.items()
-    }
-
-    shape_present: dict[str, bool] = {}
-    for name in reversed(graph["ordered_names"]):
-        operation = str(definitions[name]["operation"])
-        if operation in {"wall", "slab", "structure"}:
-            present = True
-        elif operation in {"building", "level"}:
-            child_names = [graph_names[graph_id] for graph_id in expected_groups[name]]
-            present = any(shape_present.get(child, False) for child in child_names)
-        else:
-            present = False
-        shape_present[name] = present
-
-    common_fields = {
-        "graph_id",
-        "native_type",
-        "proxy_class",
-        "arch_type",
-        "ifc_type",
-        "label",
-        "placement",
-        "parent_graph_id",
-        "group_graph_ids",
-        "shape_present",
-    }
-    specific_fields = {
-        "site": {
-            "address",
-            "postal_code",
-            "city",
-            "region",
-            "country",
-            "latitude",
-            "longitude",
-            "elevation",
-        },
-        "building": {"building_type"},
-        "level": {"elevation", "height", "level_offset"},
-        "wall": {
-            "base_native_type",
-            "base_proxy_class",
-            "base_arch_type",
-            "base_placement",
-            "points",
-            "closed",
-            "width",
-            "height",
-            "alignment",
-            "offset",
-            "opening_graph_ids",
-            "pre_opening_volume",
-            "final_volume",
-            "expected_opening_volume_delta",
-            "observed_opening_volume_delta",
-            "base_artifact_path",
-            "base_facts",
-        },
-        "slab": {
-            "base_native_type",
-            "base_proxy_class",
-            "base_arch_type",
-            "base_placement",
-            "boundary",
-            "thickness",
-            "normal",
-            "shape_volume",
-            "base_artifact_path",
-            "base_facts",
-        },
-        "structure": {"length", "width", "height", "role", "shape_volume"},
-        "opening": {
-            "level_graph_id",
-            "host_graph_id",
-            "host_count",
-            "base_native_type",
-            "base_proxy_class",
-            "base_placement",
-            "width",
-            "height",
-            "segment",
-            "offset",
-            "sill",
-            "hole_depth",
-            "requested_hole_depth",
-            "host_wall_width",
-            "expected_host_volume_delta",
-            "opening_shape_null",
-            "base_artifact_path",
-            "base_facts",
-        },
-    }
-    expected_summaries: list[dict[str, Any]] = []
-    native_base_count = 0
-    counts = {
-        operation: 0
-        for operation in (
-            "site",
-            "building",
-            "level",
-            "wall",
-            "slab",
-            "structure",
-            "opening",
-        )
-    }
-    for declaration, item in zip(prepared["expected_outputs"], outputs):
-        name = str(declaration["name"])
-        operation = str(declaration["type"])
-        payload = definitions[name]
-        properties = dict(payload["properties"])
-        arguments = list(payload["arguments"])
-        data = item.get("bim_data")
-        if (
-            not isinstance(data, dict)
-            or set(data) != common_fields | specific_fields[operation]
-        ):
-            raise ValueError(f"BIM output {name!r} native data has malformed fields.")
-        expected_native = (
-            (
-                "Part::FeaturePython",
-                "_Structure",
-                "Structure",
-                _BIM_ROLE_IFC[str(properties["role"])],
-            )
-            if operation == "structure"
-            else _BIM_NATIVE_CONTRACTS[operation]
-        )
-        observed_native = (
-            str(data["native_type"]),
-            str(data["proxy_class"]),
-            str(data["arch_type"]),
-            str(data["ifc_type"]),
-        )
-        if observed_native != expected_native:
-            raise ValueError(f"BIM output {name!r} changed its native Arch contract.")
-        if data["graph_id"] != graph_id_by_name[name]:
-            raise ValueError(f"BIM output {name!r} changed graph identity.")
-        expected_parent = (
-            graph_id_by_name[parent_by_name[name]] if name in parent_by_name else ""
-        )
-        if data["parent_graph_id"] != expected_parent:
-            raise ValueError(f"BIM output {name!r} changed its hierarchy parent.")
-        if data["group_graph_ids"] != expected_groups[name]:
-            raise ValueError(f"BIM output {name!r} changed native Group relationships.")
-        if data["shape_present"] is not shape_present[name]:
-            raise ValueError(f"BIM output {name!r} changed expected Shape presence.")
-        expected_label = str(properties.get("label") or name)
-        if data["label"] != expected_label:
-            raise ValueError(f"BIM output {name!r} changed its label.")
-        if operation == "level":
-            expected_position = [0.0, 0.0, float(properties["elevation"])]
-        elif operation == "structure":
-            expected_position = list(properties["placement"]["position"])
-        else:
-            expected_position = [0.0, 0.0, 0.0]
-        expected_rotation = (
-            list(properties["placement"]["rotation"])
-            if operation == "structure"
-            else [0.0, 0.0, 0.0, 1.0]
-        )
-        _bim_placement(
-            data["placement"],
-            expected_position,
-            expected_rotation,
-            path=f"outputs.{name}.bim_data.placement",
-        )
-
-        has_main_artifact = item.get("artifact_kind") == "brep"
-        if has_main_artifact is not shape_present[name] or (
-            shape_present[name] and item.get("detached_shape") is None
-        ):
-            raise ValueError(
-                f"BIM output {name!r} Shape artifact presence is inconsistent."
-            )
-        if operation in {"wall", "slab", "structure"}:
-            facts = dict(item.get("facts") or {})
-            if (
-                int(facts.get("solids") or 0) < 1
-                or float(facts.get("volume_mm3") or 0.0) <= 0.0
-            ):
-                raise ValueError(
-                    f"BIM output {name!r} is not a positive validated solid."
-                )
-
-        if operation == "site":
-            for key in ("address", "postal_code", "city", "region", "country"):
-                if data[key] != str(properties[key]):
-                    raise ValueError(f"BIM Site {name!r} changed {key}.")
-            for key in ("latitude", "longitude", "elevation"):
-                _bim_close(
-                    data[key], properties[key], path=f"outputs.{name}.bim_data.{key}"
-                )
-        elif operation == "building":
-            if data["building_type"] != "Undefined":
-                raise ValueError(
-                    f"BIM Building {name!r} changed its native default type."
-                )
-        elif operation == "level":
-            _bim_close(
-                data["elevation"], properties["elevation"], path=f"{name}.elevation"
-            )
-            _bim_close(data["height"], properties["height"], path=f"{name}.height")
-            _bim_close(data["level_offset"], 0.0, path=f"{name}.level_offset")
-        elif operation == "wall":
-            if (
-                data["base_native_type"],
-                data["base_proxy_class"],
-                data["base_arch_type"],
-            ) != ("Part::FeaturePython", "Wire", "Wire"):
-                raise ValueError(
-                    f"BIM Wall {name!r} changed its native Draft baseline."
-                )
-            _bim_placement(
-                data["base_placement"],
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                path=f"outputs.{name}.bim_data.base_placement",
-            )
-            requested_points = arguments[1]
-            if not isinstance(data["points"], list) or len(data["points"]) != len(
-                requested_points
-            ):
-                raise ValueError(f"BIM Wall {name!r} changed baseline point count.")
-            for index, (observed, requested) in enumerate(
-                zip(data["points"], requested_points)
-            ):
-                _bim_vector(
-                    observed,
-                    [requested[0], requested[1], 0.0],
-                    path=f"outputs.{name}.bim_data.points[{index}]",
-                    length=3,
-                )
-            for key in ("width", "height", "offset"):
-                _bim_close(data[key], properties[key], path=f"{name}.{key}")
-            if (
-                data["closed"] is not bool(properties["closed"])
-                or data["alignment"] != properties["alignment"]
-            ):
-                raise ValueError(
-                    f"BIM Wall {name!r} changed parametric baseline state."
-                )
-            expected_openings = [
-                graph_id_by_name[child]
-                for child, parent in parent_by_name.items()
-                if parent == name and definitions[child]["operation"] == "opening"
-            ]
-            if data["opening_graph_ids"] != expected_openings:
-                raise ValueError(f"BIM Wall {name!r} changed hosted openings.")
-            expected_delta = sum(
-                float(dict(definitions[graph_names[graph_id]]["properties"])["width"])
-                * float(
-                    dict(definitions[graph_names[graph_id]]["properties"])["height"]
-                )
-                * float(properties["width"])
-                for graph_id in expected_openings
-            )
-            _bim_close(
-                data["expected_opening_volume_delta"],
-                expected_delta,
-                path=f"{name}.expected_opening_volume_delta",
-            )
-            _bim_close(
-                data["observed_opening_volume_delta"],
-                expected_delta,
-                path=f"{name}.observed_opening_volume_delta",
-            )
-            _bim_close(
-                data["pre_opening_volume"] - data["final_volume"],
-                expected_delta,
-                path=f"{name}.opening_volume_difference",
-            )
-            _bim_close(
-                data["final_volume"],
-                dict(item["facts"])["volume_mm3"],
-                path=f"{name}.final_volume",
-            )
-        elif operation == "slab":
-            if (
-                data["base_native_type"],
-                data["base_proxy_class"],
-                data["base_arch_type"],
-            ) != ("Part::FeaturePython", "Wire", "Wire"):
-                raise ValueError(f"BIM Slab {name!r} changed its native Draft profile.")
-            _bim_placement(
-                data["base_placement"],
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                path=f"outputs.{name}.bim_data.base_placement",
-            )
-            requested_boundary = arguments[1]
-            if not isinstance(data["boundary"], list) or len(data["boundary"]) != len(
-                requested_boundary
-            ):
-                raise ValueError(f"BIM Slab {name!r} changed boundary point count.")
-            for index, (observed, requested) in enumerate(
-                zip(data["boundary"], requested_boundary)
-            ):
-                _bim_vector(
-                    observed,
-                    [requested[0], requested[1], properties["top_offset"]],
-                    path=f"outputs.{name}.bim_data.boundary[{index}]",
-                    length=3,
-                )
-            _bim_close(
-                data["thickness"], properties["thickness"], path=f"{name}.thickness"
-            )
-            _bim_vector(
-                data["normal"], [0.0, 0.0, -1.0], path=f"{name}.normal", length=3
-            )
-            expected_volume = _bim_polygon_area(requested_boundary) * float(
-                properties["thickness"]
-            )
-            _bim_close(
-                data["shape_volume"], expected_volume, path=f"{name}.shape_volume"
-            )
-            _bim_close(
-                dict(item["facts"])["volume_mm3"],
-                expected_volume,
-                path=f"{name}.facts.volume_mm3",
-            )
-        elif operation == "structure":
-            for key, requested in zip(("length", "width", "height"), arguments[1:]):
-                _bim_close(data[key], requested, path=f"{name}.{key}")
-            if data["role"] != properties["role"]:
-                raise ValueError(f"BIM Structure {name!r} changed its role.")
-            expected_volume = (
-                float(arguments[1]) * float(arguments[2]) * float(arguments[3])
-            )
-            _bim_close(
-                data["shape_volume"], expected_volume, path=f"{name}.shape_volume"
-            )
-            _bim_close(
-                dict(item["facts"])["volume_mm3"],
-                expected_volume,
-                path=f"{name}.facts.volume_mm3",
-            )
-        else:
-            host_name = parent_by_name[name]
-            host_properties = dict(definitions[host_name]["properties"])
-            if (
-                data["level_graph_id"] != graph_id_by_name[level_by_element[name]]
-                or data["host_graph_id"] != graph_id_by_name[host_name]
-            ):
-                raise ValueError(f"BIM Opening {name!r} changed host hierarchy.")
-            if data["host_count"] != 1 or data["opening_shape_null"] is not True:
-                raise ValueError(
-                    f"BIM Opening {name!r} changed native opening semantics."
-                )
-            if (data["base_native_type"], data["base_proxy_class"]) != (
-                "Part::Feature",
-                "NoneType",
-            ):
-                raise ValueError(
-                    f"BIM Opening {name!r} changed its stable profile type."
-                )
-            position, rotation = _bim_opening_base_placement(
-                definitions[host_name], properties
-            )
-            _bim_placement(
-                data["base_placement"],
-                position,
-                rotation,
-                path=f"outputs.{name}.bim_data.base_placement",
-            )
-            for key in ("width", "height", "offset", "sill", "requested_hole_depth"):
-                requested_key = "hole_depth" if key == "requested_hole_depth" else key
-                _bim_close(data[key], properties[requested_key], path=f"{name}.{key}")
-            if data["segment"] != int(properties["segment"]):
-                raise ValueError(f"BIM Opening {name!r} changed host segment.")
-            resolved_depth = (
-                float(properties["hole_depth"])
-                or float(host_properties["width"]) + 100.0
-            )
-            _bim_close(data["hole_depth"], resolved_depth, path=f"{name}.hole_depth")
-            _bim_close(
-                data["host_wall_width"],
-                host_properties["width"],
-                path=f"{name}.host_wall_width",
-            )
-            _bim_close(
-                data["expected_host_volume_delta"],
-                float(properties["width"])
-                * float(properties["height"])
-                * float(host_properties["width"]),
-                path=f"{name}.expected_host_volume_delta",
-            )
-
-        if operation in {"wall", "slab", "opening"}:
-            _bim_import_base_artifact(prepared, item, data)
-            native_base_count += 1
-        counts[operation] += 1
-        expected_summaries.append(
-            {
-                "name": name,
-                "type": operation,
-                "graph_id": graph_id_by_name[name],
-                "native_type": expected_native[0],
-                "proxy_class": expected_native[1],
-                "arch_type": expected_native[2],
-                "ifc_type": expected_native[3],
-                "parent_graph_id": expected_parent,
-                "group_graph_ids": expected_groups[name],
-                "shape_present": shape_present[name],
-            }
-        )
-
-    expected_counts = {
-        "native_object_count": len(outputs),
-        "native_base_count": native_base_count,
-        **{f"{operation}_count": count for operation, count in counts.items()},
-    }
-    for key, expected in expected_counts.items():
-        if type(validation.get(key)) is not int or validation[key] != expected:
-            raise ValueError(f"The BIM worker reported inconsistent {key}.")
-    if validation.get("outputs") != expected_summaries:
-        raise ValueError("The BIM worker global output summary is inconsistent.")
-    encoded = json.dumps(
-        validation,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-        raise ValueError("The BIM worker validation summary is too large.")
-    return dict(validation)
-
-
 def _mesh_values_match(reported: Any, observed: Any, *, path: str) -> None:
     if isinstance(observed, bool):
         if type(reported) is not bool or reported is not observed:
@@ -3697,7 +3045,7 @@ def _mesh_values_match(reported: Any, observed: Any, *, path: str) -> None:
             raise ValueError(f"{path} differs from the imported native Mesh.")
         return
     if isinstance(observed, float):
-        value = _bim_float(reported, path=path)
+        value = _finite_float(reported, path=path)
         absolute_tolerance = (
             _REVERSE_FIT_METRIC_ABSOLUTE_TOLERANCE
             if "fit_metrics" in path.split(".")
@@ -11205,7 +10553,6 @@ def _validate_definition_value(
     extra_depth = {
         "assembly": 12,
         "surface": 64,
-        "bim": 24,
         "mesh": 32,
         "inspection": 16,
         "fem": 16,
@@ -14550,7 +13897,6 @@ def validate_candidate(
     surface_validation = None
     spreadsheet_validation = None
     material_validation = None
-    bim_validation = None
     mesh_validation = None
     meshpart_validation = None
     points_validation = None
@@ -14603,12 +13949,6 @@ def validate_candidate(
         )
     elif pack.domain == "material":
         material_validation = _validate_material_execution(
-            prepared,
-            execution,
-            validated,
-        )
-    elif pack.domain == "bim":
-        bim_validation = _validate_bim_execution(
             prepared,
             execution,
             validated,
@@ -14711,8 +14051,6 @@ def validate_candidate(
         result["spreadsheet_validation"] = spreadsheet_validation
     if material_validation is not None:
         result["material_validation"] = material_validation
-    if bim_validation is not None:
-        result["bim_validation"] = bim_validation
     if mesh_validation is not None:
         result["mesh_validation"] = mesh_validation
     if meshpart_validation is not None:
@@ -16552,7 +15890,7 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                     "rule": (
                         "The model cannot switch workbench or modeling engine. Author only Draft "
                         "objects in this surface and state the required human handoff when the next "
-                        "step belongs to Sketcher, Part, Part Design, BIM, or TechDraw."
+                        "step belongs to Sketcher, Part, Part Design, or TechDraw."
                     ),
                     "use_draft_for": (
                         "editable 2D/3D construction geometry, simple planar faces, repeated "
@@ -16561,7 +15899,6 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                     "handoff_examples": {
                         "constrained_profile": "Sketcher for solver-backed dimensional constraints",
                         "solid_modeling": "Part or Part Design after a stable closed Draft profile exists",
-                        "building_semantics": "BIM for walls, levels, openings, and spatial relationships",
                         "drawing_sheet": "TechDraw for projected views, dimensions, and page layout",
                     },
                 },
@@ -16804,7 +16141,7 @@ class SurfaceDomainAdapter(DeclarativeDomainAdapter):
                         "edits. Intermediate graph values have no live document identity."
                     ),
                     "large_models": (
-                        "For vehicle skins, robot covers, or architectural envelopes, divide the "
+                        "For vehicle skins, robot covers, or smooth exterior envelopes, divide the "
                         "surface network into semantic patches with shared authenticated boundaries; "
                         "publish stable patches/shells and perform final sewing in a separate result."
                     ),
@@ -17135,7 +16472,7 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                     "rule": (
                         "The model cannot switch workbench or modeling engine. Author only native sheets "
                         "in this surface; state the exact human handoff when an accepted alias or result "
-                        "must be consumed by a geometry, analysis, manufacturing, BIM, or drawing workbench."
+                        "must be consumed by a geometry, analysis, manufacturing, or drawing workbench."
                     ),
                     "use_spreadsheet_for": (
                         "parameter sets, unit-aware calculations, schedules, tabular reports, and stable "
@@ -17145,7 +16482,6 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                         "robot_or_vehicle_geometry": (
                             "Part Design, Assembly, or Sketcher consumes accepted dimensional aliases"
                         ),
-                        "building_model": "BIM consumes accepted level, wall, slab, and schedule parameters",
                         "engineering_analysis": "FEM consumes accepted material, load, and solver parameters",
                         "drawing_or_schedule": "TechDraw consumes accepted model state for pages and annotations",
                     },
@@ -17426,10 +16762,6 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                         "their cards and finishes, FEM creates explicit analysis materials and loads, "
                         "and Robot handles trajectories after the human activates each workbench."
                     ),
-                    "building": (
-                        "BIM creates spatial and construction objects; Material then assigns eligible "
-                        "native targets. FEM and TechDraw remain separate human-selected handoffs."
-                    ),
                     "analysis_caution": (
                         "Do not claim a ShapeMaterial assignment automatically creates a FEM material. "
                         "Hand off the authenticated accepted property values explicitly to the FEM "
@@ -17506,359 +16838,6 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                     "publication": (
                         "rollback errors identify every target that could not be restored; the candidate "
                         "is never accepted unless native readback matches worker validation"
-                    ),
-                },
-            }
-        )
-        return description
-
-
-@dataclass
-class BIMDomainAdapter(DeclarativeDomainAdapter):
-    """Dedicated adapter for native Arch hierarchy and hosted-opening programs."""
-
-    production_ready: bool = True
-
-    def describe_api(self) -> dict[str, Any]:
-        description = super().describe_api()
-        description.update(
-            {
-                "api_contract": "vibecad-vibescript-bim-api-v1",
-                "units": {
-                    "coordinates_and_lengths": "millimetres",
-                    "latitude_longitude": "decimal degrees",
-                    "structure_rotation": "normalized quaternion [x,y,z,w]",
-                },
-                "coordinate_system": {
-                    "handedness": "right-handed",
-                    "wall_and_slab_points": "level-local XY [x,y]",
-                    "vertical_axis": "+Z",
-                    "level_elevation": (
-                        "stored on the native Building Storey Placement; children retain "
-                        "level-local Shapes and placements"
-                    ),
-                },
-                "evaluation_model": (
-                    "Every API call creates one immutable hierarchy graph value. All graph "
-                    "nodes referenced by another node must also be returned as declared outputs. "
-                    "FreeCADCmd creates real Arch and Draft proxies, applies Group and Hosts "
-                    "relationships, recomputes wall/slab/structure geometry, performs opening "
-                    "cuts, validates native readback, and exports detached BREP state."
-                ),
-                "operation_selection": {
-                    "geographic_and_spatial_root": (
-                        "api.site for address/geolocation metadata, then api.building for each "
-                        "facility and api.level for each native Building Storey."
-                    ),
-                    "continuous_wall_run": (
-                        "api.wall. Use one ordered polyline for connected segments sharing level, "
-                        "width, height, alignment, and offset; closed=True closes the last segment."
-                    ),
-                    "horizontal_floor_or_roof_plate": (
-                        "api.slab for one simple polygonal plate extruded downward from top_offset. "
-                        "It is semantically an IFC Slab, not a generic structure."
-                    ),
-                    "rectangular_structural_member": (
-                        "api.structure with role='column', 'beam', or 'member'. Role is the single "
-                        "canonical selector; there are no separate redundant column/beam tools."
-                    ),
-                    "hosted_wall_void": (
-                        "api.opening for one rectangular cut in a returned wall segment. It creates "
-                        "an IFC Opening Element only, not a visible door, window, frame, or panel."
-                    ),
-                    "redundancy_contract": (
-                        "The seven exports are distinct spatial or semantic native roles. Use one "
-                        "api.wall polyline instead of one wall per collinear segment when properties "
-                        "match, one api.structure plus role instead of role-specific alternatives, "
-                        "and one api.opening per physical void. Never model a slab with structure, "
-                        "duplicate hierarchy containers, or create a second opening for the same cut."
-                    ),
-                },
-                "hierarchy_contract": {
-                    "site_to_building": "api.building requires exactly one returned Site",
-                    "building_to_level": "api.level requires exactly one returned Building",
-                    "level_to_elements": (
-                        "walls, slabs, and structures require one returned Building Storey"
-                    ),
-                    "opening_to_wall": (
-                        "api.opening requires a returned Wall; its containing Storey is derived "
-                        "from that wall and the native Hosts list contains exactly the wall"
-                    ),
-                    "no_hidden_graph_nodes": (
-                        "referenced API values not returned in result are rejected. Publisher-"
-                        "owned profile objects are internal stable document objects, not API nodes"
-                    ),
-                    "creation_order": (
-                        "create ancestors before descendants in source: Site, Building, Storey, "
-                        "elements, then hosted Openings. Pass the same immutable variable to every "
-                        "child and return every referenced value"
-                    ),
-                    "program_scope": (
-                        "a hierarchy is self-contained in one program and may publish at most 64 "
-                        "nodes. Existing native objects and outputs from another BIM program are "
-                        "read-only context and cannot be adopted as graph parents or hosts"
-                    ),
-                },
-                "native_object_contracts": {
-                    "site": "Part::FeaturePython, ArchSite._Site, IfcType Site",
-                    "building": (
-                        "App::GeometryPython, ArchBuildingPart.BuildingPart, IfcType Building"
-                    ),
-                    "level": (
-                        "App::GeometryPython, ArchBuildingPart.BuildingPart, IfcType Building Storey"
-                    ),
-                    "wall": (
-                        "Part::FeaturePython, ArchWall._Wall, stable hidden Draft Wire Base"
-                    ),
-                    "slab": (
-                        "Part::FeaturePython, ArchStructure._Structure, IfcType Slab, stable "
-                        "closed Draft profile, downward normal"
-                    ),
-                    "structure": (
-                        "Part::FeaturePython, ArchStructure._Structure, explicit Column/Beam/Member role"
-                    ),
-                    "opening": (
-                        "Part::FeaturePython, ArchWindow._Window, IfcType Opening Element, stable "
-                        "profile Base, exactly one Hosts Wall, intentionally null display Shape"
-                    ),
-                },
-                "geometry_contract": {
-                    "wall": (
-                        "2-512 non-repeating non-self-intersecting level-local points; closed "
-                        "walls require at least three; width and height are strictly positive. "
-                        "Point order defines zero-based segment direction and opening offset origin"
-                    ),
-                    "slab": (
-                        "3-4096 non-self-intersecting points with non-zero signed area; native "
-                        "solid volume must equal planar area times thickness. top_offset is the "
-                        "level-local top face and thickness extends toward -Z"
-                    ),
-                    "structure": (
-                        "strictly positive local X length, local Y width, and local Z height; an "
-                        "explicit column, beam, or member role; placement is level-local and its "
-                        "quaternion is normalized"
-                    ),
-                    "opening": (
-                        "zero-based host segment, along-segment offset, width, sill, and height "
-                        "must fit the host; same-segment openings may touch but cannot overlap. "
-                        "The native wall volume reduction is checked against width*height*wall width. "
-                        "hole_depth=0 selects wall width plus a validated cutting allowance"
-                    ),
-                },
-                "coordinate_planning": {
-                    "site_elevation": (
-                        "Site elevation is geolocation metadata; it is not automatically added to "
-                        "Storey or child placements"
-                    ),
-                    "storeys": (
-                        "level elevation is the Storey document Z placement. Wall/slab points and "
-                        "structure/opening placements remain level-local; do not add elevation twice"
-                    ),
-                    "opening_segments": (
-                        "For points [p0,p1,p2], segment 0 runs p0->p1 and segment 1 runs p1->p2; "
-                        "on a closed wall the final segment runs last->p0. offset measures from the "
-                        "selected segment's first point"
-                    ),
-                },
-                "publication_contract": {
-                    "identity": (
-                        "Every returned name updates the same native object in place; wall/slab/"
-                        "opening profiles have stable internal identities grouped with their root output"
-                    ),
-                    "relationships": (
-                        "Managed Group and Hosts links are updated exactly while foreign objects "
-                        "inside a managed spatial group are preserved"
-                    ),
-                    "asynchronous_boundary": (
-                        "Arch/Draft proxy execution, recompute, OCC construction and cuts, topology "
-                        "validation, and BREP I/O occur in FreeCADCmd. Live publication creates "
-                        "property-only proxies, transfers detached Shapes, and never recomputes"
-                    ),
-                    "downstream_consumers": (
-                        "Whole-object native consumers retain stable identities. Regeneration is "
-                        "rejected while foreign consumers hold transient subelement references; "
-                        "retirement and deletion reject all foreign references"
-                    ),
-                },
-                "composition_contract": {
-                    "construction_order": [
-                        "Plan a single right-handed, millimetre, level-local coordinate system and stable semantic result names before creating graph values.",
-                        "Create and return Site, Building, and every required Storey ancestor first; never hide a parent only in a child argument.",
-                        "Create slabs and the fewest continuous wall polylines consistent with distinct thickness, height, alignment, and offset requirements.",
-                        "Create rectangular structural members with api.structure(role=...) and explicit level-local placements; reuse no graph node for two physical members.",
-                        "Map each wall segment from point order, then create every non-overlapping opening void with explicit segment, offset, sill, width, and height.",
-                        "Return every graph node once under unchanged expected_outputs names in exact order, then verify the accepted native hierarchy and geometry evidence.",
-                    ],
-                    "input_design": (
-                        "Keep user-controlled dimensions, elevations, locations, and repeated design "
-                        "parameters in validated inputs. Use set_inputs for value changes and exact "
-                        "source edits only when topology, hierarchy, or output membership changes."
-                    ),
-                    "large_buildings": (
-                        "Use compact polylines and one graph for a coherent building hierarchy. If "
-                        "the required graph exceeds 64 returned nodes, report that exact unsupported "
-                        "state; do not fabricate cross-program parent links or duplicate the Site/"
-                        "Building merely to evade the bound. Independent buildings may use separate "
-                        "self-contained programs."
-                    ),
-                    "identity": (
-                        "Stable result names, not labels or graph_id values, are the live identity. "
-                        "Keep names unchanged across edits so native BIM objects and their internal "
-                        "profiles update in place."
-                    ),
-                },
-                "domain_context": {
-                    "document_bim_objects": (
-                        "bounded native/proxy/IFC types, placements, dimensions, Base, Group, "
-                        "parent-group, Hosts, and managed-program identities without recompute. "
-                        "This is read-only planning/verification context, not an implicit reference API"
-                    ),
-                    "programs": (
-                        "bounded persisted contracts, accepted and working revisions, candidate "
-                        "state, and stable live output identities"
-                    ),
-                },
-                "capability_boundary": {
-                    "supported": (
-                        "native Sites, Buildings, Storeys, polyline Walls, simple polygon Slabs, "
-                        "rectangular Columns/Beams/Members, and rectangular hosted wall voids"
-                    ),
-                    "not_yet_exposed": (
-                        "door/window fills, roofs distinct from IFC Slab, stairs, spaces, equipment, "
-                        "curved walls, profile-based structures, multilayer compositions, IFC import/"
-                        "export, and adoption of pre-existing or cross-program BIM parents"
-                    ),
-                    "model_rule": (
-                        "Never claim an unsupported object was authored. Build only the supported "
-                        "core graph, identify each missing element precisely, and state the required "
-                        "human-selected native BIM or other workbench handoff."
-                    ),
-                },
-                "model_verification_contract": {
-                    "success": (
-                        "Call verification_call after every write. Require working_revision equal to "
-                        "accepted_revision and one unchanged live identity for every declared result."
-                    ),
-                    "hierarchy": (
-                        "Verify each live_outputs.bim_data graph_id, parent_graph_id, group_graph_ids, "
-                        "native/proxy/Arch/IFC type, Storey membership, and each Opening's one Hosts Wall."
-                    ),
-                    "geometry": (
-                        "Verify wall baseline points/properties and opening volume delta; slab boundary, "
-                        "normal, thickness, and volume; structure dimensions, role, placement, and volume; "
-                        "and every stable Base profile identity."
-                    ),
-                    "regeneration": (
-                        "After set_inputs or edit_source, confirm result and internal Base object names "
-                        "are unchanged and any compatible whole-object human consumer remains linked."
-                    ),
-                    "failure_repair": (
-                        "Read domain_failure_stage, observed.details, and retry.required_changes. Change "
-                        "only the named hierarchy parent, point/segment, dimension, placement, opening "
-                        "interval, or result entry; retry against next_write_expected_revision and never "
-                        "recreate the program to bypass a retained failure or external-reference guard."
-                    ),
-                },
-                "workbench_handoffs": {
-                    "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only the supported "
-                        "native BIM graph here and state the exact human handoff for every remaining "
-                        "material, detailed component, analysis, manufacturing, or drawing task."
-                    ),
-                    "house_flow": (
-                        "BIM creates the supported spatial/core shell; Material assigns eligible cards "
-                        "and finishes; Part Design/Part creates detailed reusable components; FEM creates "
-                        "analysis definitions; TechDraw produces documentation after the human activates "
-                        "each workbench."
-                    ),
-                    "opening_fill": (
-                        "api.opening proves and publishes only a hosted void. A door/window fill requires "
-                        "the human to activate a surface that actually exposes that native feature; do "
-                        "not represent a void as a completed door or window."
-                    ),
-                },
-                "recommended_patterns": [
-                    {
-                        "goal": "one storey with wall, slab, column, and hosted opening",
-                        "source": (
-                            "site = api.site(city=inputs['city'], label='Project Site')\n"
-                            "building = api.building(site, label='Main Building')\n"
-                            "ground = api.level(building, 0, height=3000, label='Ground Floor')\n"
-                            "wall = api.wall(ground, [[0,0],[4000,0]], width=200, "
-                            "height=2800, label='South Wall')\n"
-                            "slab = api.slab(ground, [[0,0],[4000,0],[4000,3000],[0,3000]], "
-                            "thickness=200, label='Ground Slab')\n"
-                            "column = api.structure(ground, 300, 300, 2800, "
-                            "placement={'position':[200,200,0],'rotation':[0,0,0,1]}, "
-                            "role='column', label='Column')\n"
-                            "opening = api.opening(wall, 900, 1200, offset=800, sill=900, "
-                            "label='Window Opening')\n"
-                            "result = {'Site':site,'Building':building,'Ground':ground,"
-                            "'Wall':wall,'Slab':slab,'Column':column,'Opening':opening}"
-                        ),
-                        "expected_outputs": [
-                            {"name": "Site", "type": "site"},
-                            {"name": "Building", "type": "building"},
-                            {"name": "Ground", "type": "level"},
-                            {"name": "Wall", "type": "wall"},
-                            {"name": "Slab", "type": "slab"},
-                            {"name": "Column", "type": "structure"},
-                            {"name": "Opening", "type": "opening"},
-                        ],
-                    },
-                    {
-                        "goal": "compact two-storey building core with segment-addressed openings",
-                        "source": (
-                            "site = api.site(city=inputs['city'], label='Site')\n"
-                            "building = api.building(site, label='House')\n"
-                            "ground = api.level(building, 0, height=3000, label='Ground')\n"
-                            "upper = api.level(building, 3000, height=3000, label='Upper')\n"
-                            "footprint = [[0,0],[9000,0],[9000,7000],[0,7000]]\n"
-                            "ground_wall = api.wall(ground, footprint, closed=True, width=250, "
-                            "height=2800, label='Ground Exterior')\n"
-                            "upper_wall = api.wall(upper, footprint, closed=True, width=200, "
-                            "height=2800, label='Upper Exterior')\n"
-                            "ground_slab = api.slab(ground, footprint, thickness=250, "
-                            "label='Ground Slab')\n"
-                            "upper_slab = api.slab(upper, footprint, thickness=200, "
-                            "label='Upper Slab')\n"
-                            "door_void = api.opening(ground_wall, 1000, 2100, segment=0, "
-                            "offset=1200, sill=0, label='Entry Void')\n"
-                            "window_void = api.opening(upper_wall, 1400, 1200, segment=1, "
-                            "offset=1800, sill=900, label='Upper Window Void')\n"
-                            "result = {'Site':site,'Building':building,'Ground':ground,'Upper':upper,"
-                            "'GroundWall':ground_wall,'UpperWall':upper_wall,"
-                            "'GroundSlab':ground_slab,'UpperSlab':upper_slab,"
-                            "'DoorVoid':door_void,'WindowVoid':window_void}"
-                        ),
-                        "expected_outputs": [
-                            {"name": "Site", "type": "site"},
-                            {"name": "Building", "type": "building"},
-                            {"name": "Ground", "type": "level"},
-                            {"name": "Upper", "type": "level"},
-                            {"name": "GroundWall", "type": "wall"},
-                            {"name": "UpperWall", "type": "wall"},
-                            {"name": "GroundSlab", "type": "slab"},
-                            {"name": "UpperSlab", "type": "slab"},
-                            {"name": "DoorVoid", "type": "opening"},
-                            {"name": "WindowVoid", "type": "opening"},
-                        ],
-                    },
-                ],
-                "error_contract": {
-                    "source": (
-                        "argument errors name api.operation and the exact hierarchy, point, "
-                        "dimension, enum, bound, fit, or overlap path, and propagate "
-                        "source_validation plus one exact retry.required_changes instruction"
-                    ),
-                    "native": (
-                        "worker failures retain factory/recompute/cut stage, native type/proxy/"
-                        "IFC observations, topology facts, volume diagnostics, and correction"
-                    ),
-                    "publication": (
-                        "native-type drift, missing internal profiles, changed Group/Hosts/Base "
-                        "links, invalid detached Shapes, and external-reference conflicts abort "
-                        "the transaction before the candidate can be accepted"
                     ),
                 },
             }
@@ -20740,7 +19719,7 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "upstream": {
-                        "Part Design/Part/Assembly/BIM": "accepted geometry and placements to document",
+                        "Part Design/Part/Assembly": "accepted geometry and placements to document",
                         "Material/FEM/CAM/Inspection": "verified properties or results to summarize as notes; this API does not query them implicitly",
                     },
                     "downstream": {
@@ -21587,8 +20566,6 @@ def install_builtin_adapters() -> None:
             adapter = SpreadsheetDomainAdapter(pack)
         elif pack.domain == "material":
             adapter = MaterialDomainAdapter(pack)
-        elif pack.domain == "bim":
-            adapter = BIMDomainAdapter(pack)
         elif pack.domain == "mesh":
             adapter = MeshDomainAdapter(pack)
         elif pack.domain == "meshpart":

@@ -122,24 +122,7 @@
       <translation>Добавляет редактируемый текстовый блок аннотации на текущую страницу</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>Технический Чертёж</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Вид BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Вставляет вид плоскости сечения верстака BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Чертеж создать страницу</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Создать вид из верстака BIM</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Создать изображение</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Выберите одну группу срезов и один вид</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>Лист содержит вид объекта из BIM, который не будет экспортирован. Продолжить?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Выберите хотя бы один объект</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Выберите только одну плоскость сечения BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Не выбрана плоскость сечения BIM</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -5060,8 +5022,8 @@ always be the right choice.  Flat or square caps are useful
 for using drawings as a 1:1 cutting guide.
 </source>
       <translation>Форма торцев линий. Значение по умолчанию (круг) должно почти
-всегда быть хорошим выбором. 
-Плоские или квадратные торцы полезны если вы планируете 
+всегда быть хорошим выбором.
+Плоские или квадратные торцы полезны если вы планируете
 использовать чертёж в качестве траекторий для резки 1:1.
 </translation>
     </message>
@@ -8185,7 +8147,7 @@ You can pick further points to get line segments.</source>
       <location filename="../../TaskProjGroup.ui" line="583"/>
       <source>Distributes projections automatically
 using the given X/Y spacings</source>
-      <translation>Автоматически распределяет проекции, 
+      <translation>Автоматически распределяет проекции,
 используя заданные промежутки X/Y</translation>
     </message>
     <message>
@@ -10070,14 +10032,7 @@ there is an open task dialog.</source>
       <translation>Линия</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>БИМ</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

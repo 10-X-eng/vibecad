@@ -2229,11 +2229,6 @@ This might fail for post DXF R12 templates.</translation>
       <translation type="unfinished">Show grid border</translation>
     </message>
     <message>
-      <location filename="../ui/preferences-draftsnap.ui" line="338"/>
-      <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, the outline of a human figure is displayed at the bottom left corner of the grid. This option is only effective if the BIM workbench is installed and if &amp;quot;Show grid border&amp;quot; option is enabled.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-      <translation type="unfinished">&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, the outline of a human figure is displayed at the bottom left corner of the grid. This option is only effective if the BIM workbench is installed and if &amp;quot;Show grid border&amp;quot; option is enabled.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
-    </message>
-    <message>
       <location filename="../ui/preferences-draftsnap.ui" line="341"/>
       <source>Show human figure</source>
       <translation type="unfinished">Show human figure</translation>
@@ -5584,11 +5579,6 @@ from menu Tools -&gt; Addon Manager</translation>
       <translation type="unfinished">Feet</translation>
     </message>
     <message>
-      <location filename="../../draftutils/init_draft_statusbar.py" line="231"/>
-      <source>Architectural</source>
-      <translation type="unfinished">Architectural</translation>
-    </message>
-    <message>
       <location filename="../../draftutils/init_draft_statusbar.py" line="307"/>
       <source>The preferred unit you are currently working with.</source>
       <translation type="unfinished">The preferred unit you are currently working with.</translation>
@@ -5903,11 +5893,6 @@ However, a single sketch with disconnected traces will be converted into several
       <location filename="../../draftguitools/gui_snaps.py" line="180"/>
       <source>Snap Center</source>
       <translation type="unfinished">Snap Center</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="181"/>
-      <source>Snaps to the center point of faces and circular edges, and to the Placement point of Working Plane Proxies and Building Parts.</source>
-      <translation type="unfinished">Snaps to the center point of faces and circular edges, and to the Placement point of Working Plane Proxies and Building Parts.</translation>
     </message>
   </context>
   <context>
@@ -6243,11 +6228,6 @@ Create a group first to use this tool.</translation>
       <location filename="../../draftguitools/gui_groups.py" line="208"/>
       <source>Autogroup</source>
       <translation type="unfinished">Autogroup</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="211"/>
-      <source>Select a group to add all Draft and Arch objects to.</source>
-      <translation type="unfinished">Select a group to add all Draft and Arch objects to.</translation>
     </message>
   </context>
   <context>
@@ -7047,9 +7027,9 @@ set True for fusion or False for compound</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="50"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation type="unfinished">End angle of the arc (for a full circle, 
+      <translation type="unfinished">End angle of the arc (for a full circle,
                 give it same value as First Angle)</translation>
     </message>
     <message>
@@ -7230,7 +7210,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</transla
 
 If 'Custom' is chosen, the contents of 'Custom Text' will be used.
 For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like Arch objects.
 
 For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
 or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
@@ -7238,7 +7217,6 @@ or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is sp
 
 If 'Custom' is chosen, the contents of 'Custom Text' will be used.
 For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like Arch objects.
 
 For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
 or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</translation>
@@ -7483,27 +7461,22 @@ This property is read-only, as the number depends on the points in 'Point Object
       <translation>Hiển thị những đường bị ẩn</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="86"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation type="unfinished">Fuse wall and structure objects of same type and material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="91"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation type="unfinished">Tessellate Ellipses and B-splines into line segments</translation>
     </message>
     <message>
       <location filename="../../draftobjects/shape2dview.py" line="98"/>
-      <source>For Cutlines and Cutfaces modes, 
+      <source>For Cutlines and Cutfaces modes,
                     this leaves the faces at the cut location</source>
-      <translation type="unfinished">For Cutlines and Cutfaces modes, 
+      <translation type="unfinished">For Cutlines and Cutfaces modes,
                     this leaves the faces at the cut location</translation>
     </message>
     <message>
       <location filename="../../draftobjects/shape2dview.py" line="105"/>
-      <source>Length of line segments if tessellating Ellipses or B-splines 
+      <source>Length of line segments if tessellating Ellipses or B-splines
                     into line segments</source>
-      <translation type="unfinished">Length of line segments if tessellating Ellipses or B-splines 
+      <translation type="unfinished">Length of line segments if tessellating Ellipses or B-splines
                     into line segments</translation>
     </message>
     <message>
@@ -7593,10 +7566,10 @@ This property is read-only, as the number depends on the points in 'Point Object
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="49"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation type="unfinished">End angle of the elliptical arc 
+      <translation type="unfinished">End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</translation>
     </message>

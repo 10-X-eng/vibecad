@@ -1211,7 +1211,7 @@ will be moved to the center of the view.</source>
       <location filename="../ui/TaskPanel_SetStyle.ui" line="298"/>
       <source>The annotation scale multiplier is the inverse of the scale set in the
 Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>El multiplicador d'escala d'anotació és la inversa de l'escala establerta en el 
+      <translation>El multiplicador d'escala d'anotació és la inversa de l'escala establerta en el
 Giny d'escala d'anotacions. Si l'escala és 1:100, el multiplicador és 100.</translation>
     </message>
     <message>
@@ -6997,9 +6997,9 @@ set True for fusion or False for compound</source>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
-      <translation>Angle final de l'arc (per a una circumferència sencera, 
+      <translation>Angle final de l'arc (per a una circumferència sencera,
                 introduïu el mateix valor que el primer angle)</translation>
     </message>
     <message>
@@ -7130,7 +7130,7 @@ El primer punt ha de ser la posició del text, és a dir, 'Emplaçament', i l'ú
 ha de ser l'extrem de la línia, és a dir, el punt de 'Destí'. El punt central es calcula
 automàticament segons el signe i valor de 'Direcció de la recta' i 'Distància de la recta'.
 
-Si 'Direcció de la recta' té el valor 'Personalitzat', la propietat 'Punts' pot ser una llista 
+Si 'Direcció de la recta' té el valor 'Personalitzat', la propietat 'Punts' pot ser una llista
 de punts arbitrària.</translation>
     </message>
     <message>
@@ -7179,25 +7179,6 @@ The 'Custom Text' is displayed only if 'Label Type' is set to 'Custom'.</source>
 Aquesta propietat és de només lectura, ja que el text final depèn de 'Label Type',
 i de l'objecte definit a 'Target'.
 El 'Custom Text' només es mostrarà si 'Label Type' és 'Custom'.</translation>
-    </message>
-    <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>El tipus d'informació que mostra aquesta etiqueta.
-
-Si s'escull 'Personalitzat', s'utilitzarà el contingut de 'Text personalitzat'.
-Per a altres tipus, la cadena es calcularà automàticament a partir de l'objecte definit a 'Objectiu'.
-'Etiqueta' i 'Material' només funcionen per a objectes que tenen aquestes propietats, com els objectes BIM.
-
-Per a 'Posició', 'Longitud' i 'Àrea', aquestes propietats s'extreuen de l'objecte principal a 'Objectiu',
-o des del subelement 'VertexN', 'EdgeN' o 'FaceN', respectivament, si s'especifica.</translation>
     </message>
     <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
@@ -7482,11 +7463,6 @@ Aquesta propietat és només de lectura, jau que el nombre depèn dels punts din
       <translation>Mostra les línies amagades</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Fusiona el mur i els objectes estructurals del mateix tipus i material</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tessel·la El·lipsis i B-splines en segments de línia</translation>
@@ -7588,7 +7564,7 @@ Aquesta propietat és només de lectura, jau que el nombre depèn dels punts din
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
       <translation>Angle final de l'arc el·líptic
@@ -8319,11 +8295,6 @@ Tot i així, un sol croquis amb traços no continus es convertirà en diversos o
       <source>Auto-Group</source>
       <translation>Agrupar automàticament</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Afegeix nous objectes d'esbós i BIM a la capa o grup seleccionats</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8683,11 +8654,6 @@ La direcció de projecció inicial és l'oposada a la direcció de la vista acti
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Ajustament al centre</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Ajusta al punt central de cares i arestes circulars, i el punt de referència de proxys de pla de treball i parts de construcció</translation>
     </message>
   </context>
   <context>

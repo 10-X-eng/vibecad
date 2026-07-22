@@ -20,11 +20,11 @@
 # *   USA                                                                   *
 # *                                                                         *
 # ***************************************************************************
-"""Provides support functions to edit Arch objects."""
+"""Provides shared support functions for object editing."""
 
-## @package gui_edit_arch_objects
+## @package gui_edit_base_object
 # \ingroup draftguitools
-# \brief Provides support functions to edit Arch objects.
+# \brief Provides shared support functions for object editing.
 
 __title__ = "FreeCAD Draft Edit Tool"
 __author__ = "Carlo Pavan"

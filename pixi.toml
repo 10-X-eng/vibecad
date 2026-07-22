@@ -1,6 +1,6 @@
 [workspace]
 name = "FreeCAD"
-version = "26.3.2"
+version = "26.3.1"
 description = "pixi instructions for FreeCAD"
 authors = ["looooo <sppedflyer@gmail.com>"]
 channels = ["conda-forge"]
@@ -27,8 +27,7 @@ graphviz = "*"
 gtest= "*"
 harfbuzz = "*"
 hdf5 = "*"
-ifcopenshell = "*"
-lark = "*"
+jsonschema = "==4.25.1"
 libboost-devel = "*"
 lxml = "*"
 matplotlib = "*"
@@ -192,7 +191,8 @@ test = [{ task = "test-debug" }]
 freecad = [{ task = "freecad-debug" }]
 
 build-debug = { cmd = ["cmake", "--build", "build/debug"]}
-build-release = { cmd = ["cmake", "--build", "build/release"]}
+build-release-native = { cmd = ["cmake", "--build", "build/release"]}
+build-release = { cmd = ["bash", "package/rattler-build/scripts/build_vibecad_local_release.sh"]}
 install-debug = { cmd = ["cmake", "--install", "build/debug"]}
 install-release = { cmd = ["cmake", "--install", "build/release"]}
 test-debug = { cmd = ["ctest", "--test-dir", "build/debug"]}

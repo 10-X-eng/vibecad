@@ -83,11 +83,6 @@
       <translation>2D 드래프트 문서를 만듭니다</translation>
     </message>
     <message>
-      <location filename="../../StartView.cpp" line="235"/>
-      <source>BIM/Architecture</source>
-      <translation>BIM/건축</translation>
-    </message>
-    <message>
       <location filename="../../StartView.cpp" line="212"/>
       <source>Empty File</source>
       <translation>빈 파일</translation>
@@ -116,11 +111,6 @@
       <location filename="../../StartView.cpp" line="228"/>
       <source>Creates an assembly project</source>
       <translation>어셈블리 프로젝트를 생성합니다</translation>
-    </message>
-    <message>
-      <location filename="../../StartView.cpp" line="236"/>
-      <source>Creates an architectural project</source>
-      <translation>건축 프로젝트를 생성합니다</translation>
     </message>
     <message>
       <location filename="../../StartView.cpp" line="520"/>

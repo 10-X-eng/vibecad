@@ -39,7 +39,6 @@
 #include "DrawTile.h"
 #include "DrawTileWeld.h"
 #include "DrawViewAnnotation.h"
-#include "DrawViewArch.h"
 #include "DrawViewBalloon.h"
 #include "DrawViewClip.h"
 #include "DrawViewCollection.h"
@@ -111,7 +110,6 @@ PyMOD_INIT_FUNC(TechDraw)
     TechDraw::DrawHatch           ::init();
     TechDraw::DrawGeomHatch       ::init();
     TechDraw::DrawViewDraft       ::init();
-    TechDraw::DrawViewArch        ::init();
     TechDraw::DrawViewImage       ::init();
     TechDraw::DrawTile            ::init();
     TechDraw::DrawTileWeld        ::init();

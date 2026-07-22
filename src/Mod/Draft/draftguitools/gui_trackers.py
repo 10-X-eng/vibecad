@@ -1356,7 +1356,7 @@ class gridTracker(Tracker):
     def get_human_figure(self, loc=None):
         """Return a list of points defining a human figure,
         optionally translated to a given location.
-        Based on "HumanFigure.brep" from the BIM Workbench.
+        The figure is drawn directly from a compact set of outline points.
         """
         pts = [
             Vector(131.2, 0.0, 175.8),

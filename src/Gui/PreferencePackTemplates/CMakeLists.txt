@@ -1,6 +1,5 @@
 
 SET(PreferencePackTemplates_Files
-    Arch_Colors.cfg
     Console_Colors.cfg
     Draft_Colors.cfg
     Editor_Colors.cfg

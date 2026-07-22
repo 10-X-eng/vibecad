@@ -126,7 +126,6 @@ def _find_dock() -> Any | None:
 SCRIPTED_ENGINES = {"build123d", "openscad", "vibescript"}
 _DOMAIN_EDITOR_NEW_TYPES = {
     "assembly": "assembly",
-    "bim": "site",
     "cam": "job",
     "fem": "analysis",
     "inspection": "inspection_group",

@@ -568,7 +568,7 @@ class _MaterialEditor(CommandManager):
 
     def __init__(self):
         super().__init__()
-        self.pixmap = "Arch_Material_Group"
+        self.pixmap = "FEM_Material_Group"
         self.menutext = Qt.QT_TRANSLATE_NOOP("FEM_MaterialEditor", "Material Editor")
         self.tooltip = Qt.QT_TRANSLATE_NOOP(
             "FEM_MaterialEditor", "Opens the FreeCAD material editor"

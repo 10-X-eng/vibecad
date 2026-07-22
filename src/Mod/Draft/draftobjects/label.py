@@ -202,7 +202,7 @@ class Label(DraftAnnotation):
                 "object defined in 'Target'.\n"
                 "'Tag' and 'Material' only work "
                 "for objects that have these properties, "
-                "like BIM objects.\n"
+                "that expose these properties.\n"
                 "\n"
                 "For 'Position', 'Length', and 'Area' "
                 "these properties will be extracted "

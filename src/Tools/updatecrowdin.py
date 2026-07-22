@@ -104,7 +104,6 @@ LANGUAGE_CODE_MAP = {
 # Locations that require QM file generation (predominantly Python workbenches)
 GENERATE_QM = {
     "AddonManager",
-    "Arch",
     "Cloud",
     "Draft",
     "Inspection",
@@ -117,9 +116,7 @@ GENERATE_QM = {
 
 locations = [
     ["App", "../App/Resources/translations", "../App/Resources/App.qrc"],
-    ["Arch", "../Mod/BIM/Resources/translations", "../Mod/BIM/Resources/Arch.qrc"],
     ["App", "../App/Resources/translations", "../App/Resources/App.qrc"],
-    ["Arch", "../Mod/BIM/Resources/translations", "../Mod/BIM/Resources/Arch.qrc"],
     [
         "Assembly",
         "../Mod/Assembly/Gui/Resources/translations",

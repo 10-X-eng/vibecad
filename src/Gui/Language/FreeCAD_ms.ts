@@ -905,7 +905,7 @@ while doing a left or right click and move the mouse up or down</translation>
     <message>
       <location filename="../Dialogs/DlgActivateWindowImp.cpp" line="50"/>
       <source>&amp;Activate</source>
-      <translation>&amp;Kunci: Arch['Aktifkan'] Arch../../ArchBuildingPart. py: 910</translation>
+      <translation>&amp;Aktifkan</translation>
     </message>
     <message>
       <source/>

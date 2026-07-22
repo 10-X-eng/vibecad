@@ -148,15 +148,21 @@ def errorDXFLib(gui):
 
         baseurl = "https://raw.githubusercontent.com/yorikvanhavre/"
         baseurl += "Draft-dxf-importer/master/"
-        import ArchCommands
+        import os
+        from urllib.request import urlopen
         from FreeCAD import Base
 
         progressbar = Base.ProgressIndicator()
         progressbar.start("Downloading files...", 4)
         for f in files:
             progressbar.next()
-            p = None
-            p = ArchCommands.download(baseurl + f, force=True)
+            p = os.path.join(FreeCAD.getUserMacroDir(True), f)
+            try:
+                FreeCAD.Console.PrintMessage("Downloading " + baseurl + f + " …\n")
+                with urlopen(baseurl + f, timeout=30) as response, open(p, "wb") as output:
+                    output.write(response.read())
+            except Exception:
+                p = None
             if not p:
                 if gui:
                     message = translate(
@@ -3694,10 +3700,6 @@ def export(objectslist, filename, nospline=False, lwPoly=False):
         If any object of the given list is a group, its contents are appended
         to the export list.
 
-        If the list only contains an `'ArchSectionView'` object
-        it will use its `getDXF()` method to provide the DXF information
-        to write into `filename`.
-
         If the list only contains a `'TechDraw::DrawPage'` object it will use
         `exportPage()` to produce the DXF file.
 
@@ -3741,7 +3743,7 @@ def export(objectslist, filename, nospline=False, lwPoly=False):
     getDXFlibs()
     if dxfLibrary:
         global exportList
-        exportList = groups.get_group_contents(objectslist, spaces=True)
+        exportList = groups.get_group_contents(objectslist)
 
         nlist = []
         exportLayers = []
@@ -3759,15 +3761,7 @@ def export(objectslist, filename, nospline=False, lwPoly=False):
                     nlist.append(ob)
         exportList = nlist
 
-        if (len(exportList) == 1) and (utils.get_type(exportList[0]) == "ArchSectionView"):
-            # arch view: export it "as is"
-            dxf = exportList[0].Proxy.getDXF()
-            if dxf:
-                f = pyopen(filename, "w")
-                f.write(dxf)
-                f.close()
-
-        elif (len(exportList) == 1) and (exportList[0].isDerivedFrom("TechDraw::DrawPage")):
+        if (len(exportList) == 1) and (exportList[0].isDerivedFrom("TechDraw::DrawPage")):
             # page: special hack-export! (see below)
             exportPage(exportList[0], filename)
 
@@ -4187,7 +4181,7 @@ def getViewBlock(geom, view, blockcount):
     view : page view
         A TechDraw view which may be of different types
         depending on the objects being projected:
-        `'TechDraw::DrawViewDraft'`, or `'TechDraw::DrawViewArch'`.
+        `'TechDraw::DrawViewDraft'`.
 
     blockcount : int
         A counter that increments by one each time an insert and block
@@ -4262,8 +4256,8 @@ def getViewDXF(view):
     view : App::DocumentObjectGroup or page view
         A TechDraw view which may be of different types
         depending on the objects being projected:
-        `'TechDraw::DrawViewDraft'`, `'TechDraw::DrawViewArch'`,
-        `'TechDraw::DrawViewPart'`, `'TechDraw::DrawViewAnnotation'`
+        `'TechDraw::DrawViewDraft'`, `'TechDraw::DrawViewPart'`,
+        `'TechDraw::DrawViewAnnotation'`
 
     Returns
     -------
@@ -4280,12 +4274,6 @@ def getViewDXF(view):
 
     if view.isDerivedFrom("TechDraw::DrawViewDraft"):
         geom = dxf.get_dxf(view)
-        block, insert, blockcount = getViewBlock(geom, view, blockcount)
-
-    elif view.isDerivedFrom("TechDraw::DrawViewArch"):
-        import ArchSectionPlane
-
-        geom = ArchSectionPlane.getDXF(view)
         block, insert, blockcount = getViewBlock(geom, view, blockcount)
 
     elif view.isDerivedFrom("TechDraw::DrawViewPart"):

@@ -30,11 +30,6 @@ import xml.etree.ElementTree as ET
 import FreeCAD as App
 import Draft_rc
 
-try:
-    import Arch_rc
-except ModuleNotFoundError:
-    pass
-
 from draftutils.translate import translate
 
 if App.GuiUp:
@@ -139,7 +134,7 @@ def _param_observer_callback_grid():
 
 
 def _param_observer_callback_snapbar(value):
-    if Gui.activeWorkbench().name() not in ("DraftWorkbench", "ArchWorkbench", "BIMWorkbench"):
+    if Gui.activeWorkbench().name() != "DraftWorkbench":
         return
     if hasattr(Gui, "Snapper"):
         toolbar = Gui.Snapper.get_snap_toolbar()
@@ -531,12 +526,6 @@ def _get_param_dictionary():
         "Copy":                        ("bool",      False),
         "Move":                        ("bool",      False),
         "Rotate":                      ("bool",      False),
-
-        # Arch/BIM
-        "Beam":                        ("bool",      False),
-        "Column":                      ("bool",      False),
-        "Panel":                       ("bool",      False),
-        "Wall":                        ("bool",      False),
     }
 
     start_val = App.Units.Quantity(100.0, App.Units.Length).Value
@@ -549,96 +538,6 @@ def _get_param_dictionary():
         "XNumOfElements":              ("int",       2),
         "YNumOfElements":              ("int",       2),
         "ZNumOfElements":              ("int",       2)
-    }
-
-    # Arch parameters that are not in the preferences:
-    param_dict["Mod/Arch"] = {
-        "applyConstructionStyle":      ("bool",      True),
-        "ClaimHosted":                 ("bool",      True),
-        "CoveringAlignment":           ("string",    "Center"),
-        "CoveringFinishMode":          ("string",    "Parametric Pattern"),
-        "CoveringJoint":               ("float",     5.0),
-        "CoveringLength":              ("float",     300.0),
-        "CoveringThickness":           ("float",     10.0),
-        "CoveringRotation":            ("float",     0.0),
-        "CoveringWidth":               ("float",     300.0),
-        "CustomIfcSchema":             ("string",    ""),     # importIFClegacy.py
-        "createIfcGroups":             ("bool",      False),  # importIFClegacy.py
-        "DoorHeight":                  ("float",     2100.0),
-        "DoorPreset":                  ("int",       5),
-        "DoorSill":                    ("float",     0.0),
-        "DoorWidth":                   ("float",     1000.0),
-        "FreeLinking":                 ("bool",      False),
-        "forceIfcPythonParser":        ("bool",      False),  # importIFClegacy.py
-        "getStandardType":             ("bool",      False),
-        "ifcAggregateWindows":         ("bool",      False),  # importIFClegacy.py
-        "ifcAsMesh":                   ("string",    ""),     # importIFClegacy.py
-        "IfcExportList":               ("bool",      False),  # importIFClegacy.py
-        "ifcImportLayer":              ("bool",      True),
-        "ifcJoinSolids":               ("bool",      False),  # importIFClegacy.py
-        "ifcMergeProfiles":            ("bool",      False),
-        "IfcScalingFactor":            ("float",     1.0),    # importIFClegacy.py
-        "ifcSeparatePlacements":       ("bool",      False),  # importIFClegacy.py
-        "MultiMaterialColumnWidth0":   ("int",       120),
-        "MultiMaterialColumnWidth1":   ("int",       120),
-        "PanelLength":                 ("float",     1000.0),
-        "PanelThickness":              ("float",     10.0),
-        "PanelWidth":                  ("float",     1000.0),
-        "PrecastBase":                 ("float",     0.0),
-        "PrecastChamfer":              ("float",     0.0),
-        "PrecastDentHeight":           ("float",     0.0),
-        "PrecastDentLength":           ("float",     0.0),
-        "PrecastDentWidth":            ("float",     0.0),
-        "PrecastDownLength":           ("float",     0.0),
-        "PrecastGrooveDepth":          ("float",     0.0),
-        "PrecastGrooveHeight":         ("float",     0.0),
-        "PrecastGrooveSpacing":        ("float",     0.0),
-        "PrecastHoleMajor":            ("float",     0.0),
-        "PrecastHoleMinor":            ("float",     0.0),
-        "PrecastHoleSpacing":          ("float",     0.0),
-        "PrecastRiser":                ("float",     0.0),
-        "PrecastTread":                ("float",     0.0),
-        "ProfilePreset":               ("string",    ""),
-        "ScheduleColumnWidth0":        ("int",       100),
-        "ScheduleColumnWidth1":        ("int",       100),
-        "ScheduleColumnWidth2":        ("int",       50),
-        "ScheduleColumnWidth3":        ("int",       100),
-        "ScheduleDialogHeight":        ("int",       200),
-        "ScheduleDialogWidth":         ("int",       300),
-        "BeamHeight":                  ("float",     100.0),
-        "BeamLength":                  ("float",     1000.0),
-        "BeamWidth":                   ("float",     100.0),
-        "ColumnHeight":                ("float",     1000.0),
-        "ColumnLength":                ("float",     100.0),
-        "ColumnWidth":                 ("float",     100.0),
-        "StructureHeight":             ("float",     1000.0),
-        "StructureLength":             ("float",     100.0),
-        "StructurePreset":             ("string",    ""),
-        "StructureWidth":              ("float",     100.0),
-        "swallowAdditions":            ("bool",      True),
-        "swallowSubtractions":         ("bool",      True),
-        "WallAlignment":               ("int",       0),
-        "WallHeight":                  ("float",     3000.0),
-        "WallWidth":                   ("float",     200.0),
-        "WallOffset":                  ("float",     0.0),
-        "WindowH1":                    ("float",     50.0),
-        "WindowH2":                    ("float",     50.0),
-        "WindowH3":                    ("float",     50.0),
-        "WindowHeight":                ("float",     1000.0),
-        "WindowO1":                    ("float",     0.0),
-        "WindowO2":                    ("float",     50.0),
-        "WindowPreset":                ("int",       0),
-        "WindowSill":                  ("float",     0.0),
-        "WindowW1":                    ("float",     100.0),
-        "WindowW2":                    ("float",     50.0),
-        "WindowWidth":                 ("float",     1000.0),
-    }
-
-    # BIM parameters that are not in the preferences:
-    # Note: incomplete!
-    param_dict["Mod/BIM"] = {
-        "BIMSketchPlacementOnly":      ("bool",      False),
-        "WallBaseline":                ("int",       0),
     }
 
     # For the Mod/Mesh parameters we do not check the preferences:
@@ -681,7 +580,6 @@ def _get_param_dictionary():
 
     # Preferences ui files are stored in resource files.
     # For the Draft Workbench: /Mod/Draft/Draft_rc.py
-    # For the Arch Workbench: /Mod/Arch/Arch_rc.py
     for fnm in (
         ":/ui/preferences-draft.ui",
         ":/ui/preferences-draftinterface.ui",
@@ -692,13 +590,6 @@ def _get_param_dictionary():
         ":/ui/preferences-dxf.ui",
         ":/ui/preferences-oca.ui",
         ":/ui/preferences-svg.ui",
-        ":/ui/preferences-arch.ui",
-        ":/ui/preferences-archdefaults.ui",
-        ":/ui/preferences-dae.ui",
-        ":/ui/preferences-ifc.ui",
-        ":/ui/preferences-ifc-export.ui",
-        ":/ui/preferences-sh3d-import.ui",
-        ":/ui/preferences-webgl.ui",
     ):
 
         # https://stackoverflow.com/questions/14750997/load-txt-file-from-resources-in-python
@@ -816,10 +707,6 @@ def get_param(entry, path="Mod/Draft", ret_default=False, silent=False):
     return None
 
 
-def get_param_arch(entry, ret_default=False):
-    return get_param(entry, path="Mod/Arch", ret_default=ret_default)
-
-
 def get_param_view(entry, ret_default=False):
     return get_param(entry, path="View", ret_default=ret_default)
 
@@ -861,10 +748,6 @@ def set_param(entry, value, path="Mod/Draft"):
     else:
         ret = False
     return ret
-
-
-def set_param_arch(entry, value):
-    return set_param(entry, value, path="Mod/Arch")
 
 
 def set_param_view(entry, value):

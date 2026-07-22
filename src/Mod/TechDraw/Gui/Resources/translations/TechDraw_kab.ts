@@ -124,24 +124,7 @@
       <translation type="unfinished">Insert Annotation</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1177"/>
-      <source>TechDraw</source>
-      <translation type="unfinished">TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1178"/>
-      <source>Insert Arch Workbench Object</source>
-      <translation type="unfinished">Insert Arch Workbench Object</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1179"/>
-      <source>Insert a View of a Section Plane from Arch Workbench</source>
-      <translation type="unfinished">Insert a View of a Section Plane from Arch Workbench</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -832,11 +815,6 @@
       <translation type="unfinished">Create DraftView</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1219"/>
-      <source>Create ArchView</source>
-      <translation type="unfinished">Create ArchView</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1267"/>
       <source>Create spreadsheet view</source>
       <translation type="unfinished">Create spreadsheet view</translation>
@@ -1320,24 +1298,9 @@
       <translation type="unfinished">There were no DraftWB objects in the selection.</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1207"/>
-      <source>Please select only 1 Arch Section.</source>
-      <translation type="unfinished">Please select only 1 Arch Section.</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1213"/>
-      <source>No Arch Sections in selection.</source>
-      <translation type="unfinished">No Arch Sections in selection.</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1365"/>
       <source>Can not export selection</source>
       <translation type="unfinished">Can not export selection</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1366"/>
-      <source>Page contains DrawViewArch which will not be exported. Continue?</source>
-      <translation type="unfinished">Page contains DrawViewArch which will not be exported. Continue?</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1256"/>

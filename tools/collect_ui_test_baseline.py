@@ -288,7 +288,6 @@ def freecad_startup_smoke_summary(results_dir: Path) -> dict[str, Any]:
         "result": report.get("result"),
         "returncode": report.get("returncode"),
         "freecad_version": payload.get("freecad_version"),
-        "ifcopenshell_version": payload.get("ifcopenshell_version"),
         "python_path_contains_venv": payload.get("python_path_contains_venv"),
     }
 

@@ -122,24 +122,7 @@
       <translation>編集可能なテキストブロック注釈を現在のページに挿入</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>BIMビュー</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>BIMの断面平面のビューを挿入</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>Drawing ページ作成</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>BIMビューを作成</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>画像を作成</translation>
@@ -3293,11 +3270,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <translation>クリップグループ、ビューを1つずつ選択してください。</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>ページにはエクスポートされないBIMビューが含まれています。続行しますか？</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation type="unfinished">Save DXF file</translation>
@@ -3331,16 +3303,6 @@ If no object is selected, a file browser opens to select an SVG or image file.</
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>少なくとも1つのオブジェクトを選択してください。</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>BIM断面平面を1つだけ選択してください。</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>BIM断面平面が選択されていません。</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -5571,15 +5533,15 @@ Multiplier of &apos;Font size&apos;</source>
       <source>Controls the gap size between the dimension point and the start of the extension line for ISO dimensions.
  Value multiplied by the line width is the gap.
  Normally, no gap is used. If using a gap, the recommended value is 8.</source>
-      <translation>ISO寸法での寸法点と延長線の始点の間の間隔を調整します。 
-値に線幅を乗算したものが間隔です。 
+      <translation>ISO寸法での寸法点と延長線の始点の間の間隔を調整します。
+値に線幅を乗算したものが間隔です。
 通常は間隔は使用されません。間隔を使用する場合の推奨値は 8 です。</translation>
     </message>
     <message>
       <location filename="../../DlgPrefsTechDrawDimensions.ui" line="466"/>
       <source>Controls the gap size between the dimension point and the start of the extension line for ASME dimensions. Value multiplied by the line width is the gap.
  Normally, no gap is used. If using a gap, the recommended value is 6.</source>
-      <translation>ASME寸法での寸法点と延長線の始点の間の間隔を調整します。 値に線幅を乗算したものが間隔です。 
+      <translation>ASME寸法での寸法点と延長線の始点の間の間隔を調整します。 値に線幅を乗算したものが間隔です。
 通常は間隔は使用されません。間隔を使用する場合の推奨値は 6 です。</translation>
     </message>
     <message>
@@ -10044,14 +10006,7 @@ there is an open task dialog.</source>
       <translation>直線</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

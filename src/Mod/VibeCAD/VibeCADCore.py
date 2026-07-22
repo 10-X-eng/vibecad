@@ -3576,64 +3576,6 @@ class VibeCADService:
             "jobs": [self._cam_job_summary(job) for job in jobs[:20]],
         }
 
-    @staticmethod
-    def _is_bim_object(obj: Any) -> bool:
-        type_id = getattr(obj, "TypeId", "")
-        proxy_type = getattr(getattr(obj, "Proxy", None), "Type", "")
-        return (
-            type_id.startswith(("Arch::", "BIM::"))
-            or hasattr(obj, "IfcType")
-            or proxy_type
-            in {
-                "Building",
-                "BuildingPart",
-                "Component",
-                "Floor",
-                "Site",
-                "Space",
-                "Structure",
-                "Wall",
-                "Window",
-            }
-        )
-
-    def _bim_objects(self) -> list[Any]:
-        doc = self._active_document()
-        if doc is None:
-            return []
-        return [obj for obj in doc.Objects if self._is_bim_object(obj)]
-
-    def _bim_object_summary(self, obj: Any) -> dict[str, Any]:
-        item = self._object_summary(obj)
-        item["proxy_type"] = getattr(getattr(obj, "Proxy", None), "Type", None)
-        item["ifc_type"] = getattr(obj, "IfcType", None)
-        children = list(getattr(obj, "Group", []) or [])
-        item["child_count"] = len(children)
-        item["children"] = [self._object_summary(child) for child in children[:60]]
-        for property_name in ("CompositionType", "Height"):
-            if hasattr(obj, property_name):
-                try:
-                    item[property_name.lower()] = self._short_value(
-                        getattr(obj, property_name)
-                    )
-                except Exception:
-                    continue
-        return item
-
-    def bim_summary(self) -> dict[str, Any]:
-        objects = self._bim_objects()
-        doc = self._active_document()
-        ifc_counts: dict[str, int] = {}
-        for obj in objects:
-            ifc_type = str(getattr(obj, "IfcType", "") or "Unclassified")
-            ifc_counts[ifc_type] = ifc_counts.get(ifc_type, 0) + 1
-        return {
-            "document": doc.Name if doc else None,
-            "object_count": len(objects),
-            "ifc_type_counts": ifc_counts,
-            "objects": [self._bim_object_summary(obj) for obj in objects[:80]],
-        }
-
     def _assembly_objects(self) -> list[Any]:
         doc = self._active_document()
         if doc is None:
@@ -4969,7 +4911,6 @@ class VibeCADService:
             "techdraw": self.techdraw_summary(),
             "fem": self.fem_summary(),
             "cam": self.cam_summary(),
-            "bim": self.bim_summary(),
             "assembly": self.assembly_summary(),
             "inspection": self.inspection_summary(),
             "surface": self.surface_summary(),

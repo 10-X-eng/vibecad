@@ -122,24 +122,7 @@
       <translation>Inserisce un blocco di testo di annotazione modificabile nella pagina corrente</translation>
     </message>
   </context>
-  <context>
-    <name>CmdTechDrawArchView</name>
-    <message>
-      <location filename="../../Command.cpp" line="1677"/>
-      <source>TechDraw</source>
-      <translation>TechDraw</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1678"/>
-      <source>BIM View</source>
-      <translation>Vista BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1679"/>
-      <source>Inserts a view of a BIM section plane</source>
-      <translation>Inserisce una vista di un piano di sezione BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawBalloon</name>
     <message>
@@ -2135,12 +2118,6 @@ Se non è selezionato alcun oggetto, si apre un browser di file per selezionare 
       <translation>Crea pagina disegno</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="363"/>
-      <location filename="../../Command.cpp" line="1724"/>
-      <source>Create BIM view</source>
-      <translation>Crea vista BIM</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="488"/>
       <source>Create image</source>
       <translation>Crea immagine</translation>
@@ -3293,11 +3270,6 @@ Se non è selezionato alcun oggetto, si apre un browser di file per selezionare 
       <translation>Selezionare un gruppo di ritaglio e una vista</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="1889"/>
-      <source>Page contains a BIM view which will not be exported. Continue?</source>
-      <translation>La pagina contiene una vista BIM che non verrà esportata. Continuare?</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="1903"/>
       <source>Save DXF file</source>
       <translation>Salva file DXF</translation>
@@ -3331,16 +3303,6 @@ Se non è selezionato alcun oggetto, si apre un browser di file per selezionare 
       <location filename="../../Command.cpp" line="1628"/>
       <source>Select at least one object</source>
       <translation>Selezionare almeno un oggetto</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1706"/>
-      <source>Select only 1 BIM section plane</source>
-      <translation>Selezionare solo 1 piano di sezione BIM</translation>
-    </message>
-    <message>
-      <location filename="../../Command.cpp" line="1712"/>
-      <source>No BIM section plane in selection</source>
-      <translation>Nessun piano di sezione BIM nella selezione</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="1771"/>
@@ -4359,7 +4321,7 @@ it has a weld symbol that would become broken.</source>
       <location filename="../../ViewProviderPage.cpp" line="211"/>
       <source>The page is not empty, therefore the
 following referencing objects might be lost:</source>
-      <translation>La pagina non è vuota, quindi i seguenti 
+      <translation>La pagina non è vuota, quindi i seguenti
 oggetti di riferimento potrebbero andare persi:</translation>
     </message>
     <message>
@@ -10065,14 +10027,7 @@ c'è una finestra di dialogo Azioni aperta.</translation>
       <translation>Linea</translation>
     </message>
   </context>
-  <context>
-    <name>DrawViewArch</name>
-    <message>
-      <location filename="../../../App/DrawView.cpp" line="67"/>
-      <source>BIM</source>
-      <translation>BIM</translation>
-    </message>
-  </context>
+
   <context>
     <name>CmdTechDrawAlignVertexesVertically</name>
     <message>

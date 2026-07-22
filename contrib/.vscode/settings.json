@@ -21,7 +21,6 @@
   "${workspaceFolder}/pyside_compatibility",
   "${workspaceFolder}/src/Mod/AddonManager",
   "${workspaceFolder}/src/Mod/Assembly",
-  "${workspaceFolder}/src/Mod/BIM",
   "${workspaceFolder}/src/Mod/CAM",
   "${workspaceFolder}/src/Mod/Cloud",
   "${workspaceFolder}/src/Mod/Draft",

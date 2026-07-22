@@ -1221,7 +1221,7 @@ die Ebene in die Mitte der Ansicht verschoben.</translation>
       <location filename="../ui/TaskPanel_SetStyle.ui" line="298"/>
       <source>The annotation scale multiplier is the inverse of the scale set in the
 Annotation scale widget. If the scale is 1:100 the multiplier is 100.</source>
-      <translation>Der Anmerkungsskalenmultiplikator ist der umgekehrte Skalierungsmaßstab im 
+      <translation>Der Anmerkungsskalenmultiplikator ist der umgekehrte Skalierungsmaßstab im
 Anmerkungsskala-Widget. Bei einer Skala von 1:100 beträgt der Multiplikator 100.</translation>
     </message>
     <message>
@@ -1557,11 +1557,11 @@ manually in any of the coordinate fields. Setting this to 0 disables the delay.
 If a delay of 1 is set, after entering a numeric value, the mouse will not
 update the field anymore during one second, to avoid moving the mouse
 accidentally and modifying the entered value.</source>
-      <translation>Dies ist eine Verzögerung, bei der die Maus inaktiv ist, nachdem die Zahlen manuell in eines der Koordinatenfelder eingegeben wurden. Die Einstellung auf 0 deaktiviert die Verzögerung. Wenn eine 
-Verzögerung von 1 gesetzt ist, nach Eingabe eines numerischen 
-Wertes wird die Maus das Feld nicht mehr während einer Sekunde aktualisieren, 
+      <translation>Dies ist eine Verzögerung, bei der die Maus inaktiv ist, nachdem die Zahlen manuell in eines der Koordinatenfelder eingegeben wurden. Die Einstellung auf 0 deaktiviert die Verzögerung. Wenn eine
+Verzögerung von 1 gesetzt ist, nach Eingabe eines numerischen
+Wertes wird die Maus das Feld nicht mehr während einer Sekunde aktualisieren,
 um zu vermeiden, die Maus versehentlich zu bewegen und den eingegebenen Wert
-zu ändern. Wenn Sie einen sehr großen Wert für z. B. verwenden, 
+zu ändern. Wenn Sie einen sehr großen Wert für z. B. verwenden,
 wird die Bewegung der Maus so lange deaktiviert, bis der Befehl beendet ist.</translation>
     </message>
     <message>
@@ -7023,7 +7023,7 @@ Wahr für Fusion oder Falsch für Verbund</translation>
     </message>
     <message>
       <location filename="../../draftobjects/circle.py" line="55"/>
-      <source>End angle of the arc (for a full circle, 
+      <source>End angle of the arc (for a full circle,
                 give it same value as First Angle)</source>
       <translation>Endwinkel des Bogens (für einen Vollkreis, geben Sie hier den gleichen Wert wie für den ersten Winkel an)</translation>
     </message>
@@ -7151,7 +7151,7 @@ The middle point is calculated automatically depending on the chosen
 
 If 'Straight Direction' is set to 'Custom', the 'Points' property
 can be set as a list of arbitrary points.</source>
-      <translation>Die Liste der Punkte, die die Hinweislinie definieren; normalerweise eine Liste 
+      <translation>Die Liste der Punkte, die die Hinweislinie definieren; normalerweise eine Liste
 von drei Punkten.
 
 Der erste Punkt sollte die Position des Textes sein, also die 'Positionierung'
@@ -7159,7 +7159,7 @@ und der letzte Punkt sollte die Spitze der Linie sein, also der 'Zielpunkt'.
 Der mittlere Punkt wird abhängig von den gewählten Werten und Vorzeichen
 für 'gerade Richtung' und 'gerader Abstand' automatisch berechnet.
 
-Wenn 'gerade Richtung' auf 'Benutzerdefiniert' gesetzt ist, kann die Eigenschaft 
+Wenn 'gerade Richtung' auf 'Benutzerdefiniert' gesetzt ist, kann die Eigenschaft
 'Punkte' als Liste von beliebigen Punkten gesetzt werden.</translation>
     </message>
     <message>
@@ -7170,7 +7170,7 @@ If 'Custom' is chosen, the points of the leader can be specified by
 assigning a custom list to the 'Points' attribute.</source>
       <translation>Die Richtung des geraden Segments der Hinweislinie.
 
-Wenn 'Benutzerdefiniert' ausgewählt ist, können die Punkte der Hinweislinie durch 
+Wenn 'Benutzerdefiniert' ausgewählt ist, können die Punkte der Hinweislinie durch
 Zuweisen einer benutzerdefinierten Liste zum Attribut 'Punkte' angegeben werden.</translation>
     </message>
     <message>
@@ -7182,7 +7182,7 @@ to the left or below the 'Text', otherwise to the right or above it,
 depending on the value of 'Straight Direction'.</source>
       <translation>Die Länge des geraden Segments der Hinweislinie.
 
-Dies ist ein gerichteter Abstand. Wenn er negativ ist, wird die Linie 
+Dies ist ein gerichteter Abstand. Wenn er negativ ist, wird die Linie
 links oder unterhalb des 'Textes' gezeichnet, sonst rechts oder darüber,
 abhängig vom Wert der Eigenschaft 'Gerade Richtung' (Straight Direction).</translation>
     </message>
@@ -7211,31 +7211,12 @@ von der Hinweisart und dem unter 'Ziel' (Target) festgelegten Objekt abhängt.
 'Hinweisart' (Label Type) auf 'Benutzerdefiniert' (Custom) gesetzt ist.</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/label.py" line="214"/>
-      <source>The type of information displayed by this label.
-
-If 'Custom' is chosen, the contents of 'Custom Text' will be used.
-For other types, the string will be calculated automatically from the object defined in 'Target'.
-'Tag' and 'Material' only work for objects that have these properties, like BIM objects.
-
-For 'Position', 'Length', and 'Area' these properties will be extracted from the main object in 'Target',
-or from the subelement 'VertexN', 'EdgeN', or 'FaceN', respectively, if it is specified.</source>
-      <translation>Die Art der Informationen, die durch diese Beschriftung angezeigt wird.
-
-Wenn „Benutzerdefiniert“ ausgewählt wird, wird der Inhalt von „Benutzerdefinierter Text“ verwendet.
-Bei anderen Typen wird die Zeichenfolge automatisch aus dem in „Ziel“ definierten Objekt berechnet.
-„Tag“ und „Material“ funktionieren nur für Objekte, die über diese Eigenschaften verfügen, wie z. B. BIM-Objekte.
-
-Für „Position“, „Länge“ und „Fläche“ werden diese Eigenschaften aus dem Hauptobjekt in „Ziel“ extrahiert
-oder aus dem Unterelement „VertexN“, „EdgeN“ bzw. „FaceN“, sofern angegeben.</translation>
-    </message>
-    <message>
       <location filename="../../draftviewproviders/view_draft_annotation.py" line="90"/>
       <source>General scaling factor that affects the annotation consistently
 because it scales the text, and the line decorations, if any,
 in the same proportion.</source>
       <translation>Allgemeiner Skalierungsfaktor, der die Anmerkung konsistent beeinflusst
-weil es den Text und falls vorhanden die Liniendekorationen, 
+weil es den Text und falls vorhanden die Liniendekorationen,
 im gleichen Verhältnis skaliert.</translation>
     </message>
     <message>
@@ -7512,11 +7493,6 @@ Diese Eigenschaft ist schreibgeschützt, da die Zahl von den Punkten im 'Punkt O
       <translation>Verdeckte Linien anzeigen</translation>
     </message>
     <message>
-      <location filename="../../draftobjects/shape2dview.py" line="96"/>
-      <source>Fuse wall and structure objects of same type and material</source>
-      <translation>Wand- und Strukturobjekte von gleicher Art und Material verschmelzen</translation>
-    </message>
-    <message>
       <location filename="../../draftobjects/shape2dview.py" line="101"/>
       <source>Tessellate Ellipses and B-splines into line segments</source>
       <translation>Tesselliert Ellipsen und B-Splines in Liniensegmente</translation>
@@ -7618,10 +7594,10 @@ Diese Eigenschaft ist schreibgeschützt, da die Zahl von den Punkten im 'Punkt O
     </message>
     <message>
       <location filename="../../draftobjects/ellipse.py" line="55"/>
-      <source>End angle of the elliptical arc 
+      <source>End angle of the elliptical arc
 
                 (for a full circle, give it same value as First Angle)</source>
-      <translation>Endwinkel des elliptischen Bogens 
+      <translation>Endwinkel des elliptischen Bogens
 
                 (für einen Vollkreis, den gleichen Wert wie für den ersten Winkel verwenden)</translation>
     </message>
@@ -7701,7 +7677,7 @@ that displays the measured angle.</source>
 
 - Für lineare Masse legt diese Eigenschaft fest, wie nahe die Bemassungslinie
 zum gemessenen Objekt ist.
-- Bei radialen Maßen steuert dies die Richtung der Bemassungslinie, 
+- Bei radialen Maßen steuert dies die Richtung der Bemassungslinie,
 die den gemessenen Radius oder den gemessenen Durchmesser anzeigt.
 - Bei Winkelmaßen wird der Radius des Massbogens
 kontrolliert, der den gemessenen Winkel anzeigt.</translation>
@@ -8348,11 +8324,6 @@ Eine einzelne Skizze mit getrennten Kurven wird jedoch in mehrere einzelne Draft
       <source>Auto-Group</source>
       <translation>AutoGruppieren</translation>
     </message>
-    <message>
-      <location filename="../../draftguitools/gui_groups.py" line="233"/>
-      <source>Adds new Draft and BIM objects to the selected layer or group</source>
-      <translation>Fügt neue Draft- und BIM-Objekte der ausgewählten Ebene oder Gruppe hinzu</translation>
-    </message>
   </context>
   <context>
     <name>Draft_AddConstruction</name>
@@ -8712,11 +8683,6 @@ Die anfängliche Projektionsrichtung ist entgegengesetzt zur aktuell aktiven Bli
       <location filename="../../draftguitools/gui_snaps.py" line="215"/>
       <source>Snap Center</source>
       <translation>Einrasten auf Zentrum</translation>
-    </message>
-    <message>
-      <location filename="../../draftguitools/gui_snaps.py" line="219"/>
-      <source>Snaps to the center point of faces and circular edges, and to the placement point of working plane proxies and building parts</source>
-      <translation>Rastet auf Mittelpunkte von Flächen und kreisförmigen Kanten ein, sowie auf dem Positionierungspunkt von Arbeitsebenen-Proxies und Gebäudeteilen</translation>
     </message>
   </context>
   <context>

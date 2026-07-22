@@ -427,7 +427,7 @@ def test_provider_schema_build_reuses_turn_context_runtime_state(
 
 
 def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
-    """All 18 workbench surfaces stay bounded without dropping exact schemas."""
+    """All 17 workbench surfaces stay bounded without dropping exact schemas."""
 
     import json
 
@@ -478,7 +478,7 @@ def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
                 <= provider.MAX_PROVIDER_INSTRUCTIONS_BYTES
             )
 
-    assert observed_workbenches == 18
+    assert observed_workbenches == 17
 
 
 @pytest.mark.parametrize(
@@ -491,7 +491,6 @@ def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
         ("AssemblyWorkbench", True),
         ("SpreadsheetWorkbench", True),
         ("MaterialWorkbench", True),
-        ("BIMWorkbench", True),
         ("MeshWorkbench", True),
         ("MeshPartWorkbench", True),
         ("FemWorkbench", True),
@@ -530,37 +529,25 @@ def test_selected_vibescript_replaces_representative_native_surfaces(
         assert not any(name.startswith("vibescript.") for name in names)
 
 
-def test_bim_has_no_special_opt_in_and_exposes_only_its_ready_domain() -> None:
-    import VibeCADSession as session
+def test_removed_bim_surface_is_not_registered() -> None:
+    from tool_impl.service import TOOL_MODULE_NAMES
     from VibeCADCore import VibeCADService
+    from VibeCADWorkbenchTools import get_tool_pack
     from VibeCADModelingSurface import resolve_modeling_surface
     from VibeCADVibeScriptDomains import domain_availability, get_vibescript_pack
 
     assert not hasattr(VibeCADService, "vibescript_on_bim_enabled")
-    names = session._surface_tool_names(_SurfaceService("vibescript"), "BIMWorkbench")
-    pack = get_vibescript_pack("BIMWorkbench")
-    assert pack is not None
-    assert pack.domain == "bim"
-    assert pack.production_ready is True
+    assert not hasattr(VibeCADService, "bim_summary")
+    assert not any(name.startswith("bim_") for name in TOOL_MODULE_NAMES)
+    assert get_tool_pack("BIMWorkbench") is None
+    assert get_vibescript_pack("BIMWorkbench") is None
     available, reason = domain_availability("BIMWorkbench")
-    assert available is True
-    assert reason == ""
+    assert available is False
+    assert reason
     surface = resolve_modeling_surface("BIMWorkbench", "vibescript")
-    assert surface.available is True
-    assert surface.unavailable_reason == ""
-    assert set(surface.cad_tool_names) == {
-        name
-        for name in pack.tool_names
-        if not name.endswith(".describe_api")
-        and not name.endswith(".inspect_program")
-    }
-    assert "core.inspect" in names
-    assert len([name for name in names if name.startswith("vibescript.bim.")]) == 5
-    assert not any(
-        name.startswith("vibescript.") and not name.startswith("vibescript.bim.")
-        for name in names
-    )
-    assert not any(name.startswith("bim.") for name in names)
+    assert surface.available is False
+    assert surface.cad_tool_names == ()
+    assert surface.unavailable_reason
 
 
 @pytest.mark.parametrize("engine", ("native", "build123d", "openscad"))

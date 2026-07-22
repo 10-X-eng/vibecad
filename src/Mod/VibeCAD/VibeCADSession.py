@@ -2203,7 +2203,6 @@ def make_provider_tool_runner(
                 "meshpart",
                 "points",
                 "spreadsheet",
-                "bim",
                 "inspection",
                 "robot",
                 "reverse_engineering",

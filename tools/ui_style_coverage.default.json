@@ -4,7 +4,6 @@
     "PartDesignWorkbench",
     "SketcherWorkbench",
     "DraftWorkbench",
-    "BIMWorkbench",
     "TechDrawWorkbench",
     "FemWorkbench",
     "CAMWorkbench",
@@ -15,7 +14,6 @@
     "partdesign",
     "sketcher",
     "draft",
-    "bim",
     "techdraw",
     "fem",
     "cam",
@@ -30,7 +28,7 @@
   "required_task_coverage": [
     "partdesign-task",
     "sketcher-edit",
-    "draft-bim-panel",
+    "draft-panel",
     "techdraw-page-view",
     "fem-solver-material",
     "cam-setup-tool"
