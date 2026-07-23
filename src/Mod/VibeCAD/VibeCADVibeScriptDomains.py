@@ -176,10 +176,24 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "PartDesignWorkbench",
         "partdesign",
         "Part Design",
-        ("solid",),
-        "Author source-parametric Bodies, sketches, and Part Design features. "
-        "Every published output is exactly one validated solid.",
+        ("solid", "shell", "face", "wire", "compound"),
+        "Author one source-parametric 3D graph. Use explicit new_solid, new_surface, "
+        "add_material, or remove_material intent; use boolean for union/subtract/intersect "
+        "and compound for deliberately disconnected geometry. Body adopts an exact solid; "
+        "publish accepts standalone solid, shell, face, wire, or compound geometry. "
+        "Use material plus appearance on body/publish for physical catalog properties and "
+        "source-parametric display styling. Implementation names such as Pad, Pocket, and "
+        "Groove are compatibility-only.",
         (
+            "from_object",
+            "box",
+            "wedge",
+            "plane",
+            "prism",
+            "cylinder",
+            "cone",
+            "sphere",
+            "torus",
             "point",
             "line",
             "arc",
@@ -189,16 +203,56 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "external_geometry",
             "constraint",
             "sketch",
-            "pad",
-            "pocket",
+            "line_3d",
+            "arc_3d",
+            "circle_3d",
+            "ellipse_3d",
+            "bezier_3d",
+            "bspline_3d",
+            "nurbs_curve",
+            "helix_curve",
+            "wire",
+            "face",
+            "shell",
+            "solid",
+            "compound",
+            "subshape",
+            "extrude",
             "revolve",
-            "groove",
             "loft",
+            "sweep",
+            "helix",
+            "boolean",
+            "section",
+            "general_fuse",
+            "slice",
+            "ruled_surface",
+            "filled_surface",
             "polar_pattern",
+            "linear_pattern",
+            "multi_transform",
             "mirror",
             "fillet",
             "chamfer",
+            "thickness",
+            "hole",
+            "draft",
+            "defeature",
+            "to_nurbs",
+            "reverse",
+            "sew",
+            "repair",
+            "offset",
+            "offset2d",
+            "transform",
+            "project",
+            "refine",
+            "find_subelements",
+            "measure",
+            "material",
+            "appearance",
             "body",
+            "publish",
         ),
         production_ready=True,
     ),
@@ -1319,16 +1373,26 @@ def _material_document_snapshot(doc: Any) -> dict[str, Any]:
         appearance: dict[str, Any] = {}
         display_modes: list[str] = []
         if view is not None:
-            if hasattr(view, "ShapeColor") and hasattr(view, "ShapeAppearance"):
+            if hasattr(view, "ShapeAppearance"):
                 supported.append("ShapeAppearance")
                 try:
-                    appearance["shape_color"] = [
-                        float(value) for value in tuple(view.ShapeColor)[:3]
-                    ]
-                    appearance["transparency"] = int(view.Transparency)
-                    appearance["shape_appearance_count"] = len(
-                        list(view.ShapeAppearance or [])
-                    )
+                    materials = list(view.ShapeAppearance or [])
+                    appearance["shape_appearance_count"] = len(materials)
+                    if hasattr(view, "ShapeColor"):
+                        appearance["shape_color"] = [
+                            float(value) for value in tuple(view.ShapeColor)[:3]
+                        ]
+                    elif materials:
+                        appearance["shape_color"] = [
+                            float(value)
+                            for value in tuple(materials[0].DiffuseColor)[:3]
+                        ]
+                    if hasattr(view, "Transparency"):
+                        appearance["transparency"] = int(view.Transparency)
+                    elif materials:
+                        appearance["transparency"] = int(
+                            round(float(materials[0].Transparency) * 100.0)
+                        )
                 except Exception as exc:
                     appearance["surface_error"] = str(exc)
             for api_name, native_name in (
@@ -3311,6 +3375,7 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 "targets",
             )
         }
+    if domain in {"material", "partdesign"}:
         try:
             from vibescript_material_worker import material_catalog_index
 

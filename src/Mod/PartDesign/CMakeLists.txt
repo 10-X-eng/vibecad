@@ -53,6 +53,9 @@ set(PartDesign_TestScripts
     PartDesignTests/TestBoolean.py
     PartDesignTests/TestFillet.py
     PartDesignTests/TestChamfer.py
+    PartDesignTests/TestConsolidatedPart.py
+    PartDesignTests/TestConsolidatedPartTools.py
+    PartDesignTests/TestVibeScriptPresentation.py
     PartDesignTests/TestDraft.py
     PartDesignTests/TestThickness.py
     PartDesignTests/TestTopologicalNamingProblem.py

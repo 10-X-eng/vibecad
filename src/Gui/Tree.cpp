@@ -215,6 +215,29 @@ public:
     {
         auto newChildren = viewObject->claimChildren();
         auto obj = viewObject->getObject();
+
+        // A modeling body owns its feature nodes independently of the dependency graph between
+        // them. Do not let a feature's ViewProvider reparent another member of the same body.
+        // Dependency nesting remains unchanged for objects outside groups that opt into this
+        // ownership-first tree policy.
+        auto* owningGroup = App::GeoFeatureGroupExtension::getGroupOfObject(obj);
+        auto* owningGroupExtension = owningGroup
+            ? owningGroup->getExtensionByType<App::GeoFeatureGroupExtension>()
+            : nullptr;
+        if (owningGroupExtension && owningGroupExtension->keepDirectChildrenInTree()) {
+            newChildren.erase(
+                std::remove_if(
+                    newChildren.begin(),
+                    newChildren.end(),
+                    [owningGroup](const App::DocumentObject* child) {
+                        return child
+                            && App::GeoFeatureGroupExtension::getGroupOfObject(child) == owningGroup;
+                    }
+                ),
+                newChildren.end()
+            );
+        }
+
         std::set<App::DocumentObject*> newSet;
         bool updated = false;
         for (auto child : newChildren) {
@@ -3708,6 +3731,11 @@ void TreeWidget::onUpdateStatus()
 
     updateGeometries();
     statusTimer->stop();
+    if (!ChangedObjects.empty() || !NewObjects.empty()) {
+        // Property callbacks can enqueue another tree update while this pass is running.  Do not
+        // discard the timer they started: process the newly queued changes in a subsequent pass.
+        _updateStatus();
+    }
 
     FC_LOG("done update status");
 }
@@ -5092,6 +5120,26 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
             }
         }
         return;
+    }
+
+    // A direct-child modeling group changes how each member's dependency children are presented.
+    // Invalidate both the previous and current members whenever Group changes.  Without this, a
+    // feature created at document root can keep its pre-adoption dependency nesting cached after it
+    // is moved into a Body; removed members have the inverse stale-cache problem.
+    auto* geoGroup = obj->getExtensionByType<App::GeoFeatureGroupExtension>(true);
+    if (geoGroup && geoGroup->keepDirectChildrenInTree() && &prop == &geoGroup->Group) {
+        for (const auto& data : itEntry->second) {
+            for (auto* member : data->children) {
+                if (member && member->isAttachedToDocument()) {
+                    ChangedObjects.emplace(member, 0);
+                }
+            }
+        }
+        for (auto* member : geoGroup->Group.getValues()) {
+            if (member && member->isAttachedToDocument()) {
+                ChangedObjects.emplace(member, 0);
+            }
+        }
     }
 
     auto& s = ChangedObjects[obj];

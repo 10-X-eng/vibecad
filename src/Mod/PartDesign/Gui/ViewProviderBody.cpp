@@ -174,7 +174,7 @@ void ViewProviderBody::setOverrideMode(const std::string& mode)
                 PartDesign::Body* body = static_cast<PartDesign::Body*>(getObject());
                 auto features = body->Group.getValues();
                 for (auto feature : features) {
-                    if (feature && feature->isDerivedFrom<PartDesign::Feature>()) {
+                    if (feature && PartDesign::Body::isResultFeature(feature)) {
                         if (Gui::ViewProvider* vp = gdoc->getViewProvider(feature)) {
                             vp->setOverrideMode(mode);
                         }
@@ -411,7 +411,7 @@ void ViewProviderBody::unifyVisualProperty(const App::Property* prop)
     auto features = body->Group.getValues();
     for (auto feature : features) {
 
-        if (!feature->isDerivedFrom<PartDesign::Feature>()) {
+        if (!PartDesign::Body::isResultFeature(feature)) {
             continue;
         }
 
@@ -489,8 +489,12 @@ PartDesign::Feature* ViewProviderBody::getShownFeature() const
 
 Gui::ViewProvider* ViewProviderBody::getShownViewProvider() const
 {
-    if (const auto* feature = getShownFeature()) {
-        return Gui::Application::Instance->getViewProvider(feature);
+    auto body = static_cast<PartDesign::Body*>(getObject());
+    for (auto* feature : body->Group.getValues()) {
+        if (feature && feature->Visibility.getValue()
+            && PartDesign::Body::isResultFeature(feature)) {
+            return Gui::Application::Instance->getViewProvider(feature);
+        }
     }
 
     return nullptr;
@@ -592,7 +596,7 @@ void ViewProviderBody::dropObject(App::DocumentObject* obj)
 
 bool ViewProviderBody::canDragObjectToTarget(App::DocumentObject* obj, App::DocumentObject* target) const
 {
-    if (obj->isDerivedFrom<PartDesign::Feature>()) {
+    if (PartDesign::Body::isAllowed(obj)) {
         return target && target->is<PartDesign::Body>();
     }
 
@@ -627,11 +631,9 @@ void ViewProviderBody::show()
             continue;
         }
 
-        if (vp->isDerivedFrom(PartDesignGui::ViewProvider::getClassTypeId())) {
-            if (feature->Visibility.getValue()) {
-                foundVisible = true;
-                break;
-            }
+        if (PartDesign::Body::isResultFeature(feature) && feature->Visibility.getValue()) {
+            foundVisible = true;
+            break;
         }
     }
 

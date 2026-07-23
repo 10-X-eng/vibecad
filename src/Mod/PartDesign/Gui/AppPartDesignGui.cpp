@@ -29,10 +29,13 @@
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
+#include <App/DocumentObjectPy.h>
 #include <Gui/Application.h>
 #include <Gui/Language/Translator.h>
+#include <Mod/PartDesign/App/Body.h>
 
 #include "Workbench.h"
+#include "ModelingContext.h"
 #include "ViewProviderBase.h"
 #include "ViewProviderBody.h"
 #include "ViewProviderBoolean.h"
@@ -85,10 +88,45 @@ public:
     Module()
         : Py::ExtensionModule<Module>("PartDesignGui")
     {
+        add_varargs_method(
+            "adoptPartResult",
+            &Module::adoptPartResult,
+            "adoptPartResult(result, body=None) -> Body or None\n\n"
+            "Atomically place a completed ordinary Part result and its unowned "
+            "dependencies in a Body. Existing group ownership is never changed."
+        );
         initialize("This module is the PartDesignGui module.");  // register with Python
     }
 
 private:
+    Py::Object adoptPartResult(const Py::Tuple& args)
+    {
+        PyObject* resultObject = nullptr;
+        PyObject* bodyObject = Py_None;
+        if (!PyArg_ParseTuple(args.ptr(), "O|O", &resultObject, &bodyObject)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(resultObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("result must be a document object");
+        }
+        auto* result = static_cast<App::DocumentObjectPy*>(resultObject)->getDocumentObjectPtr();
+
+        PartDesign::Body* body = nullptr;
+        if (bodyObject != Py_None) {
+            if (!PyObject_TypeCheck(bodyObject, &App::DocumentObjectPy::Type)) {
+                throw Py::TypeError("body must be a PartDesign Body or None");
+            }
+            auto* candidate
+                = static_cast<App::DocumentObjectPy*>(bodyObject)->getDocumentObjectPtr();
+            body = freecad_cast<PartDesign::Body*>(candidate);
+            if (!body) {
+                throw Py::TypeError("body must be a PartDesign Body or None");
+            }
+        }
+
+        auto* adopted = ModelingContext::instance().adoptPartResult(result, body);
+        return adopted ? Py::asObject(adopted->getPyObject()) : Py::None();
+    }
 };
 
 PyObject* initModule()
@@ -123,6 +161,7 @@ PyMOD_INIT_FUNC(PartDesignGui)
     CreatePartDesignCommands();
     CreatePartDesignBodyCommands();
     CreatePartDesignPrimitiveCommands();
+    PartDesignGui::ModelingContext::instance();
 
     // clang-format off
     PartDesignGui::Workbench                 ::init();

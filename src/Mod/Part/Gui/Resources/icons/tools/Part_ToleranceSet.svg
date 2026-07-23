@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#729fcf"/>
+      <stop offset="1" stop-color="#204a87"/>
+    </linearGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c9e6ff"/>
+      <stop offset="1" stop-color="#729fcf"/>
+    </linearGradient>
+  </defs>
+  <path d="M7 22 29 10l22 12-22 12Z" fill="url(#top)" stroke="#0b1521" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M7 22 29 34v23L7 45Z" fill="#3465a4" stroke="#0b1521" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M29 34 51 22v23L29 57Z" fill="url(#front)" stroke="#0b1521" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M10 24 29 14l19 10" fill="none" stroke="#d6ecff" stroke-width="2" stroke-linecap="round"/>
+  <path d="M56 16v34M52 16h8M52 50h8" fill="none" stroke="#a40000" stroke-width="3" stroke-linecap="round"/>
+  <path d="m56 16-4 7h8Zm0 34-4-7h8Z" fill="#ef2929" stroke="#a40000" stroke-width="1.5" stroke-linejoin="round"/>
+  <circle cx="46" cy="13" r="10" fill="#fce94f" stroke="#0b1521" stroke-width="2"/>
+  <path d="M40 10h12M46 6v8M40 17h12" fill="none" stroke="#0b1521" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

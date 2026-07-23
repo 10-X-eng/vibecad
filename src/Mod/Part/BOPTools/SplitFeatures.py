@@ -30,6 +30,7 @@ __doc__ = "Shape splitting document objects (features)."
 from . import SplitAPI
 import FreeCAD
 import Part
+from PartLinkScope import migrate_many_to_global
 
 if FreeCAD.GuiUp:
     import FreeCADGui
@@ -72,7 +73,7 @@ class FeatureBooleanFragments:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList",
+            "App::PropertyLinkListGlobal",
             "Objects",
             "BooleanFragments",
             "Object to compute intersections between.",
@@ -99,6 +100,9 @@ class FeatureBooleanFragments:
 
         obj.Proxy = self
         self.Type = "FeatureBooleanFragments"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
 
     def execute(self, selfobj):
         shapes = [obj.Shape for obj in selfobj.Objects]
@@ -270,9 +274,15 @@ class FeatureSlice:
     """The Slice feature object."""
 
     def __init__(self, obj):
-        obj.addProperty("App::PropertyLink", "Base", "Slice", "Object to be sliced.", locked=True)
         obj.addProperty(
-            "App::PropertyLinkList", "Tools", "Slice", "Objects that slice.", locked=True
+            "App::PropertyLinkGlobal", "Base", "Slice", "Object to be sliced.", locked=True
+        )
+        obj.addProperty(
+            "App::PropertyLinkListGlobal",
+            "Tools",
+            "Slice",
+            "Objects that slice.",
+            locked=True,
         )
         obj.addProperty(
             "App::PropertyEnumeration",
@@ -295,6 +305,9 @@ class FeatureSlice:
 
         obj.Proxy = self
         self.Type = "FeatureSlice"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tools")
 
     def execute(self, selfobj):
         if len(selfobj.Tools) < 1:
@@ -422,9 +435,28 @@ def cmdCreateSliceFeature(name, mode, transaction=True):
 
 def cmdSliceApart():
     FreeCAD.ActiveDocument.openTransaction("Slice apart")
+    objects_before = set(FreeCAD.ActiveDocument.Objects)
     made = cmdCreateSliceFeature(name="Slice", mode="Split", transaction=False)
 
     if made:
+        # The exploded children must inherit the Slice result's final owner.
+        # Finalize Body ownership now because explodeCompound runs before this
+        # transaction reaches the general transaction-close adoption bridge.
+        try:
+            import PartDesignGui
+        except ImportError:
+            pass
+        else:
+            created_slices = [
+                obj
+                for obj in FreeCAD.ActiveDocument.Objects
+                if obj not in objects_before
+                and getattr(getattr(obj, "Proxy", None), "Type", "") == "FeatureSlice"
+            ]
+            if len(created_slices) != 1:
+                FreeCAD.ActiveDocument.abortTransaction()
+                raise RuntimeError("Slice Apart did not create exactly one Slice feature.")
+            PartDesignGui.adoptPartResult(created_slices[0])
         FreeCADGui.addModule("CompoundTools.Explode")
         FreeCADGui.doCommand("CompoundTools.Explode.explodeCompound(f)")
         FreeCADGui.doCommand("f.ViewObject.hide()")
@@ -531,7 +563,7 @@ class FeatureXOR:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList",
+            "App::PropertyLinkListGlobal",
             "Objects",
             "XOR",
             "Object to compute intersections between.",
@@ -548,6 +580,9 @@ class FeatureXOR:
 
         obj.Proxy = self
         self.Type = "FeatureXOR"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
 
     def execute(self, selfobj):
         shapes = [obj.Shape for obj in selfobj.Objects]

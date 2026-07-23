@@ -118,7 +118,7 @@ protected:
     virtual TaskDlgFeatureParameters* getEditDialog();
 
     std::string oldWb;
-    ViewProvider* previouslyShownViewProvider {nullptr};
+    Gui::ViewProvider* previouslyShownViewProvider {nullptr};
 
     bool isSetTipIcon {false};
 

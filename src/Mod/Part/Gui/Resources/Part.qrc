@@ -68,6 +68,7 @@
         <file>icons/tools/Part_ShapeInfo.svg</file>
         <file>icons/tools/Part_Sweep.svg</file>
         <file>icons/tools/Part_Thickness.svg</file>
+        <file>icons/tools/Part_ToleranceSet.svg</file>
         <file>icons/tools/Part_Transformed_Copy.svg</file>
     </qresource>
     <qresource>
@@ -79,7 +80,6 @@
         <file>icons/Part_FeatureImport.svg</file>
         <file>icons/Part_Import.svg</file>
         <file>icons/Part_SectionCut.svg</file>
-        <file>icons/PartWorkbench.svg</file>
         <file>icons/preferences-part_design.svg</file>
         <file>icons/Part_Detached.svg</file>
         <file>icons/Part_LinearPattern_extent.svg</file>

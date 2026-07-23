@@ -264,7 +264,6 @@ DlgFilletEdges::DlgFilletEdges(
     ui->filletEndRadius->setUnit(Base::Unit::Length);
 
     d->object = nullptr;
-    setSelectionGate();
 
     d->fillet = fillet;
     // NOLINTBEGIN
@@ -314,6 +313,9 @@ DlgFilletEdges::DlgFilletEdges(
     header->setSectionsMovable(false);
     onFilletTypeActivated(0);
     findShapes();
+    // Resolve the selected shape before installing the gate.  A gate whose target is still
+    // null rejects and clears the edge selection that launched this dialog.
+    setSelectionGate();
 }
 
 /*

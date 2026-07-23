@@ -72,6 +72,7 @@ _conversation_persist_thread: threading.Thread | None = None
 _conversation_persist_lock = threading.RLock()
 _assistant_document_refresh_scheduled = False
 _legacy_architecture_warning_documents: set[str] = set()
+_pending_document_render_refreshes: set[str] = set()
 
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
@@ -2715,7 +2716,7 @@ def _refresh_view_status(dock: Any | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _document_restore_active() -> bool:
+def _document_restore_active(document: Any | None = None) -> bool:
     is_restoring = getattr(App, "isRestoring", None)
     if callable(is_restoring):
         try:
@@ -2723,11 +2724,83 @@ def _document_restore_active() -> bool:
                 return True
         except Exception:
             pass
-    try:
-        document = App.ActiveDocument
-    except Exception:
-        document = None
+    if document is None:
+        try:
+            document = App.ActiveDocument
+        except Exception:
+            document = None
     return document is not None and bool(getattr(document, "Restoring", False))
+
+
+def _pending_document_objects(document: Any) -> list[Any]:
+    """Return restored document objects that still require recompute."""
+
+    pending = []
+    for obj in list(getattr(document, "Objects", []) or []):
+        state = {str(item) for item in list(getattr(obj, "State", []) or [])}
+        if "Touched" in state:
+            pending.append(obj)
+    return pending
+
+
+def _redraw_document_view(document: Any) -> None:
+    """Redraw a restored document without changing its saved camera."""
+
+    try:
+        gui_document = Gui.getDocument(str(document.Name))
+        view = gui_document.activeView() if gui_document is not None else None
+        if view is not None:
+            update_gui = getattr(Gui, "updateGui", None)
+            if callable(update_gui):
+                update_gui()
+            view.redraw()
+    except Exception as exc:
+        _warn(f"VibeCAD restored-document redraw failed: {exc}")
+
+
+def _recompute_pending_document_geometry(document: Any) -> bool:
+    """Make restored document geometry render-ready before user interaction."""
+
+    pending = _pending_document_objects(document)
+    if not pending:
+        return False
+    try:
+        gui_document = Gui.getDocument(str(document.Name))
+        was_modified = (
+            bool(gui_document.Modified) if gui_document is not None else None
+        )
+    except Exception:
+        gui_document = None
+        was_modified = None
+    try:
+        document.recompute()
+    except Exception as exc:
+        names = ", ".join(str(getattr(obj, "Name", "")) for obj in pending)
+        _warn(
+            "VibeCAD restored-document recompute failed for "
+            f"{names or 'pending geometry'}: {exc}"
+        )
+        return False
+
+    unresolved = []
+    for obj in pending:
+        state = {str(item) for item in list(getattr(obj, "State", []) or [])}
+        if state.intersection({"Touched", "Invalid", "Error"}):
+            unresolved.append(
+                f"{str(getattr(obj, 'Name', ''))} ({', '.join(sorted(state))})"
+            )
+    if unresolved:
+        _warn(
+            "VibeCAD restored-document recompute left invalid geometry: "
+            + ", ".join(unresolved)
+        )
+    _redraw_document_view(document)
+    if gui_document is not None and was_modified is False:
+        try:
+            gui_document.Modified = False
+        except Exception as exc:
+            _warn(f"VibeCAD restored-document modified-state reset failed: {exc}")
+    return not unresolved
 
 
 def _refresh_assistant_for_document_change() -> None:
@@ -2826,6 +2899,50 @@ def _document_storage_key(doc: Any) -> str:
     return uid
 
 
+def _schedule_document_render_after_restore(document: Any) -> None:
+    """Recompute and redraw one opened document after native restoration."""
+
+    try:
+        document_key = _document_storage_key(document)
+    except Exception as exc:
+        _warn(f"VibeCAD restored-document scheduling failed: {exc}")
+        return
+    if document_key in _pending_document_render_refreshes:
+        return
+    _pending_document_render_refreshes.add(document_key)
+
+    try:
+        from PySide import QtCore
+
+        def render_when_restored() -> None:
+            if _document_restore_active(document):
+                QtCore.QTimer.singleShot(100, render_when_restored)
+                return
+            _pending_document_render_refreshes.discard(document_key)
+            try:
+                live_documents = dict(App.listDocuments())
+            except Exception:
+                live_documents = {}
+            live_document = live_documents.get(str(getattr(document, "Name", "")))
+            if live_document is None:
+                return
+            if _document_storage_key(live_document) != document_key:
+                return
+            if _recompute_pending_document_geometry(live_document):
+                QtCore.QTimer.singleShot(
+                    0,
+                    lambda doc=live_document: _redraw_document_view(doc),
+                )
+
+        QtCore.QTimer.singleShot(0, render_when_restored)
+    except Exception as exc:
+        _pending_document_render_refreshes.discard(document_key)
+        if _document_restore_active(document):
+            _warn(f"VibeCAD restored-document scheduling failed: {exc}")
+            return
+        _recompute_pending_document_geometry(document)
+
+
 def _snapshot_active_document_conversation(doc: Any) -> None:
     if doc is None:
         return
@@ -2885,6 +3002,7 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
 
 class _VibeCADDocumentObserver:
     def slotCreatedDocument(self, doc) -> None:
+        _schedule_document_render_after_restore(doc)
         _schedule_assistant_document_refresh()
 
     def slotActivateDocument(self, doc) -> None:
@@ -2892,6 +3010,7 @@ class _VibeCADDocumentObserver:
         active_uid = str(getattr(doc, "Uid", "") or "")
         if pending and pending.get("document_uid") != active_uid:
             _sketch_close_continuation_controller.clear()
+        _schedule_document_render_after_restore(doc)
         _schedule_assistant_document_refresh()
 
     def slotChangedObject(self, obj, property_name) -> None:
@@ -2935,6 +3054,7 @@ class _VibeCADDocumentObserver:
     def slotDeletedDocument(self, doc) -> None:
         document_key = _document_storage_key(doc)
         _legacy_architecture_warning_documents.discard(document_key)
+        _pending_document_render_refreshes.discard(document_key)
         _sketch_close_continuation_controller.clear_for_document(document_key)
         _document_save_conversations.pop(document_key, None)
         _document_save_references.pop(document_key, None)
@@ -2980,6 +3100,8 @@ def _connect_document_observer() -> None:
             _document_observer = _VibeCADDocumentObserver()
             App.addDocumentObserver(_document_observer)
             _document_observer_connected = True
+            if App.ActiveDocument is not None:
+                _schedule_document_render_after_restore(App.ActiveDocument)
         except Exception as exc:
             _warn(f"VibeCAD document observer failed: {exc}")
     if not _gui_document_observer_connected:

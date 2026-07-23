@@ -38,6 +38,7 @@ PROPERTY_SOURCE(Part::Face, Part::Feature)
 Face::Face()
 {
     ADD_PROPERTY(Sources, (nullptr));
+    allowCrossContainerLink(Sources);
     ADD_PROPERTY(FaceMakerClass, ("Part::FaceMakerCheese"));  // default value here is for legacy
                                                               // documents. Default for new objects
                                                               // is set in setupObject.

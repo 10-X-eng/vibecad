@@ -346,7 +346,7 @@ class GuiInteractor:
     def workflow_switch_workbench(self):
         self.close_documents()
         App.newDocument("GuiWorkflowSwitch")
-        for workbench in ("PartWorkbench", "SketcherWorkbench", "PartDesignWorkbench", "TechDrawWorkbench"):
+        for workbench in ("PartDesignWorkbench", "SketcherWorkbench", "TechDrawWorkbench"):
             if not self.switch_workbench(workbench):
                 raise RuntimeError(f"Could not activate {workbench}")
 

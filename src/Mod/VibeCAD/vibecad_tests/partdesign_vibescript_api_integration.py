@@ -35,9 +35,13 @@ from VibeCADVibeScriptDomains import (  # noqa: E402
     get_domain_adapter,
     get_vibescript_pack,
 )
-from VibeCADVibeScriptDomainPublication import publish_candidate  # noqa: E402
+from VibeCADVibeScriptDomainPublication import (  # noqa: E402
+    PROP_OUTPUT_TYPE,
+    publish_candidate,
+)
 from vibescript_domain_api import create_domain_api  # noqa: E402
 from vibescript_partdesign_worker import (  # noqa: E402
+    PartDesignCandidateError,
     validate_and_build_partdesign,
 )
 
@@ -213,6 +217,25 @@ def _feature_case(api, case: str):
         base = api.pad(api.sketch([api.circle([0, 0], 10)]), 5)
         cut = api.sketch([api.circle([0, 0], 2)], z_offset_mm=5)
         return api.pocket(base, cut, 3)
+    if case == "canonical_extrude_add":
+        return api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            4,
+            operation="add_material",
+        )
+    if case == "canonical_extrude_remove":
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            4,
+            operation="add_material",
+        )
+        cut = api.sketch([api.circle([0, 0], 2)], z_offset_mm=4)
+        return api.extrude(
+            cut,
+            4,
+            operation="remove_material",
+            base=base,
+        )
     if case == "revolve":
         return api.revolve(_rectangle(api, 2, -2, 4, 2), axis="V")
     if case == "groove":
@@ -245,6 +268,45 @@ def _feature_case(api, case: str):
             base=base,
             subtractive=True,
         )
+    if case in {"additive_sweep", "subtractive_sweep"}:
+        profile = api.sketch([api.circle([2, 0], 0.5)])
+        path = api.line_3d([2, 0, 0], [2, 0, 5])
+        if case == "additive_sweep":
+            return api.sweep(profile, path, operation="add_material")
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            5,
+            operation="add_material",
+        )
+        return api.sweep(
+            profile,
+            path,
+            operation="remove_material",
+            base=base,
+        )
+    if case in {"additive_helix", "subtractive_helix"}:
+        profile = api.sketch([api.circle([3, 0], 0.4)])
+        if case == "additive_helix":
+            return api.helix(
+                profile,
+                operation="add_material",
+                pitch_mm=2,
+                height_mm=6,
+                radius_mm=3,
+            )
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            6,
+            operation="add_material",
+        )
+        return api.helix(
+            profile,
+            operation="remove_material",
+            pitch_mm=2,
+            height_mm=6,
+            radius_mm=3,
+            base=base,
+        )
     if case in {"polar_pattern", "mirror"}:
         base = api.pad(api.sketch([api.circle([0, 0], 10)]), 5)
         boss = api.pad(
@@ -261,6 +323,89 @@ def _feature_case(api, case: str):
     if case == "chamfer":
         base = api.pad(_rectangle(api, 0, 0, 10, 8), 5)
         return api.chamfer(base, {"type": "all_edges"}, 0.5)
+    if case == "linear_pattern":
+        base = api.extrude(
+            _rectangle(api, 0, 0, 2, 2),
+            2,
+            operation="add_material",
+        )
+        return api.linear_pattern(
+            base,
+            3,
+            4,
+            direction=[1, 0, 0],
+            result="union",
+        )
+    if case == "multi_transform":
+        base = api.extrude(
+            _rectangle(api, 0, 0, 2, 2),
+            2,
+            operation="add_material",
+        )
+        return api.multi_transform(
+            base,
+            [
+                {"type": "translate", "vector": [2, 0, 0]},
+                {"type": "translate", "vector": [2, 0, 0]},
+            ],
+            result="union",
+        )
+    if case == "thickness":
+        base = api.extrude(
+            _rectangle(api, 0, 0, 10, 8),
+            5,
+            operation="add_material",
+        )
+        top = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="plane",
+            normal=[0, 0, 1],
+            min_area_mm2=70,
+        )
+        return api.thickness(base, top, 0.5, inward=True)
+    if case in {"hole", "hole_dimensioned", "hole_countersink", "hole_counterbore"}:
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 5)]),
+            8,
+            operation="add_material",
+        )
+        locations = api.sketch([api.circle([0, 0], 1)], z_offset_mm=8)
+        if case == "hole":
+            return api.hole(base, locations, 2, through_all=True)
+        if case == "hole_countersink":
+            return api.hole(
+                base,
+                locations,
+                2,
+                depth_mm=4,
+                countersink_diameter_mm=4,
+                countersink_angle_degrees=90,
+            )
+        if case == "hole_counterbore":
+            return api.hole(
+                base,
+                locations,
+                2,
+                depth_mm=4,
+                counterbore_diameter_mm=4,
+                counterbore_depth_mm=1,
+            )
+        return api.hole(base, locations, 2, depth_mm=4)
+    if case == "draft":
+        base = api.extrude(
+            _rectangle(api, -5, -4, 5, 4),
+            5,
+            operation="add_material",
+        )
+        side = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="plane",
+            normal=[1, 0, 0],
+            min_area_mm2=20,
+        )
+        return api.draft(base, side, 3, neutral_plane="XY", pull_direction="Z")
     raise AssertionError(f"Unknown Part Design feature case: {case}")
 
 
@@ -274,15 +419,29 @@ def _exercise_feature_families(root: Path, pack) -> dict[str, dict]:
         "ellipse_pad": "PartDesign::Pad",
         "bspline_pad": "PartDesign::Pad",
         "pocket": "PartDesign::Pocket",
+        "canonical_extrude_add": "PartDesign::Pad",
+        "canonical_extrude_remove": "PartDesign::Pocket",
         "revolve": "PartDesign::Revolution",
         "groove": "PartDesign::Groove",
         "loft": "PartDesign::AdditiveLoft",
         "additive_loft": "PartDesign::AdditiveLoft",
         "subtractive_loft": "PartDesign::SubtractiveLoft",
+        "additive_sweep": "PartDesign::Feature",
+        "subtractive_sweep": "PartDesign::Feature",
+        "additive_helix": "PartDesign::Feature",
+        "subtractive_helix": "PartDesign::Feature",
         "polar_pattern": "PartDesign::PolarPattern",
         "mirror": "PartDesign::Mirrored",
         "fillet": "PartDesign::Fillet",
         "chamfer": "PartDesign::Chamfer",
+        "linear_pattern": "PartDesign::Feature",
+        "multi_transform": "PartDesign::Feature",
+        "thickness": "PartDesign::Thickness",
+        "hole": "PartDesign::Hole",
+        "hole_dimensioned": "PartDesign::Hole",
+        "hole_countersink": "PartDesign::Hole",
+        "hole_counterbore": "PartDesign::Hole",
+        "draft": "PartDesign::Draft",
     }
     evidence = {}
     for case, expected_tip in expected_tips.items():
@@ -324,15 +483,320 @@ def _exercise_feature_families(root: Path, pack) -> dict[str, dict]:
     return evidence
 
 
-def _source(*, invalid_offset: bool = False, primary_label: str = "Base Pad") -> str:
+def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
+    """Materialize every standalone/cross-kernel export through publication."""
+
+    import FreeCAD as App
+    import Materials
+    import Part
+
+    from vibescript_part_worker import part_shape_facts
+    from vibescript_partdesign_worker import configure_partdesign_references
+
+    reference_root = root / "references"
+    reference_root.mkdir(parents=True)
+    reference_path = reference_root / "source.brep"
+    reference_shape = Part.makeBox(3, 4, 5)
+    reference_shape.exportBrep(str(reference_path))
+    configure_partdesign_references(
+        reference_root,
+        [
+            {
+                "document_uid": "partdesign-api-fixture",
+                "object_name": "Source",
+                "shape_type": "Solid",
+                "brep_sha256": __import__("hashlib").sha256(
+                    reference_path.read_bytes()
+                ).hexdigest(),
+                "artifact_path": "source.brep",
+                "facts": part_shape_facts(reference_shape, max_subelements=32),
+                "source_kind": "scripted_publication",
+                "source_revision": "a" * 64,
+                "transient_topology": True,
+                "requires_semantic_interfaces": True,
+                "published_interfaces": {
+                    "DatumEdge": {
+                        "model_id": "partdesign-api-fixture",
+                        "publication_name": "Source",
+                        "output_key": "Source",
+                        "subelements": ["Edge1"],
+                        "geometry": [{"geometry_type": "line"}],
+                    }
+                },
+            }
+        ],
+    )
+
+    def closed_wire(api, points):
+        return api.wire(points, closed=True)
+
+    def planar_face(api, points):
+        return api.face(closed_wire(api, points))
+
+    def cube_faces(api, size=4.0):
+        return [
+            planar_face(api, [[0, 0, 0], [size, 0, 0], [size, size, 0], [0, size, 0]]),
+            planar_face(api, [[0, 0, size], [0, size, size], [size, size, size], [size, 0, size]]),
+            planar_face(api, [[0, 0, 0], [0, 0, size], [size, 0, size], [size, 0, 0]]),
+            planar_face(api, [[size, 0, 0], [size, 0, size], [size, size, size], [size, size, 0]]),
+            planar_face(api, [[size, size, 0], [size, size, size], [0, size, size], [0, size, 0]]),
+            planar_face(api, [[0, size, 0], [0, size, size], [0, 0, size], [0, 0, 0]]),
+        ]
+
+    def cases(api):
+        lower = api.wire([api.circle_3d(2, center=[0, 0, 0])])
+        upper = api.wire([api.circle_3d(1, center=[0, 0, 5])])
+        reversed_lower = api.wire([api.circle_3d(1, center=[8, 0, 5])])
+        reversed_upper = api.wire([api.circle_3d(2, center=[8, 0, 0])])
+        box = api.box(4, 5, 6)
+        overlapping = api.box(4, 5, 6, origin=[2, 0, 0])
+        top_query = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="plane",
+            normal=[0, 0, 1],
+            min_area_mm2=19,
+        )
+        bottom_query = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="plane",
+            normal=[0, 0, -1],
+            min_area_mm2=19,
+        )
+        bottom_face = api.subshape(box, "face", bottom_query)
+        shell = api.shell(cube_faces(api))
+        direct_solid = api.solid(shell)
+        boss = api.boolean(
+            [
+                api.box(10, 10, 5),
+                api.cylinder(2, 3, origin=[5, 5, 5]),
+            ],
+            operation="union",
+        )
+        boss_faces = api.find_subelements(
+            element_type="face",
+            expected_count=2,
+            max_area_mm2=40,
+        )
+        standalone_loft = api.loft([lower, upper], operation="new_solid")
+        reverse_loft = api.loft(
+            [reversed_lower, reversed_upper], operation="new_solid"
+        )
+        stitching = api.compound([standalone_loft, reverse_loft])
+        stitch_check = api.measure(stitching, "solid_count", expected=2)
+        stitch_volume_check = api.measure(
+            stitching, "volume_mm3", minimum=70.0
+        )
+        face_profile = planar_face(
+            api, [[0, 0, 0], [3, 0, 0], [3, 2, 0], [0, 2, 0]]
+        )
+        sweep_profile = api.wire([api.circle_3d(0.5)])
+        sweep_path = api.wire([[0, 0, 0], [0, 0, 4]])
+        projection_target = api.plane(20, 20, origin=[-10, -10, 0])
+        union = api.boolean([box, overlapping], operation="union")
+        external = api.external_geometry(
+            {
+                "document_uid": "partdesign-api-fixture",
+                "object_name": "Source",
+            },
+            {"type": "published_interface", "interface_name": "DatumEdge"},
+        )
+        external_profile = api.sketch(
+            [external, api.circle([0, 0], 1)],
+            require_closed_profile=True,
+        )
+        return [
+            ("from_object", api.from_object({"document_uid": "partdesign-api-fixture", "object_name": "Source"}, output_type="solid"), "solid", {"from_object"}, ()),
+            ("box", box, "solid", {"box"}, ()),
+            ("wedge", api.wedge(6, 4, 3, ridge_x=2), "solid", {"wedge"}, ()),
+            ("plane", projection_target, "face", {"plane"}, ()),
+            ("prism", api.prism(6, 3, 5), "solid", {"prism"}, ()),
+            ("cylinder", api.cylinder(2, 5), "solid", {"cylinder"}, ()),
+            ("cone", api.cone(3, 1, 5), "solid", {"cone"}, ()),
+            ("sphere", api.sphere(3), "solid", {"sphere"}, ()),
+            ("torus", api.torus(5, 1), "solid", {"torus"}, ()),
+            ("line_3d", api.wire([api.line_3d([0, 0, 0], [2, 0, 0])]), "wire", {"line_3d", "wire"}, ()),
+            ("arc_3d", api.wire([api.arc_3d([0, 0, 0], [1, 1, 0], [2, 0, 0])]), "wire", {"arc_3d"}, ()),
+            ("circle_3d", lower, "wire", {"circle_3d"}, ()),
+            ("ellipse_3d", api.wire([api.ellipse_3d(3, 1)]), "wire", {"ellipse_3d"}, ()),
+            ("bezier_3d", api.wire([api.bezier_3d([[0, 0, 0], [1, 2, 0], [3, 0, 0]])]), "wire", {"bezier_3d"}, ()),
+            ("bspline_3d", api.wire([api.bspline_3d([[0, 0, 0], [1, 2, 0], [2, -1, 0], [4, 0, 0]])]), "wire", {"bspline_3d"}, ()),
+            ("nurbs_curve", api.wire([api.nurbs_curve([[0, 0, 0], [1, 2, 0], [3, 0, 0]], 2, [0, 1], [3, 3])]), "wire", {"nurbs_curve"}, ()),
+            ("helix_curve", api.helix_curve(1, 4, 2), "wire", {"helix_curve"}, ()),
+            ("face", face_profile, "face", {"face"}, ()),
+            ("shell", shell, "shell", {"shell"}, ()),
+            ("solid", direct_solid, "solid", {"solid"}, ()),
+            ("compound", stitching, "compound", {"compound", "loft", "measure"}, (stitch_check, stitch_volume_check)),
+            ("subshape", bottom_face, "face", {"subshape", "find_subelements"}, ()),
+            ("extrude", api.extrude(face_profile, 4, operation="new_solid", vector=[0, 0, 1]), "solid", {"extrude"}, ()),
+            ("extrude_surface", api.extrude(api.line_3d([0, 0, 0], [3, 0, 0]), 2, operation="new_surface", vector=[0, 0, 1]), "face", {"extrude"}, ()),
+            ("external_geometry", api.extrude(external_profile, 1, operation="new_solid"), "solid", {"external_geometry"}, ()),
+            ("revolve", api.revolve(planar_face(api, [[2, 0, 0], [4, 0, 0], [4, 0, 3], [2, 0, 3]]), operation="new_solid", axis="Z", axis_direction=[0, 0, 1]), "solid", {"revolve"}, ()),
+            ("revolve_surface", api.revolve(api.line_3d([3, 0, 0], [3, 0, 2]), 180, operation="new_surface", axis="Z", axis_direction=[0, 0, 1]), "face", {"revolve"}, ()),
+            ("loft_surface", api.loft([lower, upper], operation="new_surface"), "shell", {"loft"}, ()),
+            ("sweep", api.sweep(sweep_profile, sweep_path, operation="new_solid"), "solid", {"sweep"}, ()),
+            ("sweep_surface", api.sweep(sweep_profile, sweep_path, operation="new_surface"), "shell", {"sweep"}, ()),
+            ("boolean_union", union, "solid", {"boolean"}, ()),
+            ("boolean_subtract", api.boolean([box, api.cylinder(1, 6, origin=[2, 2, 0])], operation="subtract"), "solid", {"boolean"}, ()),
+            ("boolean_intersect", api.boolean([box, overlapping], operation="intersect"), "solid", {"boolean"}, ()),
+            ("section", api.section(box, overlapping), "compound", {"section"}, ()),
+            ("general_fuse", api.general_fuse([box, overlapping]), "compound", {"general_fuse"}, ()),
+            ("slice", api.slice(box, [0, 0, 1], [2, 4]), "compound", {"slice"}, ()),
+            ("ruled_surface", api.ruled_surface(api.line_3d([0, 0, 0], [4, 0, 0]), api.line_3d([0, 2, 3], [4, 2, 3])), "face", {"ruled_surface"}, ()),
+            ("filled_surface", api.filled_surface([bottom_face]), "face", {"filled_surface"}, ()),
+            ("polar_pattern", api.polar_pattern(api.box(1, 1, 1, origin=[3, 0, 0]), 4), "compound", {"polar_pattern"}, ()),
+            ("polar_pattern_union", api.polar_pattern(api.box(2, 2, 1, origin=[0, -1, 0]), 2, result="union"), "solid", {"polar_pattern"}, ()),
+            ("linear_pattern", api.linear_pattern(api.box(1, 1, 1), 3, 4), "compound", {"linear_pattern"}, ()),
+            ("linear_pattern_union", api.linear_pattern(api.box(1, 1, 1), 3, 2, result="union"), "solid", {"linear_pattern"}, ()),
+            ("multi_transform", api.multi_transform(api.box(1, 1, 1), [{"type": "translate", "vector": [2, 0, 0]}, {"type": "translate", "vector": [2, 0, 0]}]), "compound", {"multi_transform"}, ()),
+            ("multi_transform_union", api.multi_transform(api.box(1, 1, 1), [{"type": "translate", "vector": [1, 0, 0]}, {"type": "translate", "vector": [1, 0, 0]}], result="union"), "solid", {"multi_transform"}, ()),
+            ("mirror", api.mirror(api.box(1, 2, 3, origin=[2, 0, 0]), "YZ"), "solid", {"mirror"}, ()),
+            ("fillet", api.fillet(api.box(4, 4, 4), {"type": "all_edges"}, 0.25), "solid", {"fillet"}, ()),
+            ("chamfer", api.chamfer(api.box(4, 4, 4), {"type": "all_edges"}, 0.25), "solid", {"chamfer"}, ()),
+            ("thickness", api.thickness(box, top_query, 0.25, inward=True), "solid", {"thickness"}, ()),
+            ("defeature", api.defeature(boss, boss_faces), "solid", {"defeature"}, ()),
+            ("to_nurbs", api.to_nurbs(api.wire([api.circle_3d(2)])), "wire", {"to_nurbs"}, ()),
+            ("reverse", api.reverse(api.wire([api.line_3d([0, 0, 0], [2, 0, 0])])), "wire", {"reverse"}, ()),
+            ("sew", api.sew(cube_faces(api), output_type="shell"), "shell", {"sew"}, ()),
+            ("repair", api.repair(api.box(2, 3, 4)), "solid", {"repair"}, ()),
+            ("offset", api.offset(face_profile, 0.2), "shell", {"offset"}, ()),
+            ("offset2d", api.offset2d(face_profile, 0.2, fill=True), "face", {"offset2d"}, ()),
+            ("transform", api.transform(api.box(1, 2, 3), translation=[2, 0, 0], rotation_degrees=30), "solid", {"transform"}, ()),
+            ("project", api.project(projection_target, api.circle_3d(2, center=[0, 0, 5]), [0, 0, -1]), "wire", {"project"}, ()),
+            ("refine", api.refine(union), "solid", {"refine"}, ()),
+        ]
+
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    catalog_cards = sorted(
+        list(Materials.MaterialManager().Materials.values()),
+        key=lambda card: (str(card.Name), str(card.UUID)),
+    )
+    assert catalog_cards
+    publication_material = api.material(str(catalog_cards[0].UUID))
+    publication_appearance = api.appearance(color_rgb=[255, 255, 255])
+    evidence: dict[str, dict] = {}
+    covered = {
+        "point",
+        "line",
+        "arc",
+        "circle",
+        "ellipse",
+        "bspline",
+        "constraint",
+        "sketch",
+        "helix",
+        "hole",
+        "draft",
+        "body",
+        "publish",
+    }
+    for name, shape, output_type, case_exports, checks in cases(api):
+        case_root = root / "unified-surface" / name
+        (case_root / "outputs").mkdir(parents=True)
+        document = App.newDocument(f"PartDesignUnified_{name}")
+        try:
+            publication = api.publish(
+                shape,
+                checks=checks,
+                material=publication_material if name == "box" else None,
+                appearance=publication_appearance if name == "box" else None,
+                label=name,
+            )
+            outputs, _validation = validate_and_build_partdesign(
+                document,
+                {"Result": publication},
+                [{"name": "Result", "type": output_type}],
+                case_root,
+                max_shape_subelements=256,
+            )
+            facts = outputs[0]["facts"]
+            assert facts["shape_type"].lower() == output_type, (name, facts)
+            if output_type == "solid":
+                assert facts["solids"] == 1 and facts["volume_mm3"] > 0, (
+                    name,
+                    facts,
+                )
+            if name == "compound":
+                assert facts["solids"] == 2, facts
+                assert facts["volume_mm3"] > 70.0, facts
+                assert all(item["accepted"] for item in outputs[0]["partdesign_data"]["checks"])
+            if name == "box":
+                presentation = outputs[0]["partdesign_data"]["presentation"]
+                assert presentation["physical_material"]["uuid"] == str(
+                    catalog_cards[0].UUID
+                )
+                assert presentation["appearance"]["resolved"]["shape_color"] == [
+                    1.0,
+                    1.0,
+                    1.0,
+                ]
+                covered.update({"material", "appearance"})
+            evidence[name] = {
+                "shape_type": facts["shape_type"],
+                "solids": facts["solids"],
+            }
+            covered.update(case_exports)
+        finally:
+            App.closeDocument(document.Name)
+    missing = set(pack.api_exports) - covered
+    assert not missing, f"Unexercised Part Design VibeScript exports: {sorted(missing)}"
+    return evidence
+
+
+def _exercise_material_guardrails(root: Path, pack) -> dict:
+    """Reject a valid-looking additive feature that adds no geometric region."""
+
+    import FreeCAD as App
+
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    base = api.extrude(
+        api.sketch([api.circle([0, 0], 5)]),
+        5,
+        operation="add_material",
+    )
+    enclosed_profile = api.sketch([api.circle([0, 0], 1)])
+    no_effect = api.extrude(
+        enclosed_profile,
+        2,
+        operation="add_material",
+        base=base,
+    )
+    publication = api.body(no_effect, label="Invalid No-Effect Additive Feature")
+    case_root = root / "material-guardrails"
+    (case_root / "outputs").mkdir(parents=True)
+    document = App.newDocument("PartDesignMaterialGuardrail")
+    try:
+        try:
+            validate_and_build_partdesign(
+                document,
+                {"Result": publication},
+                [{"name": "Result", "type": "solid"}],
+                case_root,
+                max_shape_subelements=32,
+            )
+        except PartDesignCandidateError as error:
+            assert "did not add material" in str(error)
+            assert error.details["stage"] == "feature_postcondition"
+            assert error.details["added_material_mm3"] <= 1.0e-7
+            assert error.details["removed_material_mm3"] <= 1.0e-7
+            return dict(error.details)
+        raise AssertionError("A no-effect additive feature passed material validation.")
+    finally:
+        App.closeDocument(document.Name)
+
+
+def _source(*, invalid_offset: bool = False, primary_label: str = "Base Extrusion") -> str:
     offset = "inputs['height'] + 100" if invalid_offset else "inputs['height']"
     return (
         "profile = api.sketch([api.circle([0,0], inputs['outer_radius'])], "
         "label='Base Profile')\n"
-        f"base = api.pad(profile, inputs['height'], label={primary_label!r})\n"
+        "base = api.extrude(profile, inputs['height'], operation='add_material', "
+        f"label={primary_label!r})\n"
         "hole_profile = api.sketch([api.circle([0,0], inputs['hole_radius'])], "
         f"z_offset_mm={offset}, label='Hole Profile')\n"
-        "finished = api.pocket(base, hole_profile, inputs['hole_depth'], "
+        "finished = api.extrude(hole_profile, inputs['hole_depth'], "
+        "operation='remove_material', base=base, "
         "label='Bore')\n"
         "result = {'Part': api.body(finished, interfaces={"
         "'Top': {'selection': {'type':'query','element_type':'face',"
@@ -468,7 +932,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
             "program_id": program_id,
             "expected_revision": accepted["working_revision"],
             "replacements": [
-                {"old": "label='Base Pad'", "new": "label='Primary Pad'"}
+                {"old": "label='Base Extrusion'", "new": "label='Primary Extrusion'"}
             ],
         },
     )
@@ -587,10 +1051,12 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
 
     reconfigured_source = (
         "profile = api.sketch([api.circle([0,0], inputs['outer_radius'])])\n"
-        "base = api.pad(profile, inputs['height'], label='Primary Pad')\n"
+        "base = api.extrude(profile, inputs['height'], operation='add_material', "
+        "label='Primary Extrusion')\n"
         "hole_profile = api.sketch([api.circle([0,0], inputs['hole_radius'])], "
         "z_offset_mm=inputs['height'])\n"
-        "finished = api.pocket(base, hole_profile, through_all=True, label='Bore')\n"
+        "finished = api.extrude(hole_profile, operation='remove_material', "
+        "base=base, through_all=True, label='Bore')\n"
         "result = {'Part': api.body(finished, interfaces={"
         "'Top': {'selection': {'type':'query','element_type':'face',"
         "'expected_count':1,'geometry_type':'plane','normal':[0,0,1],"
@@ -711,6 +1177,196 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     }
 
 
+def _exercise_topology_publication(root: Path, pack) -> dict:
+    """Prove non-solid Part Design outputs retain their exact live type metadata."""
+
+    import FreeCAD as App
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignTopologyPublication")
+    service = _Service(document, root)
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    source = (
+        "face = api.plane(8, 6, label='Reference Face')\n"
+        "size = inputs['thread_size']\n"
+        "gap = inputs['thread_gap']\n"
+        "left = api.box(size, size, size, label='Left Thread')\n"
+        "right = api.box(size, size, size, origin=[size+gap,0,0], "
+        "label='Right Thread')\n"
+        "stitching = api.compound([left, right], label='Stitching')\n"
+        "count = api.measure(stitching, 'solid_count', expected=2)\n"
+        "result = {\n"
+        " 'ReferenceFace': api.publish(face, label='Reference Face'),\n"
+        " 'Stitching': api.publish(stitching, checks=[count], label='Stitching'),\n"
+        "}\n"
+    )
+    create = _capture(
+        base_capture,
+        operation="create_program",
+        arguments={
+            "program_name": "Unified Topology Publication",
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "thread_size": {"type": "number", "exclusiveMinimum": 0},
+                    "thread_gap": {"type": "number", "exclusiveMinimum": 0},
+                },
+                "required": ["thread_size", "thread_gap"],
+                "additionalProperties": False,
+            },
+            "inputs": {"thread_size": 2.0, "thread_gap": 2.0},
+            "expected_outputs": [
+                {"name": "ReferenceFace", "type": "face"},
+                {"name": "Stitching", "type": "compound"},
+            ],
+        },
+    )
+    prepared, publication, accepted = _run_candidate(create, service)
+    expected = {"ReferenceFace": "face", "Stitching": "compound"}
+    identities = {}
+    for name, output_type in expected.items():
+        live = accepted["live_outputs"][name]
+        assert live["output_type"] == output_type, live
+        published = document.getObject(live["object_name"])
+        assert published is not None
+        assert str(getattr(published, PROP_OUTPUT_TYPE)) == output_type
+        assert published.Shape.ShapeType.lower() == output_type
+        identities[name] = str(published.Name)
+    assert abs(
+        float(accepted["live_outputs"]["Stitching"]["facts"]["volume_mm3"])
+        - 16.0
+    ) <= 1.0e-7
+    assert publication["live_outputs"]["Stitching"]["partdesign_data"]["checks"][0][
+        "accepted"
+    ] is True
+    update = _capture(
+        base_capture,
+        operation="set_inputs",
+        arguments={
+            "program_id": prepared["program_id"],
+            "expected_revision": accepted["working_revision"],
+            "patch": {"thread_size": 3.0},
+        },
+    )
+    _updated, updated_publication, updated = _run_candidate(update, service)
+    assert {
+        name: row["object_name"] for name, row in updated["live_outputs"].items()
+    } == identities
+    assert {
+        name: row["output_type"] for name, row in updated["live_outputs"].items()
+    } == expected
+    assert abs(
+        float(updated["live_outputs"]["Stitching"]["facts"]["volume_mm3"])
+        - 54.0
+    ) <= 1.0e-7
+    assert updated_publication["created_objects"] == []
+    App.closeDocument(document.Name)
+    return {"outputs": identities, "types": expected, "regenerated_volume_mm3": 54.0}
+
+
+def _exercise_physical_material_publication(root: Path, pack) -> dict:
+    """Publish one shared-catalog ShapeMaterial and preserve it on regeneration."""
+
+    import FreeCAD as App
+    import Materials
+    from pathlib import Path as LocalPath
+
+    cards = sorted(
+        list(Materials.MaterialManager().Materials.values()),
+        key=lambda card: (str(card.Name), str(card.UUID)),
+    )
+    assert cards
+    card = cards[0]
+    document = App.newDocument("PartDesignPhysicalMaterialPublication")
+    service = _Service(document, root)
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    source = (
+        "shape = api.box(inputs['size'], 4, 2, label='Material Coupon')\n"
+        "card = api.material(inputs['material_uuid'])\n"
+        "result = {'Coupon': api.publish(shape, material=card, "
+        "label='Material Coupon')}\n"
+    )
+    create = _capture(
+        base_capture,
+        operation="create_program",
+        arguments={
+            "program_name": "Part Design Physical Material",
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "size": {"type": "number", "exclusiveMinimum": 0},
+                    "material_uuid": {
+                        "type": "string",
+                        "enum": [str(card.UUID)],
+                    },
+                },
+                "required": ["size", "material_uuid"],
+                "additionalProperties": False,
+            },
+            "inputs": {"size": 6.0, "material_uuid": str(card.UUID)},
+            "expected_outputs": [{"name": "Coupon", "type": "solid"}],
+        },
+    )
+    try:
+        prepared, _publication, accepted = _run_candidate(create, service)
+        identity = accepted["live_outputs"]["Coupon"]["object_name"]
+        published = document.getObject(identity)
+        assert published is not None
+        assert str(published.ShapeMaterial.UUID) == str(card.UUID)
+        initial_volume = float(published.Shape.Volume)
+        update = _capture(
+            base_capture,
+            operation="set_inputs",
+            arguments={
+                "program_id": prepared["program_id"],
+                "expected_revision": accepted["working_revision"],
+                "patch": {"size": 9.0},
+            },
+        )
+        _updated, update_publication, updated = _run_candidate(update, service)
+        published = document.getObject(identity)
+        assert published is not None
+        assert update_publication["created_objects"] == []
+        assert updated["live_outputs"]["Coupon"]["object_name"] == identity
+        assert float(published.Shape.Volume) > initial_volume
+        assert str(published.ShapeMaterial.UUID) == str(card.UUID)
+        return {
+            "object_name": identity,
+            "material_uuid": str(card.UUID),
+            "regenerated_volume_mm3": float(published.Shape.Volume),
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 def main() -> int:
     dump_json = json.dumps
     remove_tree = shutil.rmtree
@@ -733,6 +1389,10 @@ def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="vibecad-partdesign-v2-integration-"))
     try:
         feature_families = _exercise_feature_families(root, pack)
+        unified_surface = _exercise_unified_standalone_surface(root, pack)
+        material_guardrails = _exercise_material_guardrails(root, pack)
+        topology_publication = _exercise_topology_publication(root, pack)
+        physical_material = _exercise_physical_material_publication(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
         print(
             dump_json(
@@ -740,6 +1400,10 @@ def main() -> int:
                     "ok": True,
                     "domain": "partdesign",
                     "feature_families": feature_families,
+                    "unified_surface": unified_surface,
+                    "material_guardrails": material_guardrails,
+                    "topology_publication": topology_publication,
+                    "physical_material": physical_material,
                     "lifecycle": lifecycle,
                 },
                 sort_keys=True,

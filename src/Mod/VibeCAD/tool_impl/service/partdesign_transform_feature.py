@@ -308,16 +308,20 @@ def run_single_transform(
     distribution: dict[str, Any] | None = None,
     reversed: bool = False,
 ) -> dict[str, Any]:
-    sources_state = _resolve_sources(service, feature_names)
+    native_transform_mode = _transform_mode(transform_mode)
+    if native_transform_mode is None:
+        return _invalid("transform_mode must be features or whole_shape.")
+    sources_state = _resolve_sources(
+        service,
+        feature_names,
+        whole_shape=native_transform_mode == "Whole shape",
+    )
     if not sources_state.get("ok"):
         return sources_state
     body = sources_state["body"]
     clean_label = str(label or "").strip()
     if not clean_label:
         return _invalid("label is required.")
-    native_transform_mode = _transform_mode(transform_mode)
-    if native_transform_mode is None:
-        return _invalid("transform_mode must be features or whole_shape.")
     if operation == "linear_pattern":
         reference_state = _resolve_axis(service, body, reference)
         distribution_state = _validate_distribution(distribution, "length", 1e300)
@@ -454,16 +458,20 @@ def run_multi_transform(
     refine: bool,
     transformations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    sources_state = _resolve_sources(service, feature_names)
+    native_transform_mode = _transform_mode(transform_mode)
+    if native_transform_mode is None:
+        return _invalid("transform_mode must be features or whole_shape.")
+    sources_state = _resolve_sources(
+        service,
+        feature_names,
+        whole_shape=native_transform_mode == "Whole shape",
+    )
     if not sources_state.get("ok"):
         return sources_state
     body = sources_state["body"]
     clean_label = str(label or "").strip()
     if not clean_label:
         return _invalid("label is required.")
-    native_transform_mode = _transform_mode(transform_mode)
-    if native_transform_mode is None:
-        return _invalid("transform_mode must be features or whole_shape.")
     if not isinstance(transformations, list) or len(transformations) < 2:
         return _invalid("transformations must contain at least two ordered transformations.")
     validated = []
@@ -571,7 +579,12 @@ def run_multi_transform(
     )
 
 
-def _resolve_sources(service: Any, feature_names: Any) -> dict[str, Any]:
+def _resolve_sources(
+    service: Any,
+    feature_names: Any,
+    *,
+    whole_shape: bool,
+) -> dict[str, Any]:
     if not isinstance(feature_names, list) or not feature_names:
         return _invalid("feature_names must contain at least one exact internal feature name.")
     names = [str(name or "").strip() for name in feature_names]
@@ -600,14 +613,21 @@ def _resolve_sources(service: Any, feature_names: Any) -> dict[str, Any]:
                 feature_body=owner.Name,
                 expected_body=body.Name,
             )
-        type_id = str(getattr(feature, "TypeId", ""))
-        if not type_id.startswith("PartDesign::") or type_id in {
-            "PartDesign::Body",
-            "PartDesign::Plane",
-            "PartDesign::Line",
-            "PartDesign::Point",
-        }:
-            return _invalid(f"Object {name} is not a transformable PartDesign feature.")
+        is_part_shape = bool(
+            callable(getattr(feature, "isDerivedFrom", None))
+            and feature.isDerivedFrom("Part::Feature")
+        )
+        is_add_sub_feature = bool(
+            callable(getattr(feature, "isDerivedFrom", None))
+            and feature.isDerivedFrom("PartDesign::FeatureAddSub")
+        )
+        if not is_part_shape:
+            return _invalid(f"Object {name} is not a transformable shape result.")
+        if not whole_shape and not is_add_sub_feature:
+            return _invalid(
+                f"Object {name} does not expose additive/subtractive feature intent. "
+                "Use transform_mode='whole_shape' for an ordinary Part or full-result node."
+            )
         state = domain_runtime.feature_state_summary(feature)
         if (
             state.get("inspection_complete") is not True

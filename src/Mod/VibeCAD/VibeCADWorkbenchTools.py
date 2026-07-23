@@ -83,6 +83,52 @@ PART_PACK_TOOL_NAMES: tuple[str, ...] = (
     "part.chamfer",
 )
 
+# One semantic operation per modeling intent is advertised to providers.  The
+# historical part.* and partdesign.* implementations above remain registered
+# so saved conversations and integrations continue to resolve them, but they
+# are compatibility entry points rather than competing choices in the active
+# modeling surface.
+MODELING_PACK_TOOL_NAMES: tuple[str, ...] = (
+    "model.find_subelements",
+    "model.measure",
+    "partdesign.create_body",
+    "partdesign.create_sketch",
+    "partdesign.edit_sketch",
+    "partdesign.create_datum_plane",
+    "partdesign.create_datum_axis",
+    "partdesign.create_datum_point",
+    "partdesign.create_shape_binder",
+    "partdesign.create_subshape_binder",
+    "model.extrude",
+    "partdesign.hole",
+    "model.revolve",
+    "model.loft",
+    "partdesign.thin_loft",
+    "model.sweep",
+    "model.helix",
+    "partdesign.linear_pattern",
+    "partdesign.polar_pattern",
+    "model.mirror",
+    "partdesign.multi_transform",
+    "model.fillet",
+    "model.chamfer",
+    "partdesign.draft",
+    "model.thickness",
+    "model.boolean",
+    "partdesign.set_tip",
+)
+
+# Exact legacy names remain resolvable for saved conversations and integrations, but are never
+# advertised beside their canonical model.* replacement.  Keep this list explicit in the surface
+# contract so registry guardrails can distinguish deliberate compatibility shims from orphan tools.
+MODELING_COMPATIBILITY_TOOL_NAMES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        name
+        for name in (*PARTDESIGN_PACK_TOOL_NAMES, *PART_PACK_TOOL_NAMES)
+        if name not in MODELING_PACK_TOOL_NAMES
+    )
+)
+
 DRAFT_PACK_TOOL_NAMES: tuple[str, ...] = (
     "draft.list_objects",
     "draft.create_wire",
@@ -311,29 +357,26 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     ),
     "PartDesignWorkbench": WorkbenchToolPack(
         "PartDesignWorkbench",
-        "solids",
-        "Body, sketch, feature. Verify topology and profile readiness.",
-        ("PartDesign_", "Sketcher_"),
-        ("PartDesign::", "Sketcher::SketchObject"),
+        "3D modeling",
+        "Build one coherent model graph with explicit modeling intent. Use "
+        "model.extrude/revolve/loft/sweep with new_solid, new_surface, add_material, or "
+        "remove_material as appropriate; model.helix accepts add_material or remove_material. "
+        "Do not choose implementation-specific Pad, Pocket, or Groove vocabulary. "
+        "Body-native features stay in their Body; general BREP operations may reference "
+        "geometry across Bodies without moving their operands. VibeScript programs use the "
+        "shared Material catalog through api.material and attach source-parametric color and "
+        "display state through api.appearance on body/publish outputs. Verify topology and "
+        "profile readiness before every exact-target operation.",
+        ("PartDesign_", "Part_", "Sketcher_"),
+        ("PartDesign::", "Part::", "Sketcher::SketchObject"),
         (
             {"name": "body", "object_type": "PartDesign::Body"},
             {"name": "sketch", "object_type": "Sketcher::SketchObject"},
-        ),
-        tool_names=PARTDESIGN_PACK_TOOL_NAMES,
-    ),
-    "PartWorkbench": WorkbenchToolPack(
-        "PartWorkbench",
-        "boundary-representation solids",
-        "Direct BREP operations on intentional existing profiles and solids. "
-        "Resolve subelements by guarded geometry queries before finishing edges.",
-        ("Part_",),
-        ("Part::",),
-        (
             {"name": "box", "object_type": "Part::Box"},
             {"name": "cylinder", "object_type": "Part::Cylinder"},
             {"name": "sphere", "object_type": "Part::Sphere"},
         ),
-        tool_names=PART_PACK_TOOL_NAMES,
+        tool_names=MODELING_PACK_TOOL_NAMES,
     ),
     "PointsWorkbench": WorkbenchToolPack(
         "PointsWorkbench",
@@ -441,6 +484,8 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
 def get_tool_pack(workbench: str | None) -> WorkbenchToolPack | None:
     if not workbench:
         return None
+    if workbench == "PartWorkbench":
+        workbench = "PartDesignWorkbench"
     return WORKBENCH_TOOL_PACKS.get(workbench)
 
 

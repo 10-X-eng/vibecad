@@ -28,6 +28,7 @@ __doc__ = "Implementation of document objects (features) to adjust/manipulate to
 
 import FreeCAD
 import Part
+from PartLinkScope import migrate_many_to_global
 
 if FreeCAD.GuiUp:
     import FreeCADGui
@@ -128,7 +129,7 @@ class FeatureToleranceSet:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList",
+            "App::PropertyLinkListGlobal",
             "Objects",
             "ToleranceSet",
             "Objects to have tolerance adjusted.",
@@ -151,6 +152,7 @@ class FeatureToleranceSet:
         self.Type = "FeatureToleranceSet"
 
     def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
         if not hasattr(obj, "maxTolerance"):
             obj.addProperty("App::PropertyLength", "maxTolerance", "ToleranceSet", "0", locked=True)
 
@@ -179,7 +181,7 @@ class ViewProviderToleranceSet:
         vobj.Proxy = self
 
     def getIcon(self):
-        return ":/icons/preferences-part_design.svg"
+        return ":/icons/tools/Part_ToleranceSet.svg"
 
     def attach(self, vobj):
         self.ViewObject = vobj
@@ -228,7 +230,7 @@ class CommandToleranceSet:
 
     def GetResources(self):
         return {
-            "Pixmap": getIconPath("preferences-part_design.svg"),
+            "Pixmap": getIconPath("Part_ToleranceSet.svg"),
             "MenuText": QtCore.QT_TRANSLATE_NOOP("Part_ToleranceSet", "Set Tolerance"),
             "Accel": "",
             "ToolTip": QtCore.QT_TRANSLATE_NOOP(

@@ -74,6 +74,8 @@ ProjectOnSurface::ProjectOnSurface()
         App::Prop_None,
         "Shapes to project onto support face"
     );
+    allowCrossContainerLink(SupportFace);
+    allowCrossContainerLink(Projection);
 }
 
 App::DocumentObjectExecReturn* ProjectOnSurface::execute()

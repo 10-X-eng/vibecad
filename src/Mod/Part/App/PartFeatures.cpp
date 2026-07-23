@@ -59,6 +59,8 @@ RuledSurface::RuledSurface()
 {
     ADD_PROPERTY_TYPE(Curve1, (nullptr), "Ruled Surface", App::Prop_None, "Curve of ruled surface");
     ADD_PROPERTY_TYPE(Curve2, (nullptr), "Ruled Surface", App::Prop_None, "Curve of ruled surface");
+    allowCrossContainerLink(Curve1);
+    allowCrossContainerLink(Curve2);
     ADD_PROPERTY_TYPE(
         Orientation,
         ((long)0),
@@ -180,6 +182,7 @@ Loft::Loft()
 {
     ADD_PROPERTY_TYPE(Sections, (nullptr), "Loft", App::Prop_None, "List of sections");
     Sections.setSize(0);
+    allowCrossContainerLink(Sections);
     ADD_PROPERTY_TYPE(Solid, (true), "Loft", App::Prop_None, "Create solid");
     ADD_PROPERTY_TYPE(Ruled, (false), "Loft", App::Prop_None, "Ruled surface");
     ADD_PROPERTY_TYPE(Closed, (false), "Loft", App::Prop_None, "Close Last to First Profile");
@@ -262,6 +265,8 @@ Sweep::Sweep()
     ADD_PROPERTY_TYPE(Sections, (nullptr), "Sweep", App::Prop_None, "List of sections");
     Sections.setSize(0);
     ADD_PROPERTY_TYPE(Spine, (nullptr), "Sweep", App::Prop_None, "Path to sweep along");
+    allowCrossContainerLink(Sections);
+    allowCrossContainerLink(Spine);
     ADD_PROPERTY_TYPE(Solid, (true), "Sweep", App::Prop_None, "Create solid");
     ADD_PROPERTY_TYPE(Frenet, (true), "Sweep", App::Prop_None, "Frenet");
     ADD_PROPERTY_TYPE(Transition, (long(1)), "Sweep", App::Prop_None, "Transition mode");
@@ -367,6 +372,7 @@ PROPERTY_SOURCE(Part::Thickness, Part::Feature)
 Thickness::Thickness()
 {
     ADD_PROPERTY_TYPE(Faces, (nullptr), "Thickness", App::Prop_None, "Faces to be removed");
+    allowCrossContainerLink(Faces);
     ADD_PROPERTY_TYPE(Value, (1.0), "Thickness", App::Prop_None, "Thickness value");
     ADD_PROPERTY_TYPE(Mode, (long(0)), "Thickness", App::Prop_None, "Mode");
     Mode.setEnums(ModeEnums);
@@ -457,6 +463,7 @@ PROPERTY_SOURCE(Part::Refine, Part::Feature)
 Refine::Refine()
 {
     ADD_PROPERTY_TYPE(Source, (nullptr), "Refine", App::Prop_None, "Source shape");
+    allowCrossContainerLink(Source);
 }
 
 App::DocumentObjectExecReturn* Refine::execute()
@@ -483,6 +490,7 @@ PROPERTY_SOURCE(Part::Reverse, Part::Feature)
 Reverse::Reverse()
 {
     ADD_PROPERTY_TYPE(Source, (nullptr), "Reverse", App::Prop_None, "Source shape");
+    allowCrossContainerLink(Source);
 }
 
 App::DocumentObjectExecReturn* Reverse::execute()

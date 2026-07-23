@@ -29,6 +29,11 @@ PROP_MATERIAL_BASELINE = "VibeCADMaterialBaseline"
 PROP_MATERIAL_ACCEPTED = "VibeCADMaterialAccepted"
 PROP_APPEARANCE_BASELINE = "VibeCADAppearanceBaseline"
 PROP_APPEARANCE_ACCEPTED = "VibeCADAppearanceAccepted"
+PROP_PARTDESIGN_PRESENTATION_STATE = "VibeCADPartDesignPresentationState"
+PROP_PARTDESIGN_MATERIAL_BASELINE = "VibeCADPartDesignMaterialBaseline"
+PROP_PARTDESIGN_MATERIAL_ACCEPTED = "VibeCADPartDesignMaterialAccepted"
+PROP_PARTDESIGN_APPEARANCE_BASELINE = "VibeCADPartDesignAppearanceBaseline"
+PROP_PARTDESIGN_APPEARANCE_ACCEPTED = "VibeCADPartDesignAppearanceAccepted"
 PROP_MESH_VALIDATION = "VibeCADMeshValidation"
 PROP_MESHPART_VALIDATION = "VibeCADMeshPartValidation"
 PROP_POINTS_VALIDATION = "VibeCADPointsValidation"
@@ -42,6 +47,9 @@ PROP_ASSEMBLY_BOM_VALIDATION = "VibeCADAssemblyBOMValidation"
 PROP_ASSEMBLY_BOM_RESTORE_TARGET = "VibeCADAssemblyBOMRestoreTarget"
 PROP_ASSEMBLY_BOM_RESTORE_ERROR = "VibeCADAssemblyBOMRestoreError"
 MATERIAL_OWNERSHIP_SCHEMA = "vibecad-material-ownership-v1"
+PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA = (
+    "vibecad-partdesign-presentation-ownership-v1"
+)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 _ASSEMBLY_DEPENDENCY_SUFFIX = "__dependencies"
 _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE = "dependency_anchor"
@@ -2871,6 +2879,7 @@ _MATERIAL_SIMPLE_VIEW_PROPERTIES = (
     "DisplayMode",
     "Visibility",
     "Selectable",
+    "OverrideMaterial",
 )
 
 
@@ -3183,16 +3192,65 @@ def _material_baseline_for_desired(
     return {"simple": baseline_simple, "shape_appearance": baseline_shape}
 
 
-def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> None:
-    view = getattr(target, "ViewObject", None)
+def _appearance_property_view(
+    target: Any,
+    native_name: str,
+    property_views: Mapping[str, Any] | None,
+) -> Any:
+    view = (
+        property_views.get(native_name)
+        if property_views is not None
+        else getattr(target, "ViewObject", None)
+    )
     if view is None:
         raise RuntimeError(
             f"Appearance target {target.Name!r} has no live view provider."
         )
+    return view
+
+
+def _effective_appearance_controlled_properties(
+    view: Any,
+    controlled: list[str],
+) -> list[str]:
+    result = list(dict.fromkeys(str(name) for name in controlled))
+    if (
+        "ShapeAppearance" in result
+        and hasattr(view, "OverrideMaterial")
+        and "OverrideMaterial" not in result
+    ):
+        result.append("OverrideMaterial")
+    return sorted(result)
+
+
+def _apply_requested_appearance(
+    target: Any,
+    requested: Mapping[str, Any],
+    *,
+    property_views: Mapping[str, Any] | None = None,
+) -> None:
     shape_material = requested.get("shape_material")
-    if shape_material is not None:
+    shape_color = requested.get("shape_color")
+    transparency = requested.get("transparency")
+    if (
+        shape_material is not None
+        or shape_color is not None
+        or transparency is not None
+    ):
+        view = _appearance_property_view(
+            target,
+            "ShapeAppearance",
+            property_views,
+        )
+        if not hasattr(view, "ShapeAppearance"):
+            raise RuntimeError(
+                f"Appearance target {target.Name!r} no longer supports ShapeAppearance."
+            )
         if not isinstance(shape_material, Mapping):
-            raise RuntimeError("Validated card appearance is not a material mapping.")
+            if shape_material is not None:
+                raise RuntimeError(
+                    "Validated card appearance is not a material mapping."
+                )
         allowed = {
             "ambient_color": "AmbientColor",
             "diffuse_color": "DiffuseColor",
@@ -3201,7 +3259,9 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
             "shininess": "Shininess",
             "transparency": "Transparency",
         }
-        if not shape_material or not set(shape_material) <= set(allowed):
+        if shape_material is not None and (
+            not shape_material or not set(shape_material) <= set(allowed)
+        ):
             raise RuntimeError(
                 "Validated card appearance has unsupported material fields."
             )
@@ -3220,18 +3280,28 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
                 "Shininess": float(current.Shininess),
                 "Transparency": float(current.Transparency),
             }
-            for field, value in shape_material.items():
+            for field, value in dict(shape_material or {}).items():
                 native_name = allowed[str(field)]
                 values[native_name] = (
                     tuple(float(channel) for channel in list(value))
                     if str(field).endswith("_color")
                     else float(value)
                 )
+            if shape_color is not None:
+                previous = list(values["DiffuseColor"])
+                values["DiffuseColor"] = tuple(
+                    [
+                        *[float(channel) for channel in list(shape_color)],
+                        float(previous[3]) if len(previous) == 4 else 1.0,
+                    ]
+                )
+            if transparency is not None:
+                values["Transparency"] = float(transparency) / 100.0
             updated.append(App.Material(**values))
         view.ShapeAppearance = updated
+        if hasattr(view, "OverrideMaterial"):
+            view.OverrideMaterial = True
     assignments = (
-        ("shape_color", "ShapeColor"),
-        ("transparency", "Transparency"),
         ("line_color", "LineColor"),
         ("point_color", "PointColor"),
         ("line_width", "LineWidth"),
@@ -3244,6 +3314,7 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
         value = requested.get(key)
         if value is None:
             continue
+        view = _appearance_property_view(target, native_name, property_views)
         if not hasattr(view, native_name):
             raise RuntimeError(
                 f"Appearance target {target.Name!r} no longer supports {native_name}."
@@ -3265,11 +3336,36 @@ def _apply_requested_appearance(target: Any, requested: Mapping[str, Any]) -> No
         setattr(view, native_name, value)
 
 
-def _verify_requested_appearance(target: Any, requested: Mapping[str, Any]) -> None:
-    view = getattr(target, "ViewObject", None)
-    if view is None:
-        raise RuntimeError(f"Appearance target {target.Name!r} lost its view provider.")
+def _verify_requested_appearance(
+    target: Any,
+    requested: Mapping[str, Any],
+    *,
+    property_views: Mapping[str, Any] | None = None,
+) -> None:
     shape_material = requested.get("shape_material")
+    shape_color = requested.get("shape_color")
+    transparency = requested.get("transparency")
+    materials = []
+    if (
+        shape_material is not None
+        or shape_color is not None
+        or transparency is not None
+    ):
+        view = _appearance_property_view(
+            target,
+            "ShapeAppearance",
+            property_views,
+        )
+        materials = list(view.ShapeAppearance)
+        if not materials:
+            raise RuntimeError(
+                f"Appearance target {target.Name!r} has no ShapeAppearance readback."
+            )
+        if hasattr(view, "OverrideMaterial") and not bool(view.OverrideMaterial):
+            raise RuntimeError(
+                f"Appearance target {target.Name!r} did not enable its native "
+                "material override."
+            )
     if shape_material is not None:
         native_names = {
             "ambient_color": "AmbientColor",
@@ -3279,11 +3375,6 @@ def _verify_requested_appearance(target: Any, requested: Mapping[str, Any]) -> N
             "shininess": "Shininess",
             "transparency": "Transparency",
         }
-        materials = list(view.ShapeAppearance)
-        if not materials:
-            raise RuntimeError(
-                f"Appearance target {target.Name!r} has no ShapeAppearance readback."
-            )
         for index, material in enumerate(materials):
             for field, expected in shape_material.items():
                 observed = getattr(material, native_names[str(field)])
@@ -3302,45 +3393,89 @@ def _verify_requested_appearance(target: Any, requested: Mapping[str, Any]) -> N
                         f"{native_names[str(field)]} read back as {observed!r}, expected "
                         f"{expected!r}."
                     )
+    if shape_color is not None:
+        expected = [float(value) for value in list(shape_color)]
+        for index, material in enumerate(materials):
+            observed = [
+                float(value) for value in tuple(material.DiffuseColor)[:3]
+            ]
+            if not _material_state_equal(observed, expected):
+                raise RuntimeError(
+                    f"Appearance target {target.Name!r}.ShapeAppearance[{index}]."
+                    f"DiffuseColor read back as {observed!r}, expected {expected!r}."
+                )
+    if transparency is not None:
+        expected = float(transparency)
+        for index, material in enumerate(materials):
+            observed = float(material.Transparency) * 100.0
+            if not _material_state_equal(observed, expected):
+                raise RuntimeError(
+                    f"Appearance target {target.Name!r}.ShapeAppearance[{index}]."
+                    f"Transparency read back as {observed!r}, expected {expected!r}."
+                )
+
+    simple_views = {
+        native_name: _appearance_property_view(
+            target,
+            native_name,
+            property_views,
+        )
+        for key, native_name in (
+            ("line_color", "LineColor"),
+            ("point_color", "PointColor"),
+            ("line_width", "LineWidth"),
+            ("point_size", "PointSize"),
+            ("display_mode", "DisplayMode"),
+            ("visibility", "Visibility"),
+            ("selectable", "Selectable"),
+        )
+        if requested.get(key) is not None
+    }
     readbacks = {
-        "shape_color": (
-            [float(value) for value in tuple(view.ShapeColor)[:3]]
-            if requested.get("shape_color") is not None
-            else None
-        ),
-        "transparency": (
-            int(view.Transparency)
-            if requested.get("transparency") is not None
-            else None
-        ),
         "line_color": (
-            [float(value) for value in tuple(view.LineColor)[:3]]
+            [
+                float(value)
+                for value in tuple(simple_views["LineColor"].LineColor)[:3]
+            ]
             if requested.get("line_color") is not None
             else None
         ),
         "point_color": (
-            [float(value) for value in tuple(view.PointColor)[:3]]
+            [
+                float(value)
+                for value in tuple(simple_views["PointColor"].PointColor)[:3]
+            ]
             if requested.get("point_color") is not None
             else None
         ),
         "line_width": (
-            float(view.LineWidth) if requested.get("line_width") is not None else None
+            float(simple_views["LineWidth"].LineWidth)
+            if requested.get("line_width") is not None
+            else None
         ),
         "point_size": (
-            float(view.PointSize) if requested.get("point_size") is not None else None
+            float(simple_views["PointSize"].PointSize)
+            if requested.get("point_size") is not None
+            else None
         ),
         "display_mode": (
-            str(view.DisplayMode) if requested.get("display_mode") is not None else None
+            str(simple_views["DisplayMode"].DisplayMode)
+            if requested.get("display_mode") is not None
+            else None
         ),
         "visibility": (
-            bool(view.Visibility) if requested.get("visibility") is not None else None
+            bool(simple_views["Visibility"].Visibility)
+            if requested.get("visibility") is not None
+            else None
         ),
         "selectable": (
-            bool(view.Selectable) if requested.get("selectable") is not None else None
+            bool(simple_views["Selectable"].Selectable)
+            if requested.get("selectable") is not None
+            else None
         ),
     }
     for key, requested_value in requested.items():
-        if key == "shape_material" or requested_value is None:
+        if key in {"shape_material", "shape_color", "transparency"} or requested_value is None:
             continue
         if not _material_state_equal(readbacks[key], requested_value):
             raise RuntimeError(
@@ -3424,12 +3559,15 @@ def _configure_material_carrier(
         ownership["accepted_material"] = accepted_state
     else:
         requested = dict(validation.get("resolved") or {})
-        controlled = list(validation.get("controlled_properties") or [])
         view = getattr(target, "ViewObject", None)
         if view is None:
             raise RuntimeError(
                 f"Appearance target {target.Name!r} has no live view provider."
             )
+        controlled = _effective_appearance_controlled_properties(
+            view,
+            list(validation.get("controlled_properties") or []),
+        )
         _add_property(
             obj,
             "App::PropertyMaterialList",
@@ -7244,6 +7382,13 @@ def _publish_material_candidate(
                 f"Material output {name!r} cannot target another managed Material carrier."
             )
         channel = "physical" if item["type"] == "material_assignment" else "appearance"
+        inline_presentation = _partdesign_presentation_state(target)
+        if inline_presentation is not None and inline_presentation.get(channel) is not None:
+            raise RuntimeError(
+                f"Material output {name!r} cannot own {channel} state on Part Design "
+                f"output {target.Name!r}; that channel is already source-owned by its "
+                "Part Design program."
+            )
         key = (str(target.Name), channel)
         if key in desired_keys:
             raise RuntimeError(
@@ -7336,6 +7481,16 @@ def _publish_material_candidate(
                 if isinstance(validation, dict)
                 else []
             )
+            if output_type == "appearance":
+                view = getattr(target, "ViewObject", None)
+                if view is None:
+                    raise RuntimeError(
+                        f"Appearance target {target.Name!r} has no live view provider."
+                    )
+                controlled = _effective_appearance_controlled_properties(
+                    view,
+                    controlled,
+                )
             channel = (
                 "physical" if output_type == "material_assignment" else "appearance"
             )
@@ -9453,6 +9608,419 @@ def _assembly_model_evidence(item: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _partdesign_presentation_state(obj: Any) -> dict[str, Any] | None:
+    if PROP_PARTDESIGN_PRESENTATION_STATE not in _properties(obj):
+        return None
+    try:
+        state = json.loads(
+            str(getattr(obj, PROP_PARTDESIGN_PRESENTATION_STATE, "") or "")
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Part Design output {getattr(obj, 'Name', '')!r} has invalid "
+            f"presentation state: {exc}"
+        ) from exc
+    if (
+        not isinstance(state, dict)
+        or state.get("schema") != PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA
+        or set(state) != {"schema", "physical", "appearance"}
+        or (
+            state["physical"] is not None
+            and not isinstance(state["physical"], dict)
+        )
+        or (
+            state["appearance"] is not None
+            and not isinstance(state["appearance"], dict)
+        )
+    ):
+        raise RuntimeError(
+            f"Part Design output {getattr(obj, 'Name', '')!r} has malformed "
+            "presentation ownership state."
+        )
+    return state
+
+
+def _partdesign_appearance_property_views(
+    obj: Any,
+    controlled: list[str],
+    *,
+    expected_locations: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Resolve each display property to the stable link or its private shape."""
+
+    publication_view = getattr(obj, "ViewObject", None)
+    if publication_view is None:
+        raise RuntimeError(
+            f"Part Design output {obj.Name!r} has no live view provider."
+        )
+    implementation = scripted_publication.publication_target(obj)
+    implementation_view = getattr(implementation, "ViewObject", None)
+    views = {
+        "publication": publication_view,
+        "implementation": implementation_view,
+    }
+    property_views: dict[str, Any] = {}
+    locations: dict[str, str] = {}
+    implementation_preferred = {"LineColor", "PointColor", "DisplayMode"}
+    for name in controlled:
+        expected = (
+            str(expected_locations.get(name) or "")
+            if expected_locations is not None
+            else ""
+        )
+        if expected:
+            if expected not in views:
+                raise RuntimeError(
+                    f"Part Design output {obj.Name!r} has invalid appearance "
+                    f"location {expected!r} for {name!r}."
+                )
+            candidates = [(expected, views[expected])]
+        elif name in implementation_preferred:
+            candidates = [
+                ("implementation", implementation_view),
+                ("publication", publication_view),
+            ]
+        else:
+            candidates = [
+                ("publication", publication_view),
+                ("implementation", implementation_view),
+            ]
+        for location, view in candidates:
+            if view is not None and hasattr(view, name):
+                property_views[name] = view
+                locations[name] = location
+                break
+        else:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} does not support requested "
+                f"appearance property {name!r}."
+            )
+    return property_views, locations
+
+
+def _capture_mapped_simple_view_state(
+    property_views: Mapping[str, Any],
+    names: list[str],
+) -> dict[str, Any]:
+    return {
+        name: _capture_simple_view_state(property_views[name], [name])[name]
+        for name in names
+    }
+
+
+def _set_mapped_simple_view_state(
+    property_views: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    for name, value in state.items():
+        _set_simple_view_state(property_views[name], {name: value})
+
+
+def _preflight_partdesign_presentation(obj: Any) -> dict[str, Any] | None:
+    """Reject out-of-band edits to source-owned output presentation state."""
+
+    state = _partdesign_presentation_state(obj)
+    if state is None:
+        return None
+    physical = state.get("physical")
+    if physical is not None:
+        if not {
+            PROP_PARTDESIGN_MATERIAL_BASELINE,
+            PROP_PARTDESIGN_MATERIAL_ACCEPTED,
+        } <= _properties(obj):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} lost its material baseline."
+            )
+        live = _material_card_state(getattr(obj, "ShapeMaterial", None))
+        stored = _material_card_state(
+            getattr(obj, PROP_PARTDESIGN_MATERIAL_ACCEPTED)
+        )
+        if live != physical.get("accepted") or stored != physical.get("accepted"):
+            raise RuntimeError(
+                f"Cannot regenerate Part Design output {obj.Name!r}: its physical "
+                "material changed outside the accepted VibeScript revision."
+            )
+
+    appearance = state.get("appearance")
+    if appearance is not None:
+        controlled = list(appearance.get("controlled_properties") or [])
+        if not controlled or any(
+            name not in {"ShapeAppearance", *_MATERIAL_SIMPLE_VIEW_PROPERTIES}
+            for name in controlled
+        ):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has invalid appearance ownership."
+            )
+        property_views, _locations = _partdesign_appearance_property_views(
+            obj,
+            controlled,
+            expected_locations=dict(
+                appearance.get("property_locations") or {}
+            ),
+        )
+        if "ShapeAppearance" in controlled:
+            if not {
+                PROP_PARTDESIGN_APPEARANCE_BASELINE,
+                PROP_PARTDESIGN_APPEARANCE_ACCEPTED,
+            } <= _properties(obj):
+                raise RuntimeError(
+                    f"Part Design output {obj.Name!r} lost its appearance baseline."
+                )
+            live_digest = _shape_appearance_sha256(
+                property_views["ShapeAppearance"].ShapeAppearance
+            )
+            stored_digest = _shape_appearance_sha256(
+                getattr(obj, PROP_PARTDESIGN_APPEARANCE_ACCEPTED)
+            )
+            expected_digest = str(
+                appearance.get("accepted_shape_appearance_sha256") or ""
+            )
+            if live_digest != expected_digest or stored_digest != expected_digest:
+                raise RuntimeError(
+                    f"Cannot regenerate Part Design output {obj.Name!r}: its "
+                    "ShapeAppearance changed outside the accepted VibeScript revision."
+                )
+        simple_names = [
+            name for name in controlled if name != "ShapeAppearance"
+        ]
+        live_simple = _capture_mapped_simple_view_state(
+            property_views,
+            simple_names,
+        )
+        if not _material_state_equal(
+            live_simple,
+            dict(appearance.get("accepted_simple") or {}),
+        ):
+            raise RuntimeError(
+                f"Cannot regenerate Part Design output {obj.Name!r}: one or more "
+                "controlled display properties changed outside the accepted "
+                "VibeScript revision."
+            )
+    return state
+
+
+def _restore_partdesign_presentation_baseline(
+    obj: Any,
+    state: Mapping[str, Any] | None,
+) -> None:
+    if state is None:
+        return
+    if state.get("physical") is not None:
+        _set_physical_material_preserving_view(
+            obj,
+            getattr(obj, PROP_PARTDESIGN_MATERIAL_BASELINE),
+        )
+    appearance = state.get("appearance")
+    if appearance is None:
+        return
+    controlled = list(appearance.get("controlled_properties") or [])
+    property_views, _locations = _partdesign_appearance_property_views(
+        obj,
+        controlled,
+        expected_locations=dict(appearance.get("property_locations") or {}),
+    )
+    if "ShapeAppearance" in controlled:
+        property_views["ShapeAppearance"].ShapeAppearance = list(
+            getattr(obj, PROP_PARTDESIGN_APPEARANCE_BASELINE)
+        )
+    _set_mapped_simple_view_state(
+        property_views,
+        dict(appearance.get("baseline_simple") or {}),
+    )
+
+
+def _configure_partdesign_presentation(
+    obj: Any,
+    item: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply and persist one output's validated material and appearance state."""
+
+    presentation = item.get("partdesign_presentation")
+    if (
+        not isinstance(presentation, Mapping)
+        or presentation.get("schema") != "vibecad-partdesign-presentation-v1"
+    ):
+        raise RuntimeError(
+            f"Part Design output {item.get('name')!r} lost validated "
+            "presentation evidence."
+        )
+    physical_record = presentation.get("physical_material")
+    appearance_validation = presentation.get("appearance")
+    ownership: dict[str, Any] = {
+        "schema": PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA,
+        "physical": None,
+        "appearance": None,
+    }
+
+    if physical_record is not None:
+        if not isinstance(physical_record, Mapping):
+            raise RuntimeError("Validated Part Design material state is malformed.")
+        native_material = item.get("partdesign_native_material")
+        if native_material is None:
+            raise RuntimeError(
+                f"Part Design output {item.get('name')!r} lost its resolved "
+                "native material card."
+            )
+        if not hasattr(obj, "ShapeMaterial"):
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} does not support ShapeMaterial."
+            )
+        baseline_material = getattr(obj, "ShapeMaterial")
+        _add_property(
+            obj,
+            "Materials::PropertyMaterial",
+            PROP_PARTDESIGN_MATERIAL_BASELINE,
+            "Native material restored when source material ownership is removed.",
+        )
+        _add_property(
+            obj,
+            "Materials::PropertyMaterial",
+            PROP_PARTDESIGN_MATERIAL_ACCEPTED,
+            "Native material authenticated for the accepted Part Design revision.",
+        )
+        setattr(
+            obj,
+            PROP_PARTDESIGN_MATERIAL_BASELINE,
+            baseline_material,
+        )
+        _set_physical_material_preserving_view(obj, native_material)
+        assigned = getattr(obj, "ShapeMaterial")
+        accepted = _material_card_state(assigned)
+        expected = {
+            "uuid": str(physical_record.get("uuid") or ""),
+            "name": str(physical_record.get("name") or ""),
+            "card_sha256": str(physical_record.get("card_sha256") or ""),
+        }
+        if accepted != expected:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} physical material readback "
+                "differs from the validated catalog card."
+            )
+        setattr(obj, PROP_PARTDESIGN_MATERIAL_ACCEPTED, assigned)
+        ownership["physical"] = {
+            "baseline": _material_card_state(baseline_material),
+            "accepted": accepted,
+        }
+
+    if appearance_validation is not None:
+        if not isinstance(appearance_validation, Mapping):
+            raise RuntimeError("Validated Part Design appearance state is malformed.")
+        requested = dict(appearance_validation.get("resolved") or {})
+        view = getattr(obj, "ViewObject", None)
+        if view is None:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has no live view provider."
+            )
+        controlled = _effective_appearance_controlled_properties(
+            view,
+            list(appearance_validation.get("controlled_properties") or []),
+        )
+        if not controlled:
+            raise RuntimeError(
+                f"Part Design output {obj.Name!r} has an empty appearance request."
+            )
+        property_views, property_locations = (
+            _partdesign_appearance_property_views(obj, controlled)
+        )
+        simple_names = [
+            name for name in controlled if name != "ShapeAppearance"
+        ]
+        baseline_simple = _capture_mapped_simple_view_state(
+            property_views,
+            simple_names,
+        )
+        baseline_shape = (
+            list(property_views["ShapeAppearance"].ShapeAppearance)
+            if "ShapeAppearance" in controlled
+            else []
+        )
+        _add_property(
+            obj,
+            "App::PropertyMaterialList",
+            PROP_PARTDESIGN_APPEARANCE_BASELINE,
+            "Complete ShapeAppearance restored when source appearance is removed.",
+        )
+        _add_property(
+            obj,
+            "App::PropertyMaterialList",
+            PROP_PARTDESIGN_APPEARANCE_ACCEPTED,
+            "Complete ShapeAppearance authenticated for the accepted revision.",
+        )
+        setattr(
+            obj,
+            PROP_PARTDESIGN_APPEARANCE_BASELINE,
+            baseline_shape,
+        )
+        _apply_requested_appearance(
+            obj,
+            requested,
+            property_views=property_views,
+        )
+        _verify_requested_appearance(
+            obj,
+            requested,
+            property_views=property_views,
+        )
+        accepted_simple = _capture_mapped_simple_view_state(
+            property_views,
+            simple_names,
+        )
+        accepted_shape = (
+            list(property_views["ShapeAppearance"].ShapeAppearance)
+            if "ShapeAppearance" in controlled
+            else []
+        )
+        setattr(
+            obj,
+            PROP_PARTDESIGN_APPEARANCE_ACCEPTED,
+            accepted_shape,
+        )
+        ownership["appearance"] = {
+            "controlled_properties": controlled,
+            "property_locations": property_locations,
+            "baseline_simple": baseline_simple,
+            "accepted_simple": accepted_simple,
+            "baseline_shape_appearance_sha256": (
+                _shape_appearance_sha256(baseline_shape)
+                if "ShapeAppearance" in controlled
+                else ""
+            ),
+            "accepted_shape_appearance_sha256": (
+                _shape_appearance_sha256(accepted_shape)
+                if "ShapeAppearance" in controlled
+                else ""
+            ),
+        }
+
+    _add_string_property(
+        obj,
+        PROP_PARTDESIGN_PRESENTATION_STATE,
+        "Reversible source-owned Part Design material and appearance state.",
+    )
+    setattr(
+        obj,
+        PROP_PARTDESIGN_PRESENTATION_STATE,
+        json.dumps(
+            ownership,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    return ownership
+
+
+def _partdesign_presentation_channels(
+    presentation: Mapping[str, Any],
+) -> set[str]:
+    channels: set[str] = set()
+    if presentation.get("physical_material") is not None:
+        channels.add("physical")
+    if presentation.get("appearance") is not None:
+        channels.add("appearance")
+    return channels
+
+
 class _PartDesignShapeCarrier:
     """Detached validated shape presented to the shared publication service."""
 
@@ -9635,6 +10203,38 @@ def _publish_partdesign_candidate(
     publications = (
         _partdesign_publications(doc, root, program_id) if root is not None else {}
     )
+    previous_presentation = {
+        name: _preflight_partdesign_presentation(obj)
+        for name, obj in publications.items()
+    }
+    for item in validated["outputs"]:
+        output_name = str(item["name"])
+        published = publications.get(output_name)
+        if published is None:
+            continue
+        presentation = item.get("partdesign_presentation")
+        if not isinstance(presentation, Mapping):
+            raise RuntimeError(
+                f"Part Design output {output_name!r} has no validated presentation state."
+            )
+        desired_channels = _partdesign_presentation_channels(presentation)
+        if not desired_channels:
+            continue
+        for candidate in list(getattr(doc, "Objects", []) or []):
+            if (
+                str(getattr(candidate, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+                != "material"
+                or getattr(candidate, PROP_MATERIAL_TARGET, None) is not published
+            ):
+                continue
+            ownership = _material_ownership(candidate)
+            if str(ownership.get("channel") or "") in desired_channels:
+                raise RuntimeError(
+                    f"Part Design output {output_name!r} cannot own "
+                    f"{ownership['channel']} presentation while Material program "
+                    f"{getattr(candidate, contracts.PROP_PROGRAM_ID, '')!r} owns "
+                    "the same channel."
+                )
     previous_interfaces: dict[str, Any] = {}
     if root is not None:
         try:
@@ -9679,6 +10279,14 @@ def _publish_partdesign_candidate(
     transaction_open = False
     created: list[str] = []
     removed: list[str] = []
+    rollback_targets: dict[int, Any] = {}
+    for obj in publications.values():
+        rollback_targets[id(obj)] = obj
+        implementation = scripted_publication.publication_target(obj, root)
+        rollback_targets[id(implementation)] = implementation
+    rollback_states = [
+        _material_target_snapshot(obj) for obj in rollback_targets.values()
+    ]
     try:
         if hasattr(doc, "openTransaction"):
             doc.openTransaction(
@@ -9702,6 +10310,7 @@ def _publish_partdesign_candidate(
             )
         for item in validated["outputs"]:
             name = str(item["name"])
+            output_type = str(item["type"])
             carrier = _PartDesignShapeCarrier(item)
             published = publications.get(name)
             if published is None:
@@ -9718,7 +10327,21 @@ def _publish_partdesign_candidate(
                 )
                 publications[name] = published
                 created.append(str(published.Name))
+                for rollback_target in (
+                    published,
+                    scripted_publication.publication_target(published, root),
+                ):
+                    if id(rollback_target) in rollback_targets:
+                        continue
+                    rollback_targets[id(rollback_target)] = rollback_target
+                    rollback_states.append(
+                        _material_target_snapshot(rollback_target)
+                    )
             else:
+                _restore_partdesign_presentation_baseline(
+                    published,
+                    previous_presentation.get(name),
+                )
                 scripted_publication.tag_object(
                     published,
                     role=scripted_publication.ROLE_PUBLICATION,
@@ -9738,9 +10361,10 @@ def _publish_partdesign_candidate(
                 published,
                 prepared,
                 name,
-                "solid",
+                output_type,
                 _definition(item),
             )
+            _configure_partdesign_presentation(published, item)
         interface_table = _partdesign_interface_table(validated, publications)
         reference_contracts.validate_removed_interfaces(
             doc,
@@ -9771,20 +10395,34 @@ def _publish_partdesign_candidate(
         if hasattr(doc, "commitTransaction") and transaction_open:
             doc.commitTransaction()
             transaction_open = False
-    except Exception:
+    except Exception as publication_error:
+        rollback_error = None
+        try:
+            _restore_material_target_snapshots(rollback_states)
+        except Exception as exc:
+            rollback_error = exc
         if transaction_open and hasattr(doc, "abortTransaction"):
-            doc.abortTransaction()
+            try:
+                doc.abortTransaction()
+            except Exception:
+                pass
+        if rollback_error is not None:
+            raise RuntimeError(
+                f"{publication_error} Explicit Part Design presentation rollback "
+                f"failed: {rollback_error}"
+            ) from publication_error
         raise
     live_outputs: dict[str, Any] = {}
     output_rows: list[dict[str, Any]] = []
     for item in validated["outputs"]:
         name = str(item["name"])
+        output_type = str(item["type"])
         published = publications[name]
         row = {
             "object_name": str(published.Name),
             "label": str(published.Label),
             "type_id": str(published.TypeId),
-            "output_type": "solid",
+            "output_type": output_type,
             "facts": dict(item.get("facts") or {}),
             "partdesign_data": dict(item.get("partdesign_data") or {}),
             "derived_state": str(

@@ -3,7 +3,7 @@
     {
       "name": "part-crank",
       "coverage": ["part"],
-      "workbench": "PartWorkbench",
+      "workbench": "PartDesignWorkbench",
       "file": "data/tests/Crank.fcstd",
       "fit_view": true
     },

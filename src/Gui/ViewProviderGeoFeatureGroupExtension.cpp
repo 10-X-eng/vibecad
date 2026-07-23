@@ -85,6 +85,20 @@ std::vector<App::DocumentObject*> ViewProviderGeoFeatureGroupExtension::extensio
 
     auto* group = obj->getExtensionByType<App::GeoFeatureGroupExtension>();
     const std::vector<App::DocumentObject*>& model = group->Group.getValues();
+
+    if (group->keepDirectChildrenInTree()) {
+        std::vector<App::DocumentObject*> result;
+        result.reserve(model.size());
+        for (auto* child : model) {
+            if (!child || !child->isAttachedToDocument()) {
+                continue;
+            }
+            child->setStatus(App::ObjectStatus::GeoExcluded, false);
+            result.push_back(child);
+        }
+        return result;
+    }
+
     std::set<App::DocumentObject*> outSet;  //< set of objects not to claim (childrens of childrens)
 
     // search for objects handled (claimed) by the features

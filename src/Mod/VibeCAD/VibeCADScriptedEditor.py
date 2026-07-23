@@ -155,7 +155,8 @@ def _new_domain_program_template(domain: str, label: str) -> tuple[str, str] | N
             "left = api.line([0, d], [0, 0], name='Left')\n"
             "profile = api.sketch([bottom, right, top, left], "
             "require_closed_profile=True, label='Base Profile')\n"
-            "feature = api.pad(profile, h, label='Base Pad')\n"
+            "feature = api.extrude(profile, h, operation='add_material', "
+            "label='Base Extrusion')\n"
             f"result = {{'Result': api.body(feature, label={label!r})}}\n"
         )
     elif domain == "part":

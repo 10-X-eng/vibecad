@@ -25,7 +25,6 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
     WORKBENCHES = (
         "PartDesignWorkbench",
         "SketcherWorkbench",
-        "PartWorkbench",
         "DraftWorkbench",
         "SurfaceWorkbench",
         "AssemblyWorkbench",
@@ -451,7 +450,6 @@ def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
     user_workbenches = {
         "PartDesignWorkbench",
         "SketcherWorkbench",
-        "PartWorkbench",
         "DraftWorkbench",
         "SurfaceWorkbench",
         "AssemblyWorkbench",
@@ -600,10 +598,12 @@ def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None
         loader_locals,
     )
 
-    assert workbenches.values["Ordered"] == "PartWorkbench,DraftWorkbench"
+    assert workbenches.values["Ordered"] == "PartDesignWorkbench,DraftWorkbench"
     assert workbenches.values["Disabled"] == "TestWorkbench,NoneWorkbench"
-    assert general.values["BackgroundAutoloadModules"] == "PartWorkbench"
+    assert general.values["BackgroundAutoloadModules"] == "PartDesignWorkbench"
     assert general.values["AutoloadModule"] == "PartDesignWorkbench"
     assert general.values["LastModule"] == "PartDesignWorkbench"
     assert migration.values["VibeCADRemovedArchitectureWorkbench2026"] is True
+    assert migration.values["VibeCADConsolidatedPartWorkbench2026"] is True
     assert any("retired architecture workbench" in warning for warning in warnings)
+    assert any("Part workbench references" in warning for warning in warnings)

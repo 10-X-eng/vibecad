@@ -155,11 +155,7 @@ bool ViewProvider::setEdit(int ModNum)
         // the body container. That should never happen, but in some cases we find models with a
         // problem like that.
         if (ViewProviderBody* bodyViewProvider = getBodyViewProvider()) {
-            PartDesign::Feature* shownFeature = bodyViewProvider->getShownFeature();
-
-            previouslyShownViewProvider = freecad_cast<ViewProvider*>(
-                Gui::Application::Instance->getViewProvider(shownFeature)
-            );
+            previouslyShownViewProvider = bodyViewProvider->getShownViewProvider();
         }
 
         // clear the selection (convenience)
@@ -491,7 +487,7 @@ ViewProviderBody* ViewProvider::getBodyViewProvider()
 
 void ViewProvider::toggleVisibility()
 {
-    if (!PartDesign::Body::isSolidFeature(getObject())) {
+    if (!PartDesign::Body::isResultFeature(getObject())) {
         Gui::ViewProvider::toggleVisibility();
         return;
     }

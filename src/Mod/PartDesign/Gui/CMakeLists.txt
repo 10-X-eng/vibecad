@@ -203,6 +203,8 @@ SET(PartDesignGuiModule_SRCS
     Command.cpp
     CommandPrimitive.cpp
     CommandBody.cpp
+    ModelingContext.cpp
+    ModelingContext.h
     EnumFlags.h
     Resources/PartDesign.qrc
     PreCompiled.h

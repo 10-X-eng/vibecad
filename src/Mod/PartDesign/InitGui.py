@@ -58,6 +58,11 @@ class PartDesignWorkbench(Workbench):
 
         import PartDesignGui
         import PartDesign
+        import PartGui
+
+        from PartGuiCommands import initialize as initialize_part_commands
+
+        initialize_part_commands()
 
         from PartDesign.InvoluteGearFeature import CommandInvoluteGear
 

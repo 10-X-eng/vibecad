@@ -38,7 +38,10 @@ from PySide.QtGui import QApplication
 
 from PartDesignTests.TestMaterial import TestMaterial
 from PartDesignTests.TestActiveObject import TestActiveObject
+from PartDesignTests.TestConsolidatedPart import TestConsolidatedPartWorkbench
+from PartDesignTests.TestConsolidatedPartTools import TestConsolidatedPartTools
 from PartDesignTests.TestSuppressed import TestSuppressedStrikethrough
+from PartDesignTests.TestVibeScriptPresentation import TestVibeScriptPresentation
 
 
 # timer runs this class in order to access modal dialog

@@ -11,7 +11,7 @@ from . import partdesign_measure
 
 TOOL_SPEC = deepcopy(partdesign_measure.TOOL_SPEC)
 TOOL_SPEC["name"] = "part.measure"
-TOOL_SPEC["workbench"] = "PartWorkbench"
+TOOL_SPEC["workbench"] = "PartDesignWorkbench"
 TOOL_SPEC["description"] = (
     "Measure exact native object/subelement geometry, minimum distance, or direction "
     "angle for any shaped object. Datum points, axes, and planes are measured "

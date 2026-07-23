@@ -99,7 +99,7 @@ short Body::mustExecute() const
     return Part::BodyBase::mustExecute();
 }
 
-App::DocumentObject* Body::getPrevSolidFeature(App::DocumentObject* start)
+App::DocumentObject* Body::getPrevResultFeature(App::DocumentObject* start)
 {
     if (!start) {  // default to tip
         start = Tip.getValue();
@@ -120,14 +120,19 @@ App::DocumentObject* Body::getPrevSolidFeature(App::DocumentObject* start)
         return nullptr;
     }
 
-    auto rvIt = std::find_if(startIt + 1, features.rend(), isSolidFeature);
+    auto rvIt = std::find_if(startIt + 1, features.rend(), isResultFeature);
     if (rvIt != features.rend()) {  // the solid found in model list
         return *rvIt;
     }
     return nullptr;
 }
 
-App::DocumentObject* Body::getNextSolidFeature(App::DocumentObject* start)
+App::DocumentObject* Body::getPrevSolidFeature(App::DocumentObject* start)
+{
+    return getPrevResultFeature(start);
+}
+
+App::DocumentObject* Body::getNextResultFeature(App::DocumentObject* start)
 {
     if (!start) {  // default to tip
         start = Tip.getValue();
@@ -150,16 +155,21 @@ App::DocumentObject* Body::getNextSolidFeature(App::DocumentObject* start)
         return nullptr;
     }
 
-    auto rvIt = std::find_if(startIt, features.end(), isSolidFeature);
+    auto rvIt = std::find_if(startIt, features.end(), isResultFeature);
     if (rvIt != features.end()) {  // the solid found in model list
         return *rvIt;
     }
     return nullptr;
 }
 
+App::DocumentObject* Body::getNextSolidFeature(App::DocumentObject* start)
+{
+    return getNextResultFeature(start);
+}
+
 bool Body::isAfterInsertPoint(App::DocumentObject* feature)
 {
-    App::DocumentObject* nextSolid = getNextSolidFeature();
+    App::DocumentObject* nextSolid = getNextResultFeature();
     assert(feature);
 
     if (feature == nextSolid) {
@@ -190,7 +200,34 @@ bool Body::isSolidFeature(const App::DocumentObject* obj)
         }
         return true;
     }
-    return false;  // DeepSOIC: work-in-progress?
+    return false;
+}
+
+bool Body::isResultFeature(const App::DocumentObject* obj)
+{
+    if (!obj) {
+        return false;
+    }
+    // Preserve the established Part Design distinction between a sequential result and a support
+    // feature.  In particular, datums and the internal Transformed children owned by a
+    // MultiTransform derive from PartDesign::Feature (and therefore Part::Feature), but must never
+    // become the Body Tip or enter the BaseFeature chain.
+    if (obj->isDerivedFrom<PartDesign::Feature>()) {
+        return isSolidFeature(obj);
+    }
+    // Shape binders are reference/support geometry.  They intentionally derive directly from
+    // Part::Feature, so exclude them before accepting ordinary Part results.
+    if (obj->isDerivedFrom<PartDesign::ShapeBinder>()
+        || obj->isDerivedFrom<PartDesign::SubShapeBinder>()) {
+        return false;
+    }
+    // Part Design features are sequential material operations, while ordinary Part features carry
+    // their dependencies explicitly (Base/Tool/Shapes/etc.). Both are valid result nodes in the
+    // consolidated modeling body. Part2D objects and body/group containers remain support or
+    // ownership objects rather than result features.
+    return obj->isDerivedFrom<Part::Feature>()
+        && !obj->isDerivedFrom<Part::Part2DObject>() && !obj->isDerivedFrom<Part::BodyBase>()
+        && !obj->isDerivedFrom<Part::Datum>();
 }
 
 bool Body::isAllowed(const App::DocumentObject* obj)
@@ -199,10 +236,9 @@ bool Body::isAllowed(const App::DocumentObject* obj)
         return false;
     }
 
-    // TODO: Should we introduce a PartDesign::FeaturePython class? This should then also return
-    // true for isSolidFeature()
     return (
-        obj->isDerivedFrom<PartDesign::Feature>() || obj->isDerivedFrom<Part::Datum>() ||
+        (obj->isDerivedFrom<Part::Feature>() && !obj->isDerivedFrom<Part::BodyBase>())
+        || obj->isDerivedFrom<Part::Datum>() ||
         // TODO Shouldn't we replace it with Sketcher::SketchObject? (2015-08-13, Fat-Zer)
         obj->isDerivedFrom<Part::Part2DObject>() || obj->isDerivedFrom<PartDesign::ShapeBinder>()
         || obj->isDerivedFrom<PartDesign::SubShapeBinder>() ||
@@ -242,16 +278,15 @@ std::vector<App::DocumentObject*> Body::addObject(App::DocumentObject* feature)
     }
 
 
-    insertObject(feature, getNextSolidFeature(), /*after = */ false);
-    // Move the Tip if we added a solid
-    if (isSolidFeature(feature)) {
+    insertObject(feature, getNextResultFeature(), /*after = */ false);
+    // Move the Tip if we added a result feature.
+    if (isResultFeature(feature)) {
         Tip.setValue(feature);
     }
 
-    if (feature->Visibility.getValue() && feature->isDerivedFrom<PartDesign::Feature>()) {
+    if (feature->Visibility.getValue() && isResultFeature(feature)) {
         for (auto obj : Group.getValues()) {
-            if (obj->Visibility.getValue() && obj != feature
-                && obj->isDerivedFrom<PartDesign::Feature>()) {
+            if (obj->Visibility.getValue() && obj != feature && isResultFeature(obj)) {
                 obj->Visibility.setValue(false);
             }
         }
@@ -322,16 +357,18 @@ void Body::insertObject(App::DocumentObject* feature, App::DocumentObject* targe
 
 void Body::setBaseProperty(App::DocumentObject* feature)
 {
-    if (Body::isSolidFeature(feature)) {
+    if (Body::isResultFeature(feature)) {
         // Set BaseFeature property to previous feature (this might be the Tip feature)
-        App::DocumentObject* prevSolidFeature = getPrevSolidFeature(feature);
-        // NULL is ok here, it just means we made the current one fiature the base solid
-        static_cast<PartDesign::Feature*>(feature)->BaseFeature.setValue(prevSolidFeature);
+        App::DocumentObject* prevSolidFeature = getPrevResultFeature(feature);
+        // NULL is ok here, it just means we made the current one feature the base solid. Ordinary
+        // Part features keep their own explicit input links and therefore need no BaseFeature.
+        if (feature->isDerivedFrom<PartDesign::Feature>()) {
+            static_cast<PartDesign::Feature*>(feature)->BaseFeature.setValue(prevSolidFeature);
+        }
 
         // Reroute the next solid feature's BaseFeature property to this feature
-        App::DocumentObject* nextSolidFeature = getNextSolidFeature(feature);
-        if (nextSolidFeature) {
-            assert(nextSolidFeature->isDerivedFrom(PartDesign::Feature::getClassTypeId()));
+        App::DocumentObject* nextSolidFeature = getNextResultFeature(feature);
+        if (nextSolidFeature && nextSolidFeature->isDerivedFrom<PartDesign::Feature>()) {
             static_cast<PartDesign::Feature*>(nextSolidFeature)->BaseFeature.setValue(feature);
         }
     }
@@ -341,8 +378,8 @@ std::vector<App::DocumentObject*> Body::removeObject(App::DocumentObject* featur
 {
     // This method must be called BEFORE the feature is removed from the Document!
 
-    App::DocumentObject* nextSolidFeature = getNextSolidFeature(feature);
-    App::DocumentObject* prevSolidFeature = getPrevSolidFeature(feature);
+    App::DocumentObject* nextSolidFeature = getNextResultFeature(feature);
+    App::DocumentObject* prevSolidFeature = getPrevResultFeature(feature);
 
     // It's ok to remove the first solid feature, that just mean the next feature become the base one
 
@@ -389,7 +426,7 @@ App::DocumentObjectExecReturn* Body::execute()
     Base::Console().error("   Group:\n");
     for (std::vector<App::DocumentObject*>::const_iterator m = model.begin(); m != model.end(); m++)
     { if (*m == NULL) continue; Base::Console().error("      %s", (*m)->getNameInDocument()); if
-    (Body::isSolidFeature(*m)) { App::DocumentObject* baseFeature =
+    (Body::isResultFeature(*m)) { App::DocumentObject* baseFeature =
     static_cast<PartDesign::Feature*>(*m)->BaseFeature.getValue(); Base::Console().error(", Base:
     %s\n", baseFeature == NULL ? "None" : baseFeature->getNameInDocument()); } else {
             Base::Console().error("\n");
@@ -401,9 +438,9 @@ App::DocumentObjectExecReturn* Body::execute()
 
     Part::TopoShape tipShape;
     if (tip) {
-        if (!tip->isDerivedFrom<PartDesign::Feature>()) {
+        if (!tip->isDerivedFrom<Part::Feature>()) {
             return new App::DocumentObjectExecReturn(
-                QT_TRANSLATE_NOOP("Exception", "Linked object is not a PartDesign feature")
+                QT_TRANSLATE_NOOP("Exception", "Linked object is not a shape feature")
             );
         }
 
@@ -611,12 +648,13 @@ void Body::onDocumentRestored()
     DocumentObject::onDocumentRestored();
 }
 
-// a body is solid if it has features that are solid
+// A result node may be a wire, face, shell, or solid. Report solidness from actual topology rather
+// than from participation in the Body's result sequence.
 bool Body::isSolid()
 {
-    std::vector<App::DocumentObject*> features = getFullModel();
-    for (auto feature : features) {
-        if (isSolidFeature(feature)) {
+    for (auto* feature : getFullModel()) {
+        auto* shapeFeature = freecad_cast<Part::Feature*>(feature);
+        if (shapeFeature && shapeFeature->Shape.getShape().countSubShapes(TopAbs_SOLID) > 0) {
             return true;
         }
     }

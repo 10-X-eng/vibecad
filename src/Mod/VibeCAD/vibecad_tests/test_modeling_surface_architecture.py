@@ -31,7 +31,6 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
     {
         "PartDesignWorkbench",
         "SketcherWorkbench",
-        "PartWorkbench",
         "DraftWorkbench",
         "SurfaceWorkbench",
         "AssemblyWorkbench",
@@ -51,7 +50,7 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
 
 
 def test_complete_native_and_vibescript_surface_matrix() -> None:
-    assert len(USER_WORKBENCHES) == 17
+    assert len(USER_WORKBENCHES) == 16
     observed_ready = set()
     for workbench in USER_WORKBENCHES:
         native_pack = WORKBENCH_TOOL_PACKS[workbench]
@@ -143,7 +142,7 @@ def test_external_script_engines_are_partdesign_only(engine: str) -> None:
 
 def test_mixed_and_cross_domain_surfaces_are_rejected() -> None:
     part = resolve_modeling_surface("PartWorkbench", "vibescript")
-    native_part_tool = WORKBENCH_TOOL_PACKS["PartWorkbench"].tool_names[0]
+    native_part_tool = WORKBENCH_TOOL_PACKS["PartDesignWorkbench"].tool_names[-1]
     with pytest.raises(ValueError, match="cannot contain native"):
         validate_surface_names(
             workbench="PartWorkbench",

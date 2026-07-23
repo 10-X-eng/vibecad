@@ -11,6 +11,15 @@ from typing import Any
 GEOMETRY_TOLERANCE_MM = 1.0e-7
 
 
+def adopt_part_result(obj: Any) -> Any:
+    """Atomically place a completed Part graph in the active modeling Body."""
+    try:
+        import PartDesignGui
+    except ImportError:
+        return None
+    return PartDesignGui.adoptPartResult(obj)
+
+
 def vector_values(vector: Any) -> list[float]:
     """Return one FreeCAD vector as a JSON-safe XYZ triplet."""
     return [float(vector.x), float(vector.y), float(vector.z)]

@@ -11,7 +11,7 @@
       {
         "status": "workbench_active",
         "fields_equal": {
-          "workbench": "PartWorkbench"
+          "workbench": "PartDesignWorkbench"
         }
       },
       {

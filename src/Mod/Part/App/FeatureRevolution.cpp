@@ -90,6 +90,9 @@ Revolution::Revolution()
         App::Prop_None,
         "Facemaker to use if Solid is true."
     );  // default for old documents. For default for new objects, refer to setupObject().
+
+    allowCrossContainerLink(Source);
+    allowCrossContainerLink(AxisLink);
 }
 
 short Revolution::mustExecute() const

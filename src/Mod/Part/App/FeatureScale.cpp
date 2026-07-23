@@ -42,6 +42,7 @@ PROPERTY_SOURCE(Part::Scale, Part::Feature)
 Scale::Scale()
 {
     ADD_PROPERTY_TYPE(Base, (nullptr), "Scale", App::Prop_None, "Shape to scale");
+    allowCrossContainerLink(Base);
     ADD_PROPERTY_TYPE(Uniform, (true), "Scale", App::Prop_None, "If true, scale equally in all directions");
     ADD_PROPERTY_TYPE(
         UniformScale,

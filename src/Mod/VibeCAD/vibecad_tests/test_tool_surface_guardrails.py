@@ -5,7 +5,8 @@
 Four invariants are enforced:
 
 1. No orphan provider tools — every provider-visible tool spec is surfaced through
-   ``CORE_PROVIDER_TOOLS``, at least one workbench pack, or one of the
+   ``CORE_PROVIDER_TOOLS``, at least one workbench pack, one explicitly enumerated
+   compatibility surface, or one of the
    scripted-engine session surfaces (``BUILD123D_PROVIDER_TOOLS`` /
    ``OPENSCAD_PROVIDER_TOOLS`` / ``VIBESCRIPT_PROVIDER_TOOLS``). A tool
    registered without any surface fails this test, so stale or
@@ -127,6 +128,13 @@ def engine_tools() -> frozenset[str]:
     )
 
 
+@pytest.fixture(scope="module")
+def compatibility_tools() -> frozenset[str]:
+    import VibeCADWorkbenchTools as wbt
+
+    return frozenset(wbt.MODELING_COMPATIBILITY_TOOL_NAMES)
+
+
 def _surfaced_names(
     core_tools: frozenset[str],
     packs: list[dict[str, Any]],
@@ -138,12 +146,15 @@ def _surfaced_names(
     return surfaced
 
 
-def test_no_orphan_tools(specs, packs, core_tools, engine_tools) -> None:
-    """1. Every registered tool must belong to core, a pack, or an engine."""
-    orphans = sorted(set(specs) - _surfaced_names(core_tools, packs, engine_tools))
+def test_no_orphan_tools(
+    specs, packs, core_tools, engine_tools, compatibility_tools
+) -> None:
+    """1. Every registered tool must belong to a live or compatibility surface."""
+    recognized = _surfaced_names(core_tools, packs, engine_tools) | set(compatibility_tools)
+    orphans = sorted(set(specs) - recognized)
     assert not orphans, (
         "Tools registered but not surfaced by CORE_PROVIDER_TOOLS, any "
-        "workbench pack, or an engine session surface (add to one or remove "
+        "workbench pack, compatibility contract, or engine session surface (add to one or remove "
         f"the registration): {orphans}"
     )
 
@@ -154,6 +165,15 @@ def test_no_dangling_names(specs, packs, core_tools, engine_tools) -> None:
     assert not dangling, (
         f"Names surfaced by core/packs/engines with no registered tool spec: {dangling}"
     )
+
+
+def test_modeling_compatibility_tools_are_registered_but_not_advertised(
+    specs, packs, compatibility_tools
+) -> None:
+    """Legacy exact names resolve without competing with the canonical model.* surface."""
+    assert compatibility_tools <= set(specs)
+    surfaced = _surfaced_names(frozenset(), packs)
+    assert compatibility_tools.isdisjoint(surfaced)
 
 
 def _module_sources_with_local_imports(module_path: Path) -> Iterator[str]:
@@ -427,7 +447,7 @@ def test_provider_schema_build_reuses_turn_context_runtime_state(
 
 
 def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
-    """All 17 workbench surfaces stay bounded without dropping exact schemas."""
+    """All 16 workbench surfaces stay bounded without dropping exact schemas."""
 
     import json
 
@@ -478,7 +498,7 @@ def test_all_exact_surfaces_fit_their_model_context_budgets(specs) -> None:
                 <= provider.MAX_PROVIDER_INSTRUCTIONS_BYTES
             )
 
-    assert observed_workbenches == 17
+    assert observed_workbenches == 16
 
 
 @pytest.mark.parametrize(

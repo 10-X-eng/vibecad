@@ -1238,7 +1238,7 @@ CmdPartDesignPad::CmdPartDesignPad()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Pad");
+    sMenuText = QT_TR_NOOP("Extrude — Add Material");
     sToolTipText = QT_TR_NOOP("Extrudes the selected sketch or profile and adds it to the body");
     sWhatsThis = "PartDesign_Pad";
     sStatusTip = sToolTipText;
@@ -1267,7 +1267,7 @@ CmdPartDesignPocket::CmdPartDesignPocket()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Pocket");
+    sMenuText = QT_TR_NOOP("Extrude — Remove Material");
     sToolTipText = QT_TR_NOOP("Extrudes the selected sketch or profile and removes it from the body");
     sWhatsThis = "PartDesign_Pocket";
     sStatusTip = sToolTipText;
@@ -1341,7 +1341,7 @@ CmdPartDesignRevolution::CmdPartDesignRevolution()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Revolve");
+    sMenuText = QT_TR_NOOP("Revolve — Add Material");
     sToolTipText = QT_TR_NOOP(
         "Revolves the selected sketch or profile around a line or axis and adds it to the body"
     );
@@ -1403,7 +1403,7 @@ CmdPartDesignGroove::CmdPartDesignGroove()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Groove");
+    sMenuText = QT_TR_NOOP("Revolve — Remove Material");
     sToolTipText = QT_TR_NOOP(
         "Revolves the sketch or profile around a line or axis and removes it from the body"
     );
@@ -1473,7 +1473,7 @@ CmdPartDesignAdditivePipe::CmdPartDesignAdditivePipe()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Additive Pipe");
+    sMenuText = QT_TR_NOOP("Sweep — Add Material");
     sToolTipText = QT_TR_NOOP(
         "Sweeps the selected sketch or profile along a path and adds it to the body"
     );
@@ -1523,7 +1523,7 @@ CmdPartDesignSubtractivePipe::CmdPartDesignSubtractivePipe()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Subtractive Pipe");
+    sMenuText = QT_TR_NOOP("Sweep — Remove Material");
     sToolTipText = QT_TR_NOOP(
         "Sweeps the selected sketch or profile along a path and removes it from the body"
     );
@@ -1573,7 +1573,7 @@ CmdPartDesignAdditiveLoft::CmdPartDesignAdditiveLoft()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Additive Loft");
+    sMenuText = QT_TR_NOOP("Loft — Add Material");
     sToolTipText = QT_TR_NOOP(
         "Lofts the selected sketch or profile along a path and adds it to the body"
     );
@@ -1623,7 +1623,7 @@ CmdPartDesignSubtractiveLoft::CmdPartDesignSubtractiveLoft()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Subtractive Loft");
+    sMenuText = QT_TR_NOOP("Loft — Remove Material");
     sToolTipText = QT_TR_NOOP(
         "Lofts the selected sketch or profile along a path and removes it from the body"
     );
@@ -1672,7 +1672,7 @@ CmdPartDesignAdditiveHelix::CmdPartDesignAdditiveHelix()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Additive Helix");
+    sMenuText = QT_TR_NOOP("Helix Sweep — Add Material");
     sToolTipText = QT_TR_NOOP(
         "Sweeps the selected sketch or profile along a helix and adds it to the body"
     );
@@ -1756,7 +1756,7 @@ CmdPartDesignSubtractiveHelix::CmdPartDesignSubtractiveHelix()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Subtractive Helix");
+    sMenuText = QT_TR_NOOP("Helix Sweep — Remove Material");
     sToolTipText = QT_TR_NOOP(
         "Sweeps the selected sketch or profile along a helix and removes it from the body"
     );
@@ -2501,7 +2501,7 @@ void CmdPartDesignMultiTransform::activated(int iMsg)
         App::DocumentObject* prevFeature = nullptr;
         if (pcActiveBody) {
             oldTip = pcActiveBody->Tip.getValue();
-            prevFeature = pcActiveBody->getPrevSolidFeature(trFeat);
+            prevFeature = pcActiveBody->getPrevResultFeature(trFeat);
         }
         Gui::Selection().clearSelection();
         if (prevFeature) {

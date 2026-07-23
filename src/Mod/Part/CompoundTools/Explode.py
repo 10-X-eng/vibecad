@@ -19,9 +19,23 @@ def explodeCompound(compound_obj, b_group=None):
         raise TypeError("Object must be App.GeoFeature with Part.Shape property")
 
     n = len(sh.childShapes(False, False))
+    body_target = None
     if b_group is None:
-        b_group = n > 1
-    if b_group:
+        try:
+            parent = compound_obj.getParentGeoFeatureGroup()
+        except (AttributeError, RuntimeError):
+            parent = None
+        if parent is not None and parent.isDerivedFrom("PartDesign::Body"):
+            # In the consolidated modeling workbench, exploded pieces are features of the
+            # existing Body. A nested plain group would split ownership and recreate the tree
+            # ambiguity that Part Design now resolves.
+            body_target = parent
+            b_group = False
+        else:
+            b_group = n > 1
+    if body_target is not None:
+        group = body_target
+    elif b_group:
         group = compound_obj.Document.addObject(
             "App::DocumentObjectGroup", "GrExplode_" + compound_obj.Name
         )

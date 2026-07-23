@@ -3,7 +3,7 @@
     {
       "name": "vibecad-part-assistant",
       "coverage": ["vibecad", "vibecad-cpp-workbench", "part"],
-      "workbench": "PartWorkbench",
+      "workbench": "PartDesignWorkbench",
       "file": "data/tests/Crank.fcstd",
       "command": "VibeCAD_OpenAssistant",
       "required_widget_object_names": [
@@ -17,8 +17,8 @@
         "VibeCADStopPrompt"
       ],
       "required_visible_text_contains": [
-        "Workbench: PartWorkbench",
-        "Tool pack: PartWorkbench",
+        "Workbench: PartDesignWorkbench",
+        "Tool pack: PartDesignWorkbench",
         "Use OpenAI",
         "Capture View",
         "Conversation",

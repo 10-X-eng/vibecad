@@ -21,7 +21,7 @@ TOOL_SPEC = {
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
-    "workbench": "PartWorkbench",
+    "workbench": "PartDesignWorkbench",
     "edit_modes": ["none"],
     "parameters": {
         "type": "object",
@@ -114,6 +114,7 @@ def run(
     solid: bool,
     taper_angle_degrees: float,
     label: str,
+    second_taper_angle_degrees: float = 0.0,
 ) -> dict[str, Any]:
     clean_label = str(label or "").strip()
     if not clean_label:
@@ -176,6 +177,8 @@ def run(
         extrusion.Solid = bool(solid)
         extrusion.Symmetric = bool(symmetric)
         extrusion.TaperAngle = float(taper_angle_degrees)
+        extrusion.TaperAngleRev = float(second_taper_angle_degrees)
+        domain_runtime.adopt_part_result(extrusion)
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):

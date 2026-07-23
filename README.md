@@ -163,10 +163,10 @@ Native and VibeScript authoring tools are never combined, and tools from differe
 
 Scripted engines keep source, inputs, diagnostics, revisions, and accepted outputs with the project. VibeScript runs in an isolated windowless worker and publishes only validated results. The **Model Code Editor** lists programs for the active workbench domain and opens with no program selected.
 
-All 17 supported user-workbench VibeScript interfaces are production-ready:
-Part Design, Sketcher, Part, Draft, Surface, Assembly, Spreadsheet, Material,
-Mesh, MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM, and
-TechDraw. Every domain, including Part Design, exposes the same five
+All 16 supported user-workbench VibeScript interfaces are production-ready:
+Part Design, Sketcher, Draft, Surface, Assembly, Spreadsheet, Material, Mesh,
+MeshPart, Points, Reverse Engineering, Inspection, Robot, FEM, CAM, and
+TechDraw. Every domain, including Part Design, exposes the same
 provider-facing mutation tools plus the shared `core.inspect` read interface.
 API inspection and program source contain only that workbench's canonical
 runtime operations and typed outputs.
@@ -219,6 +219,10 @@ The local server must already be running and expose an OpenAI-compatible API. So
 VibeCAD is under active development. The current focus is reliable, readable AI-assisted part design with explicit human control over the document, workbench, modeling engine, and design direction.
 
 Release packaging details are documented in [docs/vibecad-release-packaging.md](docs/vibecad-release-packaging.md).
+
+The single-workbench Part and Part Design model, compatibility boundary, and
+Body/tree behavior are documented in
+[docs/part-design-consolidation.md](docs/part-design-consolidation.md).
 
 The removed BIM and architectural surface, existing-document behavior, and
 rollback path are documented in

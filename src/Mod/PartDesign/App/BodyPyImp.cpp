@@ -76,7 +76,8 @@ PyObject* BodyPy::insertObject(PyObject* args)
     if (!Body::isAllowed(feature)) {
         PyErr_SetString(
             PyExc_SystemError,
-            "Only PartDesign features, datum features and sketches can be inserted into a Body"
+            "Only shape results, datum features, sketches, and supported reference objects can be "
+            "inserted into a Body"
         );
         return nullptr;
     }
@@ -98,7 +99,7 @@ PyObject* BodyPy::insertObject(PyObject* args)
 Py::Object BodyPy::getVisibleFeature() const
 {
     for (auto obj : getBodyPtr()->Group.getValues()) {
-        if (obj->Visibility.getValue() && obj->isDerivedFrom<PartDesign::Feature>()) {
+        if (obj->Visibility.getValue() && Body::isResultFeature(obj)) {
             return Py::Object(obj->getPyObject(), true);
         }
     }

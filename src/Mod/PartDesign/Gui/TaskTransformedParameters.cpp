@@ -505,7 +505,7 @@ App::DocumentObject* TaskTransformedParameters::getBaseObject() const
     if (!base) {
         auto body = feature->getFeatureBody();
         if (body) {
-            base = body->getPrevSolidFeature(feature);
+            base = body->getPrevResultFeature(feature);
         }
     }
     return base;

@@ -2158,16 +2158,31 @@ DlgPrimitives::DlgPrimitives(QWidget* parent, Part::Primitive* feature)
     Gui::Command::doCommand(Gui::Command::Doc, "from FreeCAD import Base");
     Gui::Command::doCommand(Gui::Command::Doc, "import Part,PartGui");
 
-    // must be in the same order as of the stacked widget
+    // Part Design owns the Body-native solid primitives.  Keep their pages
+    // when editing an existing legacy Part primitive, but do not offer a
+    // second, inferior standalone creator in the consolidated create dialog.
+    // Remove in descending order so the generated UI indices stay valid.
+    if (!feature) {
+        for (int index = 8; index >= 1; --index) {
+            ui->widgetStack2->removeWidget(ui->widgetStack2->widget(index));
+            ui->PrimitiveTypeCB->removeItem(index);
+        }
+    }
+
+    // This list must remain in the same order as the filtered stacked widget.
     addPrimitive(std::make_shared<PlanePrimitive>(ui, dynamic_cast<Part::Plane*>(feature)));
-    addPrimitive(std::make_shared<BoxPrimitive>(ui, dynamic_cast<Part::Box*>(feature)));
-    addPrimitive(std::make_shared<CylinderPrimitive>(ui, dynamic_cast<Part::Cylinder*>(feature)));
-    addPrimitive(std::make_shared<ConePrimitive>(ui, dynamic_cast<Part::Cone*>(feature)));
-    addPrimitive(std::make_shared<SpherePrimitive>(ui, dynamic_cast<Part::Sphere*>(feature)));
-    addPrimitive(std::make_shared<EllipsoidPrimitive>(ui, dynamic_cast<Part::Ellipsoid*>(feature)));
-    addPrimitive(std::make_shared<TorusPrimitive>(ui, dynamic_cast<Part::Torus*>(feature)));
-    addPrimitive(std::make_shared<PrismPrimitive>(ui, dynamic_cast<Part::Prism*>(feature)));
-    addPrimitive(std::make_shared<WedgePrimitive>(ui, dynamic_cast<Part::Wedge*>(feature)));
+    if (feature) {
+        addPrimitive(std::make_shared<BoxPrimitive>(ui, dynamic_cast<Part::Box*>(feature)));
+        addPrimitive(std::make_shared<CylinderPrimitive>(ui, dynamic_cast<Part::Cylinder*>(feature)));
+        addPrimitive(std::make_shared<ConePrimitive>(ui, dynamic_cast<Part::Cone*>(feature)));
+        addPrimitive(std::make_shared<SpherePrimitive>(ui, dynamic_cast<Part::Sphere*>(feature)));
+        addPrimitive(
+            std::make_shared<EllipsoidPrimitive>(ui, dynamic_cast<Part::Ellipsoid*>(feature))
+        );
+        addPrimitive(std::make_shared<TorusPrimitive>(ui, dynamic_cast<Part::Torus*>(feature)));
+        addPrimitive(std::make_shared<PrismPrimitive>(ui, dynamic_cast<Part::Prism*>(feature)));
+        addPrimitive(std::make_shared<WedgePrimitive>(ui, dynamic_cast<Part::Wedge*>(feature)));
+    }
     addPrimitive(std::make_shared<HelixPrimitive>(ui, dynamic_cast<Part::Helix*>(feature)));
     addPrimitive(std::make_shared<SpiralPrimitive>(ui, dynamic_cast<Part::Spiral*>(feature)));
     addPrimitive(std::make_shared<CirclePrimitive>(ui, dynamic_cast<Part::Circle*>(feature)));

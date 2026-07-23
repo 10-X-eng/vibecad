@@ -1004,7 +1004,8 @@ class VibeCADService:
         if VibeCADService._is_private_scripted_object(obj):
             return False
         if (
-            getattr(pack, "workbench", "") == "PartWorkbench"
+            getattr(pack, "workbench", "")
+            in {"PartWorkbench", "PartDesignWorkbench"}
             and str(getattr(obj, "VibeCADScriptedRole", "") or "")
             == "publication"
         ):

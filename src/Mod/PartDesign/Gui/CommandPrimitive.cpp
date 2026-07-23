@@ -74,8 +74,8 @@ CmdPrimtiveCompAdditive::CmdPrimtiveCompAdditive()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Additive Primitive");
-    sToolTipText = QT_TR_NOOP("Creates an additive primitive");
+    sMenuText = QT_TR_NOOP("Primitive — Add Material");
+    sToolTipText = QT_TR_NOOP("Adds a parametric primitive to the active Body");
     sWhatsThis = "PartDesign_CompPrimitiveAdditive";
     sStatusTip = sToolTipText;
     eType = ForEdit;
@@ -212,7 +212,7 @@ void CmdPrimtiveCompAdditive::languageChange()
     QList<QAction*> a = pcAction->actions();
 
     QAction* arc1 = a[0];
-    arc1->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Box"));
+    arc1->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Box — Add Material"));
     arc1->setToolTip(
         QApplication::translate(
             "PartDesign_CompPrimitiveAdditive",
@@ -221,7 +221,7 @@ void CmdPrimtiveCompAdditive::languageChange()
     );
     arc1->setStatusTip(arc1->toolTip());
     QAction* arc2 = a[1];
-    arc2->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Cylinder"));
+    arc2->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Cylinder — Add Material"));
     arc2->setToolTip(
         QApplication::translate(
             "PartDesign_CompPrimitiveAdditive",
@@ -230,7 +230,7 @@ void CmdPrimtiveCompAdditive::languageChange()
     );
     arc2->setStatusTip(arc2->toolTip());
     QAction* arc3 = a[2];
-    arc3->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Sphere"));
+    arc3->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Sphere — Add Material"));
     arc3->setToolTip(
         QApplication::translate(
             "PartDesign_CompPrimitiveAdditive",
@@ -239,31 +239,31 @@ void CmdPrimtiveCompAdditive::languageChange()
     );
     arc3->setStatusTip(arc3->toolTip());
     QAction* arc4 = a[3];
-    arc4->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Cone"));
+    arc4->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Cone — Add Material"));
     arc4->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveAdditive", "Creates an additive cone")
     );
     arc4->setStatusTip(arc4->toolTip());
     QAction* arc5 = a[4];
-    arc5->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Ellipsoid"));
+    arc5->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Ellipsoid — Add Material"));
     arc5->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveAdditive", "Creates an additive ellipsoid")
     );
     arc5->setStatusTip(arc5->toolTip());
     QAction* arc6 = a[5];
-    arc6->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Torus"));
+    arc6->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Torus — Add Material"));
     arc6->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveAdditive", "Creates an additive torus")
     );
     arc6->setStatusTip(arc6->toolTip());
     QAction* arc7 = a[6];
-    arc7->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Prism"));
+    arc7->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Prism — Add Material"));
     arc7->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveAdditive", "Creates an additive prism")
     );
     arc7->setStatusTip(arc7->toolTip());
     QAction* arc8 = a[7];
-    arc8->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Additive Wedge"));
+    arc8->setText(QApplication::translate("CmdPrimtiveCompAdditive", "Wedge — Add Material"));
     arc8->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveAdditive", "Creates an additive wedge")
     );
@@ -282,8 +282,8 @@ CmdPrimtiveCompSubtractive::CmdPrimtiveCompSubtractive()
 {
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
-    sMenuText = QT_TR_NOOP("Subtractive Primitive");
-    sToolTipText = QT_TR_NOOP("Creates a subtractive primitive");
+    sMenuText = QT_TR_NOOP("Primitive — Remove Material");
+    sToolTipText = QT_TR_NOOP("Removes a parametric primitive from the active Body");
     sWhatsThis = "PartDesign_CompPrimitiveSubtractive";
     sStatusTip = sToolTipText;
     eType = ForEdit;
@@ -397,7 +397,7 @@ void CmdPrimtiveCompSubtractive::languageChange()
     QList<QAction*> a = pcAction->actions();
 
     QAction* arc1 = a[0];
-    arc1->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Box"));
+    arc1->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Box — Remove Material"));
     arc1->setToolTip(
         QApplication::translate(
             "PartDesign_CompPrimitiveSubtractive",
@@ -406,7 +406,7 @@ void CmdPrimtiveCompSubtractive::languageChange()
     );
     arc1->setStatusTip(arc1->toolTip());
     QAction* arc2 = a[1];
-    arc2->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Cylinder"));
+    arc2->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Cylinder — Remove Material"));
     arc2->setToolTip(
         QApplication::translate(
             "PartDesign_CompPrimitiveSubtractive",
@@ -415,7 +415,7 @@ void CmdPrimtiveCompSubtractive::languageChange()
     );
     arc2->setStatusTip(arc2->toolTip());
     QAction* arc3 = a[2];
-    arc3->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Sphere"));
+    arc3->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Sphere — Remove Material"));
     arc3->setToolTip(
         QApplication::translate(
             "PartDesign_CompPrimitiveSubtractive",
@@ -424,31 +424,31 @@ void CmdPrimtiveCompSubtractive::languageChange()
     );
     arc3->setStatusTip(arc3->toolTip());
     QAction* arc4 = a[3];
-    arc4->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Cone"));
+    arc4->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Cone — Remove Material"));
     arc4->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveSubtractive", "Creates a subtractive cone")
     );
     arc4->setStatusTip(arc4->toolTip());
     QAction* arc5 = a[4];
-    arc5->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Ellipsoid"));
+    arc5->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Ellipsoid — Remove Material"));
     arc5->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveSubtractive", "Creates a subtractive ellipsoid")
     );
     arc5->setStatusTip(arc5->toolTip());
     QAction* arc6 = a[5];
-    arc6->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Torus"));
+    arc6->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Torus — Remove Material"));
     arc6->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveSubtractive", "Creates a subtractive torus")
     );
     arc6->setStatusTip(arc6->toolTip());
     QAction* arc7 = a[6];
-    arc7->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Prism"));
+    arc7->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Prism — Remove Material"));
     arc7->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveSubtractive", "Creates a subtractive prism")
     );
     arc7->setStatusTip(arc7->toolTip());
     QAction* arc8 = a[7];
-    arc8->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Subtractive Wedge"));
+    arc8->setText(QApplication::translate("CmdPrimtiveCompSubtractive", "Wedge — Remove Material"));
     arc8->setToolTip(
         QApplication::translate("PartDesign_CompPrimitiveSubtractive", "Creates a subtractive wedge")
     );

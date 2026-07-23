@@ -11,7 +11,7 @@ from . import partdesign_find_subelements
 
 TOOL_SPEC = deepcopy(partdesign_find_subelements.TOOL_SPEC)
 TOOL_SPEC["name"] = "part.find_subelements"
-TOOL_SPEC["workbench"] = "PartWorkbench"
+TOOL_SPEC["workbench"] = "PartDesignWorkbench"
 TOOL_SPEC["description"] = (
     "Return every face or edge on one explicitly named object that satisfies the "
     "supplied geometric predicates. Works on any object with shape geometry: Part "

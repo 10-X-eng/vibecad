@@ -147,7 +147,7 @@ CmdInspectAppearance::CmdInspectAppearance()
     sToolTipText = QT_TR_NOOP("Inspects the appearance properties of the selected object");
     sWhatsThis = "Materials_InspectAppearance";
     sStatusTip = QT_TR_NOOP("Inspect the appearance properties of the selected object");
-    // sPixmap = "Material_Edit";
+    sPixmap = "preview-rendered";
 }
 
 void CmdInspectAppearance::activated(int iMsg)
@@ -174,7 +174,7 @@ CmdInspectMaterial::CmdInspectMaterial()
     sToolTipText = QT_TR_NOOP("Inspects the material properties of the selected object");
     sWhatsThis = "Materials_InspectMaterial";
     sStatusTip = QT_TR_NOOP("Inspect the material properties of the selected object");
-    // sPixmap = "Material_Edit";
+    sPixmap = "Material_Edit";
 }
 
 void CmdInspectMaterial::activated(int iMsg)

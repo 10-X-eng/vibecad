@@ -795,7 +795,13 @@ void ViewProviderPartExt::setHighlightedFaces(const std::vector<App::Material>& 
     action.apply(this->faceset);
 
     int size = static_cast<int>(materials.size());
-    if (size > 1 && size == this->faceset->partIndex.getNum()) {
+    int faceCount = this->faceset->partIndex.getNum();
+    if (faceCount == 0) {
+        if (const auto* feature = getObject<Part::Feature>()) {
+            faceCount = static_cast<int>(feature->Shape.getShape().countSubShapes(TopAbs_FACE));
+        }
+    }
+    if (size > 1 && size == faceCount) {
         pcFaceBind->value = SoMaterialBinding::PER_PART;
         texture.activateMaterial();
 

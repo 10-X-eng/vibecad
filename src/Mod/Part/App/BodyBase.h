@@ -47,6 +47,11 @@ class PartExport BodyBase: public Part::Feature, public App::OriginGroupExtensio
 public:
     BodyBase();
 
+    bool keepDirectChildrenInTree() const override
+    {
+        return true;
+    }
+
     /**
      * The final feature of the body it is associated with.
      * Note: tip may either point to the BaseFeature or to some feature inside the Group list.

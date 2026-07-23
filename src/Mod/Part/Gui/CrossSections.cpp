@@ -22,7 +22,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <exception>
 #include <limits>
+#include <set>
 
 #include <QFuture>
 #include <QKeyEvent>
@@ -236,6 +238,12 @@ bool CrossSections::apply()
         }
     }
 
+    std::set<App::Document*> documents;
+    for (auto* object : obj) {
+        if (object && object->getDocument()) {
+            documents.insert(object->getDocument());
+        }
+    }
     std::vector<double> d;
     if (ui->sectionsBox->isChecked()) {
         d = getPlanes();
@@ -256,37 +264,64 @@ bool CrossSections::apply()
             break;
     }
 
-#ifdef CS_FUTURE
-    Standard::SetReentrant(Standard_True);
-    for (std::vector<App::DocumentObject*>::iterator it = obj.begin(); it != obj.end(); ++it) {
-        Part::CrossSection cs(a, b, c, static_cast<Part::Feature*>(*it)->Shape.getValue());
-        QFuture<std::list<TopoDS_Wire>> future
-            = QtConcurrent::mapped(d, std::bind(&Part::CrossSection::section, &cs, sp::_1));
-        future.waitForFinished();
-        QFuture<std::list<TopoDS_Wire>>::const_iterator ft;
-        TopoDS_Compound comp;
-        BRep_Builder builder;
-        builder.MakeCompound(comp);
-
-        for (ft = future.begin(); ft != future.end(); ++ft) {
-            const std::list<TopoDS_Wire>& w = *ft;
-            for (std::list<TopoDS_Wire>::const_iterator wt = w.begin(); wt != w.end(); ++wt) {
-                if (!wt->IsNull()) {
-                    builder.Add(comp, *wt);
-                }
+    std::vector<App::Document*> openedDocuments;
+    auto abortTransactions = [&openedDocuments]() {
+        for (auto* document : openedDocuments) {
+            try {
+                document->abortTransaction();
+            }
+            catch (...) {
+                // Preserve the original operation failure while making a best effort to unwind
+                // every document participating in the command.
             }
         }
+    };
+    auto reportFailure = [&abortTransactions](const QString& message) {
+        abortTransactions();
+        QMessageBox::critical(
+            Gui::getMainWindow(),
+            tr("Cannot compute cross-sections"),
+            message
+        );
+        return false;
+    };
 
-        App::Document* doc = (*it)->getDocument();
-        std::string s = (*it)->getNameInDocument();
-        s += "_cs";
-        auto* section = doc->addObject<Part::Feature>(s.c_str());
-        section->Shape.setValue(comp);
-        section->purgeTouched();
-    }
-#else
-    Base::SequencerLauncher seq("Cross-sections…", obj.size() * (d.size() + 1));
     try {
+        for (auto* document : documents) {
+            document->openTransaction("Create cross-sections");
+            openedDocuments.push_back(document);
+        }
+
+#ifdef CS_FUTURE
+        Standard::SetReentrant(Standard_True);
+        for (std::vector<App::DocumentObject*>::iterator it = obj.begin(); it != obj.end(); ++it) {
+            Part::CrossSection cs(a, b, c, static_cast<Part::Feature*>(*it)->Shape.getValue());
+            QFuture<std::list<TopoDS_Wire>> future
+                = QtConcurrent::mapped(d, std::bind(&Part::CrossSection::section, &cs, sp::_1));
+            future.waitForFinished();
+            QFuture<std::list<TopoDS_Wire>>::const_iterator ft;
+            TopoDS_Compound comp;
+            BRep_Builder builder;
+            builder.MakeCompound(comp);
+
+            for (ft = future.begin(); ft != future.end(); ++ft) {
+                const std::list<TopoDS_Wire>& w = *ft;
+                for (std::list<TopoDS_Wire>::const_iterator wt = w.begin(); wt != w.end(); ++wt) {
+                    if (!wt->IsNull()) {
+                        builder.Add(comp, *wt);
+                    }
+                }
+            }
+
+            App::Document* doc = (*it)->getDocument();
+            std::string s = (*it)->getNameInDocument();
+            s += "_cs";
+            auto* section = doc->addObject<Part::Feature>(s.c_str());
+            section->Shape.setValue(comp);
+            section->purgeTouched();
+        }
+#else
+        Base::SequencerLauncher seq("Cross-sections…", obj.size() * (d.size() + 1));
         Gui::Command::runCommand(Gui::Command::App, "import Part\n");
         Gui::Command::runCommand(Gui::Command::App, "from FreeCAD import Base\n");
         for (auto it : obj) {
@@ -331,21 +366,25 @@ bool CrossSections::apply()
                     .arg(QLatin1String(doc->getName()), QLatin1String(s.c_str()))
                     .toLatin1()
             );
+            seq.next();
         }
-        seq.next();
-    }
-    catch (Base::Exception& e) {
-        e.reportException();
-        QMessageBox::critical(
-            Gui::getMainWindow(),
-            tr("Cannot compute cross-sections"),
-            QString::fromStdString(e.getMessage())
-        );
-        return false;
-    }
-
-    seq.next();
 #endif
+
+        for (auto* document : openedDocuments) {
+            document->commitTransaction();
+        }
+        openedDocuments.clear();
+    }
+    catch (Base::Exception& error) {
+        error.reportException();
+        return reportFailure(QString::fromStdString(error.getMessage()));
+    }
+    catch (const std::exception& error) {
+        return reportFailure(QString::fromUtf8(error.what()));
+    }
+    catch (...) {
+        return reportFailure(tr("Unexpected failure while creating cross-sections."));
+    }
 
     return true;
 }

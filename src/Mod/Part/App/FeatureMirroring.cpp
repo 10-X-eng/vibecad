@@ -63,6 +63,8 @@ Mirroring::Mirroring()
         "A reference for the mirroring plane, overrides Base and Normal if set, can be face or "
         "circle"
     );
+    allowCrossContainerLink(Source);
+    allowCrossContainerLink(MirrorPlane);
 }
 
 short Mirroring::mustExecute() const
@@ -84,6 +86,11 @@ short Mirroring::mustExecute() const
 
 void Mirroring::onChanged(const App::Property* prop)
 {
+    // Establish adaptive link scope before the immediate reference-plane recompute below. Otherwise
+    // a valid Origin-plane reference emits a transient out-of-scope diagnostic while the result is
+    // still at document root.
+    Part::Feature::onChanged(prop);
+
     /**
       In the case the user has a reference plane object, then
       Base and Normal are computed based on that object.  We must
@@ -119,7 +126,6 @@ void Mirroring::onChanged(const App::Property* prop)
             }
         }
     }
-    Part::Feature::onChanged(prop);
 }
 
 void Mirroring::handleChangedPropertyType(

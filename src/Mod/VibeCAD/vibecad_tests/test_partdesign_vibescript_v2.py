@@ -17,6 +17,7 @@ from vibescript_partdesign_api import PartDesignDomainAPI
 
 
 PROGRAM_ID = "0123456789abcdef0123456789abcdef"
+OUTPUT_TYPES = ("solid", "shell", "face", "wire", "compound")
 
 
 def _pack():
@@ -96,6 +97,10 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
     assert isinstance(api, PartDesignDomainAPI)
     assert api.exported_names == pack.api_exports
+    assert {"extrude", "revolve", "loft", "material", "appearance"} <= set(
+        api.exported_names
+    )
+    assert {"pad", "pocket", "groove"}.isdisjoint(api.exported_names)
     signatures = {
         name: str(inspect.signature(getattr(api, name)))
         for name in api.exported_names
@@ -109,19 +114,296 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
         for item in description["runtime_exports"]
     } == signatures
     assert description["source_globals"] == ["doc", "inputs", "api"]
-    assert description["accepted_output_types"] == ["solid"]
+    assert description["accepted_output_types"] == list(OUTPUT_TYPES)
+    assert "api.compound" in description["operation_selection"]["disconnected_geometry"]
+    assert "Part workbench is retired" in description["workbench_handoffs"][
+        "part_compatibility"
+    ]
+    assert "api.material" in description["operation_selection"]["physical_material"]
+    assert "0-255" in description["operation_selection"]["visible_appearance"]
 
 
-def test_additive_features_can_extend_an_existing_body_feature() -> None:
+def test_partdesign_publication_material_and_appearance_are_explicit_and_immutable() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    card = api.material(
+        "0051bddf-6f62-4406-b8c9-569322880564",
+        require_physical_properties=["Density"],
+    )
+    white = api.appearance(
+        card,
+        color_rgb=[255, 255, 255],
+        line_color_rgb=[32, 64, 96],
+        point_color_rgb=[255, 0, 0],
+        transparency_percent=7,
+        line_width=2.5,
+        point_size=3.5,
+        display_mode="Flat Lines",
+        visible=True,
+        selectable=False,
+    )
+    publication = api.publish(
+        api.box(2, 3, 4),
+        material=card,
+        appearance=white,
+        label="Leather Cover",
+    )
+    payload = publication.to_payload()
+    presentation = payload["properties"]
+
+    assert (card.operation, card.output_type) == ("material", "material_card")
+    assert (white.operation, white.output_type) == ("appearance", "appearance")
+    assert white.properties["shape_color"] == (1.0, 1.0, 1.0)
+    assert white.properties["line_color"] == (
+        32.0 / 255.0,
+        64.0 / 255.0,
+        96.0 / 255.0,
+    )
+    assert white.properties["point_color"] == (1.0, 0.0, 0.0)
+    assert presentation["material"]["arguments"][0] == (
+        "0051bddf-6f62-4406-b8c9-569322880564"
+    )
+    assert presentation["appearance"]["arguments"][0]["operation"] == "material"
+    assert presentation["appearance"]["properties"]["transparency"] == 7
+    with pytest.raises(TypeError):
+        white.properties["shape_color"] = (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        (
+            lambda api: api.appearance(color_rgb=[256, 0, 0]),
+            "inclusive range 0-255",
+        ),
+        (
+            lambda api: api.appearance(color_rgb=[1.0, 0, 0]),
+            "must be an integer",
+        ),
+        (
+            lambda api: api.appearance(),
+            "at least one display change",
+        ),
+        (
+            lambda api: api.publish(api.box(1, 1, 1), material=object()),
+            "returned by api.material",
+        ),
+        (
+            lambda api: api.publish(api.box(1, 1, 1), appearance=object()),
+            "returned by api.appearance",
+        ),
+    ],
+)
+def test_partdesign_presentation_rejects_ambiguous_or_invalid_values(
+    call,
+    message: str,
+) -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    with pytest.raises((TypeError, ValueError), match=message):
+        call(api)
+
+
+def test_unified_api_disambiguates_sketch_curves_and_standalone_3d_curves() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+
+    sketch_line = api.line([0, 0], [1, 0])
+    spatial_line = api.line_3d([0, 0, 0], [1, 0, 0])
+    primitive = api.box(2, 3, 4)
+
+    assert (sketch_line.operation, sketch_line.output_type) == (
+        "line",
+        "sketch_geometry",
+    )
+    assert (spatial_line.operation, spatial_line.output_type) == ("line", "edge")
+    assert (primitive.operation, primitive.output_type) == ("box", "solid")
+    assert {sketch_line.domain, spatial_line.domain, primitive.domain} == {
+        "partdesign"
+    }
+
+
+def test_standalone_lofts_publish_as_solids_or_explicit_compounds() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    first = api.loft(
+        [
+            api.sketch([api.circle([0, 0], 1)]),
+            api.sketch([api.circle([0, 0], 1)], z_offset_mm=2),
+        ],
+        operation="new_solid",
+    )
+    second = api.loft(
+        [
+            api.sketch([api.circle([4, 0], 1)]),
+            api.sketch([api.circle([4, 0], 1)], z_offset_mm=2),
+        ],
+        operation="new_solid",
+    )
+    stitching = api.compound([first, second])
+    check = api.measure(stitching, "solid_count", expected=2)
+
+    assert first.operation == "standalone_loft"
+    assert stitching.operation == "model_compound"
+    assert api.publish(stitching, checks=[check]).output_type == "compound"
+    with pytest.raises(ValueError, match="must be a value returned.*solid"):
+        api.body(stitching)
+
+
+def test_unified_api_rejects_impossible_topology_claims_and_zero_directions() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    edge = api.line_3d([0, 0, 0], [1, 0, 0])
+
+    with pytest.raises(ValueError, match="all be solids"):
+        api.boolean([edge, edge], operation="union", output_type="solid")
+    with pytest.raises(ValueError, match="must be non-zero"):
+        api.linear_pattern(api.box(1, 1, 1), 2, 2, direction=[0, 0, 0])
+    with pytest.raises(ValueError, match="must be non-zero"):
+        api.mirror(api.box(1, 1, 1), plane_normal=[0, 0, 0])
+    with pytest.raises(ValueError, match="must be a solid"):
+        api.polar_pattern(edge, 3, result="union")
+
+
+def test_topology_editing_accepts_stable_queries_and_keeps_index_compatibility() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    solid = api.box(4, 5, 6)
+    top = api.find_subelements(
+        element_type="face",
+        expected_count=1,
+        geometry_type="plane",
+        normal=[0, 0, 1],
+    )
+
+    selected = api.subshape(solid, "face", top)
+    healed = api.defeature(solid, top)
+    legacy = api.subshape(solid, "face", 1)
+
+    assert (selected.operation, selected.output_type) == ("model_subshape", "face")
+    assert (healed.operation, healed.output_type) == ("model_defeature", "solid")
+    assert (legacy.operation, legacy.output_type) == ("subshape", "face")
+
+
+def test_body_and_standalone_options_are_never_silently_reinterpreted() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    feature = api.extrude(
+        api.sketch([api.circle([0, 0], 2)]),
+        2,
+        operation="add_material",
+    )
+
+    assert api.linear_pattern(feature, 2, 2).properties["result"] == "union"
+    assert api.multi_transform(
+        feature,
+        [
+            {"type": "translate", "vector": [2, 0, 0]},
+            {"type": "translate", "vector": [2, 0, 0]},
+        ],
+    ).properties["result"] == "union"
+    with pytest.raises(ValueError, match="standalone-shape settings"):
+        api.polar_pattern(feature, 3, center=[1, 0, 0])
+    with pytest.raises(ValueError, match="standalone shapes"):
+        api.mirror(feature, plane_origin=[1, 0, 0])
+    with pytest.raises(ValueError, match="vector is required"):
+        api.extrude(
+            api.line_3d([0, 0, 0], [1, 0, 0]),
+            2,
+            operation="new_surface",
+        )
+    with pytest.raises(ValueError, match="must be X, Y, or Z"):
+        api.draft(
+            feature,
+            api.find_subelements(element_type="face", expected_count=1),
+            2,
+            pull_direction="N",
+        )
+
+
+def test_hole_validates_cut_geometry_before_native_execution() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    base = api.extrude(
+        api.sketch([api.circle([0, 0], 5)]),
+        5,
+        operation="add_material",
+    )
+    profile = api.sketch([api.circle([0, 0], 1)], z_offset_mm=5)
+
+    with pytest.raises(ValueError, match="greater than diameter_mm"):
+        api.hole(
+            base,
+            profile,
+            2,
+            through_all=True,
+            countersink_diameter_mm=2,
+        )
+    with pytest.raises(ValueError, match="less than 180"):
+        api.hole(
+            base,
+            profile,
+            2,
+            through_all=True,
+            countersink_diameter_mm=4,
+            countersink_angle_degrees=180,
+        )
+
+
+def test_multi_transform_has_a_closed_llm_readable_step_contract() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    transformed = api.multi_transform(
+        api.box(1, 1, 1),
+        [
+            {"type": "translate", "vector": [2, 0, 0]},
+            {
+                "type": "rotate",
+                "origin": [0, 0, 0],
+                "axis": [0, 0, 1],
+                "angle_degrees": 90,
+            },
+            {"type": "mirror", "normal": [1, 0, 0]},
+            {"type": "scale", "factor": 2},
+        ],
+    )
+    steps = transformed.to_payload()["arguments"][1]
+
+    assert steps[0] == {"type": "translate", "vector": [2.0, 0.0, 0.0]}
+    assert steps[2]["origin"] == [0.0, 0.0, 0.0]
+    assert steps[3] == {
+        "type": "scale",
+        "center": [0.0, 0.0, 0.0],
+        "factor": 2.0,
+    }
+    with pytest.raises(ValueError, match="exactly type and vector"):
+        api.multi_transform(
+            api.box(1, 1, 1),
+            [
+                {"type": "translate", "vector": [1, 0, 0], "ignored": True},
+                {"type": "scale", "factor": 2},
+            ],
+        )
+
+
+def test_canonical_material_features_extend_an_existing_body_feature() -> None:
     api = PartDesignDomainAPI(
         PartDesignDomainAPI.exported_names,
-        ("solid",),
+        OUTPUT_TYPES,
     )
     base_profile = api.sketch([api.circle([0, 0], 10)])
-    base = api.pad(base_profile, 5)
+    base = api.extrude(base_profile, 5, operation="add_material")
     boss_profile = api.sketch([api.circle([7, 0], 2)], z_offset_mm=5)
-    boss = api.pad(boss_profile, 3, base=base)
-    revolved = api.revolve(boss_profile, base=base, axis="V")
+    boss = api.extrude(boss_profile, 3, operation="add_material", base=base)
+    cut = api.extrude(
+        boss_profile,
+        operation="remove_material",
+        base=boss,
+        through_all=True,
+    )
+    revolved = api.revolve(
+        boss_profile,
+        operation="add_material",
+        base=base,
+        axis="V",
+    )
+    grooved = api.revolve(
+        boss_profile,
+        operation="remove_material",
+        base=revolved,
+        axis="V",
+    )
     lofted = api.loft(
         [
             api.sketch([api.circle([0, 0], 3)], z_offset_mm=5),
@@ -132,16 +414,50 @@ def test_additive_features_can_extend_an_existing_body_feature() -> None:
     patterned = api.polar_pattern(boss, 4)
 
     assert boss.properties["base"] is base
+    assert base.operation == "pad"
+    assert boss.operation == "pad"
+    assert cut.operation == "pocket"
     assert revolved.properties["base"] is base
+    assert grooved.operation == "groove"
+    assert grooved.arguments[0] is revolved
     assert lofted.properties["base"] is base
     assert patterned.arguments[0] is boss
     assert api.body(patterned).output_type == "solid"
 
 
+def test_legacy_material_names_remain_callable_but_are_not_exported() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    profile = api.sketch([api.circle([0, 0], 5)])
+    base = api.pad(profile, 5)
+    cut_profile = api.sketch([api.circle([0, 0], 2)], z_offset_mm=5)
+
+    assert api.pocket(base, cut_profile, through_all=True).operation == "pocket"
+    assert api.groove(base, cut_profile).operation == "groove"
+    assert {"pad", "pocket", "groove"}.isdisjoint(api.exported_names)
+
+
+def test_loft_rejects_conflicting_canonical_and_legacy_material_intent() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    sections = [
+        api.sketch([api.circle([0, 0], 3)]),
+        api.sketch([api.circle([0, 0], 2)], z_offset_mm=5),
+    ]
+
+    with pytest.raises(ValueError, match="one consistent intent"):
+        api.loft(
+            sections,
+            operation="add_material",
+            subtractive=True,
+        )
+
+    legacy = api.loft(sections, subtractive=True, base=api.extrude(sections[0], 5))
+    assert legacy.properties["subtractive"] is True
+
+
 def test_partdesign_rejects_cross_domain_graphs_and_transient_topology_names() -> None:
     api = PartDesignDomainAPI(
         PartDesignDomainAPI.exported_names,
-        ("solid",),
+        OUTPUT_TYPES,
     )
     foreign = DomainValue(
         domain="part",
@@ -152,7 +468,11 @@ def test_partdesign_rejects_cross_domain_graphs_and_transient_topology_names() -
     )
     with pytest.raises(ValueError, match="returned by this Part Design api"):
         api.body(foreign)
-    base = api.pad(api.sketch([api.circle([0, 0], 5)]), 5)
+    base = api.extrude(
+        api.sketch([api.circle([0, 0], 5)]),
+        5,
+        operation="add_material",
+    )
     with pytest.raises(ValueError, match="transient FaceN/EdgeN names are forbidden"):
         api.body(
             base,
@@ -225,7 +545,7 @@ def test_reconfigure_stages_v2_in_the_existing_saved_program_directory(
     monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
     source = (
         "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
-        "feature = api.pad(profile, inputs['height'])\n"
+        "feature = api.extrude(profile, inputs['height'], operation='add_material')\n"
         "result = {'Part': api.body(feature, label='Part')}\n"
     )
     capture = _capture(

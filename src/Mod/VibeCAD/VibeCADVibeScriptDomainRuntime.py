@@ -69,6 +69,8 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_sketcher_api.py",
         "vibescript_sketcher_worker.py",
         "vibescript_part_worker.py",
+        "vibescript_material_api.py",
+        "vibescript_material_worker.py",
     ),
     "part": (
         "vibescript_part_api.py",
@@ -13692,6 +13694,11 @@ def validate_candidate(
         )
     staging = Path(str(prepared["staging"])).resolve()
     validated: list[dict[str, Any]] = []
+    partdesign_material_resolver = None
+    if pack.domain == "partdesign":
+        from vibescript_partdesign_worker import PartDesignMaterialResolver
+
+        partdesign_material_resolver = PartDesignMaterialResolver()
     for declaration, raw in zip(expected, outputs):
         if not isinstance(raw, dict) or raw.get("type") != declaration["type"]:
             raise ValueError(f"Output {declaration['name']!r} has the wrong type.")
@@ -13766,9 +13773,13 @@ def validate_candidate(
                 history = data.get("feature_history")
                 sketches = data.get("sketches")
                 interfaces = data.get("interfaces")
+                feature_count = data.get("feature_count")
                 if (
                     not isinstance(history, list)
-                    or int(data.get("feature_count") or -1) != len(history)
+                    or isinstance(feature_count, bool)
+                    or not isinstance(feature_count, int)
+                    or feature_count < 0
+                    or feature_count != len(history)
                     or not isinstance(sketches, list)
                     or not isinstance(interfaces, dict)
                     or any(
@@ -13784,6 +13795,20 @@ def validate_candidate(
                         f"Part Design output {declaration['name']!r} has malformed "
                         "native feature or sketch evidence."
                     )
+                assert partdesign_material_resolver is not None
+                expected_presentation, native_material = (
+                    partdesign_material_resolver.resolve(
+                        definition,
+                        output_name=str(declaration["name"]),
+                    )
+                )
+                if data.get("presentation") != expected_presentation:
+                    raise ValueError(
+                        f"Part Design output {declaration['name']!r} Material/"
+                        "appearance evidence differs between worker and host."
+                    )
+                item["partdesign_presentation"] = expected_presentation
+                item["partdesign_native_material"] = native_material
             item["facts"] = facts
             item["detached_shape"] = shape
         elif output_type == "mesh" and pack.domain != "fem":
@@ -14988,63 +15013,123 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
         description.update(
             {
                 "api_contract": "vibecad-vibescript-partdesign-api-v2",
-                "units": {"length": "millimetres", "angle": "degrees"},
+                "units": {
+                    "length": "millimetres",
+                    "angle": "degrees",
+                    "tolerance": "millimetres",
+                    "display_rgb": "integer channels from 0 through 255",
+                    "transparency": "integer percentage from 0 through 100",
+                },
                 "evaluation_model": (
-                    "API calls build one immutable Body/sketch/feature graph. The graph "
-                    "is evaluated as native PartDesign and Sketcher objects in an isolated "
-                    "FreeCADCmd document; only exact validated single-solid BREP tips cross "
-                    "the publication boundary."
+                    "API calls build one immutable source-parametric modeling graph. Native "
+                    "Body features and retained direct OCC operations may be composed in the "
+                    "same graph. An isolated FreeCADCmd document regenerates the graph from "
+                    "inputs, validates exact topology and declared measurements, and exports "
+                    "only detached BREP results for publication."
                 ),
                 "profile_contract": {
                     "geometry": (
-                        "Create geometry with point/line/arc/circle/ellipse/bspline and "
-                        "constraints with api.constraint, then pass those exact graph values "
-                        "to api.sketch."
+                        "point, line, arc, circle, ellipse, and bspline are 2D Sketcher "
+                        "geometry. The explicit line_3d, arc_3d, circle_3d, ellipse_3d, "
+                        "bezier_3d, bspline_3d, nurbs_curve, and helix_curve names create "
+                        "standalone 3D curves."
                     ),
                     "invariants": (
-                        "Set require_fully_constrained and require_closed_profile whenever "
-                        "the downstream feature depends on those invariants. Solver conflicts, "
-                        "redundancy, malformed constraints, DoF, and profile readiness are "
-                        "validated in the worker."
+                        "Build constraints with api.constraint and reuse the exact geometry "
+                        "values in api.sketch. Set require_fully_constrained and "
+                        "require_closed_profile when downstream geometry depends on them; the "
+                        "worker rejects solver conflicts, redundancy, unresolved DoF, and "
+                        "open solid profiles."
                     ),
                 },
                 "feature_contract": {
-                    "additive": ["pad", "revolve", "loft"],
-                    "subtractive": ["pocket", "groove", "loft(subtractive=True)"],
-                    "transform": ["polar_pattern", "mirror"],
-                    "dressup": ["fillet", "chamfer"],
+                    "add_material": [
+                        "extrude(operation='add_material')",
+                        "revolve(operation='add_material')",
+                        "loft(operation='add_material')",
+                        "sweep(operation='add_material')",
+                        "helix(operation='add_material')",
+                    ],
+                    "remove_material": [
+                        "extrude(operation='remove_material')",
+                        "revolve(operation='remove_material')",
+                        "loft(operation='remove_material')",
+                        "sweep(operation='remove_material')",
+                        "helix(operation='remove_material')",
+                    ],
+                    "new_geometry": [
+                        "extrude(operation='new_solid|new_surface')",
+                        "revolve(operation='new_solid|new_surface')",
+                        "loft(operation='new_solid|new_surface')",
+                        "sweep(operation='new_solid|new_surface')",
+                        "primitives and direct topology constructors",
+                    ],
+                    "combine": ["boolean", "compound", "general_fuse", "section"],
+                    "transform": [
+                        "polar_pattern",
+                        "linear_pattern",
+                        "multi_transform",
+                        "mirror",
+                        "transform",
+                    ],
+                    "dressup": ["fillet", "chamfer", "thickness", "hole", "draft"],
                     "publication": (
-                        "Return api.body(final_feature, ...) for every declared solid. "
-                        "Keep result names stable across regeneration."
+                        "Use api.body for one exact solid Body feature or adopted direct solid. "
+                        "Use api.publish for an exact standalone solid, shell, face, wire, or "
+                        "compound. Pass api.material and api.appearance values directly to either "
+                        "publisher so physical and visible properties regenerate with geometry. "
+                        "Keep result names and types stable across regeneration."
                     ),
                 },
                 "operation_selection": {
-                    "profile_geometry": (
-                        "Use point, line, arc, circle, ellipse, bspline, and "
-                        "external_geometry only for the exact native curve type needed."
+                    "material_intent": (
+                        "Always state new_solid, new_surface, add_material, or remove_material "
+                        "on extrude, revolve, loft, and sweep. Helix is a material sweep; use "
+                        "helix_curve plus sweep for a standalone helical shape."
                     ),
-                    "profile_constraints": (
-                        "Use the single api.constraint operation for geometric and "
-                        "dimensional intent; do not recreate geometry or invent native indexes."
+                    "connected_boolean": (
+                        "Use api.boolean for union, subtract, or intersect. Declare solid only "
+                        "when the result is exactly one connected solid."
                     ),
-                    "add_material": "pad, revolve, loft(subtractive=False)",
-                    "remove_material": "pocket, groove, loft(subtractive=True)",
-                    "repeat_or_reflect": "polar_pattern or mirror",
-                    "edge_finish": "fillet or chamfer with one geometric query",
-                    "publish": "api.body",
+                    "disconnected_geometry": (
+                        "Use api.compound for separate components, thread strands, stitch "
+                        "networks, or any assembly that must remain multiple solids. Never chain "
+                        "disconnected shapes as additive Body features."
+                    ),
+                    "stable_selection": (
+                        "Use api.find_subelements to build count-guarded geometric queries for "
+                        "fillet, chamfer, thickness, interfaces, and other selections. Raw "
+                        "FaceN and EdgeN identifiers are forbidden in regenerating contracts."
+                    ),
+                    "verification": (
+                        "Use api.measure to declare dimensional or topology postconditions and "
+                        "pass those checks to api.body or api.publish."
+                    ),
+                    "physical_material": (
+                        "Use api.material with one exact UUID from material_catalog, then pass "
+                        "that immutable card as material= on api.body or api.publish. Declare "
+                        "every physical or appearance property consumed by the design."
+                    ),
+                    "visible_appearance": (
+                        "Use api.appearance with optional card-derived styling and/or explicit "
+                        "color_rgb, line_color_rgb, point_color_rgb, transparency_percent, "
+                        "line_width, point_size, display_mode, visible, and selectable fields. "
+                        "RGB values are the same 0-255 integers shown in FreeCAD's color editor. "
+                        "Pass the result as appearance= on api.body or api.publish."
+                    ),
+                    "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "Each native feature family has one model-facing operation. There "
-                        "are no rectangle, box, add-feature, recompute, update, or output "
-                        "aliases. Compose profiles from explicit geometry, reuse graph values, "
-                        "and publish only the final feature through api.body."
+                        "The model-facing vocabulary names intent, not implementation: extrude "
+                        "replaces Pad/Pocket, revolve replaces Revolution/Groove, and boolean "
+                        "replaces Fuse/Cut/Common. Compatibility methods remain callable for "
+                        "saved programs but are not exported."
                     ),
                 },
                 "semantic_interfaces": {
                     "purpose": (
                         "Declare mating, datum, load, drawing, and machining references in "
-                        "api.body(interfaces=...). Origin or geometric query selections are "
-                        "resolved against the accepted solid in the worker; raw FaceN/EdgeN "
-                        "interface declarations are forbidden."
+                        "api.body or api.publish. Origin or geometric query selections resolve "
+                        "against the accepted result; raw transient topology names are forbidden."
                     ),
                     "selection_modes": ["origin", "query"],
                 },
@@ -15053,11 +15138,32 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "Each program/output pair owns one stable native publication identity "
                         "updated in place after worker validation."
                     ),
-                    "shape": "exact OCC Solid containing exactly one valid solid",
+                    "shape": (
+                        "The declared output type must exactly match one valid OCC Solid, Shell, "
+                        "Face, Wire, or Compound. A compound is never relabeled as a solid."
+                    ),
+                    "presentation": (
+                        "Physical ShapeMaterial and the explicitly controlled display subset are "
+                        "part of the accepted output revision. They update in place, persist "
+                        "through save/reopen, restore their original baseline when removed from "
+                        "source, and reject conflicting out-of-band edits or Material-program "
+                        "ownership."
+                    ),
                     "gui_thread": (
                         "The document thread applies detached validated shapes and metadata "
                         "only; it performs no provider wait, subprocess wait, recompute-heavy "
                         "feature construction, or artifact I/O."
+                    ),
+                },
+                "domain_context": {
+                    "material_catalog": (
+                        "The shared Material-workbench catalog index is available directly in "
+                        "Part Design context. Select by exact UUID, name/tags, common bounded "
+                        "values, and complete property-name inventories; never guess a UUID."
+                    ),
+                    "programs": (
+                        "bounded persisted contracts, accepted/working revisions, live output "
+                        "identities, topology evidence, material identity, and appearance readback"
                     ),
                 },
                 "workbench_handoffs": {
@@ -15065,14 +15171,20 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "Use Sketcher when the requested result is an independently editable "
                         "2D constraint definition rather than a Body feature history."
                     ),
-                    "part": (
-                        "Use Part for direct OCC construction without a PartDesign::Body "
-                        "history."
+                    "part_compatibility": (
+                        "The old Part workbench is retired. Its direct OCC implementation remains "
+                        "inside this consolidated API for standalone curves, surfaces, topology, "
+                        "repair, and arbitrary-shape operations. Do not switch domains for 3D work."
                     ),
                     "assembly": (
                         "Use Assembly to link accepted components, ground instances, add "
                         "joints, and solve motion. Part Design publishes component geometry "
                         "and semantic interfaces; it does not position an assembly."
+                    ),
+                    "material": (
+                        "Do not switch workbenches merely to style or materially classify a Part "
+                        "Design VibeScript output. The shared Material catalog and publication "
+                        "semantics are available through api.material and api.appearance here."
                     ),
                     "rule": (
                         "The model cannot switch workbench or engine. Explain the exact "
@@ -15129,14 +15241,31 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                             "profile = api.sketch([bottom,right,top,left], constraints, "
                             "require_fully_constrained=True, require_closed_profile=True, "
                             "label='Base Profile')\n"
-                            "base = api.pad(profile, inputs['height'], label='Base Pad')\n"
+                            "base = api.extrude(profile, inputs['height'], "
+                            "operation='add_material', label='Base Extrusion')\n"
                             "result = {'Part': api.body(base, interfaces={'Top': {"
                             "'selection': {'type':'query','element_type':'face',"
                             "'expected_count':1,'geometry_type':'plane','normal':[0,0,1]},"
                             "'description':'Top mating face'}}, label='Part')}"
                         ),
                         "expected_outputs": [{"name": "Part", "type": "solid"}],
-                    }
+                    },
+                    {
+                        "goal": "several parametric lofted thread strands",
+                        "source": (
+                            "strand_a = api.loft(sections_a, operation='new_solid', label='A')\n"
+                            "strand_b = api.loft(sections_b, operation='new_solid', label='B')\n"
+                            "stitching = api.compound([strand_a, strand_b], "
+                            "label='Stitching Assembly')\n"
+                            "result = {'Stitching': api.publish(stitching, "
+                            "checks=[api.measure(stitching, 'solid_count', minimum=2)], "
+                            "appearance=api.appearance(color_rgb=[255,0,0]), "
+                            "label='Stitching')}"
+                        ),
+                        "expected_outputs": [
+                            {"name": "Stitching", "type": "compound"}
+                        ],
+                    },
                 ],
             }
         )

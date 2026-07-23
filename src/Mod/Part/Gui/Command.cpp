@@ -1256,6 +1256,7 @@ void CmdPartMakeSolid::activated(int iMsg)
         nullptr,
         Gui::ResolveMode::FollowLink
     );
+    openCommand(QT_TRANSLATE_NOOP("Command", "Convert to solid"));
     runCommand(Doc, "import Part");
     for (auto it : objs) {
         const TopoDS_Shape& shape = Part::Feature::getShape(
@@ -1316,6 +1317,7 @@ void CmdPartMakeSolid::activated(int iMsg)
             }
         }
     }
+    commitCommand();
 }
 
 bool CmdPartMakeSolid::isActive()
@@ -1433,8 +1435,10 @@ CmdPartExtrude::CmdPartExtrude()
 {
     sAppModule = "Part";
     sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Extrude");
-    sToolTipText = QT_TR_NOOP("Extrudes the selected sketch or profile");
+    sMenuText = QT_TR_NOOP("Extrude Standalone Shape");
+    sToolTipText = QT_TR_NOOP(
+        "Creates a standalone solid, shell, or surface by extruding the selected profile"
+    );
     sWhatsThis = "Part_Extrude";
     sStatusTip = sToolTipText;
     sPixmap = "Part_Extrude";
@@ -1549,8 +1553,10 @@ CmdPartRevolve::CmdPartRevolve()
 {
     sAppModule = "Part";
     sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Revolve");
-    sToolTipText = QT_TR_NOOP("Revolves the selected shape");
+    sMenuText = QT_TR_NOOP("Revolve Standalone Shape");
+    sToolTipText = QT_TR_NOOP(
+        "Creates a standalone solid, shell, or surface by revolving the selected profile"
+    );
     sWhatsThis = "Part_Revolve";
     sStatusTip = sToolTipText;
     sPixmap = "Part_Revolve";
@@ -1570,6 +1576,22 @@ bool CmdPartRevolve::isActive()
 //===========================================================================
 // Part_Fillet
 //===========================================================================
+namespace
+{
+void restoreSelectedEdges(const std::vector<Gui::SelectionObject>& selection)
+{
+    for (const auto& selected : selection) {
+        for (const auto& subname : selected.getSubNames()) {
+            if (subname.starts_with("Edge")) {
+                Gui::Selection().addSelection(
+                    selected.getDocName(), selected.getFeatName(), subname.c_str()
+                );
+            }
+        }
+    }
+}
+}  // namespace
+
 DEF_STD_CMD_A(CmdPartFillet)
 
 CmdPartFillet::CmdPartFillet()
@@ -1587,7 +1609,9 @@ CmdPartFillet::CmdPartFillet()
 void CmdPartFillet::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    const auto selection = Gui::Selection().getSelectionEx();
     Gui::Control().showDialog(new PartGui::TaskFilletEdges(nullptr));
+    restoreSelectedEdges(selection);
 }
 
 bool CmdPartFillet::isActive()
@@ -1615,7 +1639,9 @@ CmdPartChamfer::CmdPartChamfer()
 void CmdPartChamfer::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    const auto selection = Gui::Selection().getSelectionEx();
     Gui::Control().showDialog(new PartGui::TaskChamferEdges(nullptr));
+    restoreSelectedEdges(selection);
 }
 
 bool CmdPartChamfer::isActive()
@@ -1633,8 +1659,8 @@ CmdPartMirror::CmdPartMirror()
 {
     sAppModule = "Part";
     sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Mirror");
-    sToolTipText = QT_TR_NOOP("Mirrors the selected shape");
+    sMenuText = QT_TR_NOOP("Mirror Standalone Shape");
+    sToolTipText = QT_TR_NOOP("Creates a standalone mirrored result from the selected shape");
     sWhatsThis = "Part_Mirror";
     sStatusTip = sToolTipText;
     sPixmap = "Part_Mirror";
@@ -1730,8 +1756,10 @@ CmdPartLoft::CmdPartLoft()
 {
     sAppModule = "Part";
     sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Loft");
-    sToolTipText = QT_TR_NOOP("Lofts the selected profiles");
+    sMenuText = QT_TR_NOOP("Loft Standalone Shape");
+    sToolTipText = QT_TR_NOOP(
+        "Creates a standalone solid, shell, or surface through the selected profiles"
+    );
     sWhatsThis = "Part_Loft";
     sStatusTip = sToolTipText;
     sPixmap = "Part_Loft";
@@ -1759,8 +1787,10 @@ CmdPartSweep::CmdPartSweep()
 {
     sAppModule = "Part";
     sGroup = QT_TR_NOOP("Part");
-    sMenuText = QT_TR_NOOP("Sweep");
-    sToolTipText = QT_TR_NOOP("Sweeps profiles along a wire");
+    sMenuText = QT_TR_NOOP("Sweep Standalone Shape");
+    sToolTipText = QT_TR_NOOP(
+        "Creates a standalone solid, shell, or surface by sweeping profiles along a path"
+    );
     sWhatsThis = "Part_Sweep";
     sStatusTip = sToolTipText;
     sPixmap = "Part_Sweep";

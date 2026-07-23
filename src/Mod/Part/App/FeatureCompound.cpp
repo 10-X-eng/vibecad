@@ -40,6 +40,7 @@ Compound::Compound()
 {
     ADD_PROPERTY(Links, (nullptr));
     Links.setSize(0);
+    allowCrossContainerLink(Links);
 }
 
 Compound::~Compound() = default;

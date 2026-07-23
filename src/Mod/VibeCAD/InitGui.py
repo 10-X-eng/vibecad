@@ -63,6 +63,20 @@ def _remove_list_token(group, key: str, token: str) -> bool:
     return True
 
 
+def _replace_list_token(group, key: str, token: str, replacement: str) -> bool:
+    current = group.GetString(key, "")
+    values = [item.strip() for item in current.split(",") if item.strip()]
+    if token not in values:
+        return False
+    migrated = []
+    for item in values:
+        candidate = replacement if item == token else item
+        if candidate not in migrated:
+            migrated.append(candidate)
+    group.SetString(key, ",".join(migrated))
+    return True
+
+
 def _migrate_removed_architecture_workbench(
     remove_list_token=_remove_list_token,
 ) -> bool:
@@ -89,10 +103,41 @@ def _migrate_removed_architecture_workbench(
     return changed
 
 
+def _migrate_consolidated_part_workbench(
+    replace_list_token=_replace_list_token,
+) -> bool:
+    """Point saved standalone Part selections at the consolidated workbench."""
+
+    migration = App.ParamGet("User parameter:BaseApp/Preferences/Migration")
+    migration_key = "VibeCADConsolidatedPartWorkbench2026"
+    if migration.GetBool(migration_key, False):
+        return False
+
+    retired = "PartWorkbench"
+    consolidated = "PartDesignWorkbench"
+    changed = False
+    workbenches = App.ParamGet("User parameter:BaseApp/Preferences/Workbenches")
+    general = App.ParamGet("User parameter:BaseApp/Preferences/General")
+    for key in ("Ordered", "Disabled"):
+        changed = replace_list_token(workbenches, key, retired, consolidated) or changed
+    changed = (
+        replace_list_token(general, "BackgroundAutoloadModules", retired, consolidated)
+        or changed
+    )
+    for key in ("AutoloadModule", "LastModule"):
+        if general.GetString(key, "") == retired:
+            general.SetString(key, consolidated)
+            changed = True
+    migration.SetBool(migration_key, True)
+    return changed
+
+
 try:
     _restore_vibecad_disabled_workbenches()
     if _migrate_removed_architecture_workbench():
         _warn("Removed saved references to the retired architecture workbench")
+    if _migrate_consolidated_part_workbench():
+        _warn("Migrated saved Part workbench references to Part Design")
 except Exception as exc:
     _warn(f"VibeCAD workbench preference migration failed: {exc}")
 

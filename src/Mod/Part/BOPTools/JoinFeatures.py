@@ -29,7 +29,7 @@ __doc__ = "Implementation of document objects (features) for connect, ebmed and 
 
 from . import JoinAPI
 import FreeCAD
-import Part
+from PartLinkScope import migrate_many_to_global
 
 if FreeCAD.GuiUp:
     import FreeCADGui
@@ -134,7 +134,11 @@ class FeatureConnect:
 
     def __init__(self, obj):
         obj.addProperty(
-            "App::PropertyLinkList", "Objects", "Connect", "Object to be connected.", locked=True
+            "App::PropertyLinkListGlobal",
+            "Objects",
+            "Connect",
+            "Object to be connected.",
+            locked=True,
         )
         obj.addProperty(
             "App::PropertyBool",
@@ -155,6 +159,9 @@ class FeatureConnect:
 
         obj.Proxy = self
         self.Type = "FeatureConnect"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Objects")
 
     def execute(self, selfobj):
         rst = JoinAPI.connect([obj.Shape for obj in selfobj.Objects], selfobj.Tolerance)
@@ -269,8 +276,12 @@ class FeatureEmbed:
     """The Part Embed object."""
 
     def __init__(self, obj):
-        obj.addProperty("App::PropertyLink", "Base", "Embed", "Object to embed into.", locked=True)
-        obj.addProperty("App::PropertyLink", "Tool", "Embed", "Object to be embedded.", locked=True)
+        obj.addProperty(
+            "App::PropertyLinkGlobal", "Base", "Embed", "Object to embed into.", locked=True
+        )
+        obj.addProperty(
+            "App::PropertyLinkGlobal", "Tool", "Embed", "Object to be embedded.", locked=True
+        )
         obj.addProperty(
             "App::PropertyBool",
             "Refine",
@@ -290,6 +301,9 @@ class FeatureEmbed:
 
         obj.Proxy = self
         self.Type = "FeatureEmbed"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tool")
 
     def execute(self, selfobj):
         rst = JoinAPI.embed_legacy(selfobj.Base.Shape, selfobj.Tool.Shape, selfobj.Tolerance)
@@ -384,9 +398,15 @@ class FeatureCutout:
     """The Part Cutout object."""
 
     def __init__(self, obj):
-        obj.addProperty("App::PropertyLink", "Base", "Cutout", "Object to be cut.", locked=True)
         obj.addProperty(
-            "App::PropertyLink", "Tool", "Cutout", "Object to make cutout for.", locked=True
+            "App::PropertyLinkGlobal", "Base", "Cutout", "Object to be cut.", locked=True
+        )
+        obj.addProperty(
+            "App::PropertyLinkGlobal",
+            "Tool",
+            "Cutout",
+            "Object to make cutout for.",
+            locked=True,
         )
         obj.addProperty(
             "App::PropertyBool",
@@ -406,6 +426,9 @@ class FeatureCutout:
 
         obj.Proxy = self
         self.Type = "FeatureCutout"
+
+    def onDocumentRestored(self, obj):
+        migrate_many_to_global(obj, "Base", "Tool")
 
     def execute(self, selfobj):
         rst = JoinAPI.cutout_legacy(selfobj.Base.Shape, selfobj.Tool.Shape, selfobj.Tolerance)

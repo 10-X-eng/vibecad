@@ -405,7 +405,7 @@ void CmdPartDesignMigrate::activated(int iMsg)
     // Retrieve all PartDesign Features objects and filter out features already belonging to some body
     for (const auto& feat : doc->getObjects()) {
         if (feat->isDerivedFrom(PartDesign::Feature::getClassTypeId())
-            && !PartDesign::Body::findBodyOf(feat) && PartDesign::Body::isSolidFeature(feat)) {
+            && !PartDesign::Body::findBodyOf(feat) && PartDesign::Body::isResultFeature(feat)) {
             migrateFeatures.insert(static_cast<PartDesign::Feature*>(feat));
         }
     }
@@ -701,14 +701,12 @@ void CmdPartDesignMoveTip::activated(int iMsg)
         );
         return;
     }
-    else if (
-        !selFeature->isDerivedFrom(PartDesign::Feature::getClassTypeId()) && selFeature != body
-        && body->BaseFeature.getValue() != selFeature
-    ) {
+    else if (selFeature != body
+             && (!body->hasObject(selFeature) || !PartDesign::Body::isResultFeature(selFeature))) {
         QMessageBox::warning(
             nullptr,
             QObject::tr("Selection error"),
-            QObject::tr("Only a solid feature can be the tip of a body.")
+            QObject::tr("Only a result feature can be the tip of a body.")
         );
         return;
     }
@@ -1180,7 +1178,7 @@ void CmdPartDesignMoveFeatureInTree::activated(int iMsg)
     // user if they want the last object to be the new tip.
     // Only do this for features that can hold a tip (not for e.g. datums)
     if (lastObject != target && body->Tip.getValue() == target
-        && lastObject->isDerivedFrom<PartDesign::Feature>()) {
+        && PartDesign::Body::isResultFeature(lastObject)) {
         QMessageBox msgBox(Gui::getMainWindow());
         msgBox.setIcon(QMessageBox::Question);
         msgBox.setWindowTitle(qApp->translate("PartDesign_MoveFeatureInTree", "Move Tip"));

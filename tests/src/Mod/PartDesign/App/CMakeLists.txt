@@ -4,6 +4,7 @@ add_executable(PartDesign_tests_run
         BackwardCompatibility.cpp
         DatumPlane.cpp
         ShapeBinder.cpp
+        MixedFeatureBody.cpp
         Pad.cpp
         GeoFeatureGroupExtension.cpp
 )

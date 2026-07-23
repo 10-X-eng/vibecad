@@ -44,7 +44,7 @@ TOOL_SPEC = {
     ),
     "contextual": True,
     "safety": "SAFE_WRITE",
-    "workbench": "PartWorkbench",
+    "workbench": "PartDesignWorkbench",
     "edit_modes": ["none"],
     "parameters": {
         "type": "object",
@@ -153,6 +153,7 @@ def run_edge_finish(
                     "size_mm": size,
                 },
             )
+        domain_runtime.adopt_part_result(feature)
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):
