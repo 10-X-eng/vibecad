@@ -2251,7 +2251,15 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
             if (raw->type() != ObjectType) {
                 continue;
             }
-            auto* vp = static_cast<DocumentObjectItem*>(raw)->object();
+            auto* objectItem = static_cast<DocumentObjectItem*>(raw);
+            if (objectItem->visibilityPeer()) {
+                setObjectItemVisibility(
+                    objectItem,
+                    !objectItemVisibility(objectItem)
+                );
+                continue;
+            }
+            auto* vp = objectItem->object();
             if (!vp || !vp->canToggleVisibility()) {
                 continue;
             }
@@ -2284,13 +2292,16 @@ bool TreeWidget::objectItemVisibility(const DocumentObjectItem* item)
     App::DocumentObject* parent = nullptr;
     std::ostringstream subName;
     item->getSubName(subName, parent);
+    bool visible = object->Visibility.getValue();
     if (parent) {
-        const int visible = parent->isElementVisible(object->getNameInDocument());
-        if (visible >= 0) {
-            return visible != 0;
+        const int elementVisible =
+            parent->isElementVisible(object->getNameInDocument());
+        if (elementVisible >= 0) {
+            visible = elementVisible != 0;
         }
     }
-    return object->Visibility.getValue();
+    const auto* peer = item->visibilityPeer();
+    return visible || (peer && peer->Visibility.getValue());
 }
 
 void TreeWidget::setObjectItemVisibility(DocumentObjectItem* item, bool visible)
@@ -2309,6 +2320,10 @@ void TreeWidget::setObjectItemVisibility(DocumentObjectItem* item, bool visible)
     }
     else {
         object->Visibility.setValue(visible);
+    }
+    if (auto* peer = item->visibilityPeer();
+        peer && peer->Visibility.getValue() != visible) {
+        peer->Visibility.setValue(visible);
     }
     Selection().updateSelection(
         visible,
@@ -4972,7 +4987,8 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     App::DocumentObject* object,
     QTreeWidgetItem* parent,
     DocumentObjectItem* logicalParent,
-    bool browserDefaultHidden
+    bool browserDefaultHidden,
+    App::DocumentObject* browserVisibilityPeer
 )
 {
     if (!object || !parent) {
@@ -4991,6 +5007,10 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
         logicalParent,
         browserDefaultHidden
     );
+    item->browserVisibilityPeerName =
+        browserVisibilityPeer && browserVisibilityPeer->getNameInDocument()
+        ? browserVisibilityPeer->getNameInDocument()
+        : "";
     parent->addChild(item);
     item->setText(0, QString::fromUtf8(data->label.c_str()));
     if (!data->label2.empty()) {
@@ -5218,10 +5238,14 @@ void DocumentItem::rebuildModelBrowser()
             entry.object,
             parent,
             logicalParent,
-            entry.publishedImplementation
+            entry.publishedImplementation || entry.bodyRepresentation,
+            entry.publicationRepresentation
         );
         if (!item) {
             return nullptr;
+        }
+        if (entry.compatibilityResultLabel) {
+            item->setText(0, TreeWidget::tr("Result"));
         }
         proxies.emplace(entry.object, item);
         rendered.insert(entry.object);
@@ -7633,6 +7657,16 @@ Gui::ViewProviderDocumentObject* DocumentObjectItem::object() const
     return myData->viewObject;
 }
 
+App::DocumentObject* DocumentObjectItem::visibilityPeer() const
+{
+    const auto* viewProvider = object();
+    auto* source = viewProvider ? viewProvider->getObject() : nullptr;
+    auto* document = source ? source->getDocument() : nullptr;
+    return document && !browserVisibilityPeerName.empty()
+        ? document->getObject(browserVisibilityPeerName.c_str())
+        : nullptr;
+}
+
 void DocumentObjectItem::testStatus(bool resetStatus)
 {
     QIcon icon, icon2;
@@ -7832,6 +7866,10 @@ void DocumentObjectItem::testStatus(bool resetStatus, QIcon& icon1, QIcon& icon2
 
     if (visible < 0) {
         visible = object()->isShow() ? 1 : 0;
+    }
+    if (const auto* peer = visibilityPeer();
+        peer && peer->Visibility.getValue()) {
+        visible = 1;
     }
 
     auto obj = object()->getObject();

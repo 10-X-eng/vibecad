@@ -2,7 +2,9 @@
 
 #include "ModelTreeBrowser.h"
 
+#include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <App/Datums.h>
@@ -12,6 +14,7 @@
 #include <App/GroupExtension.h>
 #include <App/Origin.h>
 #include <App/OriginGroupExtension.h>
+#include <App/PropertyStandard.h>
 
 
 using namespace Gui;
@@ -75,6 +78,71 @@ bool hasGeometry(const App::DocumentObject* object)
             || object->getPropertyByName("Points"));
 }
 
+std::string stringProperty(const App::DocumentObject* object, const char* name)
+{
+    if (!object) {
+        return {};
+    }
+    const auto* property =
+        dynamic_cast<const App::PropertyString*>(object->getPropertyByName(name));
+    return property ? property->getStrValue() : std::string();
+}
+
+std::string scriptedOutputIdentity(
+    const App::DocumentObject* object,
+    std::string_view role
+)
+{
+    if (stringProperty(object, "VibeCADScriptedRole") != role
+        || stringProperty(object, "VibeCADScriptedEngine")
+            != "vibescript:partdesign") {
+        return {};
+    }
+    const std::string modelId =
+        stringProperty(object, "VibeCADScriptedModelId");
+    const std::string outputKey =
+        stringProperty(object, "VibeCADScriptedOutputKey");
+    if (modelId.empty() || outputKey.empty()) {
+        return {};
+    }
+    return std::to_string(modelId.size()) + ":" + modelId + outputKey;
+}
+
+bool hasExactType(const App::DocumentObject* object, std::string_view typeName)
+{
+    return object
+        && std::string_view(object->getTypeId().getName()) == typeName;
+}
+
+bool isCompatibilityAdoptedResult(
+    const App::DocumentObject* object,
+    const App::DocumentObject* body,
+    App::Document* document
+)
+{
+    if (!object || !body || !document
+        || !hasExactType(object, "PartDesign::Feature")
+        || stringProperty(body, "VibeCADScriptedRole") != "implementation"
+        || stringProperty(body, "VibeCADScriptedEngine")
+            != "vibescript:partdesign") {
+        return false;
+    }
+
+    const std::string featureRole =
+        stringProperty(object, "VibeCADNativeFeatureRole");
+    const std::string_view internalName =
+        object->getNameInDocument() ? object->getNameInDocument() : "";
+    if (featureRole != "adopted_result"
+        && internalName.find("AdoptedResult_") == std::string_view::npos) {
+        return false;
+    }
+
+    const std::string featureLabel = stringProperty(object, "Label");
+    const std::string bodyLabel = stringProperty(body, "Label");
+    return !featureLabel.empty() && !bodyLabel.empty()
+        && document->haveSameBaseName(featureLabel, bodyLabel);
+}
+
 App::DocumentObject* geoParent(const App::DocumentObject* object)
 {
     return App::GeoFeatureGroupExtension::getGroupOfObject(object);
@@ -90,6 +158,69 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
 
     const auto& objects = document->getObjects();
     _entries.reserve(objects.size());
+
+    // VibeScript publishes through stable root-level links so Assembly,
+    // TechDraw, FEM, CAM, and other consumers never lose object identity when
+    // a program rebuilds. A solid output may also have a native editable Body.
+    // Pair those representations by their explicit persisted contract instead
+    // of relying on labels, object order, or generated names.
+    std::unordered_map<std::string, App::DocumentObject*> scriptedBodies;
+    std::unordered_map<std::string, App::DocumentObject*> scriptedPublications;
+    auto recordUnique = [](
+                            auto& table,
+                            const std::string& identity,
+                            App::DocumentObject* object
+                        ) {
+        if (identity.empty()) {
+            return;
+        }
+        const auto [iterator, inserted] = table.emplace(identity, object);
+        if (!inserted) {
+            // Ambiguous metadata must remain fully visible for diagnosis.
+            iterator->second = nullptr;
+        }
+    };
+    for (auto* object : objects) {
+        if (isBody(object)) {
+            recordUnique(
+                scriptedBodies,
+                scriptedOutputIdentity(object, "implementation"),
+                object
+            );
+        }
+        if (isLink(object)) {
+            recordUnique(
+                scriptedPublications,
+                scriptedOutputIdentity(object, "publication"),
+                object
+            );
+        }
+    }
+
+    std::unordered_map<const App::DocumentObject*, App::DocumentObject*>
+        bodyRepresentations;
+    std::unordered_map<const App::DocumentObject*, App::DocumentObject*>
+        publicationRepresentations;
+    for (const auto& [identity, published] : scriptedPublications) {
+        const auto body = scriptedBodies.find(identity);
+        if (!published || body == scriptedBodies.end() || !body->second
+            || geoParent(published)
+            || App::GroupExtension::getGroupOfObject(published)) {
+            continue;
+        }
+        auto* linked = published->getLinkedObject(false);
+        if (!linked || linked == published || linked->getDocument() != document) {
+            continue;
+        }
+        const Ownership linkedOwnership = resolveOwnership(linked);
+        const Ownership bodyOwnership = resolveOwnership(body->second);
+        if (!linkedOwnership.component
+            || linkedOwnership.component != bodyOwnership.component) {
+            continue;
+        }
+        bodyRepresentations.emplace(published, body->second);
+        publicationRepresentations.emplace(body->second, published);
+    }
 
     std::unordered_set<const App::DocumentObject*> publishedImplementations;
     for (auto* object : objects) {
@@ -176,6 +307,20 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         else {
             entry.logicalParent = ownership.component;
         }
+
+        if (const auto body = bodyRepresentations.find(object);
+            body != bodyRepresentations.end()) {
+            entry.bodyRepresentation = body->second;
+        }
+        if (const auto published = publicationRepresentations.find(object);
+            published != publicationRepresentations.end()) {
+            entry.publicationRepresentation = published->second;
+        }
+        entry.compatibilityResultLabel = isCompatibilityAdoptedResult(
+            object,
+            ownership.body,
+            document
+        );
 
         _index.emplace(object, _entries.size());
         _entries.push_back(entry);

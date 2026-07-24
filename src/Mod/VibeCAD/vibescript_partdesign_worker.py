@@ -40,6 +40,7 @@ PARTDESIGN_NATIVE_HISTORY_SCHEMA = "vibecad-partdesign-native-history-v1"
 PARTDESIGN_NATIVE_HISTORY_ARTIFACT = "partdesign-native-history.json"
 PROP_CANDIDATE_OUTPUT = "VibeCADCandidateOutputName"
 PROP_CANDIDATE_NAME_PREFIX = "VibeCADCandidateNamePrefix"
+PROP_NATIVE_FEATURE_ROLE = "VibeCADNativeFeatureRole"
 _LINK_PROPERTY_TYPES = {
     "App::PropertyLink",
     "App::PropertyXLink",
@@ -2049,7 +2050,22 @@ def validate_and_build_partdesign(
                     "PartDesign::Feature",
                     f"{object_name_prefix}AdoptedResult_{index + 1}",
                 )
-                final_feature.Label = str(properties.get("label") or name)
+                source_label = str(
+                    _properties(source_definition).get("label") or ""
+                ).strip()
+                if not source_label or source_label == str(body.Label):
+                    source_label = f"{body.Label} Result"
+                final_feature.Label = source_label
+                final_feature.addProperty(
+                    "App::PropertyString",
+                    PROP_NATIVE_FEATURE_ROLE,
+                    "VibeCAD Native History",
+                )
+                setattr(
+                    final_feature,
+                    PROP_NATIVE_FEATURE_ROLE,
+                    "adopted_result",
+                )
                 final_feature.Shape = direct_shape
             else:
                 raise PartDesignCandidateError(

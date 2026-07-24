@@ -31,7 +31,7 @@ from VibeCADProvider import (
 REVIEW_TOOL_NAME = "submit_design_review"
 REVIEW_INSTRUCTIONS = """You are VibeCAD's independent principal mechanical design reviewer.
 
-Review the supplied customer intent and design draft before CAD construction.
+Review the supplied customer intent and design draft.
 Call submit_design_review exactly once. You have no CAD mutation tools and must
 not author geometry. Challenge whether the proposal satisfies the requested
 product rather than merely producing easy geometry. Examine architecture,

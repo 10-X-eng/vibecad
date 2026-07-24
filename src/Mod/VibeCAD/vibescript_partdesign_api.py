@@ -50,6 +50,9 @@ _TOPOLOGY_TYPES = frozenset({"edge", *_PUBLISHABLE_TYPES})
 _MATERIAL_OPERATIONS = frozenset({"add_material", "remove_material"})
 _CREATION_OPERATIONS = frozenset({"new_solid", "new_surface"})
 _COMPATIBILITY_METHODS = frozenset({"pad", "pocket", "groove"})
+_COMPATIBILITY_FEATURES = frozenset(
+    {*_COMPATIBILITY_METHODS, "loft_subtractive"}
+)
 _PART_API_EXPORTS = PartDomainAPI.exported_names.fget(None)
 _MATERIAL_API_EXPORTS = MaterialDomainAPI.exported_names
 
@@ -780,7 +783,11 @@ class PartDesignDomainAPI:
         intersection: bool = False,
         name: str = "",
     ) -> DomainValue:
-        """Project one authenticated stable edge/vertex into a profile sketch."""
+        """Project one stable referenced edge or vertex into a sketch.
+
+        reference must come from a validated document-reference input; selection
+        identifies the published interface or exact source subelement.
+        """
 
         return self._from_sketcher(
             self._sketcher.external_geometry(
@@ -803,7 +810,11 @@ class PartDesignDomainAPI:
         active: bool = True,
         virtual: bool = False,
     ) -> DomainValue:
-        """Create one named native Sketcher constraint for a profile."""
+        """Create one Sketcher constraint for geometry used by the same api.sketch.
+
+        entities contains geometry values or their point selectors. Dimensional
+        constraint kinds require value; name gives the dimension a stable identity.
+        """
 
         sketcher_entities = self._to_sketcher(
             entities,
@@ -833,7 +844,12 @@ class PartDesignDomainAPI:
         require_closed_profile: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Create a solver-validated Body profile on an origin plane."""
+        """Create one planar Sketcher profile from 2D geometry and constraints.
+
+        plane is XY, XZ, or YZ; z_offset_mm moves that plane parallel to itself.
+        The validation flags reject an open profile or remaining degrees of freedom
+        when set. Returns a profile for feature operations, not a solid.
+        """
 
         value = self._sketcher.sketch(
             self._to_sketcher(
@@ -913,7 +929,12 @@ class PartDesignDomainAPI:
         output_type: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Extrude with explicit new-solid, new-surface, add, or remove intent."""
+        """Create a linear feature or standalone extrusion from a profile.
+
+        operation is add_material, remove_material, new_solid, or new_surface.
+        remove_material requires base and exactly one of distance_mm or through_all.
+        vector and output_type apply only to standalone edge or wire extrusion.
+        """
 
         intent = _operation_intent("extrude", operation, allow_creation=True)
         if intent == "add_material":
@@ -1071,7 +1092,12 @@ class PartDesignDomainAPI:
         output_type: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Revolve with explicit new-solid, new-surface, add, or remove intent."""
+        """Create an axial feature or standalone revolution from a profile.
+
+        operation is add_material, remove_material, new_solid, or new_surface.
+        remove_material requires base. Body features use axis H, V, N, X, Y, or Z;
+        axis_origin, axis_direction, and output_type apply only to standalone geometry.
+        """
 
         angle = _number("revolve", "angle_degrees", angle_degrees, minimum=0.0, strict=True)
         if angle > 360.0:
@@ -1165,47 +1191,24 @@ class PartDesignDomainAPI:
         sections: Sequence[DomainValue],
         *,
         base: DomainValue | None = None,
-        operation: str | None = None,
-        subtractive: bool | None = None,
+        operation: str = "add_material",
         ruled: bool = False,
         closed: bool = False,
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Loft profiles to add material or remove material from a Body.
+        """Create a loft through 2-64 ordered sections.
 
-        Planar sections should be ``api.sketch`` values so publication preserves
-        native sketches and a native loft feature.  Direct wires are for genuinely
-        nonplanar or standalone topology.
-
-        ``subtractive`` remains accepted only for saved VibeScript v2 programs;
-        new source should state ``operation`` explicitly.
+        Use api.sketch sections for planar profiles. operation selects add_material,
+        remove_material, new_solid, or new_surface; remove_material requires base.
+        Direct wire sections are valid only for standalone nonplanar topology.
         """
 
         if not isinstance(sections, (list, tuple)) or not 2 <= len(sections) <= 64:
             raise _error("loft", "sections", "must contain 2-64 profile values")
         clean_sections = list(sections)
-        explicit_intent = (
-            None if operation is None else str(operation or "").strip().lower()
-        )
-        if explicit_intent is not None:
-            explicit_intent = _operation_intent(
-                "loft", explicit_intent, allow_creation=True
-            )
-        if subtractive is not None:
-            legacy_intent = "remove_material" if bool(subtractive) else "add_material"
-            if explicit_intent is not None and explicit_intent != legacy_intent:
-                raise _error("loft", "operation/subtractive", "specify one consistent intent")
-            intent = legacy_intent
-        else:
-            intent = explicit_intent or "add_material"
+        intent = _operation_intent("loft", operation, allow_creation=True)
         if intent in _CREATION_OPERATIONS:
-            if subtractive is not None:
-                raise _error(
-                    "loft",
-                    "subtractive",
-                    "is compatibility-only for Body material operations",
-                )
             if base is not None:
                 raise _error("loft", "base", "cannot be used for standalone geometry")
             standalone_sections = [
@@ -1259,7 +1262,12 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Sweep ordered profiles along a path with explicit material intent."""
+        """Sweep one or more ordered profiles along one edge or wire path.
+
+        operation is add_material, remove_material, new_solid, or new_surface.
+        remove_material requires base; new geometry forbids base. Use api.sketch for
+        planar profiles and a direct edge or wire only for the spatial path.
+        """
 
         intent = _operation_intent("sweep", operation, allow_creation=True)
         raw_profiles = [profile] if isinstance(profile, DomainValue) else list(profile)
@@ -1323,7 +1331,11 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Sweep a closed profile on a helix to add or remove Body material."""
+        """Add or remove Body material by sweeping a closed profile on a helix.
+
+        operation is add_material or remove_material; removal requires base.
+        pitch_mm, height_mm, and radius_mm are positive and define the helical path.
+        """
 
         intent = _operation_intent("helix", operation, allow_creation=False)
         if intent == "remove_material" and base is None:
@@ -1353,7 +1365,12 @@ class PartDesignDomainAPI:
         refine: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Union, subtract, or intersect arbitrary modeled geometry."""
+        """Combine two or more modeled shapes by union, subtract, or intersect.
+
+        subtract uses the first shape as the base and all remaining shapes as tools.
+        output_type='solid' requires solid inputs and exactly one connected result;
+        use output_type='compound' when the valid result contains separate pieces.
+        """
 
         intent = str(operation or "").strip().lower()
         if intent not in {"union", "subtract", "intersect"}:
@@ -1395,7 +1412,7 @@ class PartDesignDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Group disconnected modeled shapes without pretending they form one solid."""
+        """Return disconnected modeled shapes as one compound without fusing them."""
 
         if not isinstance(shapes, (list, tuple)) or not 1 <= len(shapes) <= 1024:
             raise _error("compound", "shapes", "must contain 1-1024 modeled values")
@@ -1421,7 +1438,11 @@ class PartDesignDomainAPI:
         result: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Pattern a Body feature or standalone shape around an explicit axis."""
+        """Repeat a feature or standalone shape around an axis.
+
+        A feature returns one additive Body feature. A standalone shape returns a
+        compound by default; result='union' requires copies that form one solid.
+        """
 
         angle = _number(
             "polar_pattern", "angle_degrees", angle_degrees, minimum=0.0, strict=True
@@ -1497,7 +1518,11 @@ class PartDesignDomainAPI:
         result: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Pattern modeled geometry along a global direction."""
+        """Repeat geometry along direction over total distance_mm.
+
+        A Body feature uses result='union'. Standalone copies default to a compound;
+        request result='union' only when all copies form one connected solid.
+        """
 
         clean_base = _modeled("linear_pattern", "base", base)
         clean_result = (
@@ -1549,7 +1574,11 @@ class PartDesignDomainAPI:
         result: str | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Apply an ordered sequence of translate, rotate, mirror, or scale steps."""
+        """Apply 2-32 explicit translate, rotate, mirror, or scale pattern steps.
+
+        A Body feature requires result='union'; standalone results may be a compound
+        or one connected union.
+        """
 
         if not isinstance(transformations, (list, tuple)) or not 2 <= len(transformations) <= 32:
             raise _error(
@@ -1709,7 +1738,10 @@ class PartDesignDomainAPI:
         plane_normal: Sequence[float] | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Mirror a Body feature or standalone shape across one explicit plane."""
+        """Mirror a feature across XY, XZ, or YZ, or a standalone shape across any plane.
+
+        plane_origin and plane_normal are valid only for standalone geometry.
+        """
 
         clean_origin = _vector("mirror", "plane_origin", plane_origin)
         if isinstance(base, DomainValue) and base.output_type == "feature":
@@ -1755,7 +1787,7 @@ class PartDesignDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Round geometrically selected edges on the current feature."""
+        """Round the exact edges matched by a count-guarded geometric selection."""
 
         clean_base = _modeled(
             "fillet", "base", base, topology={"solid", "shell"}
@@ -1777,7 +1809,7 @@ class PartDesignDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Bevel geometrically selected edges on the current feature."""
+        """Bevel the exact edges matched by a count-guarded geometric selection."""
 
         clean_base = _modeled(
             "chamfer", "base", base, topology={"solid", "shell"}
@@ -1801,7 +1833,7 @@ class PartDesignDomainAPI:
         join: str = "arc",
         label: str = "",
     ) -> DomainValue:
-        """Hollow or thicken a solid after geometrically selecting removable faces."""
+        """Remove selected faces and offset the remainder to make a wall thickness."""
 
         clean_base = _modeled(
             "thickness", "base", base, topology={"solid", "shell"}
@@ -1838,7 +1870,11 @@ class PartDesignDomainAPI:
         counterbore_depth_mm: float | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Create one native parametric hole from a point/circle location sketch."""
+        """Cut a native hole at each point or circle in the location sketch.
+
+        Provide exactly one of depth_mm or through_all. A countersink and counterbore
+        are mutually exclusive; counterbore diameter and depth must be supplied together.
+        """
 
         if through_all == (depth_mm is not None):
             raise _error(
@@ -1953,7 +1989,7 @@ class PartDesignDomainAPI:
         reversed: bool = False,
         label: str = "",
     ) -> DomainValue:
-        """Draft selected faces about an explicit neutral plane and pull direction."""
+        """Taper selected feature faces about a neutral origin plane and pull axis."""
 
         clean_base = _feature("draft", "base", base)
         angle = _number(
@@ -1977,15 +2013,11 @@ class PartDesignDomainAPI:
         self,
         shape: DomainValue,
         kind: str,
-        selection: Mapping[str, Any] | int,
+        selection: Mapping[str, Any],
         *,
         label: str = "",
     ) -> DomainValue:
-        """Extract one subshape by a stable geometric query.
-
-        A positive 1-based index remains accepted for deterministic saved source,
-        but new regenerating programs should pass ``api.find_subelements(...)``.
-        """
+        """Extract one subshape with a selector from api.find_subelements."""
 
         clean_shape = _topology("subshape", "shape", shape)
         clean_kind = str(kind or "").strip().lower()
@@ -1996,6 +2028,7 @@ class PartDesignDomainAPI:
                 "must be edge, wire, face, shell, or solid",
                 kind,
             )
+        # Unadvertised compatibility for unchanged saved programs.
         if isinstance(selection, int) and not isinstance(selection, bool):
             return self._direct(
                 "subshape",
@@ -2070,7 +2103,12 @@ class PartDesignDomainAPI:
         angle_tolerance_degrees: float = 1.0,
         radius_tolerance_mm: float = 1.0e-6,
     ) -> dict[str, Any]:
-        """Build a count-guarded geometric selector; never rely on transient EdgeN/FaceN."""
+        """Build a stable geometric selector for edges or faces.
+
+        Describe geometry, direction, size, or location and set expected_count to the
+        exact intended matches. Regeneration fails instead of selecting the wrong
+        topology when that count changes.
+        """
 
         raw: dict[str, Any] = {
             "type": "query",
@@ -2112,7 +2150,11 @@ class PartDesignDomainAPI:
         tolerance: float = 1.0e-6,
         label: str = "",
     ) -> DomainValue:
-        """Declare a deferred dimensional assertion evaluated on regenerated geometry."""
+        """Require regenerated geometry to satisfy a measurement bound.
+
+        quantity is length_mm, area_mm2, volume_mm3, solid_count, face_count, or
+        edge_count. Pass the returned check to api.body or api.publish.
+        """
 
         clean_quantity = str(quantity or "").strip().lower()
         if clean_quantity not in {
@@ -2152,7 +2194,11 @@ class PartDesignDomainAPI:
         require_physical_properties: Sequence[str] = (),
         require_appearance_properties: Sequence[str] = (),
     ) -> DomainValue:
-        """Select one exact Material-workbench catalog card for a published output."""
+        """Select one material catalog card by exact UUID for api.body or api.publish.
+
+        Required property names make validation fail when the card lacks data consumed
+        by the design.
+        """
 
         return _retag(
             self._material.material(
@@ -2177,11 +2223,11 @@ class PartDesignDomainAPI:
         visible: bool | None = None,
         selectable: bool | None = None,
     ) -> DomainValue:
-        """Define card-derived and/or explicit display state for one model output.
+        """Define display properties for api.body or api.publish.
 
-        RGB inputs use the same 8-bit channel values shown by FreeCAD's color
-        editor.  The returned immutable value is passed to ``api.body`` or
-        ``api.publish``; it is not itself a result output.
+        RGB channels are integers from 0 through 255 and transparency is 0 through
+        100 percent. Explicit values override card-derived appearance. This value
+        styles a published result and is not itself an output.
         """
 
         clean_card = _material_card(
@@ -2238,12 +2284,11 @@ class PartDesignDomainAPI:
         appearance: DomainValue | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Publish one exact solid with optional material and appearance.
+        """Publish one connected solid as an editable Part Design Body.
 
-        Compatible sketch-based ``new_solid`` extrudes, revolves, and lofts
-        become native initial Body features so their sketches and feature links
-        remain editable after publication.  Passing a direct solid is a fallback
-        for geometry that native sketch-and-feature history cannot represent.
+        Pass the final feature to preserve its sketches and native feature history.
+        A standalone solid is accepted only when native feature history cannot
+        represent it. Attach checks, material, appearance, and semantic interfaces here.
         """
 
         return self._graph(
@@ -2277,7 +2322,11 @@ class PartDesignDomainAPI:
         appearance: DomainValue | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Publish exact standalone topology with optional material and appearance."""
+        """Publish standalone solid, shell, face, wire, or compound topology.
+
+        Use api.body instead when the result is one solid with native Part Design
+        history. Attach checks, material, appearance, and semantic interfaces here.
+        """
 
         clean_shape = _topology("publish", "shape", shape, allowed=_PUBLISHABLE_TYPES)
         return self._graph(
@@ -2323,11 +2372,7 @@ def _direct_part_method(public_name: str, part_name: str):
 
     call.__name__ = public_name
     call.__qualname__ = f"PartDesignDomainAPI.{public_name}"
-    note = (
-        " Retained for standalone, nonplanar, imported, or repair topology; prefer "
-        "api.sketch and native Body features whenever they can represent the design."
-    )
-    call.__doc__ = str(getattr(retained, "__doc__", "") or "").strip() + note
+    call.__doc__ = str(getattr(retained, "__doc__", "") or "").strip()
     return call
 
 
@@ -2354,7 +2399,7 @@ class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
         compatibility_methods: Iterable[str],
     ) -> None:
         enabled = frozenset(str(item) for item in compatibility_methods)
-        unknown = enabled - _COMPATIBILITY_METHODS
+        unknown = enabled - _COMPATIBILITY_FEATURES
         if unknown:
             raise RuntimeError(
                 "Unknown Part Design compatibility methods: "
@@ -2385,6 +2430,62 @@ class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
             name
             for name in names
             if name not in _COMPATIBILITY_METHODS or name in enabled
+        )
+
+    def loft(
+        self,
+        sections: Sequence[DomainValue],
+        *,
+        base: DomainValue | None = None,
+        operation: str | None = None,
+        subtractive: bool | None = None,
+        ruled: bool = False,
+        closed: bool = False,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        enabled = object.__getattribute__(
+            self,
+            "_enabled_compatibility_methods",
+        )
+        explicit_intent = (
+            None if operation is None else str(operation or "").strip().lower()
+        )
+        if explicit_intent is not None:
+            explicit_intent = _operation_intent(
+                "loft",
+                explicit_intent,
+                allow_creation=True,
+            )
+        if subtractive is not None:
+            if "loft_subtractive" not in enabled:
+                raise AttributeError(
+                    "loft(subtractive=...) is not enabled for this saved "
+                    "Part Design source."
+                )
+            legacy_intent = (
+                "remove_material" if bool(subtractive) else "add_material"
+            )
+            if (
+                explicit_intent is not None
+                and explicit_intent != legacy_intent
+            ):
+                raise _error(
+                    "loft",
+                    "operation/subtractive",
+                    "specify one consistent intent",
+                )
+            intent = legacy_intent
+        else:
+            intent = explicit_intent or "add_material"
+        return super().loft(
+            sections,
+            base=base,
+            operation=intent,
+            ruled=ruled,
+            closed=closed,
+            refine=refine,
+            label=label,
         )
 
     def pad(

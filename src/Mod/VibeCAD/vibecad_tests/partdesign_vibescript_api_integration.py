@@ -1689,6 +1689,78 @@ def _exercise_physical_material_publication(root: Path, pack) -> dict:
         App.closeDocument(document.Name)
 
 
+def _exercise_direct_solid_adoption_label(root: Path, pack) -> dict:
+    """A direct solid keeps the operation label inside its editable Body."""
+
+    import FreeCAD as App
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignDirectSolidLabel")
+    service = _Service(document, root)
+    source = (
+        "lower = api.wire([api.circle_3d(3, center=[0,0,0])])\n"
+        "upper = api.wire([api.circle_3d(2, center=[0,0,5])])\n"
+        "finished = api.loft([lower, upper], operation='new_solid', "
+        "ruled=True, label='Finished Direct Loft')\n"
+        "result = {'Part': api.body(finished, label='Published Direct Loft')}\n"
+    )
+    create = _capture(
+        {
+            "pack": pack,
+            "project_root": str(root),
+            "document_name": str(document.Name),
+            "document_uid": str(document.Uid),
+            "document_revision": service.provider_document_revision(),
+            "document_objects": [],
+            "surface": resolve_modeling_surface(
+                "PartDesignWorkbench", "vibescript"
+            ).summary(),
+            "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+            "timeout_seconds": 60.0,
+            "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+        },
+        operation="create_program",
+        arguments={
+            "program_name": "Direct Solid Label",
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            "inputs": {},
+            "expected_outputs": [{"name": "Part", "type": "solid"}],
+        },
+    )
+    try:
+        _prepared, publication, accepted = _run_candidate(create, service)
+        body_name = publication["native_history"]["body_objects"]["Part"]
+        body = document.getObject(body_name)
+        assert body is not None and body.TypeId == "PartDesign::Body"
+        assert str(body.Label) == "Published Direct Loft"
+        assert body.Tip is not None
+        assert body.Tip.TypeId == "PartDesign::Feature"
+        assert str(body.Tip.Label) == "Finished Direct Loft"
+        assert (
+            str(getattr(body.Tip, "VibeCADNativeFeatureRole", "") or "")
+            == "adopted_result"
+        )
+        assert publication["live_outputs"]["Part"]["partdesign_data"][
+            "tip_label"
+        ] == "Finished Direct Loft"
+        published = document.getObject(
+            accepted["live_outputs"]["Part"]["object_name"]
+        )
+        assert published is not None and published.Shape.isValid()
+        return {
+            "body": str(body.Name),
+            "tip": str(body.Tip.Name),
+            "tip_label": str(body.Tip.Label),
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
     """Replay an unchanged saved alias without exposing it to canonical source."""
 
@@ -1824,6 +1896,7 @@ def main() -> int:
         native_sketch_history = _exercise_native_sketch_history(root, pack)
         topology_publication = _exercise_topology_publication(root, pack)
         physical_material = _exercise_physical_material_publication(root, pack)
+        direct_solid_label = _exercise_direct_solid_adoption_label(root, pack)
         saved_source_compatibility = _exercise_saved_source_compatibility(
             root,
             pack,
@@ -1840,6 +1913,7 @@ def main() -> int:
                     "native_sketch_history": native_sketch_history,
                     "topology_publication": topology_publication,
                     "physical_material": physical_material,
+                    "direct_solid_label": direct_solid_label,
                     "saved_source_compatibility": saved_source_compatibility,
                     "lifecycle": lifecycle,
                 },

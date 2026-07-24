@@ -196,10 +196,11 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
     for removed_contract in ("params", "new_body", "new_sketch", "sketchbuilder"):
         assert removed_contract not in text
     assert "validated inputs" in text
-    assert "scope='api'" in text
+    assert "core.inspect only when" in text
+    assert "successful write result as current" in text
 
 
-def test_partdesign_uses_the_same_model_operating_template_as_other_domains() -> None:
+def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> None:
     partdesign = provider._vibescript_authoring_instruction(
         _vibescript_mode_context()
     )
@@ -207,24 +208,24 @@ def test_partdesign_uses_the_same_model_operating_template_as_other_domains() ->
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
     for instruction in (partdesign, assembly):
-        assert "scope='domain'" in instruction
-        assert "scope='api'" in instruction
-        assert "scope='program'" in instruction
+        assert "Use core.inspect only when" in instruction
         assert "edit_source" in instruction
         assert "set_inputs" in instruction
         assert "reconfigure_program" in instruction
+        assert "inspect again only" in instruction
         assert "Never call native workbench tools" in instruction
+        assert "before writing the first program" not in instruction
+        assert "after success" not in instruction
 
 
 def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
     partdesign = provider._vibescript_authoring_instruction(
         _vibescript_mode_context()
     )
-    assert "native editable Body history as the default" in partdesign
-    assert "Every planar profile" in partdesign
-    assert "must be an api.sketch" in partdesign
+    assert "editable native Body history" in partdesign
+    assert "api.sketch for planar feature profiles" in partdesign
     assert "line_3d, arc_3d, wire" in partdesign
-    assert "never choose direct topology merely because it is shorter" in partdesign
+    assert "nonplanar, imported, repair, or standalone geometry" in partdesign
 
     assembly = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")

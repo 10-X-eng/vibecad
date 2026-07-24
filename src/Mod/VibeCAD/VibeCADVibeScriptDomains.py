@@ -186,19 +186,13 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "partdesign",
         "Part Design",
         ("solid", "shell", "face", "wire", "compound"),
-        "Author one source-parametric 3D graph with native editable Body history as "
-        "the default. Every planar profile used by extrude, revolve, loft, sweep, or "
-        "hole must be an api.sketch so its sketch and feature remain editable in the "
-        "tree. Use line_3d, arc_3d, wire, direct primitives, and other retained OCC "
-        "topology only for genuinely nonplanar, imported, repair, standalone, or "
-        "otherwise unrepresentable geometry; never choose direct topology merely "
-        "because it is shorter to author. Use explicit new_solid, new_surface, "
-        "add_material, or remove_material intent; use boolean for "
-        "union/subtract/intersect and compound for deliberately disconnected geometry. "
-        "Body publishes one solid, while publish accepts standalone solid, shell, face, "
-        "wire, or compound geometry. Use material plus appearance on body/publish for "
-        "physical catalog properties and source-parametric display styling. Use only "
-        "the canonical exported operation names returned by scope='api'.",
+        "Create source-parametric geometry with editable native Body history. Use "
+        "api.sketch for planar feature profiles. Set operation to new_solid, new_surface, "
+        "add_material, or remove_material. Reserve line_3d, arc_3d, wire, and "
+        "other direct OCC topology for nonplanar, imported, repair, or standalone "
+        "geometry. Use boolean for union, subtract, or intersect and compound for "
+        "separate geometry. Attach material and appearance to the published output. "
+        "Use only canonical exported operation names.",
         (
             "from_object",
             "box",
@@ -5035,13 +5029,12 @@ def _base_tool_spec(
 
 def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ...]:
     program_id = _property_schema(
-        "Exact stable program id returned by create_program or core.inspect with "
-        "scope='domain' or scope='program'.",
+        "Stable program id returned by create_program, another write, or core.inspect.",
         type="string",
         pattern="^[0-9a-f]{32}$",
     )
     revision = _property_schema(
-        "Exact current working revision returned by core.inspect scope='program'.",
+        "Current working revision returned by the latest write or inspection.",
         type="string",
         pattern="^[0-9a-f]{64}$",
     )
@@ -5105,9 +5098,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "inspect_program",
             description=(
-                f"Inspect one persisted {pack.title} VibeScript program, revisions, "
-                "typed outputs, latest candidate, and stable live identities. Call this "
-                "before mutating an existing program and after acceptance to verify it."
+                f"Read one {pack.title} program's source, inputs, revisions, candidate "
+                "diagnostics, declared outputs, and live output identities without changing it."
             ),
             properties={"program_id": program_id},
             required=("program_id",),
@@ -5117,9 +5109,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "create_program",
             description=(
-                f"Create, isolate, validate, and publish a new {pack.title} "
-                "VibeScript program with declared typed outputs. Use only when the "
-                "active-domain core.inspect result has no existing program for the same intent."
+                f"Create and publish a new {pack.title} program. Use only when no "
+                "existing program owns the requested output."
             ),
             properties={
                 "program_name": _property_schema(
@@ -5146,10 +5137,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "edit_source",
             description=(
-                f"Apply exact replacements to a {pack.title} program source, then "
-                "isolate, validate, and publish the guarded candidate. Use for "
-                "source-only changes that preserve the input contract, input values, "
-                "and declared outputs."
+                f"Change only the source text of an existing {pack.title} program, "
+                "then validate and publish it. Inputs and output declarations stay unchanged."
             ),
             properties={
                 "program_id": program_id,
@@ -5163,9 +5152,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "set_inputs",
             description=(
-                f"Replace selected validated inputs for a {pack.title} program and "
-                "publish the guarded regenerated candidate. Use for value-only changes "
-                "that preserve source, input schema, and declared outputs."
+                f"Change only input values of an existing {pack.title} program, then "
+                "regenerate and publish it. Source and output declarations stay unchanged."
             ),
             properties={
                 "program_id": program_id,
@@ -5183,10 +5171,8 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "reconfigure_program",
             description=(
-                f"Replace the complete source, input contract, inputs, and typed "
-                f"outputs of a guarded {pack.title} VibeScript program. Use only when "
-                "those contracts must change together; prefer edit_source or set_inputs "
-                "for narrower mutations."
+                f"Replace a {pack.title} program's source, input schema, inputs, and "
+                "output declarations together. Use when any of those contracts must change."
             ),
             properties={
                 "program_id": program_id,

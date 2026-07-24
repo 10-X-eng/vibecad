@@ -192,24 +192,16 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         ]["description"]
         assert "create_program" in program_id_description
         assert "core.inspect" in program_id_description
-        assert "source-only" in specs["edit_source"]["description"]
-        assert "value-only" in specs["set_inputs"]["description"]
-        assert (
-            "prefer edit_source or set_inputs"
-            in specs["reconfigure_program"]["description"]
-        )
+        assert "Change only the source text" in specs["edit_source"]["description"]
+        assert "Change only input values" in specs["set_inputs"]["description"]
+        assert "contracts must change" in specs["reconfigure_program"]["description"]
 
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
         description = adapter.describe_api()
         operating = description["model_operating_contract"]
-        assert [item["action"] for item in operating["authoring_sequence"]] == [
-            "discover",
-            "learn_api",
-            "author",
-            "repair",
-            "verify",
-        ]
+        assert "authoring_sequence" not in operating
+        assert "Inspect only when" in operating["context_first"]
         assert set(operating["mutation_selection"]) == {
             "edit_source",
             "set_inputs",
@@ -250,8 +242,7 @@ def test_every_domain_description_is_copy_ready_for_the_operating_model() -> Non
         error_contract = json.dumps(description["error_contract"]).lower()
         assert "correct" in error_contract
 
-        patterns = description["recommended_patterns"]
-        assert patterns
+        patterns = description.get("recommended_patterns", [])
         for pattern in patterns:
             source = pattern["source"]
             expected_outputs = pattern["expected_outputs"]

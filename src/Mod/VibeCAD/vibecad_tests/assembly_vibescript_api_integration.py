@@ -210,17 +210,7 @@ def _run_candidate(captured: dict, service: _Service):
     assert accepted["model_state"]["next_write_expected_revision"] == accepted[
         "working_revision"
     ]
-    assert accepted["model_state"]["verification_call"] == {
-        "tool": "core.inspect",
-        "arguments": {
-            "scope": "program",
-            "target": prepared["program_id"],
-            "path": "",
-            "offset": 0,
-            "limit": 50,
-            "attach": False,
-        },
-    }
+    assert "verification_call" not in accepted["model_state"]
     return prepared, execution, publication, accepted
 
 

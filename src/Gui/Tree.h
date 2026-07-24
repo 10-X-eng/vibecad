@@ -467,7 +467,8 @@ protected:
         App::DocumentObject* object,
         QTreeWidgetItem* parent,
         DocumentObjectItem* logicalParent,
-        bool browserDefaultHidden
+        bool browserDefaultHidden,
+        App::DocumentObject* browserVisibilityPeer = nullptr
     );
     DocumentObjectItem* findBrowserItem(App::DocumentObject* object) const;
     bool isPresentationItem(const DocumentObjectItem* item) const;
@@ -589,6 +590,7 @@ public:
     }
 
 private:
+    App::DocumentObject* visibilityPeer() const;
     void setCheckState(bool checked);
     void getExpandedSnapshot(std::vector<bool>& snapshot) const;
     void applyExpandedSnapshot(
@@ -611,6 +613,7 @@ private:
     bool browserProxy;
     DocumentObjectItem* browserLogicalParent;
     bool browserDefaultHidden;
+    std::string browserVisibilityPeerName;
 
     friend class TreeWidget;
     friend class DocumentItem;

@@ -174,44 +174,29 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "api.material" in description["operation_selection"]["physical_material"]
     assert "0-255" in description["operation_selection"]["visible_appearance"]
     priority = description["authoring_priority"]
-    assert "native editable Body history" in priority["default"]
-    assert "including parallel sections at different offsets in a loft" in priority[
-        "planar_profile_rule"
-    ]
-    assert "Source brevity and avoiding constraints are not valid reasons" in priority[
-        "direct_topology_exception"
-    ]
-    assert "Never replace a working native sketch/feature history" in priority[
-        "do_not_regress"
-    ]
-    assert "empty sketches list" in priority["verification"]
+    assert "api.sketch plus native feature operations" in priority["default"]
+    assert "offset loft section" in priority["planar_profile_rule"]
+    assert "nonplanar, imported, repair" in priority["direct_topology_exception"]
+    assert "Do not replace valid native history" in priority["do_not_regress"]
+    assert "empty sketch list" in priority["verification"]
     serialized_description = json.dumps(description, sort_keys=True)
     assert "Pad" not in serialized_description
     assert "Pocket" not in serialized_description
     assert "Groove" not in serialized_description
+    assert "recommended_patterns" not in description
 
     exports = {
         item["name"]: item for item in description["runtime_exports"]
     }
     for direct_name in ("line_3d", "arc_3d", "wire"):
-        assert "prefer api.sketch and native Body features" in exports[direct_name][
+        assert "prefer api.sketch and native Body features" not in exports[direct_name][
             "description"
         ]
-    assert "Planar sections should be ``api.sketch`` values" in exports["loft"][
+    assert "Use api.sketch sections for planar profiles" in exports["loft"][
         "description"
     ]
-    assert "Passing a direct solid is a fallback" in exports["body"]["description"]
-
-    loft_pattern = next(
-        pattern
-        for pattern in description["recommended_patterns"]
-        if pattern["goal"] == "native sketch-based parametric lofted Body"
-    )
-    loft_source = loft_pattern["source"]
-    assert "return api.sketch" in loft_source
-    assert "api.loft([lower,middle,upper]" in loft_source
-    assert "api.line_3d" not in loft_source
-    assert "api.wire" not in loft_source
+    assert "subtractive" not in exports["loft"]["signature"]
+    assert "standalone solid is accepted only" in exports["body"]["description"]
 
 
 def test_partdesign_publication_material_and_appearance_are_explicit_and_immutable() -> None:
@@ -639,21 +624,100 @@ def test_unchanged_saved_partdesign_source_gets_private_compatibility_runtime(
     runtime.abandon_prepared_candidate(prepared)
 
 
-def test_loft_rejects_conflicting_canonical_and_legacy_material_intent() -> None:
+def test_saved_loft_subtractive_keyword_is_detected_but_new_source_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = (
+        "lower = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "upper = api.sketch([api.circle([0,0], inputs['radius'] / 2)], "
+        "z_offset_mm=inputs['height'])\n"
+        "base = api.extrude(lower, inputs['height'])\n"
+        "feature = api.loft([lower, upper], base=base, subtractive=True)\n"
+        "result = {'Part': api.body(feature)}\n"
+    )
+    create_capture = _capture(
+        tmp_path,
+        operation="create_program",
+        arguments={
+            "program_name": "Legacy Loft Rejected",
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "radius": {"type": "number", "exclusiveMinimum": 0},
+                    "height": {"type": "number", "exclusiveMinimum": 0},
+                },
+                "required": ["radius", "height"],
+                "additionalProperties": False,
+            },
+            "inputs": {"radius": 4.0, "height": 5.0},
+            "expected_outputs": [{"name": "Part", "type": "solid"}],
+        },
+    )
+    with pytest.raises(runtime.DomainRuntimeFailure) as failure:
+        runtime.prepare_candidate(create_capture)
+    assert failure.value.payload["observed"]["retired_api_members"] == [
+        "loft_subtractive"
+    ]
+
+    _directory, revision = _write_v2_program(tmp_path, source)
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    saved_capture = _capture(
+        tmp_path,
+        operation="set_inputs",
+        arguments={
+            "program_id": PROGRAM_ID,
+            "expected_revision": revision,
+            "patch": {"height": 6.0},
+        },
+    )
+    prepared = runtime.prepare_candidate(saved_capture)
+    assert prepared["worker_request"]["compatibility_methods"] == [
+        "loft_subtractive"
+    ]
+    runtime.abandon_prepared_candidate(prepared)
+
+
+def test_loft_legacy_keyword_is_private_to_unchanged_saved_source() -> None:
     api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
     sections = [
         api.sketch([api.circle([0, 0], 3)]),
         api.sketch([api.circle([0, 0], 2)], z_offset_mm=5),
     ]
 
-    with pytest.raises(ValueError, match="one consistent intent"):
+    with pytest.raises(TypeError, match="subtractive"):
         api.loft(
             sections,
-            operation="add_material",
             subtractive=True,
         )
 
-    legacy = api.loft(sections, subtractive=True, base=api.extrude(sections[0], 5))
+    saved_source = create_domain_api(
+        "partdesign",
+        PartDesignDomainAPI.exported_names,
+        OUTPUT_TYPES,
+        compatibility_methods=("loft_subtractive",),
+    )
+    saved_sections = [
+        saved_source.sketch([saved_source.circle([0, 0], 3)]),
+        saved_source.sketch(
+            [saved_source.circle([0, 0], 2)],
+            z_offset_mm=5,
+        ),
+    ]
+    base = saved_source.extrude(saved_sections[0], 5)
+    with pytest.raises(ValueError, match="one consistent intent"):
+        saved_source.loft(
+            saved_sections,
+            base=base,
+            operation="add_material",
+            subtractive=True,
+        )
+    legacy = saved_source.loft(
+        saved_sections,
+        subtractive=True,
+        base=base,
+    )
     assert legacy.properties["subtractive"] is True
 
 

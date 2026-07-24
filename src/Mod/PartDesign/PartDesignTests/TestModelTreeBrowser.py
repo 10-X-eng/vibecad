@@ -18,6 +18,18 @@ BROWSER_FOLDER_TYPE = 1002
 TREE_PARAMETER_PATH = "User parameter:BaseApp/Preferences/TreeView"
 
 
+def _tag_scripted_object(obj, *, role, model_id, output_key=""):
+    values = {
+        "VibeCADScriptedRole": role,
+        "VibeCADScriptedEngine": "vibescript:partdesign",
+        "VibeCADScriptedModelId": model_id,
+        "VibeCADScriptedOutputKey": output_key,
+    }
+    for name, value in values.items():
+        obj.addProperty("App::PropertyString", name, "VibeCAD Publication")
+        setattr(obj, name, value)
+
+
 def _visible_children(item):
     return [
         item.child(index)
@@ -160,6 +172,69 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.output.Label = "Published Output"
         self.output.LinkedObject = self.source
 
+        # A scripted solid intentionally has two persistent representations:
+        # an editable native Body and a stable publication link for downstream
+        # references. The model browser must present that pair only once.
+        scripted_model_id = "browser-body-backed-publication"
+        self.vibe_component = self.document.addObject(
+            "App::Part", "VibeProgram"
+        )
+        self.vibe_component.Label = "Vibe Program"
+        _tag_scripted_object(
+            self.vibe_component,
+            role="model",
+            model_id=scripted_model_id,
+        )
+        self.vibe_body = self.document.addObject(
+            "PartDesign::Body", "VibeCandidateBody"
+        )
+        self.vibe_body.Label = "Utility Blade 38755A29"
+        self.vibe_component.addObject(self.vibe_body)
+        _tag_scripted_object(
+            self.vibe_body,
+            role="implementation",
+            model_id=scripted_model_id,
+            output_key="UtilityBlade",
+        )
+        self.vibe_result = self.vibe_body.newObject(
+            "PartDesign::Feature",
+            "VibePD_AdoptedResult_1",
+        )
+        # Reproduce an already-saved document from before adopted results kept
+        # their source-operation label. Duplicate-label protection turns this
+        # into the confusing "...001" label seen in the reported document.
+        self.vibe_result.Label = self.vibe_body.Label
+        self.vibe_result.Shape = Part.makeBox(6, 2, 1)
+        self.vibe_body.Tip = self.vibe_result
+
+        self.vibe_target = self.document.addObject(
+            "Part::Feature", "VibeUtilityBladeSource"
+        )
+        self.vibe_target.Shape = self.vibe_result.Shape
+        self.vibe_component.addObject(self.vibe_target)
+        self.vibe_target.Visibility = False
+        _tag_scripted_object(
+            self.vibe_target,
+            role="publication_target",
+            model_id=scripted_model_id,
+            output_key="UtilityBlade",
+        )
+        self.vibe_output = self.document.addObject(
+            "App::Link", "VibeUtilityBlade"
+        )
+        self.vibe_output.Label = self.vibe_body.Label
+        self.vibe_output.LinkedObject = (
+            self.vibe_component,
+            f"{self.vibe_target.Name}.",
+        )
+        self.vibe_output.LinkTransform = True
+        _tag_scripted_object(
+            self.vibe_output,
+            role="publication",
+            model_id=scripted_model_id,
+            output_key="UtilityBlade",
+        )
+
         self.standalone = self.document.addObject(
             "Part::Feature", "StandaloneGeometry"
         )
@@ -194,6 +269,12 @@ class TestModelTreeBrowser(unittest.TestCase):
         )
         self.expected_notes_group = tuple(
             obj.Name for obj in self.notes_group.Group
+        )
+        self.expected_vibe_component_group = tuple(
+            obj.Name for obj in self.vibe_component.Group
+        )
+        self.expected_vibe_body_group = tuple(
+            obj.Name for obj in self.vibe_body.Group
         )
 
         self.assertIsNotNone(
@@ -278,6 +359,14 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertEqual(
             tuple(obj.Name for obj in self.notes_group.Group),
             self.expected_notes_group,
+        )
+        self.assertEqual(
+            tuple(obj.Name for obj in self.vibe_component.Group),
+            self.expected_vibe_component_group,
+        )
+        self.assertEqual(
+            tuple(obj.Name for obj in self.vibe_body.Group),
+            self.expected_vibe_body_group,
         )
 
     def test_browser_groups_by_type_with_one_visible_item_per_object(self):
@@ -435,6 +524,97 @@ class TestModelTreeBrowser(unittest.TestCase):
         _event_step()
         self._assert_document_unchanged()
         self.assertIs(tree, self._tree_and_document_item()[0])
+
+    def test_body_backed_publication_uses_body_as_its_only_normal_tree_item(self):
+        tree, document_item = self._browser_items()
+        vibe_component = _child(document_item, "Vibe Program")
+        self.assertIsNotNone(vibe_component)
+
+        bodies = _child(vibe_component, "Bodies", BROWSER_FOLDER_TYPE)
+        self.assertIsNotNone(bodies)
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(bodies)],
+            ["Utility Blade 38755A29"],
+        )
+        body_item = _child(bodies, "Utility Blade 38755A29")
+        features = _child(body_item, "Features", BROWSER_FOLDER_TYPE)
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(features)],
+            ["Result"],
+        )
+
+        # The implementation Body is the semantic solid in the normal browser.
+        # Its stable carrier and private copied shape remain present in the
+        # document but do not create a duplicate Geometry branch.
+        self.assertIsNone(
+            _child(vibe_component, "Geometry", BROWSER_FOLDER_TYPE)
+        )
+        visible_labels = {
+            item.text(0) for item in _visible_walk(vibe_component)
+        }
+        self.assertNotIn(self.vibe_result.Label, visible_labels)
+        self.assertNotIn(self.vibe_output.Label, visible_labels)
+        self.assertIs(self.vibe_output.getLinkedObject(), self.vibe_target)
+
+        # The Body row controls the complete visible output, including the
+        # stable carrier that owns presentation and downstream identity.
+        self.vibe_body.Visibility = True
+        self.vibe_output.Visibility = True
+        tree.clearSelection()
+        tree.setCurrentItem(body_item)
+        body_item.setSelected(True)
+        tree.setFocus()
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_body.Visibility
+                and not self.vibe_output.Visibility
+            )
+        )
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_body.Visibility
+                and self.vibe_output.Visibility
+            )
+        )
+
+        self.document.ShowHidden = True
+
+        def hidden_geometry_visible():
+            component = _child(
+                self._tree_and_document_item()[1],
+                "Vibe Program",
+            )
+            geometry = _child(component, "Geometry", BROWSER_FOLDER_TYPE)
+            return geometry if geometry is not None else None
+
+        hidden_geometry = _wait_until(hidden_geometry_visible)
+        self.assertIsNotNone(hidden_geometry)
+        self.assertEqual(
+            {
+                item.text(0)
+                for item in _visible_children(hidden_geometry)
+            },
+            {self.vibe_target.Label, self.vibe_output.Label},
+        )
+        self.document.ShowHidden = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    _child(
+                        _child(
+                            self._tree_and_document_item()[1],
+                            "Vibe Program",
+                        ),
+                        "Geometry",
+                        BROWSER_FOLDER_TYPE,
+                    )
+                    is None
+                )
+            )
+        )
+        self._assert_document_unchanged()
 
     def test_sketch_folder_toggles_all_sketch_visibility(self):
         tree, document_item = self._browser_items()
@@ -605,6 +785,8 @@ class TestModelTreeBrowser(unittest.TestCase):
             self.component = self.document.getObject("BrowserComponent")
             self.sketch_body = self.document.getObject("SketchBody")
             self.feature_body = self.document.getObject("FeatureBody")
+            self.vibe_component = self.document.getObject("VibeProgram")
+            self.vibe_body = self.document.getObject("VibeCandidateBody")
             self.assertEqual(
                 {obj.Name: obj.TypeId for obj in self.document.Objects},
                 expected_types,
@@ -617,6 +799,7 @@ class TestModelTreeBrowser(unittest.TestCase):
                 self.document.getObject("PublishedOutput").LinkedObject,
                 self.document.getObject("ImplementationSource"),
             )
+
             def categories_ready():
                 snapshot = self._browser_snapshot_now()
                 has_sketches = _snapshot_has_path(
@@ -638,6 +821,28 @@ class TestModelTreeBrowser(unittest.TestCase):
                     [obj.Name for obj in self.sketch_body.Group],
                     self._browser_snapshot(),
                 ),
+            )
+            snapshot = self._browser_snapshot()
+            self.assertTrue(
+                _snapshot_has_path(
+                    snapshot,
+                    (
+                        self.document.Label,
+                        "Vibe Program",
+                        "Bodies",
+                        "Utility Blade 38755A29",
+                        "Features",
+                        "Result",
+                    ),
+                ),
+                snapshot,
+            )
+            self.assertFalse(
+                _snapshot_has_path(
+                    snapshot,
+                    (self.document.Label, "Vibe Program", "Geometry"),
+                ),
+                snapshot,
             )
 
     def test_legacy_dependency_tree_remains_available_as_fallback(self):

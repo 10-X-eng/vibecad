@@ -67,6 +67,20 @@ public:
         // True when a root-level published link exposes this implementation
         // object. The browser hides it by default without changing ShowInTree.
         bool publishedImplementation {};
+
+        // The stable publication link for a VibeScript output remains in the
+        // document for downstream references, but an editable native Body is
+        // the canonical browser representation of the same output.
+        App::DocumentObject* bodyRepresentation {};
+
+        // The stable publication whose rendered visibility must follow this
+        // native Body's browser visibility.
+        App::DocumentObject* publicationRepresentation {};
+
+        // Older VibeScript documents gave an adopted result the same label as
+        // its Body. FreeCAD uniquified that duplicate into an opaque numeric
+        // label. The browser presents that compatibility object as "Result".
+        bool compatibilityResultLabel {};
     };
 
     explicit ModelTreeBrowserProjection(App::Document* document);

@@ -65,6 +65,7 @@ _PARTDESIGN_NATIVE_HISTORY_TYPES = frozenset(
 _PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS = frozenset(
     {"pad", "pocket", "groove"}
 )
+_PARTDESIGN_LOFT_SUBTRACTIVE_COMPATIBILITY = "loft_subtractive"
 _MAX_REFERENCE_MESH_SEGMENTS = 4096
 _MAX_REFERENCE_POINTS = 2_000_000
 _MAX_REFERENCE_FACT_SUBELEMENTS = 32
@@ -844,14 +845,30 @@ def _partdesign_saved_source_compatibility_methods(source: str) -> frozenset[str
         filename="<vibecad-partdesign-vibescript>",
         mode="exec",
     )
-    return frozenset(
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "api"
-        and node.attr in _PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS
-    )
+    compatibility: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "api"
+            and node.attr in _PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS
+        ):
+            compatibility.add(node.attr)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "api"
+            and node.func.attr == "loft"
+            and any(
+                keyword.arg == "subtractive"
+                for keyword in node.keywords
+            )
+        ):
+            compatibility.add(
+                _PARTDESIGN_LOFT_SUBTRACTIVE_COMPATIBILITY
+            )
+    return frozenset(compatibility)
 
 
 def _freecadcmd(freecad_home: str) -> Path:
@@ -2157,12 +2174,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     "LEGACY_PARTDESIGN_API_NOT_AVAILABLE",
                     "schema",
                     "New or edited Part Design source must use the canonical operation "
-                    "vocabulary. Use api.extrude(operation='add_material' or "
-                    "'remove_material') for linear material changes and "
-                    "api.revolve(operation='add_material' or 'remove_material') "
-                    "for axial material changes.",
+                    "vocabulary. Use operation='add_material' or 'remove_material' "
+                    "with api.extrude, api.revolve, api.loft, or api.sweep.",
                     requested={
-                        "canonical_operations": ["extrude", "revolve"],
+                        "canonical_operations": [
+                            "extrude",
+                            "revolve",
+                            "loft",
+                            "sweep",
+                        ],
                     },
                     observed={
                         "retired_api_members": sorted(retired_calls),
@@ -2171,7 +2191,12 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     required_changes=[
                         {
                             "replace_retired_calls": sorted(retired_calls),
-                            "with": ["api.extrude", "api.revolve"],
+                            "with": [
+                                "api.extrude",
+                                "api.revolve",
+                                "api.loft",
+                                "api.sweep",
+                            ],
                         }
                     ],
                 )
@@ -14809,21 +14834,6 @@ def accept_candidate(
             "status": "accepted",
             "accepted_is_current": True,
             "next_write_expected_revision": revision,
-            "verification_call": {
-                "tool": "core.inspect",
-                "arguments": {
-                    "scope": "program",
-                    "target": program_id,
-                    "path": "",
-                    "offset": 0,
-                    "limit": 50,
-                    "attach": False,
-                },
-            },
-            "verification_goal": (
-                "Confirm accepted_revision equals working_revision and every declared "
-                "output has the expected stable live identity and accepted evidence."
-            ),
         },
     }
 
@@ -15053,56 +15063,10 @@ class DeclarativeDomainAdapter:
             "instructions": self.pack.instructions,
             "model_operating_contract": {
                 "context_first": (
-                    "Read the injected vibescript_domain context before calling a write "
-                    "tool. Reuse a matching persisted program and copy candidate stable "
-                    "references exactly; do not invent document_uid or object_name values."
+                    "Use exact facts already returned in the current turn. Inspect only "
+                    "when a required program, reference, API contract, source, or revision "
+                    "is missing; never invent stable values."
                 ),
-                "authoring_sequence": [
-                    {
-                        "step": 1,
-                        "action": "discover",
-                        "instruction": (
-                            "Read existing programs and domain candidates in the injected "
-                            "context. Inspect a matching program before deciding to mutate it."
-                        ),
-                    },
-                    {
-                        "step": 2,
-                        "action": "learn_api",
-                        "instruction": (
-                            "Use this describe_api response as the exact runtime contract; "
-                            "never guess exports, signatures, units, or output types."
-                        ),
-                    },
-                    {
-                        "step": 3,
-                        "action": "author",
-                        "instruction": (
-                            "Create only when no existing program owns the intent. Keep output "
-                            "names semantic and stable, and make result keys exactly match "
-                            "expected_outputs in the same order."
-                        ),
-                    },
-                    {
-                        "step": 4,
-                        "action": "repair",
-                        "instruction": (
-                            "On failure, use failure_stage, observed values, native diagnostics, "
-                            "retry.required_changes, and model_state. Repair the smallest exact "
-                            "cause against next_write_expected_revision; the prior accepted "
-                            "revision remains live."
-                        ),
-                    },
-                    {
-                        "step": 5,
-                        "action": "verify",
-                        "instruction": (
-                            "After a successful write, call the returned verification_call and "
-                            "confirm accepted_revision equals working_revision plus the domain's "
-                            "accepted live evidence."
-                        ),
-                    },
-                ],
                 "mutation_selection": {
                     "edit_source": (
                         "Use only for exact source-text changes while input_schema, inputs, "
@@ -15505,10 +15469,9 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "after_write": (
-                        "Call the write response's verification_call. Confirm the accepted "
-                        "and working revisions match, then verify every output's declared "
-                        "shape_type, validity, topology counts, volume/area/length as "
-                        "applicable, and bounds against the design intent."
+                        "Use the successful write result to verify each output's declared "
+                        "shape_type, validity, topology counts, applicable measurements, "
+                        "and bounds. Inspect only when a required detail is absent."
                     ),
                     "selection_repair": (
                         "For an index failure, use the reported available 1-based range and "
@@ -15670,63 +15633,41 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "transparency": "integer percentage from 0 through 100",
                 },
                 "evaluation_model": (
-                    "API calls build one immutable source-parametric modeling graph. Native "
-                    "Body features and retained direct OCC operations may be composed in the "
-                    "same graph, but composition support is not equal authoring preference: "
-                    "choose native sketch-and-feature history whenever it can represent the "
-                    "design. An isolated FreeCADCmd document regenerates the graph from inputs, "
-                    "validates exact topology and declared measurements, and exports both "
-                    "detached BREP results and a bounded native Body-history snapshot. "
-                    "Publication keeps the stable output identity while transactionally "
-                    "restoring its real Bodies, sketches, and features in the live document."
+                    "API calls build an immutable graph regenerated from inputs. Publication "
+                    "updates stable output identities and restores native Body feature history."
                 ),
                 "authoring_priority": {
                     "default": (
-                        "For a Part Design solid, preserve native editable Body history. "
-                        "Use api.sketch for every planar section and feed those sketches to "
-                        "extrude, revolve, loft, sweep, or hole. Prefer a sequence of meaningful "
-                        "native features over one adopted direct solid."
+                        "Use api.sketch plus native feature operations for solids defined by "
+                        "planar profiles. This preserves editable Body history."
                     ),
                     "planar_profile_rule": (
-                        "A closed section whose points lie on one plane is a sketch profile, "
-                        "including parallel sections at different offsets in a loft. Express "
-                        "it with 2D api.line/api.arc/api.circle geometry plus api.sketch plane "
-                        "and z_offset_mm, not line_3d/arc_3d/api.wire."
+                        "Any planar section, including an offset loft section, is an api.sketch "
+                        "with plane and z_offset_mm; it is not a *_3d curve or api.wire."
                     ),
                     "direct_topology_exception": (
-                        "Use retained direct OCC primitives, *_3d curves, api.wire, faces, "
-                        "shells, and arbitrary topology only when the intent is genuinely "
-                        "nonplanar, imported, repair-oriented, standalone, or cannot be "
-                        "represented by native sketch-and-feature history. Source brevity and "
-                        "avoiding constraints are not valid reasons."
+                        "Use direct OCC topology only for nonplanar, imported, repair, "
+                        "standalone, or otherwise unrepresentable geometry."
                     ),
                     "do_not_regress": (
-                        "Never replace a working native sketch/feature history with direct "
-                        "topology merely to simplify source or pass validation. Repair the "
-                        "smallest failing sketch or feature instead."
+                        "Do not replace valid native history with direct topology to shorten "
+                        "source or bypass a failing feature."
                     ),
                     "verification": (
-                        "For profile-driven Body construction, inspect the accepted "
-                        "partdesign_data and confirm sketches plus native feature types are "
-                        "present. An empty sketches list and one adopted PartDesign::Feature "
-                        "indicate direct-model fallback and require an explicit geometric "
-                        "justification before completion."
+                        "A sketch-driven Body must report sketches and native feature types in "
+                        "accepted partdesign_data. An empty sketch list with one adopted feature "
+                        "means native history was not preserved."
                     ),
                 },
                 "profile_contract": {
                     "geometry": (
-                        "point, line, arc, circle, ellipse, and bspline are 2D Sketcher "
-                        "geometry. The explicit line_3d, arc_3d, circle_3d, ellipse_3d, "
-                        "bezier_3d, bspline_3d, nurbs_curve, and helix_curve names create "
-                        "standalone 3D curves and are not substitutes for planar Body profiles."
+                        "point, line, arc, circle, ellipse, and bspline are 2D sketch geometry. "
+                        "Names ending in _3d and helix_curve create standalone spatial curves."
                     ),
                     "invariants": (
-                        "Build constraints with api.constraint and reuse the exact geometry "
-                        "values in api.sketch. A planar profile consumed by a solid feature is "
-                        "downstream-dependent: require a closed profile and fully constrain it "
-                        "unless the user explicitly requests remaining sketch freedom. The "
-                        "worker rejects solver conflicts, redundancy, unresolved DoF, and open "
-                        "solid profiles."
+                        "Constraints must reference the same geometry values passed to "
+                        "api.sketch. Material features require closed profiles. Set "
+                        "require_fully_constrained=True when all profile dimensions must be fixed."
                     ),
                 },
                 "feature_contract": {
@@ -15745,10 +15686,14 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "helix(operation='remove_material')",
                     ],
                     "new_geometry": [
-                        "extrude(operation='new_solid|new_surface')",
-                        "revolve(operation='new_solid|new_surface')",
-                        "loft(operation='new_solid|new_surface')",
-                        "sweep(operation='new_solid|new_surface')",
+                        "extrude(operation='new_solid')",
+                        "extrude(operation='new_surface')",
+                        "revolve(operation='new_solid')",
+                        "revolve(operation='new_surface')",
+                        "loft(operation='new_solid')",
+                        "loft(operation='new_surface')",
+                        "sweep(operation='new_solid')",
+                        "sweep(operation='new_surface')",
                         "primitives and direct topology constructors",
                     ],
                     "combine": ["boolean", "compound", "general_fuse", "section"],
@@ -15761,233 +15706,110 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     ],
                     "dressup": ["fillet", "chamfer", "thickness", "hole", "draft"],
                     "publication": (
-                        "Use api.body for one exact solid and normally pass it native "
-                        "sketch-based feature history. Sketch-based new_solid extrudes, revolves, "
-                        "and lofts remain native initial Body features instead of frozen adopted "
-                        "shapes. Passing a direct solid to api.body is an exception for geometry "
-                        "that native history cannot represent, not the default shortcut. Use "
-                        "api.publish for exact standalone solid, shell, face, wire, or compound "
-                        "topology. Pass api.material and api.appearance values directly to either "
-                        "publisher so physical and visible properties regenerate with geometry. "
-                        "Keep result names and types stable across regeneration."
+                        "api.body publishes one connected solid with native history. api.publish "
+                        "publishes standalone solid, shell, face, wire, or compound topology."
                     ),
                 },
                 "operation_selection": {
                     "material_intent": (
-                        "Always state new_solid, new_surface, add_material, or remove_material "
-                        "on extrude, revolve, loft, and sweep. Helix is a material sweep; use "
-                        "helix_curve plus sweep for a standalone helical shape."
+                        "extrude, revolve, loft, and sweep use operation='new_solid', "
+                        "'new_surface', 'add_material', or 'remove_material'. helix accepts "
+                        "only add_material or remove_material."
                     ),
                     "connected_boolean": (
-                        "Use api.boolean for union, subtract, or intersect. Declare solid only "
-                        "when the result is exactly one connected solid."
+                        "api.boolean performs union, subtract, or intersect. A solid result must "
+                        "be exactly one connected solid."
                     ),
                     "disconnected_geometry": (
-                        "Use api.compound for separate components, thread strands, stitch "
-                        "networks, or any assembly that must remain multiple solids. Never chain "
-                        "disconnected shapes as additive Body features."
+                        "api.compound preserves separate shapes. Do not use disconnected shapes "
+                        "as additive Body features."
                     ),
                     "stable_selection": (
-                        "Use api.find_subelements to build count-guarded geometric queries for "
-                        "fillet, chamfer, thickness, interfaces, and other selections. Raw "
-                        "FaceN and EdgeN identifiers are forbidden in regenerating contracts."
+                        "api.find_subelements creates count-guarded geometric selections. Raw "
+                        "FaceN and EdgeN names are not stable across regeneration."
                     ),
                     "verification": (
-                        "Use api.measure to declare dimensional or topology postconditions and "
-                        "pass those checks to api.body or api.publish."
+                        "api.measure declares dimensional or topology checks passed to api.body "
+                        "or api.publish."
                     ),
                     "physical_material": (
-                        "Use api.material with one exact UUID from material_catalog, then pass "
-                        "that immutable card as material= on api.body or api.publish. Declare "
-                        "every physical or appearance property consumed by the design."
+                        "api.material selects an exact catalog UUID and is passed as material= "
+                        "to api.body or api.publish."
                     ),
                     "visible_appearance": (
-                        "Use api.appearance with optional card-derived styling and/or explicit "
-                        "color_rgb, line_color_rgb, point_color_rgb, transparency_percent, "
-                        "line_width, point_size, display_mode, visible, and selectable fields. "
-                        "RGB values are the same 0-255 integers shown in FreeCAD's color editor. "
-                        "Pass the result as appearance= on api.body or api.publish."
+                        "api.appearance defines color, transparency, display mode, visibility, "
+                        "and selection state. RGB channels are 0-255. Pass it as appearance= "
+                        "to api.body or api.publish."
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "The model-facing vocabulary exposes one canonical operation per intent: "
-                        "extrude for linear material changes, revolve for axial material changes, "
-                        "and boolean for union, subtraction, or intersection. Saved compatibility "
-                        "spellings are intentionally absent from exports and model guidance."
+                        "Use extrude for linear material changes, revolve for axial material "
+                        "changes, and boolean for union, subtraction, or intersection."
                     ),
                 },
                 "semantic_interfaces": {
                     "purpose": (
-                        "Declare mating, datum, load, drawing, and machining references in "
-                        "api.body or api.publish. Origin or geometric query selections resolve "
-                        "against the accepted result; raw transient topology names are forbidden."
+                        "Declare stable mating, datum, load, drawing, or machining references "
+                        "on api.body or api.publish with origin or geometric-query selections."
                     ),
                     "selection_modes": ["origin", "query"],
                 },
                 "publication_contract": {
                     "identity": (
-                        "Each program/output pair owns one stable native publication identity "
-                        "updated in place after worker validation."
+                        "Each program output has one stable native identity updated in place."
                     ),
                     "shape": (
-                        "The declared output type must exactly match one valid OCC Solid, Shell, "
-                        "Face, Wire, or Compound. A compound is never relabeled as a solid."
+                        "The declared type must match the OCC Solid, Shell, Face, Wire, or "
+                        "Compound result. A compound is not a solid."
                     ),
                     "presentation": (
-                        "Physical ShapeMaterial and the explicitly controlled display subset are "
-                        "part of the accepted output revision. They update in place, persist "
-                        "through save/reopen, restore their original baseline when removed from "
-                        "source, and reject conflicting out-of-band edits or Material-program "
-                        "ownership."
-                    ),
-                    "gui_thread": (
-                        "The document thread applies detached validated shapes, restores the "
-                        "already validated native history snapshot, and updates metadata. It "
-                        "performs no provider wait, subprocess wait, source execution, or "
-                        "artifact I/O."
+                        "Published material and appearance update in place and persist through "
+                        "save and reopen."
                     ),
                 },
                 "domain_context": {
                     "material_catalog": (
-                        "The shared Material-workbench catalog index is available directly in "
-                        "Part Design context. Select by exact UUID, name/tags, common bounded "
-                        "values, and complete property-name inventories; never guess a UUID."
-                    ),
-                    "programs": (
-                        "bounded persisted contracts, accepted/working revisions, live output "
-                        "identities, topology evidence, material identity, and appearance readback"
+                        "Part Design context includes the material catalog index. Select an exact "
+                        "UUID from it; never invent one."
                     ),
                 },
                 "workbench_handoffs": {
                     "sketcher": (
-                        "api.sketch is the normal embedded Part Design profile mechanism and "
-                        "does not require a workbench switch. Switch to the dedicated Sketcher "
-                        "domain only when the requested published result is an independently "
-                        "editable 2D constraint definition rather than a Part Design Body."
+                        "Use embedded api.sketch for Body profiles. The Sketcher domain is only "
+                        "for a separately published 2D sketch result."
                     ),
                     "part_compatibility": (
-                        "The old Part workbench is retired. Its direct OCC implementation remains "
-                        "inside this consolidated API for standalone curves, surfaces, topology, "
-                        "repair, and arbitrary-shape operations. Do not switch domains for 3D work."
+                        "The Part workbench is retired. Its direct OCC operations are available "
+                        "here for standalone topology and repair."
                     ),
                     "assembly": (
-                        "Use Assembly to link accepted components, ground instances, add "
-                        "joints, and solve motion. Part Design publishes component geometry "
-                        "and semantic interfaces; it does not position an assembly."
+                        "Use Assembly for component instances, joints, and solved motion; Part "
+                        "Design publishes component geometry and interfaces."
                     ),
                     "material": (
-                        "Do not switch workbenches merely to style or materially classify a Part "
-                        "Design VibeScript output. The shared Material catalog and publication "
-                        "semantics are available through api.material and api.appearance here."
+                        "Use api.material and api.appearance here; no Material workbench switch "
+                        "is needed for a Part Design output."
                     ),
                     "rule": (
-                        "The model cannot switch workbench or engine. Explain the exact "
-                        "handoff and ask the human to switch when the requested result belongs "
-                        "to another domain."
+                        "The model cannot switch workbenches; ask the human to activate another "
+                        "domain only when the requested output belongs there."
                     ),
                 },
                 "error_contract": {
                     "source_or_contract": (
-                        "Correct the exact policy, schema, graph, or output declaration named "
-                        "by the failure; do not broaden the source or change unrelated inputs."
+                        "Correct the named source, schema, graph, or output error only."
                     ),
                     "sketch": (
-                        "Use the returned graph ids, constraint names, solver sets, DoF, and "
-                        "profile openings to correct only the failing profile intent."
+                        "Use returned graph ids, constraint names, DoF, conflicts, and profile "
+                        "openings to correct the failing profile."
                     ),
                     "feature": (
-                        "Use feature_history and native validation evidence to correct the "
-                        "first invalid feature; the accepted revision remains live."
+                        "Correct the first invalid feature reported by native validation."
                     ),
                     "publication": (
-                        "A reference-preflight or stale-consumer rejection is not permission "
-                        "to delete a consumer. Preserve its semantic reference or ask the human."
+                        "Do not delete a dependent consumer to bypass a stale-reference failure."
                     ),
                 },
-                "recommended_patterns": [
-                    {
-                        "goal": "fully constrained parametric rectangular Body",
-                        "source": (
-                            "bottom = api.line([0,0], [inputs['width'],0], name='Bottom')\n"
-                            "right = api.line([inputs['width'],0], "
-                            "[inputs['width'],inputs['depth']], name='Right')\n"
-                            "top = api.line([inputs['width'],inputs['depth']], "
-                            "[0,inputs['depth']], name='Top')\n"
-                            "left = api.line([0,inputs['depth']], [0,0], name='Left')\n"
-                            "constraints = [\n"
-                            " api.constraint('coincident',[{'geometry':bottom,'point':'end'},"
-                            "{'geometry':right,'point':'start'}]),\n"
-                            " api.constraint('coincident',[{'geometry':right,'point':'end'},"
-                            "{'geometry':top,'point':'start'}]),\n"
-                            " api.constraint('coincident',[{'geometry':top,'point':'end'},"
-                            "{'geometry':left,'point':'start'}]),\n"
-                            " api.constraint('coincident',[{'geometry':left,'point':'end'},"
-                            "{'geometry':bottom,'point':'start'}]),\n"
-                            " api.constraint('horizontal',[bottom]),\n"
-                            " api.constraint('horizontal',[top]),\n"
-                            " api.constraint('vertical',[right]),\n"
-                            " api.constraint('vertical',[left]),\n"
-                            " api.constraint('distance',[bottom],value=inputs['width'],name='Width'),\n"
-                            " api.constraint('distance',[right],value=inputs['depth'],name='Depth'),\n"
-                            " api.constraint('coincident',[{'geometry':bottom,'point':'start'},"
-                            "'origin'],name='Anchored'),\n"
-                            "]\n"
-                            "profile = api.sketch([bottom,right,top,left], constraints, "
-                            "require_fully_constrained=True, require_closed_profile=True, "
-                            "label='Base Profile')\n"
-                            "base = api.extrude(profile, inputs['height'], "
-                            "operation='add_material', label='Base Extrusion')\n"
-                            "result = {'Part': api.body(base, interfaces={'Top': {"
-                            "'selection': {'type':'query','element_type':'face',"
-                            "'expected_count':1,'geometry_type':'plane','normal':[0,0,1]},"
-                            "'description':'Top mating face'}}, label='Part')}"
-                        ),
-                        "expected_outputs": [{"name": "Part", "type": "solid"}],
-                    },
-                    {
-                        "goal": "native sketch-based parametric lofted Body",
-                        "source": (
-                            "def section(radius, z_offset, prefix, label):\n"
-                            " circle = api.circle([0,0], radius, "
-                            "name=prefix+'_Circle')\n"
-                            " constraints = [\n"
-                            "  api.constraint('radius',[circle],value=radius,"
-                            "name=prefix+'_Radius'),\n"
-                            "  api.constraint('coincident',[{'geometry':circle,"
-                            "'point':'center'},'origin'],name=prefix+'_Centered'),\n"
-                            " ]\n"
-                            " return api.sketch([circle], constraints, plane='XY', "
-                            "z_offset_mm=z_offset, require_fully_constrained=True, "
-                            "require_closed_profile=True, label=label)\n"
-                            "lower = section(inputs['lower_radius'], 0, 'Lower', "
-                            "'Lower Profile')\n"
-                            "middle = section(inputs['middle_radius'], "
-                            "inputs['height']*0.5, 'Middle', 'Middle Profile')\n"
-                            "upper = section(inputs['upper_radius'], inputs['height'], "
-                            "'Upper', 'Upper Profile')\n"
-                            "lofted = api.loft([lower,middle,upper], "
-                            "operation='new_solid', refine=True, label='Native Loft')\n"
-                            "result = {'Part': api.body(lofted, label='Lofted Part')}"
-                        ),
-                        "expected_outputs": [{"name": "Part", "type": "solid"}],
-                    },
-                    {
-                        "goal": "several parametric lofted thread strands",
-                        "source": (
-                            "strand_a = api.loft(sections_a, operation='new_solid', label='A')\n"
-                            "strand_b = api.loft(sections_b, operation='new_solid', label='B')\n"
-                            "stitching = api.compound([strand_a, strand_b], "
-                            "label='Stitching Assembly')\n"
-                            "result = {'Stitching': api.publish(stitching, "
-                            "checks=[api.measure(stitching, 'solid_count', minimum=2)], "
-                            "appearance=api.appearance(color_rgb=[255,0,0]), "
-                            "label='Stitching')}"
-                        ),
-                        "expected_outputs": [
-                            {"name": "Stitching", "type": "compound"}
-                        ],
-                    },
-                ],
             }
         )
         return description
@@ -16282,9 +16104,9 @@ class SketcherDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "after_write": (
-                        "Call verification_call, confirm accepted_revision equals working_revision, "
-                        "then inspect solver_code, DoF, conflict sets, named constraint readback, "
-                        "wire counts, profile_ready, support, and the live Sketcher::SketchObject identity."
+                        "Use the successful write result to verify solver state, DoF, conflict "
+                        "sets, named constraint readback, wire counts, profile readiness, support, "
+                        "and live identity. Inspect only when a required detail is absent."
                     ),
                     "underconstrained": (
                         "underconstraint_guidance is a bounded native heuristic, not a recipe. "
@@ -16718,9 +16540,8 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every write and inspect the accepted "
-                        "program. working_revision must equal accepted_revision and every "
-                        "expected result must have a stable live object identity."
+                        "A successful write must report every expected result with a stable "
+                        "live object identity. Inspect only when required readback is absent."
                     ),
                     "primitive_readback": (
                         "Verify native proxy class, Draft type, points/dimensions, placement, "
@@ -17026,8 +16847,8 @@ class SurfaceDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every mutation. Confirm working_revision "
-                        "equals accepted_revision and every expected result has one stable live identity."
+                        "A successful write must report every expected result with one stable "
+                        "live identity. Inspect only when required topology or native readback is absent."
                     ),
                     "topology": (
                         "Verify declared output type against exact OCC ShapeType, underlying "
@@ -17295,9 +17116,10 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every write and inspect the accepted program. "
-                        "working_revision must equal accepted_revision and every expected sheet must "
-                        "have one stable Spreadsheet::Sheet live identity."
+                        "A successful write must report working_revision equal to "
+                        "accepted_revision and every expected sheet with one stable "
+                        "Spreadsheet::Sheet live identity. Inspect only when required cell "
+                        "or native readback is absent."
                     ),
                     "assigned_state": (
                         "Verify bounded native contents, aliases, display units, styles, alignment, "
@@ -17574,9 +17396,9 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "success": (
-                        "Call verification_call after every write. working_revision must equal "
-                        "accepted_revision, every declared result must retain one stable carrier, "
-                        "and target/channel identities must match the requested inputs."
+                        "A successful write must report one stable carrier for every declared "
+                        "result, with target and channel identities matching the requested inputs. "
+                        "Inspect only when required material or display readback is absent."
                     ),
                     "physical": (
                         "For each material_assignment, inspect live_outputs.validation.material_card: "
@@ -18177,8 +17999,8 @@ class MeshPartDomainAdapter(DeclarativeDomainAdapter):
                         "closed state for solids, boundary counts, and refinement result."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal "
-                        "accepted_revision and every result must retain its stable live identity."
+                        "A successful write must report matching working and accepted revisions "
+                        "and stable live identities for every result."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -18452,8 +18274,8 @@ class PointsDomainAdapter(DeclarativeDomainAdapter):
                         "attribute components, structured dimensions, and authenticated artifact SHA-256."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal "
-                        "accepted_revision and the output must retain its stable live object identity."
+                        "A successful write must report matching working and accepted revisions "
+                        "and the output's stable live object identity."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -18745,8 +18567,8 @@ class ReverseEngineeringDomainAdapter(DeclarativeDomainAdapter):
                         "all, retained facets, and published groups; never infer success from color alone."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal "
-                        "accepted_revision and all output object names must remain stable."
+                        "A successful write must report matching working and accepted revisions "
+                        "and unchanged output object names."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -19035,8 +18857,8 @@ class InspectionDomainAdapter(DeclarativeDomainAdapter):
                         "requires unmeasured_count=0; verify sign only for oriented nominal geometry."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal accepted_revision "
-                        "and all output object names and human consumers must remain stable."
+                        "A successful write must report matching working and accepted revisions, "
+                        "stable output object names, and preserved human consumers."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and retry.required_changes. "
@@ -19427,8 +19249,8 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                         "authenticated artifact digest before making a motion claim."
                     ),
                     "stable_state": (
-                        "After every mutation inspect the program: working_revision must equal accepted_revision "
-                        "and native output names, frozen dress-up state, and human consumers must remain stable."
+                        "A successful write must report matching working and accepted revisions, "
+                        "stable native output names, frozen dress-up state, and preserved consumers."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and retry.required_changes. "

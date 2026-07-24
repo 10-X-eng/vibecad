@@ -10,10 +10,12 @@ RUNNER_HANDLED = True
 TOOL_SPEC = {
     "name": "core.inspect",
     "description": (
-        "Read only the live CAD or scripted state needed for the current task, "
-        "inside the active workbench and modeling engine. Start with document, "
-        "selection, or domain; use object/program/api for exact detail. Results "
-        "are deterministic pages and never switch workbenches or engines."
+        "Read exact current state without changing it. Use document for the object "
+        "inventory, selection for selected subelements, object for one object's "
+        "properties, domain for existing programs and references, program for source, "
+        "inputs, revisions, and live outputs, api for callable names and signatures, "
+        "or image for stored image data. Call only when the required fact is absent "
+        "or may have changed."
     ),
     "contextual": True,
     "safety": "READ",
@@ -33,7 +35,7 @@ TOOL_SPEC = {
                     "api",
                     "image",
                 ],
-                "description": "Exact category of active-surface state to inspect.",
+                "description": "State category; each value is defined in the tool description.",
             },
             "target": {
                 "type": "string",
