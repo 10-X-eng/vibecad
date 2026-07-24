@@ -2,10 +2,14 @@
 
 #include "ModelTreeBrowser.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <App/Datums.h>
 #include <App/Document.h>
@@ -14,6 +18,7 @@
 #include <App/GroupExtension.h>
 #include <App/Origin.h>
 #include <App/OriginGroupExtension.h>
+#include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 
 
@@ -324,6 +329,76 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
 
         _index.emplace(object, _entries.size());
         _entries.push_back(entry);
+    }
+
+    orderFeaturesByBodyHistory();
+}
+
+void ModelTreeBrowserProjection::orderFeaturesByBodyHistory()
+{
+    // Collect each Body's feature entries in their current (creation) order.
+    std::unordered_map<const App::DocumentObject*, std::vector<std::size_t>>
+        featureSlots;
+    for (std::size_t i = 0; i < _entries.size(); ++i) {
+        const Entry& entry = _entries[i];
+        if (entry.role == Role::Feature && entry.body) {
+            featureSlots[entry.body].push_back(i);
+        }
+    }
+
+    bool changed = false;
+    for (const auto& [body, slots] : featureSlots) {
+        if (slots.size() < 2) {
+            continue;
+        }
+        // A Body's Group property is its feature history: move up/down and
+        // similar edits reorder Group without changing creation order.
+        const auto* group = dynamic_cast<const App::PropertyLinkList*>(
+            body->getPropertyByName("Group"));
+        if (!group) {
+            continue;
+        }
+        std::unordered_map<const App::DocumentObject*, std::size_t> rank;
+        const auto& members = group->getValues();
+        rank.reserve(members.size());
+        for (std::size_t position = 0; position < members.size(); ++position) {
+            rank.emplace(members[position], position);
+        }
+        constexpr std::size_t unranked = std::numeric_limits<std::size_t>::max();
+        auto rankOf = [&](std::size_t slot) {
+            const auto it = rank.find(_entries[slot].object);
+            return it == rank.end() ? unranked : it->second;
+        };
+
+        // Stable: features missing from Group keep creation order, after the
+        // history-ordered ones.
+        std::vector<std::size_t> ordered = slots;
+        std::stable_sort(
+            ordered.begin(),
+            ordered.end(),
+            [&](std::size_t a, std::size_t b) { return rankOf(a) < rankOf(b); }
+        );
+        if (ordered == slots) {
+            continue;
+        }
+
+        // Permute the feature entries into history order within the slots they
+        // already occupy; every non-feature entry keeps its position.
+        std::vector<Entry> reordered;
+        reordered.reserve(ordered.size());
+        for (const std::size_t index : ordered) {
+            reordered.push_back(_entries[index]);
+        }
+        for (std::size_t position = 0; position < slots.size(); ++position) {
+            _entries[slots[position]] = reordered[position];
+        }
+        changed = true;
+    }
+
+    if (changed) {
+        for (std::size_t i = 0; i < _entries.size(); ++i) {
+            _index[_entries[i].object] = i;
+        }
     }
 }
 

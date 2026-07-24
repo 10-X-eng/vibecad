@@ -14,6 +14,7 @@ import pytest
 
 from VibeCADModelingSurface import (
     CORE_CONVERSATION_VIEW_TOOLS,
+    FASTENER_CATALOG_TOOL,
     HIDDEN_PROVIDER_INSPECTION_TOOLS,
     resolve_modeling_surface,
     validate_surface_names,
@@ -77,7 +78,10 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
         domain_pack = domains.get_vibescript_pack(workbench)
         assert domain_pack is not None
         assert scripted.domain == domain_pack.domain
-        assert set(scripted.core_tool_names) == set(CORE_CONVERSATION_VIEW_TOOLS)
+        expected_core = set(CORE_CONVERSATION_VIEW_TOOLS)
+        if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
+            expected_core.add(FASTENER_CATALOG_TOOL)
+        assert set(scripted.core_tool_names) == expected_core
         if domain_pack.production_ready:
             observed_ready.add(workbench)
             assert scripted.available is True
@@ -1154,6 +1158,10 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert description["operation_selection"]["named_parts_table"] == (
         "api.bill_of_materials"
     )
+    assert description["operation_selection"]["standard_hardware_occurrence"] == (
+        "api.fastener"
+    )
+    assert "fastener_catalog.search" in description["standard_hardware"]["selection"]
     assert "no aliases" in description["operation_selection"]["redundancy_contract"]
     assert "failed_segment_index" in description["nested_subassemblies"]["repair"]
     assert any(
@@ -1207,6 +1215,14 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         return {"document_uid": "document", "object_name": name}
 
     base = api.component(reference("BaseSource"), grounded=True, label="Base")
+    bolt = api.fastener(
+        "ISO4762",
+        "M6",
+        length_mm=20,
+        model_thread=True,
+        placement=[0, 0, 5],
+        label="Mounting Bolt",
+    )
     arm = api.component(
         reference("ArmSource"),
         placement={"position": [0, 0, 20], "rotation": [0, 0, 0, 2]},
@@ -1255,6 +1271,12 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     )
 
     assert base.properties["grounded"] is True
+    assert bolt.operation == "fastener"
+    assert bolt.output_type == "component_link"
+    assert bolt.arguments == ("ISO4762", "M6")
+    assert bolt.properties["length_mm"] == 20.0
+    assert bolt.properties["model_thread"] is True
+    assert bolt.properties["placement"]["position"] == (0.0, 0.0, 5.0)
     assert arm.properties["placement"]["rotation"] == (0.0, 0.0, 0.0, 1.0)
     assert model.properties["components"] == (base, arm)
     assert model.properties["joints"] == (hinge,)
@@ -3093,6 +3115,8 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
             "assembly",
             {
                 "VibeCADAssemblyBOM.py",
+                "VibeCADFasteners.py",
+                "fasteners-provenance.json",
                 "vibescript_assembly_api.py",
                 "vibescript_assembly_worker.py",
                 "vibescript_part_worker.py",

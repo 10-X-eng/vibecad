@@ -2951,6 +2951,251 @@ def _exercise_bom_lifecycle(root: Path, pack) -> dict:
     }
 
 
+def _exercise_catalog_fastener_lifecycle(root: Path, pack) -> dict:
+    """Prove exact catalog occurrences, semantic connectors, BOM, and reopen."""
+
+    document = App.newDocument("VibeScriptAssemblyFasteners")
+    service = _Service(document, root)
+    source = "\n".join(
+        [
+            "bolt_a = api.fastener('ISO4762', 'M6', length_mm=inputs['length_mm'], model_thread=inputs['model_thread'], grounded=True, label='Bolt A')",
+            "bolt_b = api.fastener('ISO4762', 'M6', length_mm=inputs['length_mm'], model_thread=inputs['model_thread'], placement=[0, 0, 25], label='Bolt B')",
+            "axis_a = api.connector(bolt_a, {'type':'published_interface','interface_name':'thread_axis'})",
+            "axis_b = api.connector(bolt_b, {'type':'published_interface','interface_name':'thread_axis'})",
+            "fixed = api.joint('fixed', axis_a, axis_b, label='Fastener Fixture')",
+            "model = api.assembly([bolt_a, bolt_b], [fixed], label='Fastener Assembly')",
+            "diagnostics = api.solve(model)",
+            "bill = api.bill_of_materials(model, columns=['name', 'quantity', {'property':'PartNumber','heading':'Part Number'}], label='Fastener BOM')",
+            "result = {'Model':model, 'BoltA':bolt_a, 'BoltB':bolt_b, 'Fixed':fixed, 'Bill':bill, 'Diagnostics':diagnostics}",
+        ]
+    )
+    expected_outputs = [
+        {"name": "Model", "type": "assembly"},
+        {"name": "BoltA", "type": "component_link"},
+        {"name": "BoltB", "type": "component_link"},
+        {"name": "Fixed", "type": "joint"},
+        {"name": "Bill", "type": "bom"},
+        {"name": "Diagnostics", "type": "solver_diagnostics"},
+    ]
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": "assembly-production-revision",
+        "document_objects": _document_objects(document),
+        "surface": resolve_modeling_surface(
+            "AssemblyWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(Path(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    capture = _candidate_capture(
+        base_capture,
+        operation="create_program",
+        tool_name="vibescript.assembly.create_program",
+        arguments={
+            "program_name": "Catalog Fastener Assembly",
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "length_mm": {
+                        "type": "number",
+                        "minimum": 1,
+                    },
+                    "model_thread": {"type": "boolean"},
+                },
+                "required": ["length_mm", "model_thread"],
+                "additionalProperties": False,
+            },
+            "inputs": {"length_mm": 20.0, "model_thread": True},
+            "expected_outputs": expected_outputs,
+        },
+    )
+    prepared, execution, publication, accepted = _run_candidate(capture, service)
+    assert execution["assembly_validation"]["solver_code"] == 0
+    worker_outputs = {
+        str(item["name"]): item for item in execution["outputs"]
+    }
+    assert worker_outputs["BoltA"]["assembly_data"]["catalog_fastener"][
+        "part_number"
+    ] == "ISO4762 M6x20"
+    assert worker_outputs["BoltA"]["assembly_data"]["catalog_fastener"][
+        "model_thread"
+    ] is True
+    assert worker_outputs["BoltA"]["assembly_data"]["source_facts"]["edges"] > 100
+    assert worker_outputs["BoltA"]["assembly_data"]["source"] == worker_outputs[
+        "BoltB"
+    ]["assembly_data"]["source"]
+    connectors = worker_outputs["Fixed"]["assembly_data"]["connectors"]
+    assert [item["semantic_selection"]["interface_name"] for item in connectors] == [
+        "thread_axis",
+        "thread_axis",
+    ]
+    assert all(item["interface_frame"] is not None for item in connectors)
+    bill_data = worker_outputs["Bill"]["assembly_data"]
+    assert bill_data["row_count"] == 1
+    assert bill_data["rows"][0]["quantity"] == 2
+    assert bill_data["rows"][0]["cells"]["Part Number"] == "ISO4762 M6x20"
+
+    identities = {
+        name: details["object_name"]
+        for name, details in accepted["live_outputs"].items()
+    }
+    bolt_links = [
+        document.getObject(identities["BoltA"]),
+        document.getObject(identities["BoltB"]),
+    ]
+    assert all(link.TypeId == "App::Link" for link in bolt_links)
+    fastener_sources = [
+        obj
+        for obj in document.Objects
+        if str(getattr(obj, PROP_PROGRAM_OUTPUT, "") or "").endswith(
+            ".__fastener_source"
+        )
+    ]
+    assert len(fastener_sources) == 2
+    assert {link.LinkedObject for link in bolt_links} == set(fastener_sources)
+    assert all(source.TypeId == "Part::FeaturePython" for source in fastener_sources)
+    assert all(len(source.Shape.Solids) == 1 for source in fastener_sources)
+    assert all(bool(source.Thread) is True for source in fastener_sources)
+    real_thread_edges = [len(source.Shape.Edges) for source in fastener_sources]
+    assert len(
+        {
+            str(source.VibeCADFastenerCanonicalKey)
+            for source in fastener_sources
+        }
+    ) == 1
+
+    edit = _candidate_capture(
+        base_capture,
+        operation="set_inputs",
+        tool_name="vibescript.assembly.set_inputs",
+        arguments={
+            "program_id": prepared["program_id"],
+            "expected_revision": accepted["working_revision"],
+            "patch": {"length_mm": 25.0, "model_thread": False},
+        },
+    )
+    _edited_prepared, edited_execution, _edited_publication, edited = (
+        _run_candidate(edit, service)
+    )
+    assert edited_execution["assembly_validation"]["solver_code"] == 0
+    assert {
+        name: details["object_name"]
+        for name, details in edited["live_outputs"].items()
+    } == identities
+    edited_sources = [
+        obj
+        for obj in document.Objects
+        if str(getattr(obj, PROP_PROGRAM_OUTPUT, "") or "").endswith(
+            ".__fastener_source"
+        )
+    ]
+    assert len(edited_sources) == 2
+    assert all(str(source.Length) == "25" for source in edited_sources)
+    assert all(bool(source.Thread) is False for source in edited_sources)
+    simple_edges = [len(source.Shape.Edges) for source in edited_sources]
+    assert max(simple_edges) < min(real_thread_edges)
+    assert all(
+        str(source.VibeCADCatalogPartNumber) == "ISO4762 M6x25"
+        for source in edited_sources
+    )
+
+    restore_threads = _candidate_capture(
+        base_capture,
+        operation="set_inputs",
+        tool_name="vibescript.assembly.set_inputs",
+        arguments={
+            "program_id": prepared["program_id"],
+            "expected_revision": edited["working_revision"],
+            "patch": {"model_thread": True},
+        },
+    )
+    (
+        _threaded_prepared,
+        threaded_execution,
+        _threaded_publication,
+        threaded,
+    ) = _run_candidate(restore_threads, service)
+    assert threaded_execution["assembly_validation"]["solver_code"] == 0
+    assert {
+        name: details["object_name"]
+        for name, details in threaded["live_outputs"].items()
+    } == identities
+    threaded_sources = [
+        obj
+        for obj in document.Objects
+        if str(getattr(obj, PROP_PROGRAM_OUTPUT, "") or "").endswith(
+            ".__fastener_source"
+        )
+    ]
+    assert len(threaded_sources) == 2
+    assert all(bool(source.Thread) is True for source in threaded_sources)
+    assert min(len(source.Shape.Edges) for source in threaded_sources) > max(
+        simple_edges
+    )
+
+    save_path = root / "catalog-fastener-assembly.FCStd"
+    document.recompute()
+    document.saveAs(str(save_path))
+    App.closeDocument(document.Name)
+    reopened = App.openDocument(str(save_path))
+    service.document = reopened
+    reopened_links = [
+        reopened.getObject(identities["BoltA"]),
+        reopened.getObject(identities["BoltB"]),
+    ]
+    assert all(link is not None and link.LinkedObject is not None for link in reopened_links)
+    assert all(len(link.Shape.Solids) == 1 for link in reopened_links)
+    assert all(
+        str(link.LinkedObject.VibeCADCatalogPartNumber) == "ISO4762 M6x25"
+        for link in reopened_links
+    )
+    assert all(bool(link.LinkedObject.Thread) is True for link in reopened_links)
+    reopened.recompute()
+    assert all(
+        str(link.LinkedObject.VibeCADFastenerError) == ""
+        for link in reopened_links
+    )
+
+    reopened_capture = {
+        **base_capture,
+        "document_name": str(reopened.Name),
+        "document_uid": str(reopened.Uid),
+        "document_objects": _document_objects(reopened),
+    }
+    prepared_delete = prepare_delete(
+        {
+            **reopened_capture,
+            "operation": "delete_program",
+            "tool_name": "vibescript.assembly.delete_program",
+            "arguments": {
+                "program_id": prepared["program_id"],
+                "expected_revision": threaded["working_revision"],
+                "reason": "Catalog fastener lifecycle complete",
+            },
+        }
+    )
+    deletion = delete_live_program(service, prepared_delete)
+    assert finish_delete(prepared_delete, deletion)["ok"] is True
+    assert not any(
+        str(getattr(obj, PROP_PROGRAM_ID, "") or "") == prepared["program_id"]
+        for obj in reopened.Objects
+    )
+    App.closeDocument(reopened.Name)
+    return {
+        "program_id": prepared["program_id"],
+        "part_number": "ISO4762 M6x25",
+        "bom_quantity": 2,
+        "semantic_interface": "thread_axis",
+        "native_thread_toggle_changes_brep": True,
+        "stable_outputs": identities,
+    }
+
+
 def main() -> int:
     pack = get_vibescript_pack("AssemblyWorkbench")
     assert pack is not None
@@ -2965,6 +3210,7 @@ def main() -> int:
         flexible_subassembly = _exercise_flexible_subassembly_lifecycle(root, pack)
         bom_autogenerate_boundary = _exercise_native_bom_autogenerate_boundary(root)
         bom = _exercise_bom_lifecycle(root, pack)
+        catalog_fasteners = _exercise_catalog_fastener_lifecycle(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -2982,6 +3228,7 @@ def main() -> int:
                 "flexible_subassembly": flexible_subassembly,
                 "bom_autogenerate_boundary": bom_autogenerate_boundary,
                 "bom": bom,
+                "catalog_fasteners": catalog_fasteners,
                 **lifecycle,
             },
             sort_keys=True,

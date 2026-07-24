@@ -50,6 +50,7 @@ _PARTDESIGN_NATIVE_HISTORY_TYPES = frozenset(
         "PartDesign::Chamfer",
         "PartDesign::Draft",
         "PartDesign::Feature",
+        "PartDesign::FeaturePython",
         "PartDesign::Fillet",
         "PartDesign::Groove",
         "PartDesign::Hole",
@@ -99,6 +100,8 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_part_worker.py",
         "vibescript_material_api.py",
         "vibescript_material_worker.py",
+        "VibeCADFasteners.py",
+        "fasteners-provenance.json",
     ),
     "part": (
         "vibescript_part_api.py",
@@ -109,6 +112,8 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_assembly_worker.py",
         "vibescript_part_worker.py",
         "VibeCADAssemblyBOM.py",
+        "VibeCADFasteners.py",
+        "fasteners-provenance.json",
     ),
     "sketcher": (
         "vibescript_sketcher_api.py",
@@ -6299,8 +6304,18 @@ def _validate_assembly_exploded_views(
             str(source.get("object_name") or ""),
         )
         resolved = component_sources.get(component_name)
-        descriptor = worker_references.get(key)
-        if resolved is None or descriptor is None:
+        definition = component_item.get("definition")
+        operation = (
+            str(definition.get("operation") or "")
+            if isinstance(definition, Mapping)
+            else ""
+        )
+        descriptor = (
+            component_data.get("source_brep")
+            if operation == "fastener"
+            else worker_references.get(key)
+        )
+        if resolved is None or not isinstance(descriptor, Mapping):
             raise ValueError(
                 f"Component output {component_name!r} has no authenticated staged BREP."
             )
@@ -6310,9 +6325,18 @@ def _validate_assembly_exploded_views(
             context=f"Component output {component_name!r} exploded-view source",
         )
         digest = _sha256_file(path)
-        if digest != str(descriptor.get("brep_sha256") or "") or digest != str(
-            resolved.get("brep_sha256") or ""
-        ):
+        descriptor_digest = str(
+            descriptor.get(
+                "artifact_sha256" if operation == "fastener" else "brep_sha256"
+            )
+            or ""
+        )
+        resolved_digest = (
+            descriptor_digest
+            if operation == "fastener"
+            else str(resolved.get("brep_sha256") or "")
+        )
+        if digest != descriptor_digest or digest != resolved_digest:
             raise ValueError(
                 f"Component output {component_name!r} source BREP changed after "
                 "revision binding."
@@ -7041,6 +7065,98 @@ def _assembly_expected_native_reference(
     return target_name, subelements, mode
 
 
+def _assembly_catalog_fastener_contract(
+    prepared: Mapping[str, Any],
+    definition: Mapping[str, Any],
+    data: Mapping[str, Any],
+    *,
+    context: str,
+) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
+    """Independently validate one worker-generated catalog occurrence."""
+
+    arguments = definition.get("arguments")
+    properties = definition.get("properties")
+    required_properties = {
+        "length_mm",
+        "model_thread",
+        "left_handed",
+        "options",
+        "placement",
+        "grounded",
+    }
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 2
+        or not isinstance(properties, dict)
+        or not required_properties <= set(properties)
+        or set(properties) - required_properties not in (set(), {"label"})
+    ):
+        raise ValueError(f"{context} has a malformed api.fastener definition.")
+    try:
+        from VibeCADFasteners import (
+            assembly_component_contract,
+            catalog_component_reference,
+            resolve_fastener,
+        )
+
+        identity = resolve_fastener(
+            standard=arguments[0],
+            nominal_thread=arguments[1],
+            length_mm=properties.get("length_mm"),
+            model_thread=properties["model_thread"],
+            left_handed=properties.get("left_handed"),
+            options=properties.get("options"),
+        )
+        source = catalog_component_reference(identity)
+    except Exception as exc:
+        raise ValueError(
+            f"{context} does not resolve to one exact bundled catalog item: {exc}"
+        ) from exc
+    if data.get("catalog_fastener") != identity:
+        raise ValueError(f"{context} catalog identity changed in the worker.")
+    if data.get("source") != source:
+        raise ValueError(f"{context} catalog source identity changed in the worker.")
+    brep = data.get("source_brep")
+    if not isinstance(brep, dict) or set(brep) != {
+        "artifact_kind",
+        "artifact_path",
+        "artifact_sha256",
+        "artifact_bytes",
+    }:
+        raise ValueError(f"{context} has malformed generated-BREP evidence.")
+    if brep.get("artifact_kind") != "brep":
+        raise ValueError(f"{context} has the wrong generated artifact kind.")
+    path = _staged_artifact_path(
+        prepared,
+        brep.get("artifact_path"),
+        context=f"{context} generated BREP",
+    )
+    size = path.stat().st_size
+    digest = _sha256_file(path)
+    if (
+        size != brep.get("artifact_bytes")
+        or digest != brep.get("artifact_sha256")
+    ):
+        raise ValueError(f"{context} generated BREP changed during transfer.")
+    import Part
+
+    shape = Part.Shape()
+    shape.importBrep(str(path))
+    if shape.isNull() or not shape.isValid() or len(shape.Solids) != 1:
+        raise ValueError(f"{context} generated BREP is not one valid solid.")
+    try:
+        contract = assembly_component_contract(shape, identity)
+    except Exception as exc:
+        raise ValueError(
+            f"{context} generated BREP does not satisfy its catalog contract: {exc}"
+        ) from exc
+    if data.get("source_contract") != contract:
+        raise ValueError(
+            f"{context} standard interfaces or BOM identity changed in the worker."
+        )
+    return identity, source, {**source, **contract}
+
+
 def _validate_assembly_execution(
     prepared: Mapping[str, Any],
     execution: Mapping[str, Any],
@@ -7232,17 +7348,14 @@ def _validate_assembly_execution(
         if (
             not isinstance(definition, dict)
             or definition.get("domain") != "assembly"
-            or definition.get("operation") != "component"
+            or definition.get("operation") not in {"component", "fastener"}
             or definition.get("output_type") != "component_link"
         ):
             raise ValueError(f"Component output {name!r} has an invalid definition.")
+        operation = str(definition["operation"])
         arguments = definition.get("arguments")
         properties = definition.get("properties")
-        if (
-            not isinstance(arguments, list)
-            or len(arguments) != 1
-            or not isinstance(properties, dict)
-        ):
+        if not isinstance(arguments, list) or not isinstance(properties, dict):
             raise ValueError(f"Component output {name!r} has a malformed definition.")
         source = data.get("source")
         if not isinstance(source, dict) or set(source) != {
@@ -7252,16 +7365,31 @@ def _validate_assembly_execution(
             raise ValueError(
                 f"Component output {name!r} has an invalid source identity."
             )
-        if source != arguments[0]:
-            raise ValueError(
-                f"Component output {name!r} source changed after source evaluation."
+        if operation == "fastener":
+            _identity, expected_source, resolved = (
+                _assembly_catalog_fastener_contract(
+                    prepared,
+                    definition,
+                    data,
+                    context=f"Component output {name!r}",
+                )
             )
-        key = (str(source["document_uid"]), str(source["object_name"]))
-        resolved = references.get(key)
-        if resolved is None:
-            raise ValueError(
-                f"Component output {name!r} uses an unauthenticated source {key[1]!r}."
-            )
+            if source != expected_source:
+                raise ValueError(
+                    f"Component output {name!r} changed its catalog source identity."
+                )
+        else:
+            if len(arguments) != 1 or source != arguments[0]:
+                raise ValueError(
+                    f"Component output {name!r} source changed after source evaluation."
+                )
+            key = (str(source["document_uid"]), str(source["object_name"]))
+            resolved = references.get(key)
+            if resolved is None:
+                raise ValueError(
+                    f"Component output {name!r} uses an unauthenticated source "
+                    f"{key[1]!r}."
+                )
         facts = data.get("source_facts")
         if not isinstance(facts, dict) or int(facts.get("solids") or 0) < 1:
             raise ValueError(
@@ -7694,6 +7822,7 @@ def _validate_assembly_execution(
                 raise ValueError(
                     f"Joint output {name!r} connector {index} occurrence path was altered."
                 )
+            expected_standard_frame: Mapping[str, Any] | None = None
             if mode == "component_origin":
                 if selection != {"type": "component_origin"}:
                     raise ValueError(
@@ -7762,6 +7891,14 @@ def _validate_assembly_execution(
                     (geometry[0] if geometry else {}).get("geometry_type")
                     or ("component_origin" if not expected_element else "")
                 )
+                raw_standard_frame = interface.get("standard_frame")
+                if raw_standard_frame is not None:
+                    if not isinstance(raw_standard_frame, Mapping):
+                        raise ValueError(
+                            f"Joint output {name!r} connector {index} has a malformed "
+                            "standard-component frame."
+                        )
+                    expected_standard_frame = raw_standard_frame
                 expected_semantic = {
                     "type": "published_interface",
                     "interface_name": interface_name,
@@ -7844,20 +7981,38 @@ def _validate_assembly_execution(
                 raise ValueError(
                     f"Joint output {name!r} connector {index} native reference disagrees."
                 )
-            for frame_name in ("offset", "local_frame", "global_frame"):
-                frame = _assembly_placement_fact(
+            declared_offset = _assembly_native_declared_placement(
+                connector_properties.get("offset"),
+                f"Joint output {name!r} connector {index} declared offset",
+            )
+            if expected_standard_frame is None:
+                if connector.get("interface_frame") is not None:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} invented a "
+                        "standard-component frame."
+                    )
+                expected_offset = declared_offset
+            else:
+                interface_frame = _assembly_native_declared_placement(
+                    dict(expected_standard_frame),
+                    f"Joint output {name!r} connector {index} standard frame",
+                )
+                _assembly_validate_placement_fact(
+                    connector.get("interface_frame"),
+                    interface_frame,
+                    f"Joint output {name!r} connector {index} interface_frame",
+                )
+                expected_offset = interface_frame.multiply(declared_offset)
+            _assembly_validate_placement_fact(
+                connector.get("offset"),
+                expected_offset,
+                f"Joint output {name!r} connector {index} offset",
+            )
+            for frame_name in ("local_frame", "global_frame"):
+                _assembly_placement_fact(
                     connector.get(frame_name),
                     f"Joint output {name!r} connector {index} {frame_name}",
                 )
-                if frame_name == "offset":
-                    declared_offset = connector_properties.get("offset")
-                    if not isinstance(declared_offset, dict) or frame[
-                        "position_mm"
-                    ] != list(declared_offset.get("position") or []):
-                        raise ValueError(
-                            f"Joint output {name!r} connector {index} offset "
-                            "disagrees with its definition."
-                        )
             if str(connector.get("geometry_type") or "") != expected_geometry_type:
                 raise ValueError(
                     f"Joint output {name!r} connector {index} reports the wrong "
@@ -10887,6 +11042,18 @@ def _validate_definition_value(
         return
     if isinstance(value, dict):
         if set(value) == {"document_uid", "object_name"}:
+            if (
+                prepared["pack"].domain == "assembly"
+                and str(value["document_uid"]) == "freecad-fasteners"
+                and re.fullmatch(
+                    r"freecad-fasteners:[0-9a-f]{64}",
+                    str(value["object_name"]),
+                )
+            ):
+                # This non-document identity is independently bound to an exact
+                # bundled catalog definition and generated BREP by
+                # _validate_assembly_execution before structured-data traversal.
+                return
             if str(value["document_uid"]) != str(prepared["document_uid"]):
                 raise ValueError(f"{path} refers to a different document.")
             names = {
@@ -15686,6 +15853,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "helix(operation='remove_material')",
                     ],
                     "new_geometry": [
+                        "fastener",
                         "extrude(operation='new_solid')",
                         "extrude(operation='new_surface')",
                         "revolve(operation='new_solid')",
@@ -15704,7 +15872,14 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "mirror",
                         "transform",
                     ],
-                    "dressup": ["fillet", "chamfer", "thickness", "hole", "draft"],
+                    "dressup": [
+                        "fillet",
+                        "chamfer",
+                        "thickness",
+                        "hole",
+                        "fastener_hole",
+                        "draft",
+                    ],
                     "publication": (
                         "api.body publishes one connected solid with native history. api.publish "
                         "publishes standalone solid, shell, face, wire, or compound topology."
@@ -15740,6 +15915,13 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "api.appearance defines color, transparency, display mode, visibility, "
                         "and selection state. RGB channels are 0-255. Pass it as appearance= "
                         "to api.body or api.publish."
+                    ),
+                    "standard_hardware": (
+                        "Use fastener_catalog.search for exact standard, thread, length, and "
+                        "option values. Create catalog hardware with api.fastener; never draw "
+                        "a standard fastener from primitives. Use api.fastener_hole to derive "
+                        "clearance, tapped, counterbore, or countersink dimensions from that "
+                        "same returned fastener value."
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
@@ -20495,7 +20677,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "Pass component sources through inputs. The host detaches each exact "
                         "Shape, hashes the BREP and semantic-interface contract into the "
                         "program revision, and marks accepted Assembly outputs stale if a "
-                        "source changes. Raw document access from source is unavailable."
+                        "source changes. Raw document access from source is unavailable. "
+                        "Catalog fasteners are created directly with api.fastener and do "
+                        "not require an input reference."
                     ),
                     "schema": {
                         "type": "object",
@@ -20517,8 +20701,10 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "graph_contract": {
                     "component": (
-                        "Create each occurrence once, set grounded=True on at least one "
-                        "fixed base, and reuse that exact variable in connectors."
+                        "Create each authored-source occurrence once with api.component or "
+                        "each exact standard-hardware occurrence with api.fastener. Set "
+                        "grounded=True on at least one fixed base and reuse that exact "
+                        "variable in connectors."
                     ),
                     "joint": (
                         "Each joint consumes two connector variables on two different "
@@ -20538,6 +20724,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "operation_selection": {
                     "source_occurrence": "api.component",
+                    "standard_hardware_occurrence": "api.fastener",
                     "joint_coordinate_system": "api.connector",
                     "mechanical_relationship": "api.joint",
                     "complete_mechanism_graph": "api.assembly",
@@ -20849,6 +21036,23 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "edge midpoint/circle center or face center. Invalid membership "
                         "reports the selected subelement, requested vertex, available "
                         "vertex count, and a correction."
+                    ),
+                },
+                "standard_hardware": {
+                    "selection": (
+                        "Use fastener_catalog.search for exact standard, thread, length, "
+                        "and option values. Insert the result with api.fastener; never draw "
+                        "a published standard fastener from primitives."
+                    ),
+                    "interfaces": (
+                        "Use a published_interface such as thread_axis, bearing_plane, "
+                        "under_head_plane, tip_plane, first_bearing_plane, or "
+                        "second_bearing_plane when present. These named frames remain stable "
+                        "when the generated topology changes."
+                    ),
+                    "identity": (
+                        "Repeated identical catalog definitions share BOM identity while "
+                        "remaining independent native Assembly occurrences."
                     ),
                 },
                 "joint_types": {

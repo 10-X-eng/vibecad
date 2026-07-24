@@ -53,6 +53,8 @@ PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA = (
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 _ASSEMBLY_DEPENDENCY_SUFFIX = "__dependencies"
 _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE = "dependency_anchor"
+_ASSEMBLY_FASTENER_SOURCE_SUFFIX = "__fastener_source"
+_ASSEMBLY_FASTENER_SOURCE_OUTPUT_TYPE = "standard_fastener_source"
 
 _PERSISTED_INPUT_SNAPSHOT_KEYS = (
     "document_uid",
@@ -1286,6 +1288,7 @@ def _create_object(
     output_type: str,
     definition: Mapping[str, Any],
     assembly: Any | None,
+    assembly_fastener_sources: Mapping[str, Any] | None = None,
 ) -> Any:
     native_type = _native_type(output_type, prepared["pack"].domain)
     name = _internal_name(prepared, output_name)
@@ -1329,8 +1332,20 @@ def _create_object(
         del Robot
         obj = doc.addObject(native_type, name)
     elif output_type == "component_link" and assembly is not None:
-        source = _definition_argument(definition, 0, "source")
-        target = _reference_target(doc, source, f"output {output_name} source")
+        if str(definition.get("operation") or "") == "fastener":
+            target = dict(assembly_fastener_sources or {}).get(output_name)
+            if target is None:
+                raise RuntimeError(
+                    f"Assembly fastener source for output {output_name!r} "
+                    "was not prepared."
+                )
+        else:
+            source = _definition_argument(definition, 0, "source")
+            target = _reference_target(
+                doc,
+                source,
+                f"output {output_name} source",
+            )
         native_type = (
             "Assembly::AssemblyLink"
             if bool(
@@ -1423,11 +1438,14 @@ def _reference_target(doc: Any, value: Any, label: str) -> Any:
 
 
 def _component_native_type(doc: Any, item: Mapping[str, Any]) -> str:
+    definition = _definition(item)
+    if str(definition.get("operation") or "") == "fastener":
+        return "App::Link"
     data = item.get("assembly_data")
     data = dict(data) if isinstance(data, dict) else {}
     source = data.get("source")
     if source is None:
-        source = _definition_argument(_definition(item), 0, "source")
+        source = _definition_argument(definition, 0, "source")
     target = _reference_target(doc, source, f"output {item.get('name')} source")
     return (
         "Assembly::AssemblyLink"
@@ -1438,6 +1456,166 @@ def _component_native_type(doc: Any, item: Mapping[str, Any]) -> str:
         )
         else "App::Link"
     )
+
+
+def _assembly_fastener_source_output(output_name: str) -> str:
+    return f"{output_name}.{_ASSEMBLY_FASTENER_SOURCE_SUFFIX}"
+
+
+def _assembly_fastener_identity(
+    definition: Mapping[str, Any],
+    *,
+    output_name: str,
+) -> dict[str, Any]:
+    arguments = list(definition.get("arguments") or [])
+    properties = definition.get("properties")
+    if (
+        str(definition.get("operation") or "") != "fastener"
+        or len(arguments) != 2
+        or not isinstance(properties, Mapping)
+        or "model_thread" not in properties
+    ):
+        raise RuntimeError(
+            f"Assembly component output {output_name!r} has a malformed "
+            "api.fastener definition."
+        )
+    try:
+        from VibeCADFasteners import resolve_fastener
+
+        return resolve_fastener(
+            standard=arguments[0],
+            nominal_thread=arguments[1],
+            length_mm=properties.get("length_mm"),
+            model_thread=properties["model_thread"],
+            left_handed=properties.get("left_handed"),
+            options=properties.get("options"),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Assembly component output {output_name!r} no longer resolves in "
+            f"the bundled fastener catalog: {exc}"
+        ) from exc
+
+
+def _prepare_assembly_fastener_sources(
+    doc: Any,
+    prepared: Mapping[str, Any],
+    outputs: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[Any], list[str]]:
+    """Create or reuse hidden parametric definitions for catalog occurrences."""
+
+    from VibeCADFasteners import (
+        PROP_CANONICAL_KEY,
+        create_fastener_feature,
+        install_fastener_view_provider,
+    )
+
+    owned = _program_objects(
+        doc,
+        str(prepared["program_id"]),
+        prepared["pack"].domain,
+    )
+    sources: dict[str, Any] = {}
+    created: list[Any] = []
+    removed: list[str] = []
+    for item in outputs:
+        if str(item.get("type") or "") != "component_link":
+            continue
+        definition = _definition(item)
+        if str(definition.get("operation") or "") != "fastener":
+            continue
+        output_name = str(item["name"])
+        source_output = _assembly_fastener_source_output(output_name)
+        matches = [
+            obj
+            for obj in owned
+            if str(getattr(obj, contracts.PROP_PROGRAM_OUTPUT, "") or "")
+            == source_output
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Multiple managed fastener definitions claim output "
+                f"{source_output!r}."
+            )
+        identity = _assembly_fastener_identity(
+            definition,
+            output_name=output_name,
+        )
+        source = matches[0] if matches else None
+        replaced_source = None
+        if source is not None and (
+            str(getattr(source, "TypeId", "") or "") != "Part::FeaturePython"
+            or str(getattr(source, PROP_CANONICAL_KEY, "") or "")
+            != str(identity["canonical_key"])
+        ):
+            external = _external_uses(doc, [source], owned)
+            if external:
+                raise _reference_error(
+                    f"Cannot replace the internal catalog definition for Assembly "
+                    f"component {output_name!r}; foreign objects reference it",
+                    external,
+                )
+            replaced_source = source
+            source = None
+        if source is None:
+            object_name = _internal_name(
+                prepared,
+                (
+                    f"{output_name}_Fastener_"
+                    f"{str(identity['canonical_key']).rsplit(':', 1)[-1][:8]}"
+                ),
+            )
+            source, observed = create_fastener_feature(
+                doc,
+                standard=identity["standard"],
+                nominal_thread=identity["nominal_size"],
+                length_mm=identity["length_mm"],
+                model_thread=bool(identity["model_thread"]),
+                left_handed=bool(identity["left_handed"]),
+                options=dict(identity["options"]),
+                object_name=object_name,
+                label=str(identity["part_number"]),
+            )
+            if observed["canonical_key"] != identity["canonical_key"]:
+                raise RuntimeError(
+                    f"Assembly component output {output_name!r} generated a "
+                    "different catalog identity during publication."
+                )
+            created.append(source)
+            owned.append(source)
+        if replaced_source is not None:
+            # Retarget managed occurrences before deleting their old definition.
+            # Removing the source first leaves otherwise-stable App::Link objects
+            # temporarily broken and causes FreeCAD to emit misleading errors.
+            for candidate in owned:
+                if (
+                    candidate is not replaced_source
+                    and getattr(candidate, "LinkedObject", None)
+                    is replaced_source
+                ):
+                    candidate.LinkedObject = source
+            old_name = str(replaced_source.Name)
+            owned = [
+                candidate for candidate in owned if candidate is not replaced_source
+            ]
+            doc.removeObject(old_name)
+            removed.append(old_name)
+        _set_metadata(
+            source,
+            prepared,
+            source_output,
+            _ASSEMBLY_FASTENER_SOURCE_OUTPUT_TYPE,
+            definition,
+        )
+        source.Label = str(identity["part_number"])
+        view = getattr(source, "ViewObject", None)
+        if view is not None:
+            view.Visibility = False
+            if hasattr(view, "ShowInTree"):
+                view.ShowInTree = False
+        install_fastener_view_provider(source)
+        sources[output_name] = source
+    return sources, created, removed
 
 
 def _placement(value: Any) -> Any:
@@ -1698,14 +1876,47 @@ def _configure_component(
     prepared: Mapping[str, Any],
 ) -> None:
     properties = _definition_properties(item)
+    definition = _definition(item)
     assembly_data = item.get("assembly_data")
     assembly_data = dict(assembly_data) if isinstance(assembly_data, dict) else {}
-    source = assembly_data.get("source", properties.get("source"))
-    if source is None:
-        arguments = list(_definition(item).get("arguments") or [])
-        source = arguments[0] if arguments else None
-    target = _reference_target(doc, source, f"output {item['name']} source")
-    flexible = bool(assembly_data.get("flexible", properties.get("flexible", False)))
+    if str(definition.get("operation") or "") == "fastener":
+        target = next(
+            (
+                source
+                for source in _program_objects(
+                    doc,
+                    str(prepared["program_id"]),
+                    prepared["pack"].domain,
+                )
+                if str(
+                    getattr(source, contracts.PROP_PROGRAM_OUTPUT, "") or ""
+                )
+                == _assembly_fastener_source_output(str(item["name"]))
+            ),
+            None,
+        )
+        if target is None:
+            raise RuntimeError(
+                f"Assembly fastener source for output {item['name']!r} disappeared "
+                "before publication."
+            )
+        flexible = False
+    else:
+        source = assembly_data.get("source", properties.get("source"))
+        if source is None:
+            arguments = list(definition.get("arguments") or [])
+            source = arguments[0] if arguments else None
+        target = _reference_target(
+            doc,
+            source,
+            f"output {item['name']} source",
+        )
+        flexible = bool(
+            assembly_data.get(
+                "flexible",
+                properties.get("flexible", False),
+            )
+        )
     is_assembly_link = str(getattr(obj, "TypeId", "") or "") == (
         "Assembly::AssemblyLink"
     )
@@ -10458,6 +10669,12 @@ def _materialize_partdesign_native_history(
             view = getattr(obj, "ViewObject", None)
             if view is not None and hasattr(view, "Visibility"):
                 view.Visibility = bool(specification.get("visible"))
+            if str(
+                getattr(obj, "VibeCADFastenerSchema", "") or ""
+            ) == "vibecad-standard-fastener-v1":
+                from VibeCADFasteners import install_fastener_view_provider
+
+                install_fastener_view_provider(obj)
 
         tip_name = str(body_specification.get("tip_name") or "")
         if tip_name:
@@ -10991,6 +11208,17 @@ def publish_candidate(
                     assembly_output,
                 )
                 created.append(assembly_dependency_anchor)
+            (
+                assembly_fastener_sources,
+                fastener_sources_created,
+                fastener_sources_removed,
+            ) = _prepare_assembly_fastener_sources(
+                doc,
+                prepared,
+                list(validated["outputs"]),
+            )
+            created.extend(fastener_sources_created)
+            removed.extend(fastener_sources_removed)
         for item in validated["outputs"]:
             output_name = str(item["name"])
             output_type = str(item["type"])
@@ -11003,6 +11231,7 @@ def publish_candidate(
                     output_type,
                     _definition(item),
                     assembly,
+                    assembly_fastener_sources,
                 )
                 created.append(obj)
             expected_native = (
@@ -11599,6 +11828,7 @@ def _delete_partdesign_program(
             transaction_open = True
         for published in list(publications.values()):
             scripted_publication.delete_publication(doc, root, published)
+        scripted_publication.delete_implementation(doc, root)
         for child in reversed(list(getattr(root, "Group", []) or [])):
             child_name = str(getattr(child, "Name", "") or "")
             if child_name and doc.getObject(child_name) is not None:

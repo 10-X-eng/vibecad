@@ -77,6 +77,7 @@ _pending_document_render_refreshes: set[str] = set()
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
 _PREFERENCES_PATH = "User parameter:BaseApp/Preferences/VibeCAD"
+_COMPOSER_ICON_ONLY_BREAKPOINT = 500
 
 
 class _AssistantRunController:
@@ -2138,6 +2139,80 @@ def _install_prompt_paste_filter(prompt: Any) -> None:
     prompt.setProperty("VibePasteFilterInstalled", True)
 
 
+def _update_composer_button_presentation(
+    container: Any,
+    *,
+    busy: bool | None = None,
+) -> None:
+    """Use labels only when the assistant composer has room for them."""
+
+    try:
+        from PySide import QtWidgets
+    except Exception:
+        return
+    if container is None:
+        return
+    compact = int(container.width()) < _COMPOSER_ICON_ONLY_BREAKPOINT
+    is_busy = _is_assistant_run_active() if busy is None else bool(busy)
+    labels = {
+        "VibeAttachView": (
+            "Attach View",
+            "Attach a screenshot of the current 3D view",
+        ),
+        "VibeAttachImage": (
+            "Attach Image",
+            "Attach a reference image; you can also paste one with Ctrl+V",
+        ),
+        "VibeSend": (
+            "Steer" if is_busy else "Send",
+            (
+                "Steer the current CAD run"
+                if is_busy
+                else "Send this message to VibeCAD"
+            ),
+        ),
+        "VibeStop": (
+            "Stop",
+            "Stop after the current provider or tool step",
+        ),
+    }
+    for object_name, (label, tooltip) in labels.items():
+        button = container.findChild(QtWidgets.QPushButton, object_name)
+        if button is None:
+            continue
+        button.setAccessibleName(label)
+        button.setToolTip(tooltip)
+        button.setText("" if compact else label)
+        button.setProperty("VibeCompactMode", compact)
+        button.updateGeometry()
+    container.setProperty("VibeCompactMode", compact)
+
+
+def _install_composer_width_filter(container: Any) -> None:
+    """Refresh composer labels whenever the dock crosses the compact width."""
+
+    try:
+        from PySide import QtCore
+    except Exception:
+        return
+
+    class _ComposerWidthFilter(QtCore.QObject):
+        def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802 (Qt API)
+            if event.type() in {
+                QtCore.QEvent.Resize,
+                QtCore.QEvent.Show,
+                QtCore.QEvent.FontChange,
+                QtCore.QEvent.StyleChange,
+            }:
+                _update_composer_button_presentation(obj)
+            return False
+
+    width_filter = _ComposerWidthFilter(container)
+    container.installEventFilter(width_filter)
+    container._vibecad_width_filter = width_filter
+    container.setProperty("VibeResponsiveFilterInstalled", True)
+
+
 def _insert_prompt_starter(prompt: Any, content: str) -> None:
     """Insert editable starter text at the current composer selection."""
     from PySide import QtGui
@@ -2315,10 +2390,10 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
     prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
     engine_selector = _find_child("QComboBox", "VibeModelingEngine", dock)
+    composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
     if send_button is not None:
         send_button.setEnabled(busy or document_ready)
-        send_button.setText("Steer" if busy else "Send")
     if stop_button is not None:
         stop_button.setEnabled(busy)
     if attach_button is not None:
@@ -2335,6 +2410,11 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         prompt_starters.setEnabled(document_ready and not busy)
     if engine_selector is not None:
         engine_selector.setEnabled(document_ready and not busy)
+    if composer_buttons is not None:
+        _update_composer_button_presentation(
+            composer_buttons,
+            busy=busy,
+        )
     if prompt_box is not None:
         prompt_box.setReadOnly(not busy and not document_ready)
         if busy:
@@ -3300,17 +3380,17 @@ def _build_panel_widget():
 
     attach_button = QtWidgets.QPushButton("Attach View", composer_buttons)
     attach_button.setObjectName("VibeAttachView")
-    attach_button.setIcon(QtGui.QIcon(_icon_path(ICON_OPEN_ASSISTANT)))
+    attach_button.setIcon(QtGui.QIcon(":/icons/Std_ViewScreenShot.svg"))
     attach_button.setIconSize(icon_size)
+    attach_button.setToolTip("Attach a screenshot of the current 3D view")
     attach_button.clicked.connect(_capture_view_from_panel)
 
     attach_image_button = QtWidgets.QPushButton("Attach Image", composer_buttons)
     attach_image_button.setObjectName("VibeAttachImage")
-    attach_image_button.setIcon(QtGui.QIcon(_icon_path(ICON_OPEN_ASSISTANT)))
+    attach_image_button.setIcon(QtGui.QIcon(":/icons/image-open.svg"))
     attach_image_button.setIconSize(icon_size)
     attach_image_button.setToolTip(
-        "Attach a reference image (a picture of the part you want).\n"
-        "You can also paste an image into the message box with Ctrl+V."
+        "Attach a reference image; you can also paste one with Ctrl+V"
     )
     attach_image_button.clicked.connect(_attach_image_from_panel)
 
@@ -3333,6 +3413,7 @@ def _build_panel_widget():
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
     send_button.setIconSize(icon_size)
+    send_button.setToolTip("Send this message to VibeCAD")
     send_button.setDefault(True)
     send_button.clicked.connect(_run_prompt_from_panel)
 
@@ -3340,6 +3421,7 @@ def _build_panel_widget():
     stop_button.setObjectName("VibeStop")
     stop_button.setIcon(QtGui.QIcon(_icon_path(ICON_STOP)))
     stop_button.setIconSize(icon_size)
+    stop_button.setToolTip("Stop after the current provider or tool step")
     stop_button.setEnabled(False)
     stop_button.clicked.connect(_stop_prompt_from_panel)
 
@@ -3349,6 +3431,8 @@ def _build_panel_widget():
     buttons_layout.addStretch(1)
     buttons_layout.addWidget(send_button)
     buttons_layout.addWidget(stop_button)
+    _install_composer_width_filter(composer_buttons)
+    _update_composer_button_presentation(composer_buttons, busy=False)
     composer_layout.addWidget(composer_buttons)
 
     lower_layout.addWidget(composer, 1)

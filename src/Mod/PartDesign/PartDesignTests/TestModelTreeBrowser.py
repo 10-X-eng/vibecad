@@ -616,6 +616,81 @@ class TestModelTreeBrowser(unittest.TestCase):
         )
         self._assert_document_unchanged()
 
+    def test_late_publication_metadata_refreshes_live_tree_to_body(self):
+        component = self.document.addObject("App::Part", "LateVibeProgram")
+        component.Label = "Late Vibe Program"
+
+        source = self.document.addObject("Part::Feature", "LateSource")
+        source.Label = "Late Source"
+        source.Shape = Part.makeBox(4, 3, 2)
+        component.addObject(source)
+
+        body = self.document.addObject("PartDesign::Body", "LateBody")
+        body.Label = "Late Body"
+        component.addObject(body)
+        result = body.newObject("PartDesign::Feature", "LateResult")
+        result.Label = "Late Result"
+        result.Shape = source.Shape
+        body.Tip = result
+
+        publication = self.document.addObject("App::Link", "LatePublication")
+        publication.Label = "Late Published Solid"
+        publication.LinkedObject = (component, f"{source.Name}.")
+        publication.LinkTransform = True
+        self.document.recompute()
+
+        def unpaired_tree():
+            _tree, document_item = self._tree_and_document_item()
+            component_item = _child(document_item, component.Label)
+            geometry = _child(
+                component_item, "Geometry", BROWSER_FOLDER_TYPE
+            )
+            return (
+                component_item
+                if geometry is not None
+                and _child(geometry, publication.Label) is not None
+                else None
+            )
+
+        self.assertIsNotNone(
+            _wait_until(unpaired_tree),
+            self._browser_snapshot(),
+        )
+
+        model_id = "late-publication-metadata"
+        _tag_scripted_object(
+            body,
+            role="implementation",
+            model_id=model_id,
+            output_key="Result",
+        )
+        _tag_scripted_object(
+            publication,
+            role="publication",
+            model_id=model_id,
+            output_key="Result",
+        )
+
+        def paired_tree():
+            _tree, document_item = self._tree_and_document_item()
+            component_item = _child(document_item, component.Label)
+            bodies = _child(component_item, "Bodies", BROWSER_FOLDER_TYPE)
+            geometry = _child(
+                component_item, "Geometry", BROWSER_FOLDER_TYPE
+            )
+            return (
+                component_item
+                if bodies is not None
+                and _child(bodies, body.Label) is not None
+                and geometry is None
+                else None
+            )
+
+        self.assertIsNotNone(
+            _wait_until(paired_tree),
+            self._browser_snapshot(),
+        )
+
     def test_sketch_folder_toggles_all_sketch_visibility(self):
         tree, document_item = self._browser_items()
         sketches_folder = _child(

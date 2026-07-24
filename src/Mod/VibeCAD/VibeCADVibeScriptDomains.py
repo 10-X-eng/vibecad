@@ -203,6 +203,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "cone",
             "sphere",
             "torus",
+            "fastener",
             "point",
             "line",
             "arc",
@@ -245,6 +246,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "chamfer",
             "thickness",
             "hole",
+            "fastener_hole",
             "draft",
             "defeature",
             "to_nurbs",
@@ -408,6 +410,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         (
             "assembly",
             "component",
+            "fastener",
             "connector",
             "joint",
             "solve",

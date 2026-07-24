@@ -33,6 +33,7 @@ from VibeCADModelingSurface import (
     PARTDESIGN_BUILD123D_TOOLS,
     PARTDESIGN_OPENSCAD_TOOLS,
     ModelingSurface,
+    SHARED_CONTEXT_TOOLS,
     infer_engine_from_names,
     resolve_service_surface,
     validate_surface_names,
@@ -58,7 +59,9 @@ PROVIDER_SAFE_LEVELS = {
     SafetyLevel.SAFE_WRITE,
 }
 
-CORE_PROVIDER_TOOLS = set(CORE_CONVERSATION_VIEW_TOOLS)
+CORE_PROVIDER_TOOLS = set(CORE_CONVERSATION_VIEW_TOOLS) | set(
+    SHARED_CONTEXT_TOOLS
+)
 
 BUILD123D_PROVIDER_TOOLS = set(PARTDESIGN_BUILD123D_TOOLS) - set(
     HIDDEN_PROVIDER_INSPECTION_TOOLS
@@ -85,6 +88,7 @@ OPENSCAD_RUNNER_TOOLS = {
 
 VIBESCRIPT_PROVIDER_TOOLS = {
     *CORE_CONVERSATION_VIEW_TOOLS,
+    *SHARED_CONTEXT_TOOLS,
     *(
         name
         for pack in vibescript_domains.VIBESCRIPT_WORKBENCH_PACKS.values()

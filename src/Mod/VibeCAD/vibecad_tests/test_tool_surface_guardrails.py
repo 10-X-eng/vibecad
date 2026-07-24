@@ -591,6 +591,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "core.capture_view_screenshot",
         "core.inspect",
         "core.set_view",
+        "fastener_catalog.search",
         "vibescript.partdesign.create_program",
         "vibescript.partdesign.edit_source",
         "vibescript.partdesign.set_inputs",

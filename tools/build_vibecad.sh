@@ -90,7 +90,8 @@ fi
 git -C "${repo_root}" submodule update --init --recursive \
     src/3rdParty/GSL \
     src/3rdParty/OndselSolver \
-    src/Mod/AddonManager
+    src/Mod/AddonManager \
+    src/Mod/Fasteners
 
 cmake \
     -S "${repo_root}" \

@@ -29,6 +29,18 @@ CORE_CONVERSATION_VIEW_TOOLS = frozenset(
         "core.set_view",
     }
 )
+FASTENER_CATALOG_TOOL = "fastener_catalog.search"
+SHARED_CONTEXT_TOOLS = frozenset({FASTENER_CATALOG_TOOL})
+FASTENER_WORKBENCHES = frozenset(
+    {"PartDesignWorkbench", "AssemblyWorkbench"}
+)
+
+
+def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
+    names = set(CORE_CONVERSATION_VIEW_TOOLS)
+    if workbench in FASTENER_WORKBENCHES:
+        names.add(FASTENER_CATALOG_TOOL)
+    return tuple(sorted(names))
 
 # Domain-specific read entry points stay available to the application, but are
 # not duplicated in provider declarations. ``core.inspect`` is the one
@@ -155,7 +167,7 @@ def _unavailable(
             domain=domain,
             generation="v2-unavailable",
         ),
-        core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
+        core_tool_names=_core_tool_names(workbench),
         cad_tool_names=(),
         available=False,
         unavailable_reason=reason,
@@ -215,7 +227,7 @@ def resolve_modeling_surface(
                 domain=native_pack.domain,
                 generation="native-v3-unified-inspect",
             ),
-            core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
+            core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=cad_names,
             available=True,
             unavailable_reason="",
@@ -247,7 +259,7 @@ def resolve_modeling_surface(
                 domain=vibescript_pack.domain,
                 generation="domain-v4-unified-lifecycle",
             ),
-            core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
+            core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=_provider_cad_tool_names(vibescript_pack.tool_names),
             available=True,
             unavailable_reason="",
@@ -272,7 +284,7 @@ def resolve_modeling_surface(
             domain="partdesign",
             generation=f"{clean_engine}-v2-unified-inspect",
         ),
-        core_tool_names=tuple(sorted(CORE_CONVERSATION_VIEW_TOOLS)),
+        core_tool_names=_core_tool_names(clean_workbench),
         cad_tool_names=_provider_cad_tool_names(
             name for name in sorted(tools) if name not in CORE_CONVERSATION_VIEW_TOOLS
         ),
@@ -341,7 +353,8 @@ def validate_surface_names(
     non_core_names = [
         name
         for name in clean_names
-        if name.partition(".")[0] not in {"conversation", "core"}
+        if name.partition(".")[0]
+        not in {"conversation", "core", "fastener_catalog"}
     ]
     if engine in {"vibescript", "build123d", "openscad"}:
         if scripted and scripted != {engine}:
@@ -352,7 +365,13 @@ def validate_surface_names(
         native_cad = [
             name
             for name in clean_names
-            if name.partition(".")[0] not in {"conversation", "core", "vibescript"}
+            if name.partition(".")[0]
+            not in {
+                "conversation",
+                "core",
+                "fastener_catalog",
+                "vibescript",
+            }
         ]
         if native_cad:
             raise ValueError(
@@ -368,7 +387,8 @@ def validate_surface_names(
             cad_names = [
                 name
                 for name in clean_names
-                if name.partition(".")[0] not in {"conversation", "core"}
+                if name.partition(".")[0]
+                not in {"conversation", "core", "fastener_catalog"}
             ]
             if cad_names:
                 raise ValueError("An unknown workbench cannot receive CAD authoring tools.")
@@ -376,7 +396,8 @@ def validate_surface_names(
             foreign = [
                 name
                 for name in clean_names
-                if name.partition(".")[0] not in {"conversation", "core"}
+                if name.partition(".")[0]
+                not in {"conversation", "core", "fastener_catalog"}
                 and name not in set(pack.tool_names)
             ]
             if foreign:

@@ -10,6 +10,8 @@ set(VibeCAD_Scripts
     VibeCADDebug.py
     VibeCADDesignReview.py
     VibeCADEditState.py
+    VibeCADFasteners.py
+    VibeCADFastenersGui.py
     VibeCADGrid.py
     VibeCADGeometry.py
     VibeCADGui.py
@@ -82,7 +84,12 @@ set(VibeCAD_Scripts
 )
 
 set(VibeCAD_Resources
+    fasteners-provenance.json
     preferences-vibecad.svg
+    vibecad-fastener-attach.svg
+    vibecad-fastener-edit.svg
+    vibecad-fastener-hole.svg
+    vibecad-fastener-insert.svg
     vibecad-open-assistant.svg
     vibecad-send.svg
     vibecad-stop.svg

@@ -39,6 +39,7 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 
+#include <string_view>
 
 #include <Base/Console.h>
 #include <Base/Reader.h>
@@ -359,10 +360,14 @@ public:
     )
         : QTreeWidgetItem(parent, TreeWidget::BrowserFolderType)
         , owner(owner)
-        , logicalParent(logicalParent)
         , itemKey(std::move(key))
         , iconName(std::move(iconName))
     {
+        if (logicalParent) {
+            // Keep the name only; item pointers dangle between an object
+            // deletion and the next model browser rebuild.
+            logicalParentName = logicalParent->getName();
+        }
         setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setText(0, std::move(label));
         setExpanded(false);
@@ -376,7 +381,15 @@ public:
 
     DocumentObjectItem* getLogicalParent() const
     {
-        return logicalParent;
+        if (logicalParentName.empty() || !owner) {
+            return nullptr;
+        }
+        auto* guiDocument = owner->document();
+        auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+        auto* parentObject = document
+            ? document->getObject(logicalParentName.c_str())
+            : nullptr;
+        return parentObject ? owner->findBrowserItem(parentObject) : nullptr;
     }
 
     const QString& key() const
@@ -517,7 +530,8 @@ private:
     }
 
     DocumentItem* owner;
-    DocumentObjectItem* logicalParent;
+    // Stored by name and resolved lazily; see getLogicalParent().
+    std::string logicalParentName;
     QString itemKey;
     QByteArray iconName;
 };
@@ -5244,8 +5258,16 @@ void DocumentItem::rebuildModelBrowser()
         if (!item) {
             return nullptr;
         }
-        if (entry.compatibilityResultLabel) {
-            item->setText(0, TreeWidget::tr("Result"));
+        if (entry.compatibilityResultLabel && entry.body) {
+            // Substitute the clean "Result" only while the feature still
+            // carries the legacy uniquified duplicate of its Body's label.
+            // An explicit user relabel must be shown verbatim.
+            const char* featureLabel = entry.object->Label.getValue();
+            const char* bodyLabel = entry.body->Label.getValue();
+            if (featureLabel && bodyLabel
+                && appDocument->haveSameBaseName(featureLabel, bodyLabel)) {
+                item->setText(0, TreeWidget::tr("Result"));
+            }
         }
         proxies.emplace(entry.object, item);
         rendered.insert(entry.object);
@@ -5262,14 +5284,89 @@ void DocumentItem::rebuildModelBrowser()
         return item;
     };
 
-    auto entriesMatching = [&](const std::function<bool(const Entry&)>& predicate) {
-        std::vector<const Entry*> result;
-        for (const auto& entry : entries) {
-            if (entryAvailable(entry) && !rendered.contains(entry.object) && predicate(entry)) {
-                result.push_back(&entry);
+    // One indexing pass over the projection replaces the former per-category
+    // linear scans: every category used to walk all entries, which made a
+    // rebuild quadratic in document size.  Buckets keep projection entry
+    // order, so category contents stay identical to the scanning
+    // implementation.  The availability and rendered-once checks still run at
+    // consumption time, exactly as the scans did.
+    struct RoleContextKey
+    {
+        const App::DocumentObject* context {};
+        Role role {Role::Other};
+        bool operator==(const RoleContextKey&) const = default;
+    };
+    struct RoleContextKeyHash
+    {
+        std::size_t operator()(const RoleContextKey& key) const
+        {
+            const std::size_t context = std::hash<const App::DocumentObject*> {}(key.context);
+            const std::size_t role = static_cast<std::size_t>(key.role);
+            return context ^ (role * static_cast<std::size_t>(0x9e3779b97f4a7c15ULL));
+        }
+    };
+    using EntryBucket = std::vector<const Entry*>;
+
+    // Origin and OriginFeature entries keyed by their logical parent object.
+    std::unordered_map<RoleContextKey, EntryBucket, RoleContextKeyHash> entriesByLogicalParentRole;
+    // Feature entries keyed by their owning Body.
+    std::unordered_map<const App::DocumentObject*, EntryBucket> featureEntriesByBody;
+    // Entries claimed by a plain group, keyed by that group.
+    std::unordered_map<const App::DocumentObject*, EntryBucket> entriesByGroup;
+    // Entries keyed by (owning component, role); the nullptr-component bucket
+    // holds document-root entries.
+    std::unordered_map<RoleContextKey, EntryBucket, RoleContextKeyHash> entriesByComponentRole;
+    // All Component entries, for root placement of unowned components.
+    EntryBucket componentEntries;
+
+    for (const auto& entry : entries) {
+        if (entry.role == Role::Origin || entry.role == Role::OriginFeature) {
+            entriesByLogicalParentRole[{entry.logicalParent, entry.role}].push_back(&entry);
+        }
+        if (entry.role == Role::Feature && entry.body) {
+            featureEntriesByBody[entry.body].push_back(&entry);
+        }
+        if (entry.group) {
+            entriesByGroup[entry.group].push_back(&entry);
+        }
+        entriesByComponentRole[{entry.component, entry.role}].push_back(&entry);
+        if (entry.role == Role::Component) {
+            componentEntries.push_back(&entry);
+        }
+    }
+
+    auto findBucket = [](const auto& buckets, const auto& key) -> const EntryBucket* {
+        const auto it = buckets.find(key);
+        return it == buckets.end() ? nullptr : &it->second;
+    };
+
+    // Residual predicates preserve exactly the conjuncts the former scans
+    // applied beyond the bucket key itself.
+    auto filterBucket = [&](const EntryBucket* bucket, auto&& residual) {
+        EntryBucket result;
+        if (!bucket) {
+            return result;
+        }
+        for (const auto* entry : *bucket) {
+            if (entryAvailable(*entry) && !rendered.contains(entry->object)
+                && residual(*entry)) {
+                result.push_back(entry);
             }
         }
         return result;
+    };
+    auto takeBucket = [&](const EntryBucket* bucket) {
+        return filterBucket(bucket, [](const Entry&) {
+            return true;
+        });
+    };
+    auto originEntriesFor = [&](const App::DocumentObject* context) {
+        return takeBucket(
+            findBucket(entriesByLogicalParentRole, RoleContextKey {context, Role::Origin})
+        );
+    };
+    auto componentRoleEntries = [&](const App::DocumentObject* component, Role role) {
+        return takeBucket(findBucket(entriesByComponentRole, RoleContextKey {component, role}));
     };
 
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderOrigin;
@@ -5277,7 +5374,32 @@ void DocumentItem::rebuildModelBrowser()
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderComponent;
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderGroup;
 
-    auto localOriginFeatureLabel = [](const Entry& entry, const QString& label) {
+    // FreeCAD resolves duplicate default labels by appending a zero-padded
+    // numeric suffix of at least three digits ("Origin001", "X-axis002"; see
+    // Document::makeUniqueLabel).  Treat a label as "still the default" only
+    // for that exact shape; anything else is a user relabel that the browser
+    // must show verbatim.
+    auto defaultLabelBase = [](const QString& label,
+                               std::initializer_list<QString> bases) {
+        for (const auto& base : bases) {
+            if (base.isEmpty() || !label.startsWith(base)) {
+                continue;
+            }
+            const QString suffix = label.mid(base.size());
+            if (suffix.isEmpty()) {
+                return base;
+            }
+            if (suffix.size() >= 3
+                && std::ranges::all_of(suffix, [](QChar character) {
+                       return character.isDigit();
+                   })) {
+                return base;
+            }
+        }
+        return QString();
+    };
+
+    auto localOriginFeatureLabel = [&](const Entry& entry, const QString& label) {
         struct DefaultLabel
         {
             std::string_view namePrefix;
@@ -5305,17 +5427,11 @@ void DocumentItem::rebuildModelBrowser()
                 defaultLabel.source
             );
             const QString source = QString::fromLatin1(defaultLabel.source);
-            for (const auto& base : {translated, source}) {
-                if (!label.startsWith(base)) {
-                    continue;
-                }
-                const QString suffix = label.mid(base.size());
-                if (!suffix.isEmpty()
-                    && std::ranges::all_of(suffix, [](QChar character) {
-                           return character.isDigit();
-                       })) {
-                    return base;
-                }
+            const QString base = defaultLabelBase(label, {translated, source});
+            if (!base.isEmpty()) {
+                // Show the clean base label: strip only the duplicate-label
+                // uniquifier suffix, never a user-chosen name.
+                return base;
             }
             break;
         }
@@ -5330,12 +5446,21 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
         // Internal Origin names are document-unique (Origin, Origin001, ...),
-        // but each is the local Origin of its own component or Body.
-        originItem->setText(0, TreeWidget::tr("Origin"));
-        const auto features = entriesMatching([&](const Entry& entry) {
-            return entry.role == Role::OriginFeature
-                && entry.logicalParent == originEntry.object;
-        });
+        // but each is the local Origin of its own component or Body.  Show
+        // the clean default only while the label still is the default; a
+        // user relabel must be shown verbatim.
+        const QString originBase = defaultLabelBase(
+            originItem->text(0),
+            {QApplication::translate("App::OriginGroupExtension", "Origin"),
+             QString::fromLatin1("Origin")}
+        );
+        if (!originBase.isEmpty()) {
+            originItem->setText(0, TreeWidget::tr("Origin"));
+        }
+        const auto features = takeBucket(findBucket(
+            entriesByLogicalParentRole,
+            RoleContextKey {originEntry.object, Role::OriginFeature}
+        ));
         for (const auto* feature : features) {
             auto* featureItem = renderObject(*feature, originItem, originItem);
             if (featureItem) {
@@ -5386,16 +5511,12 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
 
-        const auto origins = entriesMatching([&](const Entry& entry) {
-            return entry.role == Role::Origin && entry.logicalParent == bodyEntry.object;
-        });
+        const auto origins = originEntriesFor(bodyEntry.object);
         for (const auto* origin : origins) {
             renderOrigin(*origin, bodyItem, bodyItem);
         }
 
-        const auto features = entriesMatching([&](const Entry& entry) {
-            return entry.body == bodyEntry.object && entry.role == Role::Feature;
-        });
+        const auto features = takeBucket(findBucket(featureEntriesByBody, bodyEntry.object));
         renderCategory(
             bodyItem,
             bodyItem,
@@ -5418,9 +5539,7 @@ void DocumentItem::rebuildModelBrowser()
         if (!groupItem) {
             return;
         }
-        const auto children = entriesMatching([&](const Entry& entry) {
-            return entry.group == groupEntry.object;
-        });
+        const auto children = takeBucket(findBucket(entriesByGroup, groupEntry.object));
         for (const auto* child : children) {
             if (child->role == Role::Group) {
                 renderGroup(*child, groupItem, groupItem);
@@ -5452,17 +5571,12 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
 
-        const auto origins = entriesMatching([&](const Entry& entry) {
-            return entry.role == Role::Origin
-                && entry.logicalParent == componentEntry.object;
-        });
+        const auto origins = originEntriesFor(componentEntry.object);
         for (const auto* origin : origins) {
             renderOrigin(*origin, componentItem, componentItem);
         }
 
-        const auto parameters = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object && entry.role == Role::Parameter;
-        });
+        const auto parameters = componentRoleEntries(componentEntry.object, Role::Parameter);
         renderCategory(
             componentItem,
             componentItem,
@@ -5473,10 +5587,8 @@ void DocumentItem::rebuildModelBrowser()
             parameters
         );
 
-        const auto nestedComponents = entriesMatching([&](const Entry& entry) {
-            return entry.role == Role::Component
-                && entry.component == componentEntry.object;
-        });
+        const auto nestedComponents =
+            componentRoleEntries(componentEntry.object, Role::Component);
         if (!nestedComponents.empty()) {
             auto* folder = makeFolder(
                 componentItem,
@@ -5491,9 +5603,7 @@ void DocumentItem::rebuildModelBrowser()
             }
         }
 
-        const auto bodies = entriesMatching([&](const Entry& entry) {
-            return entry.role == Role::Body && entry.component == componentEntry.object;
-        });
+        const auto bodies = componentRoleEntries(componentEntry.object, Role::Body);
         if (!bodies.empty()) {
             auto* folder = makeFolder(
                 componentItem,
@@ -5508,9 +5618,7 @@ void DocumentItem::rebuildModelBrowser()
             }
         }
 
-        const auto sketches = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object && entry.role == Role::Sketch;
-        });
+        const auto sketches = componentRoleEntries(componentEntry.object, Role::Sketch);
         renderCategory(
             componentItem,
             componentItem,
@@ -5521,10 +5629,8 @@ void DocumentItem::rebuildModelBrowser()
             sketches
         );
 
-        const auto construction = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object
-                && entry.role == Role::Construction;
-        });
+        const auto construction =
+            componentRoleEntries(componentEntry.object, Role::Construction);
         renderCategory(
             componentItem,
             componentItem,
@@ -5535,9 +5641,7 @@ void DocumentItem::rebuildModelBrowser()
             construction
         );
 
-        const auto geometry = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object && entry.role == Role::Geometry;
-        });
+        const auto geometry = componentRoleEntries(componentEntry.object, Role::Geometry);
         renderCategory(
             componentItem,
             componentItem,
@@ -5548,9 +5652,7 @@ void DocumentItem::rebuildModelBrowser()
             geometry
         );
 
-        const auto references = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object && entry.role == Role::Reference;
-        });
+        const auto references = componentRoleEntries(componentEntry.object, Role::Reference);
         renderCategory(
             componentItem,
             componentItem,
@@ -5561,10 +5663,15 @@ void DocumentItem::rebuildModelBrowser()
             references
         );
 
-        const auto groups = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object && entry.role == Role::Group
-                && !entry.group;
-        });
+        const auto groups = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::Group}
+            ),
+            [](const Entry& entry) {
+                return !entry.group;
+            }
+        );
         if (!groups.empty()) {
             auto* folder = makeFolder(
                 componentItem,
@@ -5579,10 +5686,15 @@ void DocumentItem::rebuildModelBrowser()
             }
         }
 
-        const auto other = entriesMatching([&](const Entry& entry) {
-            return entry.component == componentEntry.object && !entry.body && !entry.group
-                && entry.role == Role::Other;
-        });
+        const auto other = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::Other}
+            ),
+            [](const Entry& entry) {
+                return !entry.body && !entry.group;
+            }
+        );
         renderCategory(
             componentItem,
             componentItem,
@@ -5601,16 +5713,14 @@ void DocumentItem::rebuildModelBrowser()
 
     // Components are the primary browser roots, matching component-oriented CAD
     // systems.  Type folders below handle document-level loose objects and Bodies.
-    const auto topComponents = entriesMatching([&](const Entry& entry) {
-        return entry.role == Role::Component && !entry.logicalParent && !entry.group;
+    const auto topComponents = filterBucket(&componentEntries, [](const Entry& entry) {
+        return !entry.logicalParent && !entry.group;
     });
     for (const auto* component : topComponents) {
         renderComponent(*component, this, nullptr);
     }
 
-    const auto rootParameters = entriesMatching([&](const Entry& entry) {
-        return !entry.component && entry.role == Role::Parameter;
-    });
+    const auto rootParameters = componentRoleEntries(nullptr, Role::Parameter);
     renderCategory(
         this,
         nullptr,
@@ -5621,9 +5731,7 @@ void DocumentItem::rebuildModelBrowser()
         rootParameters
     );
 
-    const auto rootBodies = entriesMatching([&](const Entry& entry) {
-        return entry.role == Role::Body && !entry.component;
-    });
+    const auto rootBodies = componentRoleEntries(nullptr, Role::Body);
     if (!rootBodies.empty()) {
         auto* folder = makeFolder(
             this,
@@ -5638,9 +5746,7 @@ void DocumentItem::rebuildModelBrowser()
         }
     }
 
-    const auto rootSketches = entriesMatching([&](const Entry& entry) {
-        return !entry.component && entry.role == Role::Sketch;
-    });
+    const auto rootSketches = componentRoleEntries(nullptr, Role::Sketch);
     renderCategory(
         this,
         nullptr,
@@ -5651,9 +5757,7 @@ void DocumentItem::rebuildModelBrowser()
         rootSketches
     );
 
-    const auto rootConstruction = entriesMatching([&](const Entry& entry) {
-        return !entry.component && entry.role == Role::Construction;
-    });
+    const auto rootConstruction = componentRoleEntries(nullptr, Role::Construction);
     renderCategory(
         this,
         nullptr,
@@ -5664,9 +5768,7 @@ void DocumentItem::rebuildModelBrowser()
         rootConstruction
     );
 
-    const auto rootGeometry = entriesMatching([&](const Entry& entry) {
-        return !entry.component && entry.role == Role::Geometry;
-    });
+    const auto rootGeometry = componentRoleEntries(nullptr, Role::Geometry);
     renderCategory(
         this,
         nullptr,
@@ -5677,9 +5779,7 @@ void DocumentItem::rebuildModelBrowser()
         rootGeometry
     );
 
-    const auto rootReferences = entriesMatching([&](const Entry& entry) {
-        return !entry.component && entry.role == Role::Reference;
-    });
+    const auto rootReferences = componentRoleEntries(nullptr, Role::Reference);
     renderCategory(
         this,
         nullptr,
@@ -5690,9 +5790,12 @@ void DocumentItem::rebuildModelBrowser()
         rootReferences
     );
 
-    const auto rootGroups = entriesMatching([&](const Entry& entry) {
-        return !entry.component && entry.role == Role::Group && !entry.group;
-    });
+    const auto rootGroups = filterBucket(
+        findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
+        [](const Entry& entry) {
+            return !entry.group;
+        }
+    );
     if (!rootGroups.empty()) {
         auto* folder = makeFolder(
             this,
@@ -5707,9 +5810,12 @@ void DocumentItem::rebuildModelBrowser()
         }
     }
 
-    const auto rootOther = entriesMatching([&](const Entry& entry) {
-        return !entry.component && !entry.body && !entry.group && entry.role == Role::Other;
-    });
+    const auto rootOther = filterBucket(
+        findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Other}),
+        [](const Entry& entry) {
+            return !entry.body && !entry.group;
+        }
+    );
     renderCategory(
         this,
         nullptr,
@@ -5723,9 +5829,14 @@ void DocumentItem::rebuildModelBrowser()
     // Never make a valid document object disappear because a new or third-party
     // type did not match a known role.  The fallback remains deterministic and is
     // deliberately presentation-only.
-    const auto unrendered = entriesMatching([](const Entry&) {
-        return true;
-    });
+    // Terminal safety sweep: one deliberate O(N) pass over all entries to
+    // collect everything still unrendered; not a per-category scan.
+    EntryBucket unrendered;
+    for (const auto& entry : entries) {
+        if (entryAvailable(entry) && !rendered.contains(entry.object)) {
+            unrendered.push_back(&entry);
+        }
+    }
     if (!unrendered.empty()) {
         auto* folder = makeFolder(
             this,
@@ -5869,6 +5980,11 @@ void TreeWidget::_slotDeleteObject(const Gui::ViewProviderDocumentObject& view, 
         for (auto cit = items.begin(), citNext = cit; cit != items.end(); cit = citNext) {
             ++citNext;
             DocumentObjectItem* itemToDelete = *cit;
+            if (editingItem == itemToDelete) {
+                // editingItem is a raw pointer into the tree; clear it before
+                // the item is destroyed so it cannot dangle until the rebuild.
+                editingItem = nullptr;
+            }
             itemToDelete->myOwner = nullptr;
             delete itemToDelete;
         }
@@ -6297,9 +6413,17 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     }
 
     const char* propertyName = prop.getName();
-    if (propertyName
-        && (strcmp(propertyName, "Group") == 0 || strcmp(propertyName, "Origin") == 0
-            || strstr(propertyName, "LinkedObject") != nullptr)) {
+    const std::string_view changedProperty =
+        propertyName ? std::string_view(propertyName) : std::string_view();
+    const bool changesBrowserProjection =
+        changedProperty == "Group" || changedProperty == "Origin"
+        || changedProperty.find("LinkedObject") != std::string_view::npos
+        || changedProperty == "VibeCADScriptedRole"
+        || changedProperty == "VibeCADScriptedEngine"
+        || changedProperty == "VibeCADScriptedModelId"
+        || changedProperty == "VibeCADScriptedOutputKey"
+        || changedProperty == "VibeCADNativeFeatureRole";
+    if (changesBrowserProjection) {
         for (const auto& data : itEntry->second) {
             data->docItem->modelBrowserDirty = true;
         }
@@ -7545,9 +7669,13 @@ DocumentObjectItem::DocumentObjectItem(
     , selected(0)
     , populated(false)
     , browserProxy(browserProxy)
-    , browserLogicalParent(browserLogicalParent)
     , browserDefaultHidden(browserDefaultHidden)
 {
+    if (browserLogicalParent) {
+        // Keep the parent's name only: the parent item may be destroyed
+        // (object deletion, model browser rebuild) while this item is alive.
+        browserLogicalParentName = browserLogicalParent->getName();
+    }
     setFlags(flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
     setCheckState(false);
 
@@ -8130,7 +8258,18 @@ int DocumentObjectItem::isParentGroup() const
 DocumentObjectItem* DocumentObjectItem::getParentItem() const
 {
     if (browserProxy) {
-        return browserLogicalParent;
+        // Resolve the logical parent lazily by name.  The parent object or
+        // its item may have been deleted since this item was built; a cached
+        // item pointer would dangle until the next model browser rebuild.
+        if (browserLogicalParentName.empty() || !myOwner) {
+            return nullptr;
+        }
+        auto* guiDocument = myOwner->document();
+        auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+        auto* parentObject = document
+            ? document->getObject(browserLogicalParentName.c_str())
+            : nullptr;
+        return parentObject ? myOwner->findBrowserItem(parentObject) : nullptr;
     }
     if (!parent() || parent()->type() != TreeWidget::ObjectType) {
         return nullptr;

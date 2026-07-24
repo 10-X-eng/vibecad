@@ -66,6 +66,20 @@ class AssemblyWorkbench(Workbench):
         from PySide.QtCore import QT_TRANSLATE_NOOP
         import CommandCreateAssembly, CommandInsertLink, CommandInsertNewPart, CommandCreateJoint, CommandSolveAssembly, CommandExportASMT, CommandCreateView, CommandCreateSimulation, CommandCreateBom
         import Preferences
+        cmdListStandardComponents = []
+        try:
+            import VibeCADFastenersGui
+
+            VibeCADFastenersGui.ensure_commands_registered()
+            cmdListStandardComponents = [
+                "VibeCAD_InsertStandardFastener",
+                "VibeCAD_EditStandardFastener",
+            ]
+        except Exception as exc:
+            FreeCAD.Console.PrintWarning(
+                "Assembly standard-component commands are unavailable: "
+                f"{exc}\n"
+            )
 
         FreeCADGui.addLanguagePath(":/translations")
         FreeCADGui.addIconPath(":/icons")
@@ -111,11 +125,24 @@ class AssemblyWorkbench(Workbench):
 
         self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly"), cmdList)
         self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly Joints"), cmdListJoints)
+        if cmdListStandardComponents:
+            self.appendToolbar(
+                QT_TRANSLATE_NOOP("Workbench", "Standard Components"),
+                cmdListStandardComponents,
+            )
 
         self.appendMenu(
             [QT_TRANSLATE_NOOP("Workbench", "&Assembly")],
             cmdList + cmdListMenuOnly + ["Separator"] + cmdListJoints,
         )
+        if cmdListStandardComponents:
+            self.appendMenu(
+                [
+                    QT_TRANSLATE_NOOP("Workbench", "&Assembly"),
+                    QT_TRANSLATE_NOOP("Workbench", "Standard Components"),
+                ],
+                cmdListStandardComponents,
+            )
 
     def Activated(self):
         # update the translation engine

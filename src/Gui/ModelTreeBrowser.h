@@ -104,6 +104,10 @@ private:
 
     static Ownership resolveOwnership(const App::DocumentObject* object);
     static App::DocumentObject* findOriginParent(const App::DocumentObject* object);
+
+    // PartDesign move up/down edits the Body's Group order, so Group order --
+    // not creation order -- is the feature history the browser must present.
+    void orderFeaturesByBodyHistory();
     static Role classify(
         const App::DocumentObject* object,
         const Ownership& ownership,

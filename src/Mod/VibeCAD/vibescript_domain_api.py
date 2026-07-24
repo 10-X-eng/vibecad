@@ -86,6 +86,7 @@ _DOMAIN_OPERATION_OUTPUT_TYPES: dict[str, dict[str, str]] = {
     "assembly": {
         "assembly": "assembly",
         "component": "component_link",
+        "fastener": "component_link",
         "connector": "joint",
         "joint": "joint",
         "solve": "solver_diagnostics",

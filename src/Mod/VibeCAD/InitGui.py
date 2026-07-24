@@ -11,6 +11,20 @@ def _warn(message: str) -> None:
     App.Console.PrintWarning(f"{message}\n")
 
 
+def _check_bundled_fasteners() -> bool:
+    try:
+        from VibeCADFasteners import require_available
+
+        require_available()
+        return True
+    except Exception as exc:
+        _warn(
+            "VibeCAD bundled Fasteners catalog failed to load; standard-component "
+            f"commands are disabled: {exc}"
+        )
+        return False
+
+
 def _restore_vibecad_disabled_workbenches() -> bool:
     """Undo only the exact disabled lists previously written by VibeCAD."""
 
@@ -143,11 +157,19 @@ except Exception as exc:
 
 
 try:
+    fasteners_available = _check_bundled_fasteners()
     from PySide import QtCore
 
     import VibeCADGui
 
     VibeCADGui.ensure_commands_registered()
+    if fasteners_available:
+        try:
+            import VibeCADFastenersGui
+
+            VibeCADFastenersGui.ensure_commands_registered()
+        except Exception as exc:
+            _warn(f"VibeCAD standard-component commands failed to register: {exc}")
 
     def _setup_always_on_grid() -> None:
         try:

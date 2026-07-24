@@ -7,3 +7,6 @@
 [submodule "src/Mod/AddonManager"]
 	path = src/Mod/AddonManager
 	url = https://github.com/FreeCAD/AddonManager.git
+[submodule "src/Mod/Fasteners"]
+	path = src/Mod/Fasteners
+	url = https://github.com/shaise/FreeCAD_FastenersWB.git

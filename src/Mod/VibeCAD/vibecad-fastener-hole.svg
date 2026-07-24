@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Create matching fastener hole">
+  <path d="M8 15h48v34H8z" fill="#0e1116" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="13" fill="#e8edf2" stroke="#74c0fc" stroke-width="3"/>
+  <circle cx="32" cy="32" r="6" fill="#0e1116" stroke="#1c7ed6" stroke-width="3"/>
+  <path d="M32 8v10M32 46v10M8 32h10M46 32h10" stroke="#74c0fc" stroke-width="3" stroke-linecap="round"/>
+</svg>

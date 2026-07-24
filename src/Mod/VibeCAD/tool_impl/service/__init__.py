@@ -27,6 +27,7 @@ TOOL_MODULE_NAMES = (
     "build123d_delete_model",
     "conversation_ask_user",
     "conversation_review_design",
+    "fastener_catalog_search",
     "core_inspect",
     "core_capture_view_screenshot",
     "core_set_view",

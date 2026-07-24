@@ -1399,7 +1399,57 @@ def _build_feature(
     name = _candidate_object_name(body, "Feature", graph_id)
     additive_base: Any | None = None
     subtractive_base: Any | None = None
-    if operation == "pad":
+    if operation == "fastener":
+        try:
+            from VibeCADFasteners import (
+                FastenerCatalogError,
+                create_fastener_feature,
+            )
+        except Exception as exc:
+            raise PartDesignCandidateError(
+                f"api.fastener is unavailable because the bundled catalog "
+                f"could not load: {exc}",
+                details={
+                    "stage": "fastener_catalog",
+                    "operation": operation,
+                    "graph_id": graph_id,
+                },
+            ) from exc
+
+        try:
+            feature, _identity = create_fastener_feature(
+                body,
+                standard=_argument(
+                    payload,
+                    0,
+                    context="api.fastener",
+                ),
+                nominal_thread=_argument(
+                    payload,
+                    1,
+                    context="api.fastener",
+                ),
+                length_mm=properties.get("length_mm"),
+                model_thread=properties["model_thread"],
+                left_handed=bool(properties.get("left_handed")),
+                options=dict(properties.get("options") or {}),
+                object_name=name,
+                label=str(properties.get("label") or ""),
+            )
+        except FastenerCatalogError as exc:
+            raise PartDesignCandidateError(
+                f"api.fastener rejected the catalog request: {exc}",
+                details={
+                    "stage": "fastener_catalog",
+                    "operation": operation,
+                    "graph_id": graph_id,
+                    "correction": (
+                        "Use an exact standard, nominal_thread, catalog length, "
+                        "and supported options returned by the bundled catalog."
+                    ),
+                },
+            ) from exc
+    elif operation == "pad":
         base_value = properties.get("base")
         if base_value is not None:
             additive_base = _build_feature(
@@ -1592,44 +1642,132 @@ def _build_feature(
         feature.Axis = _profile_axis(axis_target, str(properties.get("axis") or "N"))
         feature.Angle = float(properties.get("angle_degrees") or 360.0)
         feature.Occurrences = int(_argument(payload, 1, context="api.polar_pattern"))
-    elif operation == "hole":
+    elif operation in {"hole", "fastener_hole"}:
+        context = f"api.{operation}"
         subtractive_base = _build_feature(
             body,
-            _payload(_argument(payload, 0, context="api.hole"), context="api.hole.base"),
+            _payload(
+                _argument(payload, 0, context=context),
+                context=f"{context}.base",
+            ),
             memo,
             sketch_evidence,
         )
         profile = _build_sketch(
             body,
-            _payload(_argument(payload, 1, context="api.hole"), context="api.hole.profile"),
+            _payload(
+                _argument(payload, 1, context=context),
+                context=f"{context}.profile",
+            ),
             memo,
             sketch_evidence,
         )
         body.Tip = subtractive_base
         feature = body.newObject("PartDesign::Hole", name)
         feature.Profile = profile
-        feature.Diameter = float(_argument(payload, 2, context="api.hole"))
-        feature.DepthType = "ThroughAll" if bool(properties.get("through_all")) else "Dimension"
+        feature.DepthType = (
+            "ThroughAll"
+            if bool(properties.get("through_all"))
+            else "Dimension"
+        )
         if properties.get("depth_mm") is not None:
             feature.Depth = float(properties["depth_mm"])
-        countersink = properties.get("countersink_diameter_mm")
-        counterbore = properties.get("counterbore_diameter_mm")
-        if countersink is not None:
-            feature.HoleCutType = "Countersink"
-            feature.HoleCutCustomValues = True
-            feature.HoleCutDiameter = float(countersink)
-            feature.HoleCutCountersinkAngle = float(
-                properties.get("countersink_angle_degrees") or 90.0
+        if operation == "fastener_hole":
+            fastener_payload = _payload(
+                _argument(payload, 2, context=context),
+                context=f"{context}.fastener",
             )
-        elif counterbore is not None:
-            feature.HoleCutType = "Counterbore"
-            feature.HoleCutCustomValues = True
-            feature.HoleCutDiameter = float(counterbore)
-            feature.HoleCutDepth = float(properties["counterbore_depth_mm"])
+            if str(fastener_payload.get("operation") or "") != "fastener":
+                raise PartDesignCandidateError(
+                    "api.fastener_hole fastener must be the exact value returned "
+                    "by api.fastener.",
+                    details={
+                        "stage": "fastener_hole_catalog",
+                        "operation": operation,
+                        "graph_id": graph_id,
+                    },
+                )
+            fastener_properties = _properties(fastener_payload)
+            try:
+                from VibeCADFasteners import (
+                    FastenerCatalogError,
+                    configure_fastener_hole_feature,
+                    resolve_fastener,
+                )
+            except Exception as exc:
+                raise PartDesignCandidateError(
+                    f"api.fastener_hole is unavailable because the bundled "
+                    f"catalog could not load: {exc}",
+                    details={
+                        "stage": "fastener_hole_catalog",
+                        "operation": operation,
+                        "graph_id": graph_id,
+                    },
+                ) from exc
+            try:
+                fastener_identity = resolve_fastener(
+                    standard=_argument(
+                        fastener_payload,
+                        0,
+                        context="api.fastener",
+                    ),
+                    nominal_thread=_argument(
+                        fastener_payload,
+                        1,
+                        context="api.fastener",
+                    ),
+                    length_mm=fastener_properties.get("length_mm"),
+                    model_thread=fastener_properties["model_thread"],
+                    left_handed=bool(
+                        fastener_properties.get("left_handed")
+                    ),
+                    options=dict(
+                        fastener_properties.get("options") or {}
+                    ),
+                )
+                configure_fastener_hole_feature(
+                    feature,
+                    fastener_identity,
+                    purpose=properties.get("purpose"),
+                    fit=properties.get("fit"),
+                )
+            except FastenerCatalogError as exc:
+                raise PartDesignCandidateError(
+                    f"api.fastener_hole rejected the catalog request: {exc}",
+                    details={
+                        "stage": "fastener_hole_catalog",
+                        "operation": operation,
+                        "graph_id": graph_id,
+                        "correction": (
+                            "Use an exact catalog fastener and a hole purpose "
+                            "published for that standard and thread size."
+                        ),
+                    },
+                ) from exc
         else:
-            feature.HoleCutType = "None"
-            feature.HoleCutCustomValues = False
-        feature.Threaded = False
+            feature.Diameter = float(
+                _argument(payload, 2, context="api.hole")
+            )
+            countersink = properties.get("countersink_diameter_mm")
+            counterbore = properties.get("counterbore_diameter_mm")
+            if countersink is not None:
+                feature.HoleCutType = "Countersink"
+                feature.HoleCutCustomValues = True
+                feature.HoleCutDiameter = float(countersink)
+                feature.HoleCutCountersinkAngle = float(
+                    properties.get("countersink_angle_degrees") or 90.0
+                )
+            elif counterbore is not None:
+                feature.HoleCutType = "Counterbore"
+                feature.HoleCutCustomValues = True
+                feature.HoleCutDiameter = float(counterbore)
+                feature.HoleCutDepth = float(
+                    properties["counterbore_depth_mm"]
+                )
+            else:
+                feature.HoleCutType = "None"
+                feature.HoleCutCustomValues = False
+            feature.Threaded = False
         feature.Refine = True
     elif operation == "mirror":
         base = _build_feature(

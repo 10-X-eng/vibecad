@@ -611,8 +611,11 @@ private:
     int selected;
     bool populated;
     bool browserProxy;
-    DocumentObjectItem* browserLogicalParent;
     bool browserDefaultHidden;
+    // The logical parent of a browser proxy item is stored by object name and
+    // resolved lazily.  A cached item pointer would dangle between an object
+    // deletion and the next model browser rebuild (see getParentItem()).
+    std::string browserLogicalParentName;
     std::string browserVisibilityPeerName;
 
     friend class TreeWidget;

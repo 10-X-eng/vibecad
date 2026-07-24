@@ -78,6 +78,7 @@ namespace sp = std::placeholders;
     qApp->translate("Workbench", "Compound");
     qApp->translate("Workbench", "Inspect and Appearance");
     qApp->translate("Workbench", "Model Structure");
+    qApp->translate("Workbench", "Standard Components");
     qApp->translate("Workbench", "Create and Remove Material");
     qApp->translate("Workbench", "Boolean, Split, and Repair");
 #endif
@@ -474,6 +475,13 @@ Gui::MenuItem* Workbench::setupMenuBar() const
             << "PartDesign_Plane"
             << "PartDesign_CoordinateSystem";
 
+    Gui::MenuItem* standardComponents = new Gui::MenuItem;
+    standardComponents->setCommand("Standard Components");
+    *standardComponents << "VibeCAD_InsertStandardFastener"
+                        << "VibeCAD_EditStandardFastener"
+                        << "VibeCAD_CreateMatchingFastenerHole"
+                        << "VibeCAD_AttachStandardFastener";
+
     // Part Design owns the stronger solid-feature implementations.  General
     // Part commands remain here only for capabilities that do not have a Part
     // Design equivalent: standalone/surface construction, copies, repair,
@@ -551,6 +559,7 @@ Gui::MenuItem* Workbench::setupMenuBar() const
            << "PartDesign_ShapeBinder"
            << "PartDesign_SubShapeBinder"
            << "PartDesign_Clone"
+           << standardComponents
            << "Separator" << additives << "PartDesign_CompPrimitiveAdditive"
            << "Separator" << subtractives << "PartDesign_CompPrimitiveSubtractive"
            << "Separator" << dressups << transformations
@@ -597,6 +606,13 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
           << "Part_CheckGeometry"
           << "PartDesign_SubShapeBinder"
           << "PartDesign_Clone";
+
+    part = new Gui::ToolBarItem(root);
+    part->setCommand("Standard Components");
+    *part << "VibeCAD_InsertStandardFastener"
+          << "VibeCAD_EditStandardFastener"
+          << "VibeCAD_CreateMatchingFastenerHole"
+          << "VibeCAD_AttachStandardFastener";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Create and Remove Material");

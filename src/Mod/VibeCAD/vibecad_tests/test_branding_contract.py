@@ -24,6 +24,7 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 
     WORKBENCHES = (
         "PartDesignWorkbench",
+        "FastenersWorkbench",
         "SketcherWorkbench",
         "DraftWorkbench",
         "SurfaceWorkbench",
@@ -82,6 +83,78 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
                     main_window.dockWidgetArea(assistant),
                     QtCore.Qt.RightDockWidgetArea,
                 )
+
+
+class TestVibeCADResponsiveAssistant(unittest.TestCase):
+    """Exercise the compact composer against the real Qt layout engine."""
+
+    def test_narrow_composer_uses_distinct_icons_without_words(self) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtWidgets
+
+        import VibeCADGui
+
+        application = QtWidgets.QApplication.instance()
+        self.assertIsNotNone(application)
+        root = VibeCADGui._build_panel_widget()
+        try:
+            root.resize(414, 800)
+            root.show()
+            application.processEvents()
+            composer = root.findChild(
+                QtWidgets.QWidget,
+                "VibeComposerButtons",
+            )
+            self.assertIsNotNone(composer)
+            self.assertLess(
+                composer.width(),
+                VibeCADGui._COMPOSER_ICON_ONLY_BREAKPOINT,
+            )
+            buttons = {
+                name: root.findChild(QtWidgets.QPushButton, name)
+                for name in (
+                    "VibeAttachView",
+                    "VibeAttachImage",
+                    "VibeSend",
+                    "VibeStop",
+                )
+            }
+            self.assertTrue(all(button is not None for button in buttons.values()))
+            for button in buttons.values():
+                self.assertEqual(button.text(), "")
+                self.assertTrue(button.property("VibeCompactMode"))
+                self.assertFalse(button.icon().isNull())
+                self.assertTrue(button.toolTip())
+                self.assertTrue(button.accessibleName())
+            self.assertNotEqual(
+                buttons["VibeAttachView"].icon().cacheKey(),
+                buttons["VibeAttachImage"].icon().cacheKey(),
+            )
+
+            root.resize(760, 800)
+            application.processEvents()
+            self.assertGreaterEqual(
+                composer.width(),
+                VibeCADGui._COMPOSER_ICON_ONLY_BREAKPOINT,
+            )
+            self.assertEqual(buttons["VibeAttachView"].text(), "Attach View")
+            self.assertEqual(buttons["VibeAttachImage"].text(), "Attach Image")
+            self.assertEqual(buttons["VibeSend"].text(), "Send")
+            self.assertEqual(buttons["VibeStop"].text(), "Stop")
+
+            VibeCADGui._update_composer_button_presentation(
+                composer,
+                busy=True,
+            )
+            self.assertEqual(buttons["VibeSend"].text(), "Steer")
+        finally:
+            root.close()
+            root.deleteLater()
+            application.processEvents()
 
 
 def test_windows_installer_uses_vibecad_identity() -> None:
@@ -446,7 +519,13 @@ def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
         for child in workbench_group
         if child.tag == "FCText" and child.get("Name") == "Disabled"
     )
+    ordered_value = next(
+        child
+        for child in workbench_group
+        if child.tag == "FCText" and child.get("Name") == "Ordered"
+    )
     disabled = set(filter(None, (disabled_value.text or "").split(",")))
+    ordered = list(filter(None, (ordered_value.text or "").split(",")))
     user_workbenches = {
         "PartDesignWorkbench",
         "SketcherWorkbench",
@@ -468,6 +547,7 @@ def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
 
     assert disabled == {"TestWorkbench", "NoneWorkbench"}
     assert disabled.isdisjoint(user_workbenches)
+    assert "FastenersWorkbench" in ordered
 
 
 def test_vibecad_migrates_its_obsolete_background_autoload_before_use() -> None:

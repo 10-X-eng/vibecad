@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Attach standard fastener">
+  <path d="M12 9h25l7 8-7 8H12l-6-8z" fill="#0e1116" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M21 25h9v22l-4.5 5-4.5-5z" fill="#e8edf2" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M21 32l9 5M21 39l9 5" fill="none" stroke="#1c7ed6" stroke-width="2.5"/>
+  <circle cx="48" cy="46" r="10" fill="#0e1116" stroke="#74c0fc" stroke-width="3"/>
+  <circle cx="48" cy="46" r="3" fill="#4dabf7"/>
+  <path d="M30 35l11 7" fill="none" stroke="#74c0fc" stroke-width="3" stroke-linecap="round"/>
+</svg>

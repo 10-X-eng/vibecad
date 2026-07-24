@@ -22,6 +22,7 @@ from VibeCADScriptedPublication import (  # noqa: E402
     ROLE_IMPLEMENTATION,
     ROLE_MODEL,
     delete_implementation,
+    implementation_closure,
     role_of,
 )
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
@@ -448,6 +449,36 @@ def _feature_case(api, case: str):
                 counterbore_depth_mm=1,
             )
         return api.hole(base, locations, 2, depth_mm=4)
+    if case in {"fastener", "fastener_simple"}:
+        return api.fastener(
+            "ISO4762",
+            "M6",
+            length_mm=20,
+            model_thread=case == "fastener",
+            label="ISO 4762 M6 x 20",
+        )
+    if case.startswith("fastener_hole_"):
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 12)]),
+            8,
+            operation="add_material",
+        )
+        locations = api.sketch([api.circle([0, 0], 1)], z_offset_mm=8)
+        purpose = case.removeprefix("fastener_hole_")
+        standard = "ISO10642" if purpose == "countersink" else "ISO4762"
+        fastener = api.fastener(
+            standard,
+            "M6",
+            length_mm=20,
+        )
+        return api.fastener_hole(
+            base,
+            locations,
+            fastener,
+            purpose=purpose,
+            fit="normal",
+            through_all=True,
+        )
     if case == "draft":
         base = api.extrude(
             _rectangle(api, -5, -4, 5, 4),
@@ -497,6 +528,12 @@ def _exercise_feature_families(root: Path, pack) -> dict[str, dict]:
         "hole_dimensioned": "PartDesign::Hole",
         "hole_countersink": "PartDesign::Hole",
         "hole_counterbore": "PartDesign::Hole",
+        "fastener": "PartDesign::FeaturePython",
+        "fastener_simple": "PartDesign::FeaturePython",
+        "fastener_hole_clearance": "PartDesign::Hole",
+        "fastener_hole_tapped": "PartDesign::Hole",
+        "fastener_hole_counterbore": "PartDesign::Hole",
+        "fastener_hole_countersink": "PartDesign::Hole",
         "draft": "PartDesign::Draft",
     }
     evidence = {}
@@ -533,9 +570,11 @@ def _exercise_feature_families(root: Path, pack) -> dict[str, dict]:
             evidence[case] = {
                 "tip": data["tip_type_id"],
                 "volume_mm3": facts["volume_mm3"],
+                "edges": facts["edges"],
             }
         finally:
             App.closeDocument(document.Name)
+    assert evidence["fastener"]["edges"] > evidence["fastener_simple"]["edges"]
     return evidence
 
 
@@ -743,6 +782,8 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
         "sketch",
         "helix",
         "hole",
+        "fastener",
+        "fastener_hole",
         "draft",
         "body",
         "publish",
@@ -1482,11 +1523,25 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     restore_prepared_delete(deletion)
     for consumer in reversed(reopened_consumers):
         reopened.removeObject(consumer.Name)
+    reopened_root = next(
+        obj
+        for obj in reopened.Objects
+        if role_of(obj) == ROLE_MODEL
+        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+    )
+    implementation_names = {
+        str(obj.Name) for obj in implementation_closure(reopened_root)
+    }
+    assert implementation_names
     deletion = prepare_delete(delete_capture)
     deletion_publication = adapter.delete(service, deletion, deletion["manifest"])
     deleted = finish_delete(deletion, deletion_publication)
     assert deleted["artifacts_deleted"] is True
     assert reopened.getObject(identity) is None
+    assert not {
+        name for name in implementation_names if reopened.getObject(name) is not None
+    }
     assert not LocalPath(deletion["program_directory"]).exists()
     App.closeDocument(reopened.Name)
     return {

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Insert standard fastener">
+  <path d="M19 10h26l7 9-7 9H19l-7-9z" fill="#0e1116" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M27 28h10v22l-5 5-5-5z" fill="#e8edf2" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M27 35l10 6M27 42l10 6" fill="none" stroke="#1c7ed6" stroke-width="2.5"/>
+  <path d="M48 38v16M40 46h16" fill="none" stroke="#74c0fc" stroke-width="4" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,9 @@
+{
+  "name": "FreeCAD Fasteners Workbench",
+  "module": "Fasteners",
+  "version": "0.5.64",
+  "revision": "79a06dc067b57ebc89532be835704eb2af5da96c",
+  "source": "https://github.com/shaise/FreeCAD_FastenersWB",
+  "license": "GPL-2.0-or-later",
+  "license_file": "../Fasteners/LICENSE"
+}

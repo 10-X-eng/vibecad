@@ -154,6 +154,60 @@ def _label(operation: str, value: Any) -> str:
     return result
 
 
+def _required_text(
+    operation: str,
+    parameter: str,
+    value: Any,
+    *,
+    maximum: int = 128,
+) -> str:
+    result = str(value or "").strip()
+    if not result:
+        raise _error(operation, parameter, "must be non-empty")
+    if len(result) > maximum:
+        raise _error(
+            operation,
+            parameter,
+            f"must contain at most {maximum} characters",
+        )
+    return result
+
+
+def _fastener_options(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise _error("fastener", "options", "must be an object", value)
+    if len(value) > 16:
+        raise _error("fastener", "options", "may contain at most 16 entries")
+    result: dict[str, Any] = {}
+    for raw_name, raw_value in value.items():
+        name = str(raw_name or "").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
+            raise _error(
+                "fastener",
+                "options",
+                "keys must use lower_snake_case",
+                raw_name,
+            )
+        if isinstance(raw_value, float) and not math.isfinite(raw_value):
+            raise _error(
+                "fastener",
+                f"options.{name}",
+                "must be finite",
+                raw_value,
+            )
+        if not isinstance(raw_value, (str, bool, int, float)):
+            raise _error(
+                "fastener",
+                f"options.{name}",
+                "must be a string, boolean, integer, or finite number",
+                raw_value,
+            )
+        result[name] = raw_value
+    return result
+
+
 def _retag(value: Any, domain: str) -> Any:
     """Retag the shared Sketcher value graph without exposing another API."""
 
@@ -501,6 +555,7 @@ class PartDesignDomainAPI:
         "cone",
         "sphere",
         "torus",
+        "fastener",
         # Sketch geometry.  Explicit *_3d names below avoid dimensional ambiguity.
         "point",
         "line",
@@ -545,6 +600,7 @@ class PartDesignDomainAPI:
         "chamfer",
         "thickness",
         "hole",
+        "fastener_hole",
         "draft",
         # Distinct topology, repair, and transformation capabilities.
         "defeature",
@@ -666,6 +722,65 @@ class PartDesignDomainAPI:
             **{key: _retag(item, "part") for key, item in properties.items()},
         )
         return _retag(value, "partdesign")
+
+    def fastener(
+        self,
+        standard: str,
+        nominal_thread: str,
+        *,
+        length_mm: float | None = None,
+        model_thread: bool = False,
+        left_handed: bool = False,
+        options: Mapping[str, Any] | None = None,
+        label: str = "",
+    ) -> DomainValue:
+        """Create one exact catalog fastener as a native parametric Body feature.
+
+        Use the published standard, size/thread token, and a catalog length.
+        Set model_thread=True to generate real helical thread geometry; False
+        generates the lightweight unthreaded envelope. No nearest-size
+        substitution is performed.
+        """
+
+        if not isinstance(model_thread, bool):
+            raise _error(
+                "fastener",
+                "model_thread",
+                "must be a boolean",
+                model_thread,
+            )
+        if not isinstance(left_handed, bool):
+            raise _error(
+                "fastener",
+                "left_handed",
+                "must be a boolean",
+                left_handed,
+            )
+        return self._graph(
+            "fastener",
+            "feature",
+            _required_text("fastener", "standard", standard),
+            _required_text(
+                "fastener",
+                "nominal_thread",
+                nominal_thread,
+            ),
+            length_mm=(
+                None
+                if length_mm is None
+                else _number(
+                    "fastener",
+                    "length_mm",
+                    length_mm,
+                    minimum=0.0,
+                    strict=True,
+                )
+            ),
+            model_thread=model_thread,
+            left_handed=left_handed,
+            options=_fastener_options(options),
+            label=_label("fastener", label),
+        )
 
     def point(self, position: Sequence[float], *, construction: bool = True, name: str = "") -> DomainValue:
         """Create a construction point for a Part Design profile sketch."""
@@ -1976,6 +2091,94 @@ class PartDesignDomainAPI:
             counterbore_diameter_mm=counterbore_diameter,
             counterbore_depth_mm=counterbore_depth,
             label=_label("hole", label),
+        )
+
+    def fastener_hole(
+        self,
+        base: DomainValue,
+        profile: DomainValue,
+        fastener: DomainValue,
+        *,
+        purpose: str = "clearance",
+        fit: str = "normal",
+        depth_mm: float | None = None,
+        through_all: bool = False,
+        label: str = "",
+    ) -> DomainValue:
+        """Cut a native Hole whose dimensions come from an exact catalog fastener.
+
+        purpose is clearance, tapped, counterbore, or countersink. fit is
+        normal, close, or loose and applies to unthreaded holes. Provide exactly
+        one of depth_mm or through_all=True.
+        """
+
+        if through_all == (depth_mm is not None):
+            raise _error(
+                "fastener_hole",
+                "depth_mm/through_all",
+                "must provide exactly one depth or through_all=True",
+            )
+        clean_purpose = str(purpose or "").strip().lower()
+        if clean_purpose not in {
+            "clearance",
+            "tapped",
+            "counterbore",
+            "countersink",
+        }:
+            raise _error(
+                "fastener_hole",
+                "purpose",
+                "must be clearance, tapped, counterbore, or countersink",
+                purpose,
+            )
+        clean_fit = str(fit or "").strip().lower()
+        if clean_fit not in {"normal", "close", "loose"}:
+            raise _error(
+                "fastener_hole",
+                "fit",
+                "must be normal, close, or loose",
+                fit,
+            )
+        if clean_purpose == "tapped" and clean_fit != "normal":
+            raise _error(
+                "fastener_hole",
+                "fit",
+                "applies to clearance holes; tapped holes require normal",
+                fit,
+            )
+        clean_fastener = _feature(
+            "fastener_hole",
+            "fastener",
+            fastener,
+        )
+        if clean_fastener.operation != "fastener":
+            raise _error(
+                "fastener_hole",
+                "fastener",
+                "must be the exact value returned by api.fastener",
+                clean_fastener.operation,
+            )
+        return self._graph(
+            "fastener_hole",
+            "feature",
+            _feature("fastener_hole", "base", base),
+            _profile("fastener_hole", "profile", profile),
+            clean_fastener,
+            purpose=clean_purpose,
+            fit=clean_fit,
+            depth_mm=(
+                None
+                if depth_mm is None
+                else _number(
+                    "fastener_hole",
+                    "depth_mm",
+                    depth_mm,
+                    minimum=0.0,
+                    strict=True,
+                )
+            ),
+            through_all=bool(through_all),
+            label=_label("fastener_hole", label),
         )
 
     def draft(

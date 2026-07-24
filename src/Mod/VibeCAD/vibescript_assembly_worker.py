@@ -876,6 +876,80 @@ def _reference(value: Any, *, context: str) -> dict[str, str]:
     return result
 
 
+def _catalog_fastener_identity(
+    value: DomainValue,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, DomainValue)
+        or value.domain != "assembly"
+        or value.operation != "fastener"
+        or value.output_type != "component_link"
+        or len(value.arguments) != 2
+    ):
+        raise AssemblyCandidateError(
+            f"{context} must come from api.fastener.",
+            details={"stage": "fastener_graph"},
+        )
+    properties = _properties(value, "fastener")
+    try:
+        from VibeCADFasteners import resolve_fastener
+
+        return resolve_fastener(
+            standard=value.arguments[0],
+            nominal_thread=value.arguments[1],
+            length_mm=properties.get("length_mm"),
+            model_thread=properties["model_thread"],
+            left_handed=bool(properties.get("left_handed")),
+            options=dict(properties.get("options") or {}),
+        )
+    except Exception as exc:
+        raise AssemblyCandidateError(
+            f"{context} rejected the exact catalog request: {exc}",
+            details={
+                "stage": "fastener_catalog",
+                "standard": str(value.arguments[0]),
+                "nominal_thread": str(value.arguments[1]),
+            },
+        ) from exc
+
+
+def _catalog_fastener_source(
+    identity: Mapping[str, Any],
+) -> dict[str, str]:
+    from VibeCADFasteners import catalog_component_reference
+
+    return catalog_component_reference(identity)
+
+
+def _catalog_fastener_brep(
+    shape: Any,
+    *,
+    artifact_root: Path,
+    component_index: int,
+) -> dict[str, Any]:
+    relative = Path("outputs") / f"assembly-fastener-{component_index}.brep"
+    target = artifact_root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shape.exportBrep(str(target))
+    size = target.stat().st_size
+    if not 1 <= size <= 256 * 1024 * 1024:
+        raise AssemblyCandidateError(
+            "Generated fastener BREP exceeds the bounded Assembly artifact size.",
+            details={
+                "stage": "fastener_brep",
+                "artifact_bytes": size,
+            },
+        )
+    return {
+        "artifact_kind": "brep",
+        "artifact_path": str(relative),
+        "artifact_sha256": _sha256_path(target),
+        "artifact_bytes": size,
+    }
+
+
 def _native_placement(value: Any, *, context: str) -> Any:
     import FreeCAD as App
 
@@ -2258,9 +2332,31 @@ def _bom_component_sources(
     result: list[dict[str, Any]] = []
     for value in component_values:
         output_name = component_outputs[id(value)]
+        if value.operation == "fastener":
+            identity = _catalog_fastener_identity(
+                value,
+                context=f"BOM component output {output_name!r}",
+            )
+            from VibeCADFasteners import fastener_bom_properties
+
+            source = _catalog_fastener_source(identity)
+            result.append(
+                {
+                    "output_name": output_name,
+                    "reference": {
+                        **source,
+                        "label": str(identity["part_number"]),
+                        "source_kind": "standard_fastener",
+                        "document_file_name": "",
+                        "bom_properties": fastener_bom_properties(identity),
+                    },
+                }
+            )
+            continue
         if value.operation != "component" or len(value.arguments) != 1:
             raise AssemblyCandidateError(
-                f"BOM component output {output_name!r} must come from api.component.",
+                f"BOM component output {output_name!r} must come from "
+                "api.component or api.fastener.",
                 details={"stage": "bom_graph", "component_output": output_name},
             )
         source = _reference(
@@ -2908,6 +3004,7 @@ def _resolve_connector(
     component_outputs: Mapping[int, str],
     components: Mapping[str, Any],
     component_sources: Mapping[str, dict[str, str]],
+    component_source_metadata: Mapping[str, Mapping[str, Any]],
     component_reconstructions: Mapping[str, dict[str, Any] | None],
     context: str,
 ) -> dict[str, Any]:
@@ -2927,8 +3024,11 @@ def _resolve_connector(
     selection = properties.get("selection")
     if not isinstance(selection, Mapping):
         raise AssemblyCandidateError(f"{context}.selection is malformed.")
-    source_key = (source_ref["document_uid"], source_ref["object_name"])
-    metadata: Mapping[str, Any] = _REFERENCE_METADATA[source_key]
+    metadata = component_source_metadata.get(str(output_name or ""))
+    if metadata is None:
+        raise AssemblyCandidateError(
+            f"{context} lost its authenticated component-source metadata."
+        )
     reconstruction = component_reconstructions.get(str(output_name or ""))
     occurrence_path = str(properties.get("occurrence_path") or "")
     hierarchy_chain = None
@@ -2985,6 +3085,7 @@ def _resolve_connector(
         )
     mode = str(selection.get("type") or "")
     semantic: dict[str, Any] | None = None
+    standard_frame: Mapping[str, Any] | None = None
     if mode == "component_origin":
         if properties.get("anchor") is not None:
             raise AssemblyCandidateError(
@@ -3081,6 +3182,13 @@ def _resolve_connector(
         geometry_type = str(
             (geometry[0] if geometry else {}).get("geometry_type") or inferred
         )
+        raw_standard_frame = raw.get("standard_frame")
+        if raw_standard_frame is not None:
+            if not isinstance(raw_standard_frame, Mapping):
+                raise AssemblyCandidateError(
+                    f"{context} published interface has a malformed standard frame."
+                )
+            standard_frame = raw_standard_frame
         semantic = {
             "type": "published_interface",
             "interface_name": interface_name,
@@ -3107,7 +3215,23 @@ def _resolve_connector(
         )
         native_component = hierarchy_reference["target"]
         native_element, native_anchor = hierarchy_reference["subelements"]
-    offset = _native_placement(properties.get("offset"), context=f"{context}.offset")
+    user_offset = _native_placement(
+        properties.get("offset"),
+        context=f"{context}.offset",
+    )
+    interface_frame = (
+        _native_placement(
+            standard_frame,
+            context=f"{context} published-interface frame",
+        )
+        if standard_frame is not None
+        else None
+    )
+    offset = (
+        interface_frame.multiply(user_offset)
+        if interface_frame is not None
+        else user_offset
+    )
     return {
         "component_output": output_name,
         "component": native_component,
@@ -3128,6 +3252,11 @@ def _resolve_connector(
             list(hierarchy_reference["native_chain"])
             if hierarchy_reference is not None
             else []
+        ),
+        "interface_frame": (
+            _placement_fact(interface_frame)
+            if interface_frame is not None
+            else None
         ),
         "offset": offset,
     }
@@ -3395,25 +3524,111 @@ def validate_and_solve_assembly(
     source_reconstructions: dict[tuple[str, str], dict[str, Any]] = {}
     components: dict[str, Any] = {}
     component_sources: dict[str, dict[str, str]] = {}
+    component_source_metadata: dict[str, Mapping[str, Any]] = {}
     component_reconstructions: dict[str, dict[str, Any] | None] = {}
     grounded_outputs: list[str] = []
     pending_grounding: list[tuple[int, str, Any]] = []
     component_data: dict[str, dict[str, Any]] = {}
     for index, value in enumerate(component_values):
         output_name = component_outputs[id(value)]
-        if value.operation != "component" or len(value.arguments) != 1:
+        if value.operation not in {"component", "fastener"}:
             raise AssemblyCandidateError(
-                f"Component output {output_name!r} must come from api.component."
+                f"Component output {output_name!r} must come from "
+                "api.component or api.fastener."
             )
-        properties = _properties(value, "component")
-        source_ref = _reference(
-            value.arguments[0],
-            context=f"component output {output_name!r} source",
-        )
-        source_key = (source_ref["document_uid"], source_ref["object_name"])
-        metadata = _REFERENCE_METADATA[source_key]
-        source_kind = str(metadata.get("source_kind") or "shape")
-        flexible = bool(properties.get("flexible", False))
+        properties = _properties(value, value.operation)
+        catalog_identity: dict[str, Any] | None = None
+        catalog_brep: dict[str, Any] | None = None
+        if value.operation == "fastener":
+            if artifact_root is None:
+                raise AssemblyCandidateError(
+                    f"Component output {output_name!r} requires a staged fastener BREP.",
+                    details={"stage": "fastener_brep"},
+                )
+            catalog_identity = _catalog_fastener_identity(
+                value,
+                context=f"Component output {output_name!r}",
+            )
+            source_ref = _catalog_fastener_source(catalog_identity)
+            source_key = (
+                source_ref["document_uid"],
+                source_ref["object_name"],
+            )
+            try:
+                from VibeCADFasteners import (
+                    assembly_component_contract,
+                    create_fastener_feature,
+                )
+
+                source = source_objects.get(source_key)
+                if source is None:
+                    source, observed_identity = create_fastener_feature(
+                        document,
+                        standard=catalog_identity["standard"],
+                        nominal_thread=catalog_identity["nominal_size"],
+                        length_mm=catalog_identity["length_mm"],
+                        model_thread=bool(catalog_identity["model_thread"]),
+                        left_handed=bool(catalog_identity["left_handed"]),
+                        options=dict(catalog_identity["options"]),
+                        object_name=f"CandidateFastenerSource{index}",
+                        label=str(catalog_identity["part_number"]),
+                    )
+                    if (
+                        observed_identity["canonical_key"]
+                        != catalog_identity["canonical_key"]
+                    ):
+                        raise AssemblyCandidateError(
+                            f"Component output {output_name!r} generated a different "
+                            "catalog identity.",
+                            details={"stage": "fastener_generation"},
+                        )
+                    source_objects[source_key] = source
+                metadata = assembly_component_contract(
+                    source.Shape,
+                    catalog_identity,
+                )
+                catalog_brep = _catalog_fastener_brep(
+                    source.Shape,
+                    artifact_root=artifact_root,
+                    component_index=index,
+                )
+            except AssemblyCandidateError:
+                raise
+            except Exception as exc:
+                raise AssemblyCandidateError(
+                    f"Component output {output_name!r} could not generate its "
+                    f"catalog fastener: {exc}",
+                    details={
+                        "stage": "fastener_generation",
+                        "standard": str(catalog_identity["standard"]),
+                        "nominal_thread": str(catalog_identity["nominal_size"]),
+                    },
+                ) from exc
+            source_kind = "standard_fastener"
+            flexible = False
+            reconstruction = None
+            component = assembly.newObject(
+                "App::Link",
+                f"CandidateComponent{index}",
+            )
+        else:
+            if len(value.arguments) != 1:
+                raise AssemblyCandidateError(
+                    f"Component output {output_name!r} has a malformed source."
+                )
+            source_ref = _reference(
+                value.arguments[0],
+                context=f"component output {output_name!r} source",
+            )
+            source_key = (
+                source_ref["document_uid"],
+                source_ref["object_name"],
+            )
+            metadata = _REFERENCE_METADATA[source_key]
+            source_kind = str(metadata.get("source_kind") or "shape")
+            flexible = bool(properties.get("flexible", False))
+            hierarchy = _REFERENCE_HIERARCHIES.get(source_key)
+            reconstruction = None
         grounded = bool(properties.get("grounded"))
         if flexible and source_kind != "assembly":
             raise AssemblyCandidateError(
@@ -3442,9 +3657,11 @@ def validate_and_solve_assembly(
                 },
             )
 
-        hierarchy = _REFERENCE_HIERARCHIES.get(source_key)
-        reconstruction: dict[str, Any] | None = None
-        if source_kind in {"assembly", "part"} and hierarchy is not None:
+        if (
+            value.operation == "component"
+            and source_kind in {"assembly", "part"}
+            and hierarchy is not None
+        ):
             reconstruction = source_reconstructions.get(source_key)
             if reconstruction is None:
                 reconstruction = _reconstruct_assembly_hierarchy(
@@ -3463,7 +3680,7 @@ def validate_and_solve_assembly(
                 f"CandidateComponent{index}",
             )
             source = reconstruction["root"]
-        else:
+        elif value.operation == "component":
             if flexible:
                 raise AssemblyCandidateError(
                     f"Component output {output_name!r} cannot expose source internals "
@@ -3492,7 +3709,10 @@ def validate_and_solve_assembly(
                     },
                 )
                 source_objects[source_key] = source
-            component = assembly.newObject("App::Link", f"CandidateComponent{index}")
+            component = assembly.newObject(
+                "App::Link",
+                f"CandidateComponent{index}",
+            )
         if component is None:
             raise AssemblyCandidateError(
                 f"FreeCAD did not create component output {output_name!r}."
@@ -3508,6 +3728,7 @@ def validate_and_solve_assembly(
             component.Rigid = not flexible
         components[output_name] = component
         component_sources[output_name] = source_ref
+        component_source_metadata[output_name] = metadata
         component_reconstructions[output_name] = reconstruction
         if grounded:
             grounded_outputs.append(output_name)
@@ -3539,6 +3760,14 @@ def validate_and_solve_assembly(
             "occurrence_path_count": len(occurrence_paths),
             "occurrence_paths": occurrence_paths,
         }
+        if catalog_identity is not None and catalog_brep is not None:
+            component_data[output_name].update(
+                {
+                    "catalog_fastener": catalog_identity,
+                    "source_contract": dict(metadata),
+                    "source_brep": catalog_brep,
+                }
+            )
 
     # Native AssemblyLinks synchronize their generated children and internal
     # joints in the worker before any model-authored connector is resolved.
@@ -3590,6 +3819,7 @@ def validate_and_solve_assembly(
                 component_outputs=component_outputs,
                 components=components,
                 component_sources=component_sources,
+                component_source_metadata=component_source_metadata,
                 component_reconstructions=component_reconstructions,
                 context=f"joint output {output_name!r} connector {connector_index}",
             )
@@ -3685,6 +3915,7 @@ def validate_and_solve_assembly(
                         "native_hierarchy_chain"
                     ],
                     "native_reference": _native_reference(native_reference),
+                    "interface_frame": connector["interface_frame"],
                     "offset": _placement_fact(connector["offset"]),
                     "local_frame": _placement_fact(local_frame),
                     "global_frame": _placement_fact(global_frame),

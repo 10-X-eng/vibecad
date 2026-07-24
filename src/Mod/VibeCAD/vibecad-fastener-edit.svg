@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Edit standard fastener">
+  <path d="M15 9h25l7 8-7 9H15l-6-9z" fill="#0e1116" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M24 26h9v25l-4.5 4-4.5-4z" fill="#e8edf2" stroke="#4dabf7" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M24 34l9 5M24 41l9 5" fill="none" stroke="#1c7ed6" stroke-width="2.5"/>
+  <path d="M39 48l3-9 11-11 6 6-11 11z" fill="#74c0fc" stroke="#0e1116" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M53 28l6 6" stroke="#e8edf2" stroke-width="2.5"/>
+</svg>

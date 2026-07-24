@@ -121,6 +121,61 @@ def _label(operation: str, value: Any) -> str:
     return result
 
 
+def _required_text(
+    operation: str,
+    parameter: str,
+    value: Any,
+    *,
+    maximum: int = 128,
+) -> str:
+    result = str(value or "").strip()
+    if not result:
+        raise _error(operation, parameter, "must be non-empty", value)
+    if len(result) > maximum:
+        raise _error(
+            operation,
+            parameter,
+            f"must contain at most {maximum} characters",
+            value,
+        )
+    return result
+
+
+def _fastener_options(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise _error("fastener", "options", "must be an object", value)
+    if len(value) > 16:
+        raise _error("fastener", "options", "may contain at most 16 entries")
+    result: dict[str, Any] = {}
+    for raw_name, raw_value in value.items():
+        name = str(raw_name or "").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
+            raise _error(
+                "fastener",
+                "options",
+                "keys must use lower_snake_case",
+                raw_name,
+            )
+        if isinstance(raw_value, float) and not math.isfinite(raw_value):
+            raise _error(
+                "fastener",
+                f"options.{name}",
+                "must be finite",
+                raw_value,
+            )
+        if not isinstance(raw_value, (str, bool, int, float)):
+            raise _error(
+                "fastener",
+                f"options.{name}",
+                "must be a string, boolean, integer, or finite number",
+                raw_value,
+            )
+        result[name] = raw_value
+    return result
+
+
 def _occurrence_path(operation: str, value: Any) -> str:
     result = str(value or "").strip()
     if not _OCCURRENCE_PATH.fullmatch(result):
@@ -713,6 +768,7 @@ class AssemblyDomainAPI:
     exported_names = (
         "assembly",
         "component",
+        "fastener",
         "connector",
         "joint",
         "solve",
@@ -793,6 +849,73 @@ class AssemblyDomainAPI:
             placement=_placement(operation, "placement", placement),
             grounded=grounded,
             flexible=flexible,
+            label=label,
+        )
+
+    def fastener(
+        self,
+        standard: str,
+        nominal_thread: str,
+        *,
+        length_mm: float | None = None,
+        model_thread: bool = False,
+        left_handed: bool = False,
+        options: Mapping[str, Any] | None = None,
+        placement: Sequence[float] | Mapping[str, Sequence[float]] | None = None,
+        grounded: bool = False,
+        label: str = "",
+    ) -> DomainValue:
+        """Insert one exact catalog fastener as a native linked occurrence.
+
+        Pass values returned by fastener_catalog.search. No nearest standard,
+        thread, length, or option is substituted. Use the returned occurrence
+        directly in api.connector and api.assembly. Set model_thread=True for
+        real helical thread geometry; False uses the lightweight envelope.
+        """
+
+        operation = "fastener"
+        if not isinstance(model_thread, bool):
+            raise _error(
+                operation,
+                "model_thread",
+                "must be a boolean",
+                model_thread,
+            )
+        if not isinstance(left_handed, bool):
+            raise _error(
+                operation,
+                "left_handed",
+                "must be a boolean",
+                left_handed,
+            )
+        if not isinstance(grounded, bool):
+            raise _error(
+                operation,
+                "grounded",
+                "must be a boolean",
+                grounded,
+            )
+        return self._value(
+            operation,
+            "component_link",
+            _required_text(operation, "standard", standard),
+            _required_text(operation, "nominal_thread", nominal_thread),
+            length_mm=(
+                None
+                if length_mm is None
+                else _number(
+                    operation,
+                    "length_mm",
+                    length_mm,
+                    minimum=0.0,
+                    strict_minimum=True,
+                )
+            ),
+            model_thread=model_thread,
+            left_handed=left_handed,
+            options=_fastener_options(options),
+            placement=_placement(operation, "placement", placement),
+            grounded=grounded,
             label=label,
         )
 
