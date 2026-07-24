@@ -12,6 +12,7 @@ import Part
 import PartDesign  # noqa: F401 - registers Part Design document types
 import Sketcher  # noqa: F401 - registers Sketcher document types
 from PySide import QtCore, QtGui
+from pivy import coin
 
 
 BROWSER_FOLDER_TYPE = 1002
@@ -107,6 +108,32 @@ def _press_space(widget):
         QtGui.QApplication.sendEvent(widget, event)
 
 
+def _renders_in_active_scene(obj):
+    view = Gui.getDocument(obj.Document.Name).activeView()
+    search = coin.SoSearchAction()
+    search.setNode(obj.ViewObject.RootNode)
+    search.setSearchingAll(True)
+    search.apply(view.getSceneGraph())
+    path = search.getPath()
+    if path is None:
+        return False
+    path.ref()
+    try:
+        region = view.getViewer().getSoRenderManager().getViewportRegion()
+        bounds = coin.SoGetBoundingBoxAction(region)
+        bounds.apply(path)
+        return not bounds.getBoundingBox().isEmpty()
+    finally:
+        path.unref()
+
+
+def _rendered_primitive_counts(obj):
+    counts = coin.SoGetPrimitiveCountAction()
+    counts.setCanApproximate(True)
+    counts.apply(obj.ViewObject.RootNode)
+    return counts.getTriangleCount(), counts.getLineCount()
+
+
 class TestModelTreeBrowser(unittest.TestCase):
     """Verify type folders without changing the underlying document graph."""
 
@@ -196,6 +223,32 @@ class TestModelTreeBrowser(unittest.TestCase):
             model_id=scripted_model_id,
             output_key="UtilityBlade",
         )
+        self.vibe_sketch = self.vibe_body.newObject(
+            "Sketcher::SketchObject",
+            "VibeBladeProfile",
+        )
+        self.vibe_sketch.Label = "Blade Profile"
+        self.vibe_sketch.addGeometry(
+            [
+                Part.LineSegment(
+                    App.Vector(0, 0, 0),
+                    App.Vector(6, 0, 0),
+                ),
+                Part.LineSegment(
+                    App.Vector(6, 0, 0),
+                    App.Vector(6, 2, 0),
+                ),
+                Part.LineSegment(
+                    App.Vector(6, 2, 0),
+                    App.Vector(0, 2, 0),
+                ),
+                Part.LineSegment(
+                    App.Vector(0, 2, 0),
+                    App.Vector(0, 0, 0),
+                ),
+            ],
+            False,
+        )
         self.vibe_result = self.vibe_body.newObject(
             "PartDesign::Feature",
             "VibePD_AdoptedResult_1",
@@ -205,6 +258,14 @@ class TestModelTreeBrowser(unittest.TestCase):
         # into the confusing "...001" label seen in the reported document.
         self.vibe_result.Label = self.vibe_body.Label
         self.vibe_result.Shape = Part.makeBox(6, 2, 1)
+        self.vibe_body.Tip = self.vibe_result
+        self.vibe_part_result = self.document.addObject(
+            "Part::Feature",
+            "VibeRetainedPartResult",
+        )
+        self.vibe_part_result.Label = "Retained Part Result"
+        self.vibe_part_result.Shape = Part.makeCylinder(0.5, 1)
+        self.vibe_body.addObject(self.vibe_part_result)
         self.vibe_body.Tip = self.vibe_result
 
         self.vibe_target = self.document.addObject(
@@ -234,6 +295,13 @@ class TestModelTreeBrowser(unittest.TestCase):
             model_id=scripted_model_id,
             output_key="UtilityBlade",
         )
+        # The stable link renders the accepted solid. The native Body stays
+        # enabled only as the 3D parent for independently visible history.
+        self.vibe_body.Visibility = True
+        self.vibe_sketch.Visibility = False
+        self.vibe_result.Visibility = False
+        self.vibe_part_result.Visibility = False
+        self.vibe_output.Visibility = True
 
         self.standalone = self.document.addObject(
             "Part::Feature", "StandaloneGeometry"
@@ -540,7 +608,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         features = _child(body_item, "Features", BROWSER_FOLDER_TYPE)
         self.assertEqual(
             [item.text(0) for item in _visible_children(features)],
-            ["Result"],
+            ["Result", "Retained Part Result"],
         )
 
         # The implementation Body is the semantic solid in the normal browser.
@@ -556,10 +624,14 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertNotIn(self.vibe_output.Label, visible_labels)
         self.assertIs(self.vibe_output.getLinkedObject(), self.vibe_target)
 
-        # The Body row controls the complete visible output, including the
-        # stable carrier that owns presentation and downstream identity.
+        # The Body row controls the stable rendered output without disabling
+        # the native Body that owns independently visible history objects.
         self.vibe_body.Visibility = True
-        self.vibe_output.Visibility = True
+        self.vibe_result.Visibility = True
+        self.vibe_part_result.Visibility = True
+        # Reproduce the reported state: the Body row's publication is hidden,
+        # but native Part Design and retained Part results are still drawing.
+        self.vibe_output.Visibility = False
         tree.clearSelection()
         tree.setCurrentItem(body_item)
         body_item.setSelected(True)
@@ -567,8 +639,10 @@ class TestModelTreeBrowser(unittest.TestCase):
         _press_space(tree)
         self.assertIsNotNone(
             _wait_until(
-                lambda: not self.vibe_body.Visibility
+                lambda: self.vibe_body.Visibility
                 and not self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
             )
         )
         _press_space(tree)
@@ -576,6 +650,33 @@ class TestModelTreeBrowser(unittest.TestCase):
             _wait_until(
                 lambda: self.vibe_body.Visibility
                 and self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+            )
+        )
+
+        # Standard visibility commands must use the same projected Body
+        # contract even after focus leaves the tree.
+        self.vibe_result.Visibility = True
+        self.vibe_part_result.Visibility = True
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.vibe_body)
+        Gui.runCommand("Std_HideSelection")
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_body.Visibility
+                and not self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+            )
+        )
+        Gui.runCommand("Std_ShowSelection")
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_body.Visibility
+                and self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
             )
         )
 
@@ -614,6 +715,85 @@ class TestModelTreeBrowser(unittest.TestCase):
                 )
             )
         )
+        self._assert_document_unchanged()
+
+    def test_hidden_body_output_does_not_hide_its_enabled_sketch(self):
+        tree, document_item = self._browser_items()
+        vibe_component = _child(document_item, "Vibe Program")
+        bodies = _child(vibe_component, "Bodies", BROWSER_FOLDER_TYPE)
+        body_item = _child(bodies, "Utility Blade 38755A29")
+        sketches = _child(vibe_component, "Sketches", BROWSER_FOLDER_TYPE)
+        sketch_item = _child(sketches, "Blade Profile")
+        self.assertIsNotNone(body_item)
+        self.assertIsNotNone(sketch_item)
+
+        self.vibe_body.Visibility = True
+        self.vibe_result.Visibility = True
+        self.vibe_part_result.Visibility = True
+        self.vibe_output.Visibility = True
+        self.vibe_sketch.Visibility = False
+        _event_step()
+        self.assertFalse(_renders_in_active_scene(self.vibe_sketch))
+        self.assertTrue(_renders_in_active_scene(self.vibe_result))
+        self.assertTrue(_renders_in_active_scene(self.vibe_part_result))
+
+        tree.clearSelection()
+        tree.setCurrentItem(body_item)
+        body_item.setSelected(True)
+        tree.setFocus()
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_body.Visibility
+                and not self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+            )
+        )
+        self.assertFalse(_renders_in_active_scene(self.vibe_output))
+        self.assertFalse(_renders_in_active_scene(self.vibe_result))
+        self.assertFalse(_renders_in_active_scene(self.vibe_part_result))
+        triangles, _lines = _rendered_primitive_counts(self.vibe_body)
+        self.assertEqual(triangles, 0)
+
+        tree.clearSelection()
+        tree.setCurrentItem(sketch_item)
+        sketch_item.setSelected(True)
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_body.Visibility
+                and self.vibe_sketch.Visibility
+                and not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+                and not self.vibe_output.Visibility
+            )
+        )
+        self.assertTrue(_renders_in_active_scene(self.vibe_sketch))
+        _triangles, lines = _rendered_primitive_counts(self.vibe_body)
+        self.assertGreater(lines, 0)
+        self._assert_document_unchanged()
+
+    def test_legacy_hidden_body_restores_as_a_sketch_render_container(self):
+        from VibeCADVibeScriptDomainPublication import (
+            PROP_PARTDESIGN_HISTORY_PRESENTATION,
+            restore_partdesign_history_presentation,
+        )
+
+        if PROP_PARTDESIGN_HISTORY_PRESENTATION in self.vibe_body.PropertiesList:
+            self.vibe_body.removeProperty(PROP_PARTDESIGN_HISTORY_PRESENTATION)
+        self.vibe_body.Visibility = False
+        self.vibe_sketch.Visibility = True
+        self.vibe_result.Visibility = True
+        self.vibe_output.Visibility = False
+
+        restored = restore_partdesign_history_presentation(self.document)
+
+        self.assertEqual(restored["migrated_bodies"], [self.vibe_body.Name])
+        self.assertTrue(self.vibe_body.Visibility)
+        self.assertTrue(self.vibe_sketch.Visibility)
+        self.assertFalse(self.vibe_result.Visibility)
+        self.assertFalse(self.vibe_output.Visibility)
         self._assert_document_unchanged()
 
     def test_late_publication_metadata_refreshes_live_tree_to_body(self):

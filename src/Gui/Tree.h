@@ -140,6 +140,13 @@ public:
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
     static void refreshModelBrowsers();
+    // Route standard visibility commands through a projected browser object.
+    // requestedVisibility < 0 toggles; zero hides; positive shows.
+    static bool applyModelBrowserVisibility(
+        App::DocumentObject* object,
+        int requestedVisibility,
+        bool& resultingVisibility
+    );
 
     QList<QTreeWidgetItem*> childrenOfItem(const QTreeWidgetItem& item) const;
 
@@ -209,7 +216,11 @@ private:
     void selectAllDocumentLevel();
     void selectAllGroupLevel(const QTreeWidgetItem* targetNode, bool isGroup);
     void clearSelectAllContext();
-    static void setObjectItemVisibility(DocumentObjectItem* item, bool visible);
+    static void setObjectItemVisibility(
+        DocumentObjectItem* item,
+        bool visible,
+        bool updateSelection = true
+    );
     static bool objectItemVisibility(const DocumentObjectItem* item);
 
 protected Q_SLOTS:
@@ -468,7 +479,8 @@ protected:
         QTreeWidgetItem* parent,
         DocumentObjectItem* logicalParent,
         bool browserDefaultHidden,
-        App::DocumentObject* browserVisibilityPeer = nullptr
+        App::DocumentObject* browserVisibilityPeer,
+        const std::vector<App::DocumentObject*>& browserVisibilityDependents
     );
     DocumentObjectItem* findBrowserItem(App::DocumentObject* object) const;
     bool isPresentationItem(const DocumentObjectItem* item) const;
@@ -591,6 +603,7 @@ public:
 
 private:
     App::DocumentObject* visibilityPeer() const;
+    std::vector<App::DocumentObject*> visibilityDependents() const;
     void setCheckState(bool checked);
     void getExpandedSnapshot(std::vector<bool>& snapshot) const;
     void applyExpandedSnapshot(
@@ -617,6 +630,7 @@ private:
     // deletion and the next model browser rebuild (see getParentItem()).
     std::string browserLogicalParentName;
     std::string browserVisibilityPeerName;
+    std::vector<std::string> browserVisibilityDependentNames;
 
     friend class TreeWidget;
     friend class DocumentItem;

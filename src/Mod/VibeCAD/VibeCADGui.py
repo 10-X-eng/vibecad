@@ -2883,6 +2883,21 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
     return not unresolved
 
 
+def _restore_partdesign_history_rendering(document: Any) -> bool:
+    """Restore independent Body-output and history visibility after open."""
+
+    try:
+        from VibeCADVibeScriptDomainPublication import (
+            restore_partdesign_history_presentation,
+        )
+
+        result = restore_partdesign_history_presentation(document)
+    except Exception as exc:
+        _warn(f"VibeCAD Part Design history presentation restore failed: {exc}")
+        return False
+    return bool(result.get("changed_objects"))
+
+
 def _refresh_assistant_for_document_change() -> None:
     document = App.ActiveDocument
     if document is not None:
@@ -3008,7 +3023,33 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                 return
             if _document_storage_key(live_document) != document_key:
                 return
-            if _recompute_pending_document_geometry(live_document):
+            try:
+                gui_document = Gui.getDocument(str(live_document.Name))
+                was_modified = (
+                    bool(gui_document.Modified)
+                    if gui_document is not None
+                    else None
+                )
+            except Exception:
+                gui_document = None
+                was_modified = None
+            presentation_changed = _restore_partdesign_history_rendering(
+                live_document
+            )
+            geometry_recomputed = _recompute_pending_document_geometry(
+                live_document
+            )
+            if presentation_changed and not geometry_recomputed:
+                _redraw_document_view(live_document)
+            if gui_document is not None and was_modified is False:
+                try:
+                    gui_document.Modified = False
+                except Exception as exc:
+                    _warn(
+                        "VibeCAD restored-document modified-state reset failed: "
+                        f"{exc}"
+                    )
+            if presentation_changed or geometry_recomputed:
                 QtCore.QTimer.singleShot(
                     0,
                     lambda doc=live_document: _redraw_document_view(doc),
@@ -3020,7 +3061,10 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         if _document_restore_active(document):
             _warn(f"VibeCAD restored-document scheduling failed: {exc}")
             return
-        _recompute_pending_document_geometry(document)
+        presentation_changed = _restore_partdesign_history_rendering(document)
+        geometry_recomputed = _recompute_pending_document_geometry(document)
+        if presentation_changed and not geometry_recomputed:
+            _redraw_document_view(document)
 
 
 def _snapshot_active_document_conversation(doc: Any) -> None:

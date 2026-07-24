@@ -34,6 +34,7 @@ PROP_PARTDESIGN_MATERIAL_BASELINE = "VibeCADPartDesignMaterialBaseline"
 PROP_PARTDESIGN_MATERIAL_ACCEPTED = "VibeCADPartDesignMaterialAccepted"
 PROP_PARTDESIGN_APPEARANCE_BASELINE = "VibeCADPartDesignAppearanceBaseline"
 PROP_PARTDESIGN_APPEARANCE_ACCEPTED = "VibeCADPartDesignAppearanceAccepted"
+PROP_PARTDESIGN_HISTORY_PRESENTATION = "VibeCADPartDesignHistoryPresentation"
 PROP_MESH_VALIDATION = "VibeCADMeshValidation"
 PROP_MESHPART_VALIDATION = "VibeCADMeshPartValidation"
 PROP_POINTS_VALIDATION = "VibeCADPointsValidation"
@@ -49,6 +50,9 @@ PROP_ASSEMBLY_BOM_RESTORE_ERROR = "VibeCADAssemblyBOMRestoreError"
 MATERIAL_OWNERSHIP_SCHEMA = "vibecad-material-ownership-v1"
 PARTDESIGN_PRESENTATION_OWNERSHIP_SCHEMA = (
     "vibecad-partdesign-presentation-ownership-v1"
+)
+PARTDESIGN_HISTORY_PRESENTATION_SCHEMA = (
+    "vibecad-partdesign-history-presentation-v1"
 )
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 _ASSEMBLY_DEPENDENCY_SUFFIX = "__dependencies"
@@ -10590,6 +10594,173 @@ def _verify_partdesign_history_body(
         )
 
 
+def _set_view_visibility(obj: Any, visible: bool) -> bool:
+    view = getattr(obj, "ViewObject", None)
+    if view is None or not hasattr(view, "Visibility"):
+        return False
+    desired = bool(visible)
+    if bool(view.Visibility) == desired:
+        return False
+    view.Visibility = desired
+    return True
+
+
+def _is_partdesign_result_feature(obj: Any) -> bool:
+    checker = getattr(obj, "isDerivedFrom", None)
+    if not callable(checker):
+        return False
+    try:
+        if (
+            checker("PartDesign::ShapeBinder")
+            or checker("PartDesign::SubShapeBinder")
+            or checker("Part::Part2DObject")
+            or checker("Part::BodyBase")
+            or checker("Part::Datum")
+        ):
+            return False
+        return bool(
+            checker("PartDesign::Feature")
+            or checker("Part::Feature")
+        )
+    except Exception:
+        return False
+
+
+def _partdesign_history_result_features(body: Any) -> list[Any]:
+    return [
+        obj
+        for obj in list(getattr(body, "Group", []) or [])
+        if _is_partdesign_result_feature(obj)
+    ]
+
+
+def _mark_partdesign_history_presentation(body: Any) -> bool:
+    changed = PROP_PARTDESIGN_HISTORY_PRESENTATION not in _properties(body)
+    _add_string_property(
+        body,
+        PROP_PARTDESIGN_HISTORY_PRESENTATION,
+        "Internal presentation contract that keeps history independently visible.",
+    )
+    if (
+        str(getattr(body, PROP_PARTDESIGN_HISTORY_PRESENTATION, "") or "")
+        != PARTDESIGN_HISTORY_PRESENTATION_SCHEMA
+    ):
+        setattr(
+            body,
+            PROP_PARTDESIGN_HISTORY_PRESENTATION,
+            PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+        )
+        changed = True
+    _hide_property(body, PROP_PARTDESIGN_HISTORY_PRESENTATION)
+    return changed
+
+
+def _configure_partdesign_history_presentation(body: Any) -> bool:
+    """Keep the native Body as a container, not a duplicate rendered solid."""
+
+    body_view = getattr(body, "ViewObject", None)
+    result_features = _partdesign_history_result_features(body)
+    if body_view is None or not hasattr(body_view, "Visibility"):
+        return False
+    if any(
+        getattr(feature, "ViewObject", None) is None
+        or not hasattr(feature.ViewObject, "Visibility")
+        for feature in result_features
+    ):
+        return False
+
+    changed = _set_view_visibility(body, True)
+    for feature in result_features:
+        changed = _set_view_visibility(feature, False) or changed
+    return _mark_partdesign_history_presentation(body) or changed
+
+
+def _partdesign_presentation_identity(obj: Any, role: str) -> tuple[str, str] | None:
+    if (
+        str(getattr(obj, scripted_publication.PROP_ROLE, "") or "") != role
+        or str(getattr(obj, scripted_publication.PROP_ENGINE, "") or "")
+        != "vibescript:partdesign"
+    ):
+        return None
+    model_id = str(
+        getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+    ).strip()
+    output_key = str(
+        getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+    ).strip()
+    if not model_id or not output_key:
+        return None
+    return model_id, output_key
+
+
+def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
+    """Upgrade saved body-backed outputs to independent history visibility."""
+
+    bodies: dict[tuple[str, str], list[Any]] = {}
+    publications: dict[tuple[str, str], list[Any]] = {}
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body":
+            identity = _partdesign_presentation_identity(
+                obj,
+                scripted_publication.ROLE_IMPLEMENTATION,
+            )
+            if identity is not None:
+                bodies.setdefault(identity, []).append(obj)
+        if str(getattr(obj, "TypeId", "") or "") == "App::Link":
+            identity = _partdesign_presentation_identity(
+                obj,
+                scripted_publication.ROLE_PUBLICATION,
+            )
+            if identity is not None:
+                publications.setdefault(identity, []).append(obj)
+
+    changed_objects: set[str] = set()
+    migrated_bodies: list[str] = []
+    skipped_identities: list[str] = []
+    for identity in sorted(set(bodies).intersection(publications)):
+        body_matches = bodies[identity]
+        publication_matches = publications[identity]
+        if len(body_matches) != 1 or len(publication_matches) != 1:
+            skipped_identities.append(f"{identity[0]}:{identity[1]}")
+            continue
+        body = body_matches[0]
+        publication = publication_matches[0]
+        body_name = str(getattr(body, "Name", "") or "")
+        publication_name = str(getattr(publication, "Name", "") or "")
+        current_schema = str(
+            getattr(body, PROP_PARTDESIGN_HISTORY_PRESENTATION, "") or ""
+        )
+        if current_schema != PARTDESIGN_HISTORY_PRESENTATION_SCHEMA:
+            body_view = getattr(body, "ViewObject", None)
+            publication_view = getattr(publication, "ViewObject", None)
+            output_visible = bool(
+                getattr(body_view, "Visibility", False)
+                or getattr(publication_view, "Visibility", False)
+            )
+            if _configure_partdesign_history_presentation(body):
+                changed_objects.add(body_name)
+            if _set_view_visibility(publication, output_visible):
+                changed_objects.add(publication_name)
+            migrated_bodies.append(body_name)
+            continue
+
+        # The implementation Body is a permanent scene parent for sketches and
+        # datums, never a second solid renderer. ViewProviderBody::show()
+        # automatically enables its Tip, so hide every result feature after
+        # repairing the Body even when this schema was already saved.
+        if _set_view_visibility(body, True):
+            changed_objects.add(body_name)
+        for feature in _partdesign_history_result_features(body):
+            if _set_view_visibility(feature, False):
+                changed_objects.add(str(getattr(feature, "Name", "") or ""))
+
+    return {
+        "changed_objects": sorted(name for name in changed_objects if name),
+        "migrated_bodies": sorted(name for name in migrated_bodies if name),
+        "skipped_identities": skipped_identities,
+    }
+
+
 def _materialize_partdesign_native_history(
     doc: Any,
     root: Any,
@@ -10687,9 +10858,7 @@ def _materialize_partdesign_native_history(
             output_key=output_name,
             revision=revision,
         )
-        body_view = getattr(body, "ViewObject", None)
-        if body_view is not None and hasattr(body_view, "Visibility"):
-            body_view.Visibility = False
+        _configure_partdesign_history_presentation(body)
         bodies[output_name] = body
 
     for body_specification in list(history.get("outputs") or []):

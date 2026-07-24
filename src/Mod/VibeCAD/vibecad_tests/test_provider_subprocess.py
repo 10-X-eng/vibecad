@@ -129,6 +129,7 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
     guidance = provider._vibescript_authoring_instruction(context)
     instructions = provider._provider_instructions(context)
     assert instructions.startswith(provider.VIBECAD_SYSTEM_INSTRUCTIONS)
+    assert "Default to catalog fasteners." in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     assert guidance
     assert guidance in instructions
 

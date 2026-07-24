@@ -331,6 +331,23 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         _entries.push_back(entry);
     }
 
+    std::unordered_map<const App::DocumentObject*, std::vector<App::DocumentObject*>>
+        resultsByBody;
+    for (const auto& entry : _entries) {
+        if (entry.role == Role::Feature && entry.body) {
+            resultsByBody[entry.body].push_back(entry.object);
+        }
+    }
+    for (auto& entry : _entries) {
+        if (entry.role != Role::Body || !entry.publicationRepresentation) {
+            continue;
+        }
+        if (const auto results = resultsByBody.find(entry.object);
+            results != resultsByBody.end()) {
+            entry.bodyResultRepresentations = results->second;
+        }
+    }
+
     orderFeaturesByBodyHistory();
 }
 

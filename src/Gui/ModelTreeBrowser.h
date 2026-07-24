@@ -73,9 +73,16 @@ public:
         // the canonical browser representation of the same output.
         App::DocumentObject* bodyRepresentation {};
 
-        // The stable publication whose rendered visibility must follow this
-        // native Body's browser visibility.
+        // The stable publication whose rendered visibility is represented by
+        // this native Body's browser row. The Body itself remains visible as
+        // the 3D container for independently controlled history objects.
         App::DocumentObject* publicationRepresentation {};
+
+        // Body-owned result objects represented in the Features folder. A
+        // paired Body row suppresses these whenever its published solid is
+        // toggled so sketches, datums, and references remain independent
+        // without leaving a second solid visible.
+        std::vector<App::DocumentObject*> bodyResultRepresentations;
 
         // Older VibeScript documents gave an adopted result the same label as
         // its Body. FreeCAD uniquified that duplicate into an opaque numeric

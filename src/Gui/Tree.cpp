@@ -2284,6 +2284,10 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
                 appObj->getDocument()->getName(),
                 appObj->getNameInDocument()
             );
+            if (auto* parentItem = objectItem->getParentItem();
+                parentItem && parentItem->visibilityPeer()) {
+                parentItem->testStatus(true);
+            }
         }
         for (const auto& entry : DocumentMap) {
             entry.second->updateBrowserFolderStatus();
@@ -2302,6 +2306,24 @@ bool TreeWidget::objectItemVisibility(const DocumentObjectItem* item)
         return false;
     }
 
+    // A body-backed scripted publication uses the native Body as its editable
+    // history and 3D container, while the stable publication peer is the
+    // user-visible solid.  The Body must remain shown so independently enabled
+    // sketches and feature previews can render. Its browser row reports the
+    // effective solid visibility: the publication or any explicit result
+    // preview.
+    if (const auto* peer = item->visibilityPeer()) {
+        if (peer->Visibility.getValue()) {
+            return true;
+        }
+        for (const auto* dependent : item->visibilityDependents()) {
+            if (dependent->Visibility.getValue()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     auto* object = item->object()->getObject();
     App::DocumentObject* parent = nullptr;
     std::ostringstream subName;
@@ -2314,11 +2336,14 @@ bool TreeWidget::objectItemVisibility(const DocumentObjectItem* item)
             visible = elementVisible != 0;
         }
     }
-    const auto* peer = item->visibilityPeer();
-    return visible || (peer && peer->Visibility.getValue());
+    return visible;
 }
 
-void TreeWidget::setObjectItemVisibility(DocumentObjectItem* item, bool visible)
+void TreeWidget::setObjectItemVisibility(
+    DocumentObjectItem* item,
+    bool visible,
+    bool updateSelection
+)
 {
     if (!item || !item->object() || !item->object()->getObject()
         || !item->object()->canToggleVisibility()) {
@@ -2326,6 +2351,33 @@ void TreeWidget::setObjectItemVisibility(DocumentObjectItem* item, bool visible)
     }
 
     auto* object = item->object()->getObject();
+    if (auto* peer = item->visibilityPeer()) {
+        // The row represents the stable solid publication. Keep the native
+        // Body enabled only as a scene container for sketches and datums, and
+        // suppress every native solid result so hiding this row actually
+        // removes the solid from the viewport.
+        if (!object->Visibility.getValue()) {
+            object->Visibility.setValue(true);
+        }
+        for (auto* dependent : item->visibilityDependents()) {
+            if (dependent->Visibility.getValue()) {
+                dependent->Visibility.setValue(false);
+            }
+        }
+        if (peer->Visibility.getValue() != visible) {
+            peer->Visibility.setValue(visible);
+        }
+        if (updateSelection) {
+            Selection().updateSelection(
+                visible,
+                object->getDocument()->getName(),
+                object->getNameInDocument()
+            );
+        }
+        item->testStatus(true);
+        return;
+    }
+
     App::DocumentObject* parent = nullptr;
     std::ostringstream subName;
     item->getSubName(subName, parent);
@@ -2335,15 +2387,54 @@ void TreeWidget::setObjectItemVisibility(DocumentObjectItem* item, bool visible)
     else {
         object->Visibility.setValue(visible);
     }
-    if (auto* peer = item->visibilityPeer();
-        peer && peer->Visibility.getValue() != visible) {
-        peer->Visibility.setValue(visible);
+    if (updateSelection) {
+        Selection().updateSelection(
+            visible,
+            object->getDocument()->getName(),
+            object->getNameInDocument()
+        );
     }
-    Selection().updateSelection(
-        visible,
-        object->getDocument()->getName(),
-        object->getNameInDocument()
-    );
+    if (auto* parentItem = item->getParentItem();
+        parentItem && parentItem->visibilityPeer()) {
+        parentItem->testStatus(true);
+    }
+}
+
+bool TreeWidget::applyModelBrowserVisibility(
+    App::DocumentObject* object,
+    int requestedVisibility,
+    bool& resultingVisibility
+)
+{
+    if (!object || !Application::Instance) {
+        return false;
+    }
+    auto* guiDocument =
+        Application::Instance->getDocument(object->getDocument());
+    if (!guiDocument) {
+        return false;
+    }
+    for (auto* tree : Instances) {
+        if (!tree) {
+            continue;
+        }
+        const auto documentIt = tree->DocumentMap.find(guiDocument);
+        if (documentIt == tree->DocumentMap.end() || !documentIt->second) {
+            continue;
+        }
+        auto* item = documentIt->second->findBrowserItem(object);
+        if (!item || !item->visibilityPeer()) {
+            continue;
+        }
+        const bool visible = requestedVisibility < 0
+            ? !objectItemVisibility(item)
+            : requestedVisibility != 0;
+        setObjectItemVisibility(item, visible, false);
+        documentIt->second->updateBrowserFolderStatus();
+        resultingVisibility = objectItemVisibility(item);
+        return true;
+    }
+    return false;
 }
 
 void TreeWidget::mousePressEvent(QMouseEvent* event)
@@ -2384,24 +2475,39 @@ void TreeWidget::mousePressEvent(QMouseEvent* event)
                 }
                 else {
                     auto* objectItem = static_cast<DocumentObjectItem*>(item);
-                    auto* object = objectItem->object()->getObject();
-                    const char* objectName = object->getNameInDocument();
-
-                    App::DocumentObject* parent = nullptr;
-                    std::ostringstream subName;
-                    objectItem->getSubName(subName, parent);
-
-                    // Try ElementVisible first and fall back to the Visibility property.
-                    int visible = -1;
-                    if (parent) {
-                        visible = parent->isElementVisible(objectName);
-                    }
-                    if (parent && visible >= 0) {
-                        parent->setElementVisible(objectName, !visible);
+                    if (objectItem->visibilityPeer()) {
+                        setObjectItemVisibility(
+                            objectItem,
+                            !objectItemVisibility(objectItem)
+                        );
+                        if (auto* owner = objectItem->getOwnerDocument()) {
+                            owner->updateBrowserFolderStatus();
+                        }
                     }
                     else {
-                        visible = object->Visibility.getValue();
-                        object->Visibility.setValue(!visible);
+                        auto* object = objectItem->object()->getObject();
+                        const char* objectName = object->getNameInDocument();
+
+                        App::DocumentObject* parent = nullptr;
+                        std::ostringstream subName;
+                        objectItem->getSubName(subName, parent);
+
+                        // Try ElementVisible first and fall back to the Visibility property.
+                        int visible = -1;
+                        if (parent) {
+                            visible = parent->isElementVisible(objectName);
+                        }
+                        if (parent && visible >= 0) {
+                            parent->setElementVisible(objectName, !visible);
+                        }
+                        else {
+                            visible = object->Visibility.getValue();
+                            object->Visibility.setValue(!visible);
+                        }
+                        if (auto* parentItem = objectItem->getParentItem();
+                            parentItem && parentItem->visibilityPeer()) {
+                            parentItem->testStatus(true);
+                        }
                     }
                 }
                 visibilityIconDoubleClickTimer.start();
@@ -5002,7 +5108,8 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     QTreeWidgetItem* parent,
     DocumentObjectItem* logicalParent,
     bool browserDefaultHidden,
-    App::DocumentObject* browserVisibilityPeer
+    App::DocumentObject* browserVisibilityPeer,
+    const std::vector<App::DocumentObject*>& browserVisibilityDependents
 )
 {
     if (!object || !parent) {
@@ -5025,6 +5132,16 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
         browserVisibilityPeer && browserVisibilityPeer->getNameInDocument()
         ? browserVisibilityPeer->getNameInDocument()
         : "";
+    item->browserVisibilityDependentNames.reserve(
+        browserVisibilityDependents.size()
+    );
+    for (const auto* dependent : browserVisibilityDependents) {
+        if (dependent && dependent->getNameInDocument()) {
+            item->browserVisibilityDependentNames.emplace_back(
+                dependent->getNameInDocument()
+            );
+        }
+    }
     parent->addChild(item);
     item->setText(0, QString::fromUtf8(data->label.c_str()));
     if (!data->label2.empty()) {
@@ -5253,7 +5370,8 @@ void DocumentItem::rebuildModelBrowser()
             parent,
             logicalParent,
             entry.publishedImplementation || entry.bodyRepresentation,
-            entry.publicationRepresentation
+            entry.publicationRepresentation,
+            entry.bodyResultRepresentations
         );
         if (!item) {
             return nullptr;
@@ -7795,6 +7913,24 @@ App::DocumentObject* DocumentObjectItem::visibilityPeer() const
         : nullptr;
 }
 
+std::vector<App::DocumentObject*> DocumentObjectItem::visibilityDependents() const
+{
+    std::vector<App::DocumentObject*> dependents;
+    const auto* viewProvider = object();
+    auto* source = viewProvider ? viewProvider->getObject() : nullptr;
+    auto* document = source ? source->getDocument() : nullptr;
+    if (!document) {
+        return dependents;
+    }
+    dependents.reserve(browserVisibilityDependentNames.size());
+    for (const auto& name : browserVisibilityDependentNames) {
+        if (auto* dependent = document->getObject(name.c_str())) {
+            dependents.push_back(dependent);
+        }
+    }
+    return dependents;
+}
+
 void DocumentObjectItem::testStatus(bool resetStatus)
 {
     QIcon icon, icon2;
@@ -7995,9 +8131,16 @@ void DocumentObjectItem::testStatus(bool resetStatus, QIcon& icon1, QIcon& icon2
     if (visible < 0) {
         visible = object()->isShow() ? 1 : 0;
     }
-    if (const auto* peer = visibilityPeer();
-        peer && peer->Visibility.getValue()) {
-        visible = 1;
+    if (const auto* peer = visibilityPeer()) {
+        visible = peer->Visibility.getValue() ? 1 : 0;
+        if (!visible) {
+            for (const auto* dependent : visibilityDependents()) {
+                if (dependent->Visibility.getValue()) {
+                    visible = 1;
+                    break;
+                }
+            }
+        }
     }
 
     auto obj = object()->getObject();

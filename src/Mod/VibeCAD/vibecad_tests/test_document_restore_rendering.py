@@ -155,6 +155,54 @@ def test_open_scheduler_waits_for_restore_then_makes_document_render_ready(
     assert document._gui_updates == [True, True]
 
 
+def test_open_scheduler_redraws_restored_partdesign_history(monkeypatch) -> None:
+    document = _Document([_Object("CleanFeature", ["Up-to-date"])])
+    view = _install_gui_document(monkeypatch, document)
+    callbacks: list[tuple[int, object]] = []
+    restored = []
+
+    class _Timer:
+        @staticmethod
+        def singleShot(delay: int, callback) -> None:
+            callbacks.append((delay, callback))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=_Timer)),
+    )
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(
+        gui.App,
+        "listDocuments",
+        lambda: {document.Name: document},
+        raising=False,
+    )
+
+    def restore_history(doc) -> bool:
+        restored.append(doc)
+        return True
+
+    monkeypatch.setattr(
+        gui,
+        "_restore_partdesign_history_rendering",
+        restore_history,
+    )
+    gui._pending_document_render_refreshes.discard(document.Uid)
+
+    gui._schedule_document_render_after_restore(document)
+    callbacks.pop(0)[1]()
+
+    assert restored == [document]
+    assert document.recompute_calls == 0
+    assert view.redraw_calls == 1
+    assert document._gui_document.Modified is False
+    assert callbacks[0][0] == 0
+
+    callbacks.pop(0)[1]()
+    assert view.redraw_calls == 2
+
+
 def test_document_observer_schedules_new_documents_for_render(monkeypatch) -> None:
     document = _Document([])
     scheduled = []

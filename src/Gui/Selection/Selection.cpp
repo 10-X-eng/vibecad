@@ -1930,6 +1930,20 @@ void SelectionSingleton::setVisible(VisibleState vis, const char* pDocName)
         auto vp = Application::Instance->getViewProvider(obj);
 
         if (vp) {
+            bool modelBrowserVisible = false;
+            if (TreeWidget::applyModelBrowserVisibility(
+                    obj,
+                    visible,
+                    modelBrowserVisible
+                )) {
+                updateSelection(
+                    modelBrowserVisible,
+                    sel.DocName.c_str(),
+                    sel.FeatName.c_str(),
+                    sel.SubName.c_str()
+                );
+                continue;
+            }
             if (visible < 0) {
                 // Toggle link instead of the original object
                 ViewProvider* toggleVp = vp;
