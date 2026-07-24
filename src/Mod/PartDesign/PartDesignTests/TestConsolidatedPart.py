@@ -193,9 +193,17 @@ CANONICAL_COMMAND_LABELS = {
 
 
 def _find_child_labels(parent, label):
+    if parent.isHidden():
+        return None
     if parent.text(0) == label:
-        return {parent.child(index).text(0) for index in range(parent.childCount())}
+        return {
+            parent.child(index).text(0)
+            for index in range(parent.childCount())
+            if not parent.child(index).isHidden()
+        }
     for index in range(parent.childCount()):
+        if parent.child(index).isHidden():
+            continue
         result = _find_child_labels(parent.child(index), label)
         if result is not None:
             return result
@@ -230,6 +238,8 @@ def _tree_labels():
     labels = []
 
     def collect(item):
+        if item.isHidden():
+            return
         labels.append(item.text(0))
         for index in range(item.childCount()):
             collect(item.child(index))
@@ -391,12 +401,20 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
         )
 
         QtGui.QApplication.processEvents()
-        expected_children = {"Part Input A", "Part Input B", "Part Union Result"}
-        direct_children = _tree_child_labels("Consolidated Model", expected_children)
-        self.assertIsNotNone(direct_children, _tree_labels())
+        expected_features = {"Part Input A", "Part Input B", "Part Union Result"}
+        body_children = _tree_child_labels(
+            "Consolidated Model", {"Origin", "Features"}
+        )
+        self.assertIsNotNone(body_children, _tree_labels())
         self.assertTrue(
-            expected_children.issubset(direct_children),
-            (direct_children, _tree_labels()),
+            {"Origin", "Features"}.issubset(body_children),
+            (body_children, _tree_labels()),
+        )
+        feature_children = _tree_child_labels("Features", expected_features)
+        self.assertIsNotNone(feature_children, _tree_labels())
+        self.assertTrue(
+            expected_features.issubset(feature_children),
+            (feature_children, _tree_labels()),
         )
         nested_labels = _tree_child_labels("Part Union Result")
         self.assertIsNotNone(nested_labels)

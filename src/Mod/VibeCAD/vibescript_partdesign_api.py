@@ -49,6 +49,7 @@ _PUBLISHABLE_TYPES = ("solid", "shell", "face", "wire", "compound")
 _TOPOLOGY_TYPES = frozenset({"edge", *_PUBLISHABLE_TYPES})
 _MATERIAL_OPERATIONS = frozenset({"add_material", "remove_material"})
 _CREATION_OPERATIONS = frozenset({"new_solid", "new_surface"})
+_COMPATIBILITY_METHODS = frozenset({"pad", "pocket", "groove"})
 _PART_API_EXPORTS = PartDomainAPI.exported_names.fget(None)
 _MATERIAL_API_EXPORTS = MaterialDomainAPI.exported_names
 
@@ -562,7 +563,11 @@ class PartDesignDomainAPI:
         "publish",
     )
 
-    def __init__(self, exports: Iterable[str], output_types: Iterable[str]) -> None:
+    def __init__(
+        self,
+        exports: Iterable[str],
+        output_types: Iterable[str],
+    ) -> None:
         declared = tuple(dict.fromkeys(str(item) for item in exports))
         if declared != self.exported_names:
             raise RuntimeError(
@@ -859,29 +864,38 @@ class PartDesignDomainAPI:
             },
         )
 
-    def pad(
+    def _pad_feature(
         self,
         profile: DomainValue,
         length_mm: float,
         *,
-        base: DomainValue | None = None,
-        reverse: bool = False,
-        midplane: bool = False,
-        refine: bool = True,
-        label: str = "",
+        base: DomainValue | None,
+        reverse: bool,
+        midplane: bool,
+        refine: bool,
+        label: str,
+        api_operation: str,
     ) -> DomainValue:
-        """Create an additive Pad, optionally on the current feature."""
-
         return self._graph(
             "pad",
             "feature",
-            _profile("pad", "profile", profile),
-            _number("pad", "length_mm", length_mm, minimum=0.0, strict=True),
-            base=None if base is None else _feature("pad", "base", base),
+            _profile(api_operation, "profile", profile),
+            _number(
+                api_operation,
+                "length_mm",
+                length_mm,
+                minimum=0.0,
+                strict=True,
+            ),
+            base=(
+                None
+                if base is None
+                else _feature(api_operation, "base", base)
+            ),
             reverse=bool(reverse),
             midplane=bool(midplane),
             refine=bool(refine),
-            label=_label("pad", label),
+            label=_label(api_operation, label),
         )
 
     def extrude(
@@ -918,7 +932,7 @@ class PartDesignDomainAPI:
                     "vector/output_type",
                     "are available only for new standalone geometry",
                 )
-            return self.pad(
+            return self._pad_feature(
                 clean_profile,
                 distance_mm,
                 base=base,
@@ -926,6 +940,7 @@ class PartDesignDomainAPI:
                 midplane=midplane,
                 refine=refine,
                 label=label,
+                api_operation="extrude",
             )
         if intent == "remove_material":
             clean_profile = _profile("extrude", "profile", profile)
@@ -937,7 +952,7 @@ class PartDesignDomainAPI:
                     "vector/output_type",
                     "are available only for new standalone geometry",
                 )
-            return self.pocket(
+            return self._pocket_feature(
                 base,
                 clean_profile,
                 distance_mm,
@@ -946,6 +961,7 @@ class PartDesignDomainAPI:
                 midplane=midplane,
                 refine=refine,
                 label=label,
+                api_operation="extrude",
             )
         if base is not None or through_all:
             raise _error(
@@ -1000,40 +1016,43 @@ class PartDesignDomainAPI:
             label=_label("extrude", label),
         )
 
-    def pocket(
+    def _pocket_feature(
         self,
         base: DomainValue,
         profile: DomainValue,
-        length_mm: float | None = None,
+        length_mm: float | None,
         *,
-        through_all: bool = False,
-        reverse: bool = False,
-        midplane: bool = False,
-        refine: bool = True,
-        label: str = "",
+        through_all: bool,
+        reverse: bool,
+        midplane: bool,
+        refine: bool,
+        label: str,
+        api_operation: str,
     ) -> DomainValue:
-        """Create a subtractive Pocket from the current feature and profile."""
-
         if through_all == (length_mm is not None):
             raise _error(
-                "pocket",
+                api_operation,
                 "length_mm/through_all",
                 "must provide exactly one of a positive length or through_all=True",
             )
         length = None if length_mm is None else _number(
-            "pocket", "length_mm", length_mm, minimum=0.0, strict=True
+            api_operation,
+            "length_mm",
+            length_mm,
+            minimum=0.0,
+            strict=True,
         )
         return self._graph(
             "pocket",
             "feature",
-            _feature("pocket", "base", base),
-            _profile("pocket", "profile", profile),
+            _feature(api_operation, "base", base),
+            _profile(api_operation, "profile", profile),
             length,
             through_all=bool(through_all),
             reverse=bool(reverse),
             midplane=bool(midplane),
             refine=bool(refine),
-            label=_label("pocket", label),
+            label=_label(api_operation, label),
         )
 
     def revolve(
@@ -1141,32 +1160,6 @@ class PartDesignDomainAPI:
             label=_label("revolve", label),
         )
 
-    def groove(
-        self,
-        base: DomainValue,
-        profile: DomainValue,
-        angle_degrees: float = 360.0,
-        *,
-        axis: str = "V",
-        reverse: bool = False,
-        midplane: bool = False,
-        refine: bool = True,
-        label: str = "",
-    ) -> DomainValue:
-        """Create a subtractive Groove from the current feature and profile."""
-
-        return self.revolve(
-            profile,
-            angle_degrees,
-            operation="remove_material",
-            base=base,
-            axis=_axis("groove", axis),
-            reverse=bool(reverse),
-            midplane=bool(midplane),
-            refine=bool(refine),
-            label=label,
-        )
-
     def loft(
         self,
         sections: Sequence[DomainValue],
@@ -1180,6 +1173,10 @@ class PartDesignDomainAPI:
         label: str = "",
     ) -> DomainValue:
         """Loft profiles to add material or remove material from a Body.
+
+        Planar sections should be ``api.sketch`` values so publication preserves
+        native sketches and a native loft feature.  Direct wires are for genuinely
+        nonplanar or standalone topology.
 
         ``subtractive`` remains accepted only for saved VibeScript v2 programs;
         new source should state ``operation`` explicitly.
@@ -2241,7 +2238,13 @@ class PartDesignDomainAPI:
         appearance: DomainValue | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Publish one exact solid with optional physical material and appearance."""
+        """Publish one exact solid with optional material and appearance.
+
+        Compatible sketch-based ``new_solid`` extrudes, revolves, and lofts
+        become native initial Body features so their sketches and feature links
+        remain editable after publication.  Passing a direct solid is a fallback
+        for geometry that native sketch-and-feature history cannot represent.
+        """
 
         return self._graph(
             "body",
@@ -2321,8 +2324,8 @@ def _direct_part_method(public_name: str, part_name: str):
     call.__name__ = public_name
     call.__qualname__ = f"PartDesignDomainAPI.{public_name}"
     note = (
-        " This retained direct-shape capability is exposed through the consolidated "
-        "Part Design VibeScript API."
+        " Retained for standalone, nonplanar, imported, or repair topology; prefer "
+        "api.sketch and native Body features whenever they can represent the design."
     )
     call.__doc__ = str(getattr(retained, "__doc__", "") or "").strip() + note
     return call
@@ -2337,3 +2340,139 @@ for _public_name, _part_name in _DIRECT_PART_EXPORTS:
         )
 
 del _public_name, _part_name
+
+
+class _SavedPartDesignCompatibilityAPI(PartDesignDomainAPI):
+    """Private replay adapter for unchanged programs authored against old names."""
+
+    __slots__ = ("_enabled_compatibility_methods",)
+
+    def __init__(
+        self,
+        exports: Iterable[str],
+        output_types: Iterable[str],
+        compatibility_methods: Iterable[str],
+    ) -> None:
+        enabled = frozenset(str(item) for item in compatibility_methods)
+        unknown = enabled - _COMPATIBILITY_METHODS
+        if unknown:
+            raise RuntimeError(
+                "Unknown Part Design compatibility methods: "
+                f"{sorted(unknown)!r}."
+            )
+        object.__setattr__(self, "_enabled_compatibility_methods", enabled)
+        super().__init__(exports, output_types)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in _COMPATIBILITY_METHODS:
+            enabled = object.__getattribute__(
+                self,
+                "_enabled_compatibility_methods",
+            )
+            if name not in enabled:
+                raise AttributeError(
+                    f"api.{name} is not enabled for this saved Part Design source."
+                )
+        return object.__getattribute__(self, name)
+
+    def __dir__(self) -> list[str]:
+        names = list(object.__dir__(self))
+        enabled = object.__getattribute__(
+            self,
+            "_enabled_compatibility_methods",
+        )
+        return sorted(
+            name
+            for name in names
+            if name not in _COMPATIBILITY_METHODS or name in enabled
+        )
+
+    def pad(
+        self,
+        profile: DomainValue,
+        length_mm: float,
+        *,
+        base: DomainValue | None = None,
+        reverse: bool = False,
+        midplane: bool = False,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        return self._pad_feature(
+            profile,
+            length_mm,
+            base=base,
+            reverse=reverse,
+            midplane=midplane,
+            refine=refine,
+            label=label,
+            api_operation="pad",
+        )
+
+    def pocket(
+        self,
+        base: DomainValue,
+        profile: DomainValue,
+        length_mm: float | None = None,
+        *,
+        through_all: bool = False,
+        reverse: bool = False,
+        midplane: bool = False,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        return self._pocket_feature(
+            base,
+            profile,
+            length_mm,
+            through_all=through_all,
+            reverse=reverse,
+            midplane=midplane,
+            refine=refine,
+            label=label,
+            api_operation="pocket",
+        )
+
+    def groove(
+        self,
+        base: DomainValue,
+        profile: DomainValue,
+        angle_degrees: float = 360.0,
+        *,
+        axis: str = "V",
+        reverse: bool = False,
+        midplane: bool = False,
+        refine: bool = True,
+        label: str = "",
+    ) -> DomainValue:
+        return self.revolve(
+            profile,
+            angle_degrees,
+            operation="remove_material",
+            base=base,
+            axis=_axis("groove", axis),
+            reverse=bool(reverse),
+            midplane=bool(midplane),
+            refine=bool(refine),
+            label=label,
+        )
+
+
+def create_partdesign_domain_api(
+    exports: Iterable[str],
+    output_types: Iterable[str],
+    *,
+    compatibility_methods: Iterable[str] = (),
+) -> PartDesignDomainAPI:
+    """Create the canonical API or the private unchanged-source replay adapter."""
+
+    compatibility = tuple(
+        dict.fromkeys(str(item) for item in compatibility_methods)
+    )
+    if compatibility:
+        return _SavedPartDesignCompatibilityAPI(
+            exports,
+            output_types,
+            compatibility,
+        )
+    return PartDesignDomainAPI(exports, output_types)

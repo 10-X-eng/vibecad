@@ -59,6 +59,16 @@ Params = [
     ParamInt("PreSelectionMinDelay", 200),
     ParamBool("RecomputeOnDrop", True),
     ParamBool("KeepRootOrder", True),
+    ParamBool(
+        "OrganizeModelByType",
+        True,
+        on_change=True,
+        title="Organize model by type",
+        doc=(
+            "Presents model objects in virtual type folders such as Bodies, "
+            "Sketches, Construction, and Geometry without changing document ownership."
+        ),
+    ),
     ParamBool("TreeActiveAutoExpand", True),
     ParamUInt("TreeActiveColor", 0xE6E6FFFF, on_change=True),
     ParamUInt("TreeEditColor", 0x929200FF, on_change=True),

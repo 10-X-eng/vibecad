@@ -722,6 +722,7 @@ SOURCE_GROUP("Dialog\\Settings" FILES ${Dialog_Settings_SRCS})
 SET(Dock_Windows_CPP_SRCS
     ComboView.cpp
     DockWindow.cpp
+    ModelTreeBrowser.cpp
     PropertyView.cpp
     ReportView.cpp
     Selection/SelectionView.cpp
@@ -736,6 +737,7 @@ SET(Dock_Windows_CPP_SRCS
 SET(Dock_Windows_HPP_SRCS
     ComboView.h
     DockWindow.h
+    ModelTreeBrowser.h
     PropertyView.h
     ReportView.h
     Selection/SelectionView.h

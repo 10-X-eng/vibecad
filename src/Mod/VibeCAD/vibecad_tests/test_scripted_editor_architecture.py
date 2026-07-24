@@ -112,6 +112,7 @@ def test_direct_engine_editor_indexes_never_capture_geometry() -> None:
 
 def test_editor_uses_explicit_builds_and_native_resizing() -> None:
     source = (ROOT / "src/Mod/VibeCAD/VibeCADScriptedEditor.py").read_text(encoding="utf-8")
+    session = (ROOT / "src/Mod/VibeCAD/VibeCADSession.py").read_text(encoding="utf-8")
     assert "domain_program_index_snapshot(" in source
     assert "domain_context_snapshot(" not in source
     assert ".timer.start()" not in source
@@ -120,5 +121,13 @@ def test_editor_uses_explicit_builds_and_native_resizing() -> None:
     assert "widget.setMinimumWidth" not in source
     assert "widget.setMinimumHeight" not in source
     assert '"VibeScriptedContentSplitter"' in source
+    assert '"Save",' in source
+    assert '"VibeScriptedSave"' in source
     assert '"Build", "VibeScriptedRender"' in source
     assert '"Apply", "VibeScriptedAccept"' in source
+    assert 'self.button("VibeScriptedSave").setVisible(self.engine == "vibescript")' in source
+    assert 'setVisible(self.engine != "vibescript")' in source
+    assert 'self.button("VibeScriptedRevert").setVisible(self.engine != "vibescript")' in source
+    assert "self._start_vibescript_apply()" in source
+    assert "self._adopt_failed_vibescript_revision(result)" in source
+    assert 'captured["allow_unchanged_revision"] = True' in session

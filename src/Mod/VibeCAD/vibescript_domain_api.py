@@ -277,6 +277,8 @@ def create_domain_api(
     domain: str,
     exports: Iterable[str],
     output_types: Iterable[str],
+    *,
+    compatibility_methods: Iterable[str] = (),
 ) -> Any:
     """Construct the exact runtime API registered for one domain.
 
@@ -287,10 +289,19 @@ def create_domain_api(
     """
 
     clean_domain = str(domain or "").strip().lower()
+    compatibility = tuple(dict.fromkeys(str(item) for item in compatibility_methods))
     if clean_domain == "partdesign":
-        from vibescript_partdesign_api import PartDesignDomainAPI
+        from vibescript_partdesign_api import create_partdesign_domain_api
 
-        return PartDesignDomainAPI(exports, output_types)
+        return create_partdesign_domain_api(
+            exports,
+            output_types,
+            compatibility_methods=compatibility,
+        )
+    if compatibility:
+        raise ValueError(
+            "Compatibility methods are supported only for saved Part Design programs."
+        )
     if clean_domain == "part":
         from vibescript_part_api import PartDomainAPI
 

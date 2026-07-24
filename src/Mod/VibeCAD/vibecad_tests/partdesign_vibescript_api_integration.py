@@ -19,8 +19,13 @@ from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADReferenceContracts import resolve_interface  # noqa: E402
 from VibeCADScriptedPublication import (  # noqa: E402
     PROP_REVISION as PROP_PUBLISHED_REVISION,
+    ROLE_IMPLEMENTATION,
+    ROLE_MODEL,
+    delete_implementation,
+    role_of,
 )
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
+    _live_programs,
     accept_candidate,
     complete_inspection,
     execute_candidate,
@@ -32,8 +37,11 @@ from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     validate_candidate,
 )
 from VibeCADVibeScriptDomains import (  # noqa: E402
+    PROGRAM_SCHEMA,
+    PROGRAM_VERSION,
     get_domain_adapter,
     get_vibescript_pack,
+    program_revision,
 )
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     PROP_OUTPUT_TYPE,
@@ -186,13 +194,17 @@ def _fully_constrained_rectangle(api):
 
 def _feature_case(api, case: str):
     if case == "constrained_pad":
-        return api.pad(_fully_constrained_rectangle(api), 3)
+        return api.extrude(
+            _fully_constrained_rectangle(api),
+            3,
+            operation="add_material",
+        )
     if case == "construction_point_pad":
         profile = api.sketch(
             [api.point([0, 0]), api.circle([0, 0], 5)],
             require_closed_profile=True,
         )
-        return api.pad(profile, 3)
+        return api.extrude(profile, 3, operation="add_material")
     if case == "arc_pad":
         profile = api.sketch(
             [
@@ -200,9 +212,13 @@ def _feature_case(api, case: str):
                 api.line([5, 0], [-5, 0]),
             ]
         )
-        return api.pad(profile, 3)
+        return api.extrude(profile, 3, operation="add_material")
     if case == "ellipse_pad":
-        return api.pad(api.sketch([api.ellipse([0, 0], 6, 3)]), 3)
+        return api.extrude(
+            api.sketch([api.ellipse([0, 0], 6, 3)]),
+            3,
+            operation="add_material",
+        )
     if case == "bspline_pad":
         profile = api.sketch(
             [
@@ -212,11 +228,20 @@ def _feature_case(api, case: str):
                 )
             ]
         )
-        return api.pad(profile, 3)
+        return api.extrude(profile, 3, operation="add_material")
     if case == "pocket":
-        base = api.pad(api.sketch([api.circle([0, 0], 10)]), 5)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 10)]),
+            5,
+            operation="add_material",
+        )
         cut = api.sketch([api.circle([0, 0], 2)], z_offset_mm=5)
-        return api.pocket(base, cut, 3)
+        return api.extrude(
+            cut,
+            3,
+            operation="remove_material",
+            base=base,
+        )
     if case == "canonical_extrude_add":
         return api.extrude(
             api.sketch([api.circle([0, 0], 5)]),
@@ -239,9 +264,18 @@ def _feature_case(api, case: str):
     if case == "revolve":
         return api.revolve(_rectangle(api, 2, -2, 4, 2), axis="V")
     if case == "groove":
-        base = api.pad(api.sketch([api.circle([0, 0], 10)]), 5)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 10)]),
+            5,
+            operation="add_material",
+        )
         cut = _rectangle(api, 8, 1, 12, 4, plane="XZ")
-        return api.groove(base, cut, axis="V")
+        return api.revolve(
+            cut,
+            operation="remove_material",
+            base=base,
+            axis="V",
+        )
     if case == "loft":
         return api.loft(
             [
@@ -250,23 +284,32 @@ def _feature_case(api, case: str):
             ]
         )
     if case == "additive_loft":
-        base = api.pad(api.sketch([api.circle([0, 0], 6)]), 5)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 6)]),
+            5,
+            operation="add_material",
+        )
         return api.loft(
             [
                 api.sketch([api.circle([0, 0], 3)], z_offset_mm=5),
                 api.sketch([api.circle([0, 0], 2)], z_offset_mm=10),
             ],
             base=base,
+            operation="add_material",
         )
     if case == "subtractive_loft":
-        base = api.pad(api.sketch([api.circle([0, 0], 10)]), 10)
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 10)]),
+            10,
+            operation="add_material",
+        )
         return api.loft(
             [
                 api.sketch([api.circle([0, 0], 2)]),
                 api.sketch([api.circle([0, 0], 4)], z_offset_mm=10),
             ],
             base=base,
-            subtractive=True,
+            operation="remove_material",
         )
     if case in {"additive_sweep", "subtractive_sweep"}:
         profile = api.sketch([api.circle([2, 0], 0.5)])
@@ -308,20 +351,33 @@ def _feature_case(api, case: str):
             base=base,
         )
     if case in {"polar_pattern", "mirror"}:
-        base = api.pad(api.sketch([api.circle([0, 0], 10)]), 5)
-        boss = api.pad(
+        base = api.extrude(
+            api.sketch([api.circle([0, 0], 10)]),
+            5,
+            operation="add_material",
+        )
+        boss = api.extrude(
             api.sketch([api.circle([7, 0], 2)], z_offset_mm=5),
             3,
+            operation="add_material",
             base=base,
         )
         if case == "polar_pattern":
             return api.polar_pattern(boss, 4)
         return api.mirror(boss, "YZ")
     if case == "fillet":
-        base = api.pad(_rectangle(api, 0, 0, 10, 8), 5)
+        base = api.extrude(
+            _rectangle(api, 0, 0, 10, 8),
+            5,
+            operation="add_material",
+        )
         return api.fillet(base, {"type": "all_edges"}, 0.5)
     if case == "chamfer":
-        base = api.pad(_rectangle(api, 0, 0, 10, 8), 5)
+        base = api.extrude(
+            _rectangle(api, 0, 0, 10, 8),
+            5,
+            operation="add_material",
+        )
         return api.chamfer(base, {"type": "all_edges"}, 0.5)
     if case == "linear_pattern":
         base = api.extrude(
@@ -786,6 +842,249 @@ def _exercise_material_guardrails(root: Path, pack) -> dict:
         App.closeDocument(document.Name)
 
 
+def _exercise_native_sketch_history(root: Path, pack) -> dict:
+    """Publish a direct loft while retaining its three real Sketcher profiles."""
+
+    import FreeCAD as App
+    from pathlib import Path as LocalPath
+
+    def linked_object(value):
+        if (
+            isinstance(value, (tuple, list))
+            and len(value) == 2
+            and hasattr(value[0], "TypeId")
+        ):
+            return value[0]
+        return value
+
+    document = App.newDocument("PartDesignNativeSketchHistory")
+    service = _Service(document, root)
+    capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    source = """\
+W = inputs['overall_width_mm']
+H = inputs['overall_height_mm']
+T = inputs['stock_thickness_mm']
+TW = inputs['top_width_mm']
+SW = inputs['slot_width_mm']
+SD = inputs['slot_depth_mm']
+SP = inputs['slot_pitch_mm']
+BH = inputs['bevel_height_mm']
+
+r = SW / 2.0
+wall = SD - r
+c_right = SP / 2.0
+c_left = -SP / 2.0
+shoulder = (W - TW) / 2.0
+bevel_half_width = W/2.0 - shoulder*(BH/H)
+
+def blade_outline_sketch(z_offset, edge_y, edge_half_width, prefix, sketch_label):
+    cutting_edge = api.line([-edge_half_width, edge_y], [edge_half_width, edge_y], name=prefix+'_CuttingEdge')
+    right_shoulder = api.line([edge_half_width, edge_y], [TW/2.0, H], name=prefix+'_RightShoulder')
+    top_right = api.line([TW/2.0, H], [c_right+r, H], name=prefix+'_TopRight')
+    right_slot_wall_r = api.line([c_right+r, H], [c_right+r, H-wall], name=prefix+'_RightSlotWallR')
+    right_slot_root = api.arc([c_right+r, H-wall], [c_right, H-SD], [c_right-r, H-wall], name=prefix+'_RightSlotRoot')
+    right_slot_wall_l = api.line([c_right-r, H-wall], [c_right-r, H], name=prefix+'_RightSlotWallL')
+    top_bridge = api.line([c_right-r, H], [c_left+r, H], name=prefix+'_TopBridge')
+    left_slot_wall_r = api.line([c_left+r, H], [c_left+r, H-wall], name=prefix+'_LeftSlotWallR')
+    left_slot_root = api.arc([c_left+r, H-wall], [c_left, H-SD], [c_left-r, H-wall], name=prefix+'_LeftSlotRoot')
+    left_slot_wall_l = api.line([c_left-r, H-wall], [c_left-r, H], name=prefix+'_LeftSlotWallL')
+    top_left = api.line([c_left-r, H], [-TW/2.0, H], name=prefix+'_TopLeft')
+    left_shoulder = api.line([-TW/2.0, H], [-edge_half_width, edge_y], name=prefix+'_LeftShoulder')
+    return api.sketch(
+        [
+            cutting_edge, right_shoulder, top_right,
+            right_slot_wall_r, right_slot_root, right_slot_wall_l,
+            top_bridge,
+            left_slot_wall_r, left_slot_root, left_slot_wall_l,
+            top_left, left_shoulder
+        ],
+        [],
+        plane='XY',
+        z_offset_mm=z_offset,
+        require_fully_constrained=False,
+        require_closed_profile=True,
+        label=sketch_label
+    )
+
+lower_profile = blade_outline_sketch(-T/2.0, BH, bevel_half_width, 'Lower', 'Lower Face Blade Sketch')
+cutting_profile = blade_outline_sketch(0.0, 0.0, W/2.0, 'Mid', 'Cutting Edge Blade Sketch')
+upper_profile = blade_outline_sketch(T/2.0, BH, bevel_half_width, 'Upper', 'Upper Face Blade Sketch')
+
+blade = api.loft(
+    [lower_profile, cutting_profile, upper_profile],
+    operation='new_solid',
+    ruled=True,
+    closed=False,
+    refine=True,
+    label='Sketch Lofted Double Bevel Blade'
+)
+
+steel = api.material('90bbd8ef-8623-4d78-b3bf-e0bdb9b74dd3', require_physical_properties=['Density','YoungsModulus','PoissonRatio'])
+
+result = {
+    'UtilityBlade': api.body(blade, material=steel, label='Utility Blade 38755A29')
+}
+"""
+    input_schema = {
+        "type": "object",
+        "properties": {
+            name: {"type": "number"}
+            for name in (
+                "overall_width_mm",
+                "overall_height_mm",
+                "stock_thickness_mm",
+                "top_width_mm",
+                "slot_width_mm",
+                "slot_depth_mm",
+                "slot_pitch_mm",
+                "bevel_height_mm",
+            )
+        },
+        "required": [
+            "overall_width_mm",
+            "overall_height_mm",
+            "stock_thickness_mm",
+            "top_width_mm",
+            "slot_width_mm",
+            "slot_depth_mm",
+            "slot_pitch_mm",
+            "bevel_height_mm",
+        ],
+        "additionalProperties": False,
+    }
+    inputs = {
+        "overall_width_mm": 61.0,
+        "overall_height_mm": 18.0,
+        "stock_thickness_mm": 0.65,
+        "top_width_mm": 38.0,
+        "slot_width_mm": 5.0,
+        "slot_depth_mm": 6.0,
+        "slot_pitch_mm": 20.0,
+        "bevel_height_mm": 2.0,
+    }
+    create = _capture(
+        capture,
+        operation="create_program",
+        arguments={
+            "program_name": "Native Three-Sketch Loft",
+            "source": source,
+            "input_schema": input_schema,
+            "inputs": inputs,
+            "expected_outputs": [{"name": "UtilityBlade", "type": "solid"}],
+        },
+    )
+    try:
+        _prepared, publication, accepted = _run_candidate(create, service)
+        native = publication["native_history"]
+        assert native["available"] is True
+        body_name = native["body_objects"]["UtilityBlade"]
+        body = document.getObject(body_name)
+        assert body is not None and body.TypeId == "PartDesign::Body"
+        sketches = [
+            obj for obj in body.Group if obj.TypeId == "Sketcher::SketchObject"
+        ]
+        assert [obj.Label for obj in sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(int(obj.GeometryCount) == 12 for obj in sketches)
+        stable_output = accepted["live_outputs"]["UtilityBlade"]["object_name"]
+        assert stable_output
+        assert body.Tip is not None
+        assert body.Tip.TypeId == "PartDesign::AdditiveLoft"
+        assert linked_object(body.Tip.Profile) is sketches[0]
+        assert [linked_object(item) for item in body.Tip.Sections] == sketches[1:]
+        document.recompute()
+        assert body.Shape.isValid() and body.Shape.Volume > 0.0
+        published = document.getObject(stable_output)
+        assert published is not None
+        assert published.Shape.isValid()
+        assert abs(body.Shape.Volume - published.Shape.Volume) <= max(
+            1.0e-7,
+            abs(published.Shape.Volume) * 1.0e-9,
+        )
+        root_object = next(
+            obj for obj in document.Objects if role_of(obj) == ROLE_MODEL
+        )
+        removed = delete_implementation(document, root_object)
+        assert body_name in removed
+        assert not [
+            obj
+            for obj in document.Objects
+            if obj.TypeId == "Sketcher::SketchObject"
+        ]
+
+        repair = _capture(
+            {
+                **capture,
+                "live_programs": _live_programs(document, "partdesign"),
+            },
+            operation="reconfigure_program",
+            arguments={
+                "program_id": _prepared["program_id"],
+                "expected_revision": accepted["working_revision"],
+                "source": source,
+                "input_schema": input_schema,
+                "inputs": inputs,
+                "expected_outputs": [
+                    {"name": "UtilityBlade", "type": "solid"}
+                ],
+            },
+        )
+        repaired_prepared, repaired_publication, repaired = _run_candidate(
+            repair,
+            service,
+        )
+        assert repaired_prepared["native_history_repair_required"] is True
+        assert repaired["working_revision"] == accepted["working_revision"]
+        assert repaired["live_outputs"]["UtilityBlade"]["object_name"] == stable_output
+        repaired_body_name = repaired_publication["native_history"]["body_objects"][
+            "UtilityBlade"
+        ]
+        repaired_body = document.getObject(repaired_body_name)
+        repaired_sketches = [
+            obj
+            for obj in repaired_body.Group
+            if obj.TypeId == "Sketcher::SketchObject"
+        ]
+        assert [obj.Label for obj in repaired_sketches] == [
+            "Lower Face Blade Sketch",
+            "Cutting Edge Blade Sketch",
+            "Upper Face Blade Sketch",
+        ]
+        assert all(int(obj.GeometryCount) == 12 for obj in repaired_sketches)
+        assert repaired_body.Tip.TypeId == "PartDesign::AdditiveLoft"
+        assert linked_object(repaired_body.Tip.Profile) is repaired_sketches[0]
+        assert [
+            linked_object(item) for item in repaired_body.Tip.Sections
+        ] == repaired_sketches[1:]
+        document.recompute()
+        assert repaired_body.Shape.isValid()
+        return {
+            "body": repaired_body_name,
+            "sketches": [str(obj.Name) for obj in repaired_sketches],
+            "sketch_labels": [str(obj.Label) for obj in repaired_sketches],
+            "tip": str(repaired_body.Tip.Name),
+            "unchanged_revision_repaired": True,
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 def _source(*, invalid_offset: bool = False, primary_label: str = "Base Extrusion") -> str:
     offset = "inputs['height'] + 100" if invalid_offset else "inputs['height']"
     return (
@@ -1104,6 +1403,29 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     service.document = reopened
     reopened_published = reopened.getObject(identity)
     assert reopened_published is not None
+    reopened_bodies = [
+        obj
+        for obj in reopened.Objects
+        if obj.TypeId == "PartDesign::Body"
+        and role_of(obj) == ROLE_IMPLEMENTATION
+        and str(getattr(obj, "VibeCADScriptedModelId", "") or "") == program_id
+    ]
+    assert len(reopened_bodies) == 1
+    reopened_body = reopened_bodies[0]
+    assert len(
+        [
+            obj
+            for obj in reopened_body.Group
+            if obj.TypeId == "Sketcher::SketchObject"
+        ]
+    ) == 2
+    assert reopened_body.Tip is not None
+    assert reopened_body.Tip.TypeId == "PartDesign::Pocket"
+    assert str(reopened_body.Tip.SideType) == "One side"
+    assert "Transient" in set(
+        str(item)
+        for item in reopened_body.Tip.getPropertyStatus("Midplane")
+    )
     reopened_consumers = [reopened.getObject(name) for name in consumer_names]
     assert all(item is not None for item in reopened_consumers)
     _assert_consumers(reopened, reopened_consumers, reopened_published)
@@ -1367,6 +1689,114 @@ def _exercise_physical_material_publication(root: Path, pack) -> dict:
         App.closeDocument(document.Name)
 
 
+def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
+    """Replay an unchanged saved alias without exposing it to canonical source."""
+
+    import FreeCAD as App
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignSavedSourceCompatibility")
+    service = _Service(document, root)
+    program_id = "abcdefabcdefabcdefabcdefabcdefab"
+    source = (
+        "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "feature = api.pad(profile, inputs['height'], label='Saved Feature')\n"
+        "result = {'Part': api.body(feature, label='Saved Part')}\n"
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "radius": {"type": "number", "exclusiveMinimum": 0},
+            "height": {"type": "number", "exclusiveMinimum": 0},
+        },
+        "required": ["radius", "height"],
+        "additionalProperties": False,
+    }
+    inputs = {"radius": 4.0, "height": 5.0}
+    expected_outputs = [{"name": "Part", "type": "solid"}]
+    revision = program_revision(
+        domain=pack.domain,
+        source=source,
+        input_schema=input_schema,
+        inputs=inputs,
+        expected_outputs=expected_outputs,
+    )
+    directory = root / "vibescript" / pack.domain / program_id
+    directory.mkdir(parents=True)
+    (directory / "program.json").write_text(
+        json.dumps(
+            {
+                "schema": PROGRAM_SCHEMA,
+                "version": PROGRAM_VERSION,
+                "program_id": program_id,
+                "domain": pack.domain,
+                "workbench": pack.workbench,
+                "label": "Saved Compatibility Part",
+                "source": source,
+                "input_schema": input_schema,
+                "inputs": inputs,
+                "expected_outputs": expected_outputs,
+                "working_revision": revision,
+                "accepted_revision": revision,
+                "accepted_contract": None,
+                "live_outputs": {},
+                "latest_candidate": {
+                    "revision": revision,
+                    "status": "accepted",
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    update = _capture(
+        base_capture,
+        operation="set_inputs",
+        arguments={
+            "program_id": program_id,
+            "expected_revision": revision,
+            "patch": {"height": 7.0},
+        },
+    )
+    try:
+        prepared, publication, accepted = _run_candidate(update, service)
+        assert prepared["worker_request"]["compatibility_methods"] == ["pad"]
+        output = accepted["live_outputs"]["Part"]
+        body_name = publication["native_history"]["body_objects"]["Part"]
+        body = document.getObject(body_name)
+        assert body is not None
+        assert body.Tip is not None
+        assert body.Tip.TypeId == "PartDesign::Pad"
+        assert str(body.Tip.SideType) == "One side"
+        assert "Transient" in set(
+            str(item) for item in body.Tip.getPropertyStatus("Midplane")
+        )
+        assert publication["live_outputs"]["Part"]["partdesign_data"][
+            "feature_count"
+        ] >= 1
+        return {
+            "object_name": str(output["object_name"]),
+            "body_name": str(body.Name),
+            "native_tip": str(body.Tip.TypeId),
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 def main() -> int:
     dump_json = json.dumps
     remove_tree = shutil.rmtree
@@ -1391,8 +1821,13 @@ def main() -> int:
         feature_families = _exercise_feature_families(root, pack)
         unified_surface = _exercise_unified_standalone_surface(root, pack)
         material_guardrails = _exercise_material_guardrails(root, pack)
+        native_sketch_history = _exercise_native_sketch_history(root, pack)
         topology_publication = _exercise_topology_publication(root, pack)
         physical_material = _exercise_physical_material_publication(root, pack)
+        saved_source_compatibility = _exercise_saved_source_compatibility(
+            root,
+            pack,
+        )
         lifecycle = _exercise_lifecycle(root, pack)
         print(
             dump_json(
@@ -1402,8 +1837,10 @@ def main() -> int:
                     "feature_families": feature_families,
                     "unified_surface": unified_surface,
                     "material_guardrails": material_guardrails,
+                    "native_sketch_history": native_sketch_history,
                     "topology_publication": topology_publication,
                     "physical_material": physical_material,
+                    "saved_source_compatibility": saved_source_compatibility,
                     "lifecycle": lifecycle,
                 },
                 sort_keys=True,

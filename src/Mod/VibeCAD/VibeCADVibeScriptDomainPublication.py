@@ -155,6 +155,9 @@ _MESH_ROLLBACK_PROPERTIES = (
     contracts.PROP_PROGRAM_WORKBENCH,
     contracts.PROP_PROGRAM_REVISION,
     contracts.PROP_PROGRAM_OUTPUT,
+    contracts.PROP_PROGRAM_LABEL,
+    contracts.PROP_PROGRAM_CONTRACT,
+    contracts.PROP_PROGRAM_EDITOR_DRAFT,
     PROP_OUTPUT_TYPE,
     PROP_DEFINITION,
     PROP_INPUT_OBJECTS,
@@ -240,6 +243,12 @@ def _add_string_property(obj: Any, name: str, description: str) -> None:
 def _add_property(obj: Any, property_type: str, name: str, description: str) -> None:
     if name not in _properties(obj):
         obj.addProperty(property_type, name, "VibeCAD", description)
+
+
+def _hide_property(obj: Any, name: str) -> None:
+    setter = getattr(obj, "setEditorMode", None)
+    if callable(setter):
+        setter(name, 2)
 
 
 def compact_persisted_input_snapshots(doc: Any) -> dict[str, Any]:
@@ -675,6 +684,11 @@ def _set_metadata(
     output_type: str,
     definition: Mapping[str, Any],
 ) -> None:
+    expected_outputs = list(prepared.get("expected_outputs") or [])
+    contract_owner = bool(
+        expected_outputs
+        and str(expected_outputs[0].get("name") or "") == output_name
+    )
     fields = (
         (
             contracts.PROP_PROGRAM_ID,
@@ -701,6 +715,11 @@ def _set_metadata(
             "Stable VibeScript output name.",
             output_name,
         ),
+        (
+            contracts.PROP_PROGRAM_LABEL,
+            "Stable VibeScript program label.",
+            str(prepared["program_name"]),
+        ),
         (PROP_OUTPUT_TYPE, "Declared VibeScript output type.", output_type),
         (
             PROP_DEFINITION,
@@ -716,6 +735,21 @@ def _set_metadata(
     for name, description, value in fields:
         _add_string_property(obj, name, description)
         setattr(obj, name, value)
+    _add_string_property(
+        obj,
+        contracts.PROP_PROGRAM_CONTRACT,
+        "Portable accepted VibeScript source, inputs, and output contract.",
+    )
+    setattr(
+        obj,
+        contracts.PROP_PROGRAM_CONTRACT,
+        (
+            str(prepared.get("document_program_contract") or "")
+            if contract_owner
+            else ""
+        ),
+    )
+    _hide_property(obj, contracts.PROP_PROGRAM_CONTRACT)
     input_link_property_type = (
         "App::PropertyXLinkList"
         if prepared["pack"].domain == "assembly"
@@ -10141,9 +10175,20 @@ def _tag_partdesign_root(root: Any, prepared: Mapping[str, Any]) -> None:
             "Accepted VibeScript program revision.",
             str(prepared["revision"]),
         ),
+        (
+            contracts.PROP_PROGRAM_LABEL,
+            "Stable VibeScript program label.",
+            str(prepared["program_name"]),
+        ),
+        (
+            contracts.PROP_PROGRAM_CONTRACT,
+            "Portable accepted VibeScript source, inputs, and output contract.",
+            str(prepared.get("document_program_contract") or ""),
+        ),
     ):
         _add_string_property(root, name, description)
         setattr(root, name, value)
+    _hide_property(root, contracts.PROP_PROGRAM_CONTRACT)
     scripted_publication.ensure_string_property(
         root, scripted_publication.PROP_INTERFACES
     )
@@ -10190,6 +10235,274 @@ def _partdesign_interface_table(
     return table
 
 
+def _partdesign_history_reference(
+    body: Any,
+    objects: Mapping[str, Any],
+    reference: Mapping[str, Any] | None,
+) -> Any:
+    if reference is None:
+        return None
+    scope = str(reference.get("scope") or "")
+    if scope == "body":
+        return body
+    if scope == "origin":
+        return body.Origin
+    if scope == "history":
+        name = str(reference.get("name") or "")
+        if name not in objects:
+            raise RuntimeError(
+                f"Native Part Design history refers to missing object {name!r}."
+            )
+        return objects[name]
+    if scope == "origin_feature":
+        features = list(getattr(body.Origin, "OriginFeatures", []) or [])
+        index = int(reference.get("index") or 0)
+        role = str(reference.get("role") or "")
+        matches = [
+            feature
+            for feature in features
+            if str(getattr(feature, "Role", "") or "") == role
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if 0 <= index < len(features):
+            return features[index]
+        raise RuntimeError(
+            f"Native Part Design history cannot resolve origin role {role!r}."
+        )
+    raise RuntimeError(
+        f"Native Part Design history has unsupported reference scope {scope!r}."
+    )
+
+
+def _apply_partdesign_history_links(
+    body: Any,
+    objects: Mapping[str, Any],
+    obj: Any,
+    links: Mapping[str, Any],
+) -> None:
+    for property_name, specification in links.items():
+        if bool(specification.get("read_only")) or property_name == "ExternalGeometry":
+            # restoreContent restores native read-only link collections such as
+            # Sketcher ExternalGeometry. They cannot be assigned through Python.
+            continue
+        kind = str(specification.get("kind") or "")
+        value = specification.get("value")
+        if kind == "link":
+            restored = _partdesign_history_reference(body, objects, value)
+        elif kind == "link_list":
+            restored = [
+                _partdesign_history_reference(body, objects, item)
+                for item in list(value or [])
+            ]
+        elif kind == "link_sub":
+            restored = (
+                None
+                if value is None
+                else (
+                    _partdesign_history_reference(
+                        body,
+                        objects,
+                        value.get("target"),
+                    ),
+                    list(value.get("subelements") or []),
+                )
+            )
+        elif kind == "link_sub_list":
+            restored = [
+                (
+                    _partdesign_history_reference(
+                        body,
+                        objects,
+                        item.get("target"),
+                    ),
+                    list(item.get("subelements") or []),
+                )
+                for item in list(value or [])
+            ]
+        else:
+            raise RuntimeError(
+                f"Native Part Design history has unsupported link kind {kind!r}."
+            )
+        try:
+            setattr(obj, property_name, restored)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not restore {obj.Name}.{property_name} from validated "
+                f"Part Design history: {exc}"
+            ) from exc
+
+
+def _verify_partdesign_history_body(
+    body: Any,
+    item: Mapping[str, Any],
+    *,
+    output_name: str,
+) -> None:
+    tip = getattr(body, "Tip", None)
+    if tip is None or tip not in list(getattr(body, "Group", []) or []):
+        raise RuntimeError(
+            f"Restored native Part Design Body for {output_name!r} has no "
+            "valid Tip feature."
+        )
+    # The Body's aggregate Shape is refreshed by the document-level recompute
+    # that follows publication.  The restored Tip already contains the
+    # worker-validated result, so verify that native feature directly instead
+    # of forcing a recompute on the GUI publication thread.
+    shape = getattr(tip, "Shape", None)
+    if shape is None or shape.isNull() or not shape.isValid():
+        raise RuntimeError(
+            f"Restored native Part Design Tip for {output_name!r} is invalid."
+        )
+    facts = dict(item.get("facts") or {})
+    observed = {
+        "solids": len(list(getattr(shape, "Solids", []) or [])),
+        "shells": len(list(getattr(shape, "Shells", []) or [])),
+        "faces": len(list(getattr(shape, "Faces", []) or [])),
+        "wires": len(list(getattr(shape, "Wires", []) or [])),
+        "edges": len(list(getattr(shape, "Edges", []) or [])),
+        "vertices": len(list(getattr(shape, "Vertexes", []) or [])),
+    }
+    for name, value in observed.items():
+        if int(facts.get(name, -1)) != value:
+            raise RuntimeError(
+                f"Restored native Part Design Tip for {output_name!r} changed "
+                f"{name} ({value} != {facts.get(name)!r})."
+            )
+    expected_volume = float(facts.get("volume_mm3") or 0.0)
+    observed_volume = float(getattr(shape, "Volume", 0.0) or 0.0)
+    tolerance = max(1.0e-7, abs(expected_volume) * 1.0e-9)
+    if abs(observed_volume - expected_volume) > tolerance:
+        raise RuntimeError(
+            f"Restored native Part Design Tip for {output_name!r} changed volume "
+            f"({observed_volume:g} != {expected_volume:g} mm³)."
+        )
+
+
+def _materialize_partdesign_native_history(
+    doc: Any,
+    root: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+) -> dict[str, Any]:
+    history = validated.get("partdesign_native_history")
+    if not isinstance(history, Mapping):
+        return {"available": False, "bodies": {}, "created_objects": []}
+
+    output_items = {
+        str(item["name"]): item for item in list(validated.get("outputs") or [])
+    }
+    before_names = {
+        str(getattr(obj, "Name", "") or "")
+        for obj in list(getattr(doc, "Objects", []) or [])
+    }
+    bodies: dict[str, Any] = {}
+    program_id = str(prepared["program_id"])
+    revision = str(prepared["revision"])
+    for body_specification in list(history.get("outputs") or []):
+        object_specs = list(body_specification.get("objects") or [])
+        if not object_specs:
+            continue
+        output_name = str(body_specification["output_name"])
+        body = doc.addObject(
+            "PartDesign::Body",
+            str(body_specification["body_name"]),
+        )
+        if body is None:
+            raise RuntimeError(
+                f"FreeCAD did not restore the native Body for {output_name!r}."
+            )
+        body.Label = str(body_specification["body_label"])
+        root.addObject(body)
+
+        objects: dict[str, Any] = {}
+        for specification in object_specs:
+            original_name = str(specification["name"])
+            obj = body.newObject(
+                str(specification["type_id"]),
+                original_name,
+            )
+            if obj is None:
+                raise RuntimeError(
+                    f"FreeCAD did not restore native history object {original_name!r}."
+                )
+            if str(getattr(obj, "TypeId", "") or "") != str(
+                specification["type_id"]
+            ):
+                raise RuntimeError(
+                    f"FreeCAD created the wrong native history type for "
+                    f"{original_name!r}."
+                )
+            objects[original_name] = obj
+
+        for specification in object_specs:
+            original_name = str(specification["name"])
+            obj = objects[original_name]
+            try:
+                obj.restoreContent(bytearray(specification["content"]))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not restore native history object {original_name!r}: {exc}"
+                ) from exc
+            obj.Label = str(specification.get("label") or original_name)
+
+        for specification in object_specs:
+            original_name = str(specification["name"])
+            obj = objects[original_name]
+            _apply_partdesign_history_links(
+                body,
+                objects,
+                obj,
+                dict(specification.get("links") or {}),
+            )
+            view = getattr(obj, "ViewObject", None)
+            if view is not None and hasattr(view, "Visibility"):
+                view.Visibility = bool(specification.get("visible"))
+
+        tip_name = str(body_specification.get("tip_name") or "")
+        if tip_name:
+            body.Tip = objects[tip_name]
+        scripted_publication.tag_object(
+            body,
+            role=scripted_publication.ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id=program_id,
+            output_key=output_name,
+            revision=revision,
+        )
+        body_view = getattr(body, "ViewObject", None)
+        if body_view is not None and hasattr(body_view, "Visibility"):
+            body_view.Visibility = False
+        bodies[output_name] = body
+
+    for body_specification in list(history.get("outputs") or []):
+        if str(body_specification.get("representation") or "") != "body":
+            continue
+        output_name = str(body_specification["output_name"])
+        body = bodies.get(output_name)
+        if body is None:
+            raise RuntimeError(
+                f"Native Part Design Body history for {output_name!r} is empty."
+            )
+        _verify_partdesign_history_body(
+            body,
+            output_items[output_name],
+            output_name=output_name,
+        )
+
+    created_names = [
+        str(getattr(obj, "Name", "") or "")
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(getattr(obj, "Name", "") or "") not in before_names
+    ]
+    return {
+        "available": True,
+        "bodies": bodies,
+        "created_objects": created_names,
+        "artifact_sha256": str(history.get("artifact_sha256") or ""),
+    }
+
+
 def _publish_partdesign_candidate(
     service: Any,
     prepared: Mapping[str, Any],
@@ -10203,6 +10516,36 @@ def _publish_partdesign_candidate(
     publications = (
         _partdesign_publications(doc, root, program_id) if root is not None else {}
     )
+    native_history_available = isinstance(
+        validated.get("partdesign_native_history"),
+        Mapping,
+    )
+    previous_implementation = (
+        scripted_publication.implementation_closure(root)
+        if root is not None and native_history_available
+        else []
+    )
+    if previous_implementation:
+        publication_targets = [
+            scripted_publication.publication_target(obj, root)
+            for obj in publications.values()
+        ]
+        implementation_uses = scripted_publication.external_reference_uses(
+            doc,
+            previous_implementation,
+            internal_objects=[
+                root,
+                *previous_implementation,
+                *publications.values(),
+                *publication_targets,
+            ],
+        )
+        if implementation_uses:
+            raise _reference_error(
+                "Cannot regenerate native Part Design history while downstream "
+                "objects reference its generated implementation",
+                implementation_uses,
+            )
     previous_presentation = {
         name: _preflight_partdesign_presentation(obj)
         for name, obj in publications.items()
@@ -10279,6 +10622,12 @@ def _publish_partdesign_candidate(
     transaction_open = False
     created: list[str] = []
     removed: list[str] = []
+    removed_implementation: list[str] = []
+    native_history = {
+        "available": False,
+        "bodies": {},
+        "created_objects": [],
+    }
     rollback_targets: dict[int, Any] = {}
     for obj in publications.values():
         rollback_targets[id(obj)] = obj
@@ -10302,6 +10651,17 @@ def _publish_partdesign_candidate(
             created.append(str(root.Name))
         root.Label = str(prepared["program_name"])
         _tag_partdesign_root(root, prepared)
+        if native_history_available:
+            removed_implementation = scripted_publication.delete_implementation(
+                doc,
+                root,
+            )
+            native_history = _materialize_partdesign_native_history(
+                doc,
+                root,
+                prepared,
+                validated,
+            )
         for name in retired_names:
             removed.extend(
                 scripted_publication.delete_publication(
@@ -10447,6 +10807,18 @@ def _publish_partdesign_candidate(
         "interfaces": interface_table,
         "created_objects": created,
         "retired_objects": removed,
+        "native_history": {
+            "available": bool(native_history.get("available")),
+            "body_objects": {
+                name: str(body.Name)
+                for name, body in dict(native_history.get("bodies") or {}).items()
+            },
+            "created_objects": list(native_history.get("created_objects") or []),
+            "retired_objects": removed_implementation,
+            "artifact_sha256": str(
+                native_history.get("artifact_sha256") or ""
+            ),
+        },
         "downstream_references": downstream,
         "recompute_deferred": True,
         "stdout": str(validated.get("stdout") or ""),

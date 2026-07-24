@@ -46,6 +46,7 @@ class TreeParams;
 class ViewProviderDocumentObject;
 class DocumentObjectItem;
 class DocumentObjectData;
+class BrowserFolderItem;
 using DocumentObjectDataPtr = std::shared_ptr<DocumentObjectData>;
 class TreeWidgetItemDelegate;
 
@@ -100,6 +101,7 @@ public:
 
     static const int DocumentType;
     static const int ObjectType;
+    static const int BrowserFolderType;
 
     void markItem(const App::DocumentObject* Obj, bool mark);
     void syncView(ViewProviderDocumentObject* vp);
@@ -137,6 +139,7 @@ public:
 
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
+    static void refreshModelBrowsers();
 
     QList<QTreeWidgetItem*> childrenOfItem(const QTreeWidgetItem& item) const;
 
@@ -206,6 +209,8 @@ private:
     void selectAllDocumentLevel();
     void selectAllGroupLevel(const QTreeWidgetItem* targetNode, bool isGroup);
     void clearSelectAllContext();
+    static void setObjectItemVisibility(DocumentObjectItem* item, bool visible);
+    static bool objectItemVisibility(const DocumentObjectItem* item);
 
 protected Q_SLOTS:
     void onCreateGroup();
@@ -327,6 +332,7 @@ private:
 
     friend class DocumentItem;
     friend class DocumentObjectItem;
+    friend class BrowserFolderItem;
     friend class TreeParams;
     friend class TreeWidgetItemDelegate;
 
@@ -452,6 +458,19 @@ protected:
     void populateParents(const ViewProvider* vp, ViewParentMap&);
 
     void setReadOnlyIconInfo(int column, QIcon& overlayedIcon);
+    void refreshModelBrowser(bool force = false);
+    void rebuildModelBrowser();
+    void clearModelBrowser();
+    void setLegacyTreeVisible(bool visible);
+    void updateBrowserFolderStatus();
+    DocumentObjectItem* createBrowserObjectItem(
+        App::DocumentObject* object,
+        QTreeWidgetItem* parent,
+        DocumentObjectItem* logicalParent,
+        bool browserDefaultHidden
+    );
+    DocumentObjectItem* findBrowserItem(App::DocumentObject* object) const;
+    bool isPresentationItem(const DocumentObjectItem* item) const;
 
 private:
     const char* treeName;  // for debugging purpose
@@ -459,6 +478,8 @@ private:
     std::unordered_map<App::DocumentObject*, DocumentObjectDataPtr> ObjectMap;
     std::unordered_map<App::DocumentObject*, std::set<App::DocumentObject*>> _ParentMap;
     std::vector<App::DocumentObject*> PopulateObjects;
+    bool modelBrowserDirty {true};
+    bool modelBrowserActive {false};
 
     ExpandInfoPtr _ExpandInfo;
     void restoreItemExpansion(const ExpandInfoPtr&, DocumentObjectItem*);
@@ -479,6 +500,7 @@ private:
     friend class TreeWidget;
     friend class DocumentObjectData;
     friend class DocumentObjectItem;
+    friend class BrowserFolderItem;
 };
 
 /** The link between the tree and a document object.
@@ -489,7 +511,13 @@ private:
 class DocumentObjectItem: public QTreeWidgetItem
 {
 public:
-    DocumentObjectItem(DocumentItem* ownerDocItem, DocumentObjectDataPtr data);
+    DocumentObjectItem(
+        DocumentItem* ownerDocItem,
+        DocumentObjectDataPtr data,
+        bool browserProxy = false,
+        DocumentObjectItem* browserLogicalParent = nullptr,
+        bool browserDefaultHidden = false
+    );
     ~DocumentObjectItem() override;
 
     Gui::ViewProviderDocumentObject* object() const;
@@ -551,6 +579,14 @@ public:
     DocumentObjectItem* getNextSibling() const;
     DocumentObjectItem* getPreviousSibling() const;
     TreeWidget* getTree() const;
+    bool isBrowserProxy() const
+    {
+        return browserProxy;
+    }
+    bool isBrowserDefaultHidden() const
+    {
+        return browserDefaultHidden;
+    }
 
 private:
     void setCheckState(bool checked);
@@ -572,9 +608,13 @@ private:
     int previousStatus;
     int selected;
     bool populated;
+    bool browserProxy;
+    DocumentObjectItem* browserLogicalParent;
+    bool browserDefaultHidden;
 
     friend class TreeWidget;
     friend class DocumentItem;
+    friend class BrowserFolderItem;
 };
 
 class TreePanel: public QWidget

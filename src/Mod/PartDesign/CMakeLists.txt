@@ -55,6 +55,7 @@ set(PartDesign_TestScripts
     PartDesignTests/TestChamfer.py
     PartDesignTests/TestConsolidatedPart.py
     PartDesignTests/TestConsolidatedPartTools.py
+    PartDesignTests/TestModelTreeBrowser.py
     PartDesignTests/TestVibeScriptPresentation.py
     PartDesignTests/TestDraft.py
     PartDesignTests/TestThickness.py

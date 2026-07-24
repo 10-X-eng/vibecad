@@ -103,6 +103,9 @@ SCRIPTED_ENGINE_PROVIDER_TOOLS = {
 }
 
 MAX_TURN_CONTEXT_JSON_BYTES = 16 * 1024
+MAX_RECENT_CONVERSATION_TURNS = 16
+MAX_RECENT_CONVERSATION_JSON_BYTES = 48 * 1024
+MAX_RECENT_CONVERSATION_TURN_CHARACTERS = 6000
 MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES = 128 * 1024
 MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 16 * 1024
 
@@ -1021,6 +1024,30 @@ def _prime_modeling_engine_for_session(
     return engine
 
 
+def _load_conversation_for_session(
+    service: VibeCADService,
+    dispatch: DocumentThreadDispatch | None,
+) -> dict[str, Any]:
+    """Read the selected conversation without doing artifact I/O on Qt's thread."""
+
+    prepare = getattr(service, "prepare_conversation_history_read", None)
+    complete = getattr(service, "complete_conversation_history_read", None)
+    accept = getattr(service, "accept_conversation_history_read", None)
+    if not all(callable(item) for item in (prepare, complete, accept)):
+        history = _on_document_thread(dispatch, service.conversation_history)
+        return dict(history) if isinstance(history, dict) else {"conversation": []}
+
+    prepared = _on_document_thread(dispatch, prepare)
+    history = complete(prepared)
+    accepted = _on_document_thread(dispatch, lambda: accept(prepared, history))
+    if isinstance(accepted, dict) and accepted.get("accepted") is False:
+        raise RuntimeError(
+            "The active conversation changed while VibeCAD loaded its history. "
+            "Start the request again in the selected conversation."
+        )
+    return dict(history) if isinstance(history, dict) else {"conversation": []}
+
+
 def _scripted_engine_preflight(
     service: VibeCADService,
     engine: str,
@@ -1077,11 +1104,82 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bounded_conversation_content(content: str) -> tuple[str, bool]:
+    clean = str(content or "").strip()
+    if len(clean) <= MAX_RECENT_CONVERSATION_TURN_CHARACTERS:
+        return clean, False
+
+    marker = "\n...[middle of this earlier message omitted]...\n"
+    remaining = MAX_RECENT_CONVERSATION_TURN_CHARACTERS - len(marker)
+    head = remaining // 2
+    tail = remaining - head
+    return clean[:head] + marker + clean[-tail:], True
+
+
+def _recent_conversation_payload(
+    conversation: list[dict[str, Any]] | None,
+    *,
+    current_user_message: str | None = None,
+) -> dict[str, Any]:
+    """Return a chronological, bounded window from the selected conversation."""
+
+    cleaned: list[dict[str, str]] = []
+    for item in conversation or []:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        content = str(item.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        cleaned.append({"role": role, "content": content})
+
+    current = str(current_user_message or "").strip()
+    if (
+        current
+        and cleaned
+        and cleaned[-1]["role"] == "user"
+        and cleaned[-1]["content"] == current
+    ):
+        # The normal prompt path persists the user turn before starting the
+        # provider. Keep it in durable history, but do not send it twice.
+        cleaned.pop()
+
+    candidates = cleaned[-MAX_RECENT_CONVERSATION_TURNS:]
+    selected: list[dict[str, str]] = []
+    truncated_turn_count = 0
+    for item in reversed(candidates):
+        content, truncated = _bounded_conversation_content(item["content"])
+        candidate = {"role": item["role"], "content": content}
+        trial = [candidate, *selected]
+        trial_payload = {
+            "turns": trial,
+            "omitted_turn_count": len(cleaned) - len(trial),
+            "truncated_turn_count": truncated_turn_count + int(truncated),
+        }
+        encoded = json.dumps(
+            trial_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        if len(encoded.encode("utf-8")) > MAX_RECENT_CONVERSATION_JSON_BYTES:
+            break
+        selected = trial
+        truncated_turn_count += int(truncated)
+
+    return {
+        "turns": selected,
+        "omitted_turn_count": len(cleaned) - len(selected),
+        "truncated_turn_count": truncated_turn_count,
+    }
+
+
 def _provider_prompt(
     prompt: str,
     context: dict[str, Any],
     *,
     prompt_section: str = "CURRENT_USER_MESSAGE",
+    recent_conversation: list[dict[str, Any]] | None = None,
+    current_user_message: str | None = None,
 ) -> str:
     payload = {"active_state": _provider_state_payload(context)}
     encoded = json.dumps(
@@ -1093,10 +1191,29 @@ def _provider_prompt(
             "Deterministic VibeCAD turn-start context exceeded "
             f"{MAX_TURN_CONTEXT_JSON_BYTES} bytes ({encoded_bytes} bytes)."
         )
+    conversation_payload = _recent_conversation_payload(
+        recent_conversation,
+        current_user_message=current_user_message,
+    )
+    encoded_conversation = json.dumps(
+        conversation_payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    conversation_bytes = len(encoded_conversation.encode("utf-8"))
+    if conversation_bytes > MAX_RECENT_CONVERSATION_JSON_BYTES:
+        raise RuntimeError(
+            "VibeCAD recent conversation window exceeded "
+            f"{MAX_RECENT_CONVERSATION_JSON_BYTES} bytes "
+            f"({conversation_bytes} bytes)."
+        )
     return (
         "VIBECAD_CONTEXT_JSON\n"
         + encoded
         + "\nEND_VIBECAD_CONTEXT_JSON\n\n"
+        + "RECENT_CONVERSATION_JSON\n"
+        + encoded_conversation
+        + "\nEND_RECENT_CONVERSATION_JSON\n\n"
         + f"{prompt_section}\n"
         + prompt
     )
@@ -1605,6 +1722,10 @@ def build_domain_vibescript_editor_candidate(
             document_thread_dispatch,
             lambda: capture_operation_state(service, tool_name, args),
         )
+        # A human pressing Build is an explicit request to execute the current
+        # program, even when its content digest matches the prior revision.
+        # Provider mutations keep the unchanged-revision guard.
+        captured["allow_unchanged_revision"] = True
         prepared = prepare_candidate(captured)
         if prepared.get("reference_requirements") and not prepared.get("finalized"):
             try:
@@ -2310,6 +2431,7 @@ def _run_session_turn(
                 "Close the active FreeCAD edit session before running the OpenSCAD engine."
             )
     turn_conversation_id: str | None = None
+    turn_conversation: list[dict[str, Any]] = []
     if persist_input_as_user:
         recorded = _persist_session_conversation_turn(
             active_service,
@@ -2318,6 +2440,22 @@ def _run_session_turn(
             dispatch=document_thread_dispatch,
         )
         turn_conversation_id = str(recorded.get("conversation_id") or "") or None
+        turn_conversation = [
+            dict(item)
+            for item in recorded.get("conversation") or []
+            if isinstance(item, dict)
+        ]
+    else:
+        recorded = _load_conversation_for_session(
+            active_service,
+            document_thread_dispatch,
+        )
+        turn_conversation_id = str(recorded.get("conversation_id") or "") or None
+        turn_conversation = [
+            dict(item)
+            for item in recorded.get("conversation") or []
+            if isinstance(item, dict)
+        ]
     _emit(progress_callback, {"event": "context_build_started"})
     context = _on_document_thread(
         document_thread_dispatch,
@@ -2380,6 +2518,8 @@ def _run_session_turn(
                 clean_prompt,
                 context,
                 prompt_section=prompt_section,
+                recent_conversation=turn_conversation,
+                current_user_message=clean_prompt if persist_input_as_user else None,
             ),
             context,
             tool_runner,

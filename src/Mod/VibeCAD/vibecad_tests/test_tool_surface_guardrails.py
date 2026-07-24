@@ -762,7 +762,12 @@ def test_domain_lifecycle_schemas_accept_bounded_structured_inputs(specs) -> Non
     create, _, _ = specs["vibescript.partdesign.create_program"]
     valid = {
         "program_name": "Parametric Bracket",
-        "source": "result = {'Part': api.body(api.pad(api.sketch([api.circle([0,0], inputs['radius'])]), inputs['height']))}",
+        "source": (
+            "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+            "feature = api.extrude(profile, inputs['height'], "
+            "operation='add_material')\n"
+            "result = {'Part': api.body(feature)}"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

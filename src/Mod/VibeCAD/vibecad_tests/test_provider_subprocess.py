@@ -216,6 +216,22 @@ def test_partdesign_uses_the_same_model_operating_template_as_other_domains() ->
         assert "Never call native workbench tools" in instruction
 
 
+def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
+    partdesign = provider._vibescript_authoring_instruction(
+        _vibescript_mode_context()
+    )
+    assert "native editable Body history as the default" in partdesign
+    assert "Every planar profile" in partdesign
+    assert "must be an api.sketch" in partdesign
+    assert "line_3d, arc_3d, wire" in partdesign
+    assert "never choose direct topology merely because it is shorter" in partdesign
+
+    assembly = provider._vibescript_authoring_instruction(
+        _vibescript_mode_context("AssemblyWorkbench", "assembly")
+    )
+    assert "must be an api.sketch" not in assembly
+
+
 class _ProviderContextService:
     def __init__(
         self,

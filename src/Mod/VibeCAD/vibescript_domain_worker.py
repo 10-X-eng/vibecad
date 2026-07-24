@@ -780,12 +780,17 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
     expected_outputs = request.get("expected_outputs")
     exports = request.get("api_exports")
     output_types = request.get("output_types")
+    compatibility_methods = request.get("compatibility_methods", [])
     if not isinstance(inputs, dict):
         raise TypeError("inputs must be an object.")
     if not isinstance(expected_outputs, list) or not expected_outputs:
         raise TypeError("expected_outputs must be a non-empty array.")
     if not isinstance(exports, list) or not isinstance(output_types, list):
         raise TypeError("The domain API contract is missing.")
+    if not isinstance(compatibility_methods, list) or any(
+        not isinstance(item, str) for item in compatibility_methods
+    ):
+        raise TypeError("compatibility_methods must be an array of strings.")
     if domain in {
         "partdesign",
         "part",
@@ -877,7 +882,12 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         "VibeScriptDomainCandidate", "VibeScript Domain Candidate", True, True
     )
     try:
-        api = create_domain_api(domain, exports, output_types)
+        api = create_domain_api(
+            domain,
+            exports,
+            output_types,
+            compatibility_methods=compatibility_methods,
+        )
         result, stdout, budget = _execute_source(
             source=source,
             document_name=str(request.get("document_name") or "VibeScriptDocument"),
@@ -914,8 +924,12 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         cam_validation = None
         techdraw_validation = None
         partdesign_validation = None
+        partdesign_native_history = None
         if domain == "partdesign":
-            from vibescript_partdesign_worker import validate_and_build_partdesign
+            from vibescript_partdesign_worker import (
+                export_partdesign_native_history,
+                validate_and_build_partdesign,
+            )
 
             outputs, partdesign_validation = validate_and_build_partdesign(
                 document,
@@ -923,6 +937,14 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 [dict(item) for item in expected_outputs],
                 root,
                 max_shape_subelements=shape_detail_limit,
+                object_name_prefix=(
+                    f"VibePD_{str(request.get('program_id') or '')[:12]}_"
+                ),
+            )
+            partdesign_native_history = export_partdesign_native_history(
+                document,
+                outputs,
+                root,
             )
         elif domain == "draft":
             from vibescript_draft_worker import validate_and_build_draft
@@ -1070,6 +1092,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         }
         if domain == "partdesign":
             response["partdesign_validation"] = partdesign_validation
+            response["partdesign_native_history"] = partdesign_native_history
         elif domain == "assembly":
             from vibescript_assembly_worker import validate_and_solve_assembly
 

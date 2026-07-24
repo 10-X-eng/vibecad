@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from array import array
 import ast
+import base64
+import binascii
 from dataclasses import dataclass
 import hashlib
 import inspect
@@ -38,6 +40,31 @@ _ASYNC_PUBLICATION_KEY = "_vibecad_domain_publication"
 _STRUCTURED_DEFINITION_LIMIT = 1_000_000
 _MAX_REFERENCE_SHAPES = 128
 _MAX_REFERENCE_BREP_BYTES = 256 * 1024 * 1024
+_PARTDESIGN_NATIVE_HISTORY_SCHEMA = "vibecad-partdesign-native-history-v1"
+_MAX_PARTDESIGN_NATIVE_HISTORY_BYTES = 256 * 1024 * 1024
+_MAX_PARTDESIGN_NATIVE_HISTORY_OBJECTS = 16_384
+_PARTDESIGN_NATIVE_HISTORY_TYPES = frozenset(
+    {
+        "Sketcher::SketchObject",
+        "PartDesign::AdditiveLoft",
+        "PartDesign::Chamfer",
+        "PartDesign::Draft",
+        "PartDesign::Feature",
+        "PartDesign::Fillet",
+        "PartDesign::Groove",
+        "PartDesign::Hole",
+        "PartDesign::Mirrored",
+        "PartDesign::Pad",
+        "PartDesign::Pocket",
+        "PartDesign::PolarPattern",
+        "PartDesign::Revolution",
+        "PartDesign::SubtractiveLoft",
+        "PartDesign::Thickness",
+    }
+)
+_PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS = frozenset(
+    {"pad", "pocket", "groove"}
+)
 _MAX_REFERENCE_MESH_SEGMENTS = 4096
 _MAX_REFERENCE_POINTS = 2_000_000
 _MAX_REFERENCE_FACT_SUBELEMENTS = 32
@@ -377,6 +404,82 @@ def _load_manifest(
     return manifest
 
 
+def _load_captured_manifest(
+    captured: Mapping[str, Any],
+    pack: contracts.VibeScriptWorkbenchPack,
+    program_id: str,
+    *,
+    hydrate_document_contract: bool = False,
+) -> dict[str, Any]:
+    """Prefer a compatible working artifact, falling back to the FCStd contract."""
+
+    document_program = captured.get("document_program")
+    portable_manifest: dict[str, Any] | None = None
+    portable_error: Exception | None = None
+    if isinstance(document_program, Mapping):
+        raw = str(document_program.get("contract") or "")
+        if raw:
+            live = next(
+                (
+                    item
+                    for item in list(captured.get("live_programs") or [])
+                    if str(item.get("program_id") or "") == program_id
+                ),
+                None,
+            )
+            revisions = (
+                list(live.get("revisions") or [])
+                if isinstance(live, Mapping)
+                else []
+            )
+            expected_revision = str(revisions[0]) if len(revisions) == 1 else ""
+            try:
+                portable_manifest = contracts.decode_document_program_contract(
+                    raw,
+                    pack,
+                    expected_program_id=program_id,
+                    expected_revision=expected_revision,
+                )
+            except Exception as exc:
+                portable_error = exc
+
+    artifact_manifest: dict[str, Any] | None = None
+    artifact_error: Exception | None = None
+    try:
+        artifact_manifest = _load_manifest(
+            captured["project_root"],
+            pack,
+            program_id,
+        )
+    except Exception as exc:
+        artifact_error = exc
+
+    use_portable = bool(
+        portable_manifest is not None
+        and (
+            artifact_manifest is None
+            or str(artifact_manifest.get("accepted_revision") or "")
+            != str(portable_manifest.get("accepted_revision") or "")
+        )
+    )
+    if use_portable:
+        manifest = dict(portable_manifest or {})
+        if hydrate_document_contract:
+            _atomic_json(
+                _manifest_path(captured["project_root"], pack.domain, program_id),
+                manifest,
+            )
+        return manifest
+    if artifact_manifest is not None:
+        return artifact_manifest
+    if portable_manifest is not None:
+        return portable_manifest
+    if portable_error is not None:
+        raise portable_error
+    assert artifact_error is not None
+    raise artifact_error
+
+
 def _assembly_live_output_state(obj: Any) -> dict[str, Any]:
     """Capture bounded accepted evidence used by model-facing inspect_program."""
 
@@ -422,6 +525,26 @@ def _assembly_live_output_state(obj: Any) -> dict[str, Any]:
 
 def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
     programs: dict[str, dict[str, Any]] = {}
+    native_history: dict[str, list[dict[str, str]]] = {}
+    if domain == "partdesign":
+        for obj in list(getattr(doc, "Objects", []) or []):
+            if str(getattr(obj, "VibeCADScriptedRole", "") or "") != "implementation":
+                continue
+            program_id = str(
+                getattr(obj, "VibeCADScriptedModelId", "") or ""
+            )
+            if not program_id:
+                continue
+            native_history.setdefault(program_id, []).append(
+                {
+                    "object_name": str(getattr(obj, "Name", "") or ""),
+                    "label": str(getattr(obj, "Label", "") or ""),
+                    "type_id": str(getattr(obj, "TypeId", "") or ""),
+                    "output_name": str(
+                        getattr(obj, "VibeCADScriptedOutputKey", "") or ""
+                    ),
+                }
+            )
     for obj in list(getattr(doc, "Objects", []) or []):
         properties = set(getattr(obj, "PropertiesList", []) or [])
         if not {contracts.PROP_PROGRAM_ID, contracts.PROP_PROGRAM_DOMAIN} <= properties:
@@ -433,8 +556,19 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
             continue
         item = programs.setdefault(
             program_id,
-            {"program_id": program_id, "revisions": set(), "outputs": []},
+            {
+                "program_id": program_id,
+                "label": str(
+                    getattr(obj, contracts.PROP_PROGRAM_LABEL, "") or ""
+                ),
+                "revisions": set(),
+                "outputs": [],
+            },
         )
+        if not item["label"]:
+            item["label"] = str(
+                getattr(obj, contracts.PROP_PROGRAM_LABEL, "") or ""
+            )
         revision = str(getattr(obj, contracts.PROP_PROGRAM_REVISION, "") or "")
         if revision:
             item["revisions"].add(revision)
@@ -455,6 +589,19 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
         item = programs[program_id]
         item["revisions"] = sorted(item["revisions"])
         item["outputs"] = sorted(item["outputs"], key=lambda output: output["name"])
+        if domain == "partdesign":
+            bodies = sorted(
+                native_history.get(program_id, []),
+                key=lambda body: (
+                    body["output_name"],
+                    body["object_name"],
+                ),
+            )
+            item["native_history"] = {
+                "available": bool(bodies),
+                "body_count": len(bodies),
+                "bodies": bodies,
+            }
         result.append(item)
     return result
 
@@ -591,6 +738,16 @@ def capture_operation_state(
             f"FreeCAD is unavailable: {exc}",
         )
     live = _live_programs(doc, pack.domain) if doc is not None else []
+    target_program_id = str(arguments.get("program_id") or "").strip().lower()
+    document_program = (
+        contracts.capture_document_program_payload(
+            doc,
+            pack.domain,
+            target_program_id,
+        )
+        if doc is not None and target_program_id
+        else {}
+    )
     for item in live:
         if len(item["revisions"]) > 1:
             _raise(
@@ -619,6 +776,7 @@ def capture_operation_state(
             else []
         ),
         "live_programs": live,
+        "document_program": document_program,
         "surface": resolution.summary(),
         "freecad_home": freecad_home,
         "timeout_seconds": timeout,
@@ -676,6 +834,24 @@ def _merge_patch(base: Mapping[str, Any], patch: Any) -> dict[str, Any]:
         else:
             result[str(key)] = value
     return result
+
+
+def _partdesign_saved_source_compatibility_methods(source: str) -> frozenset[str]:
+    """Find retired calls eligible only when replaying an unchanged saved source."""
+
+    tree = ast.parse(
+        str(source or ""),
+        filename="<vibecad-partdesign-vibescript>",
+        mode="exec",
+    )
+    return frozenset(
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "api"
+        and node.attr in _PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS
+    )
 
 
 def _freecadcmd(freecad_home: str) -> Path:
@@ -1724,7 +1900,12 @@ def finalize_candidate(
             if resolved_references
             else contract_revision
         )
-        if prepared["base_revision"] and revision == prepared["base_revision"]:
+        if (
+            prepared["base_revision"]
+            and revision == prepared["base_revision"]
+            and not prepared.get("native_history_repair_required")
+            and not prepared.get("allow_unchanged_revision")
+        ):
             _raise(
                 str(prepared["tool_name"]),
                 "PROGRAM_REVISION_UNCHANGED",
@@ -1733,6 +1914,16 @@ def finalize_candidate(
                 "existing working revision.",
                 observed={"current_revision": revision},
             )
+        document_program_contract = contracts.encode_document_program_contract(
+            prepared["pack"],
+            program_id=str(prepared["program_id"]),
+            label=str(prepared["program_name"]),
+            revision=revision,
+            source=str(prepared["source"]),
+            input_schema=prepared["input_schema"],
+            inputs=prepared["inputs"],
+            expected_outputs=prepared["expected_outputs"],
+        )
         request = dict(prepared["worker_request"])
         request["revision"] = revision
         request["document_references"] = worker_references
@@ -1767,6 +1958,7 @@ def finalize_candidate(
                 "resolved_references": resolved_references,
                 "manifest": manifest,
                 "worker_request": request,
+                "document_program_contract": document_program_contract,
                 "finalized": True,
             }
         )
@@ -1809,6 +2001,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         raise ValueError(
                             f"A {pack.title} VibeScript program named {label!r} already exists."
                         )
+            if any(
+                str(item.get("label") or "") == label
+                for item in list(captured.get("live_programs") or [])
+                if isinstance(item, Mapping)
+            ):
+                raise ValueError(
+                    f"A {pack.title} VibeScript program named {label!r} "
+                    "already exists in this document."
+                )
             program_id = uuid.uuid4().hex
             manifest = _new_manifest(pack, program_id, label)
             source = str(arguments.get("source") or "")
@@ -1816,13 +2017,19 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             inputs = arguments.get("inputs")
             expected_outputs = arguments.get("expected_outputs")
             base_revision = ""
+            previous_source = ""
         else:
             program_id = str(arguments.get("program_id") or "").strip().lower()
             if not _PROGRAM_ID.fullmatch(program_id):
                 raise ValueError(
                     "program_id must be a 32-character lowercase hexadecimal id."
                 )
-            manifest = _load_manifest(project_root, pack, program_id)
+            manifest = _load_captured_manifest(
+                captured,
+                pack,
+                program_id,
+                hydrate_document_contract=True,
+            )
             base_revision = str(manifest.get("working_revision") or "")
             expected_revision = str(arguments.get("expected_revision") or "")
             if expected_revision != base_revision:
@@ -1871,7 +2078,8 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         }
                     ],
                 )
-            source = str(manifest.get("source") or "")
+            previous_source = str(manifest.get("source") or "")
+            source = previous_source
             input_schema = manifest.get("input_schema")
             inputs = manifest.get("inputs")
             expected_outputs = manifest.get("expected_outputs")
@@ -1894,6 +2102,40 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError(
                     f"Operation {operation!r} does not prepare a candidate."
                 )
+        native_history_repair_required = False
+        if pack.domain == "partdesign" and operation != "create_program":
+            expected_history_bodies = sum(
+                1
+                for item in dict(manifest.get("live_outputs") or {}).values()
+                if int(
+                    dict(item.get("partdesign_data") or {}).get(
+                        "feature_count",
+                        0,
+                    )
+                    or 0
+                )
+                > 0
+            )
+            live_program = next(
+                (
+                    item
+                    for item in list(captured.get("live_programs") or [])
+                    if str(item.get("program_id") or "") == program_id
+                ),
+                None,
+            )
+            live_history = (
+                dict(live_program.get("native_history") or {})
+                if isinstance(live_program, Mapping)
+                else {}
+            )
+            native_history_repair_required = (
+                expected_history_bodies > 0
+                and live_program is not None
+                and int(live_history.get("body_count") or 0)
+                < expected_history_bodies
+            )
+
         clean = contracts.validate_program_contract(
             pack,
             source=source,
@@ -1901,6 +2143,40 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             inputs=inputs,
             expected_outputs=expected_outputs,
         )
+        compatibility_methods: tuple[str, ...] = ()
+        if pack.domain == "partdesign":
+            retired_calls = _partdesign_saved_source_compatibility_methods(
+                clean["source"]
+            )
+            if retired_calls and (
+                operation == "create_program"
+                or clean["source"] != previous_source
+            ):
+                _raise(
+                    tool_name,
+                    "LEGACY_PARTDESIGN_API_NOT_AVAILABLE",
+                    "schema",
+                    "New or edited Part Design source must use the canonical operation "
+                    "vocabulary. Use api.extrude(operation='add_material' or "
+                    "'remove_material') for linear material changes and "
+                    "api.revolve(operation='add_material' or 'remove_material') "
+                    "for axial material changes.",
+                    requested={
+                        "canonical_operations": ["extrude", "revolve"],
+                    },
+                    observed={
+                        "retired_api_members": sorted(retired_calls),
+                        "unchanged_saved_source": False,
+                    },
+                    required_changes=[
+                        {
+                            "replace_retired_calls": sorted(retired_calls),
+                            "with": ["api.extrude", "api.revolve"],
+                        }
+                    ],
+                )
+            if retired_calls:
+                compatibility_methods = tuple(sorted(retired_calls))
         _validate_stable_references(clean["inputs"], captured, "inputs")
         # Resolve the worker before changing persisted program state. A missing
         # FreeCADCmd is a precondition failure, not a durable working revision.
@@ -1959,6 +2235,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "expected_outputs": clean["expected_outputs"],
             "api_exports": list(pack.api_exports),
             "output_types": list(pack.output_types),
+            "compatibility_methods": list(compatibility_methods),
             "max_operations": 200_000,
             "max_seconds": float(captured["timeout_seconds"]),
             "memory_limit_bytes": int(captured["memory_limit_bytes"]),
@@ -1999,6 +2276,10 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "point_artifact_ids": point_artifact_ids,
             "resolved_point_artifacts": resolved_point_artifacts,
             "worker_request": request,
+            "native_history_repair_required": native_history_repair_required,
+            "allow_unchanged_revision": bool(
+                captured.get("allow_unchanged_revision")
+            ),
             "finalized": False,
         }
         return prepared if reference_requirements else finalize_candidate(prepared, [])
@@ -13669,6 +13950,336 @@ def _validate_techdraw_execution(
     return dict(validation)
 
 
+def _validated_partdesign_history_reference(
+    value: Any,
+    *,
+    object_names: set[str],
+    path: str,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{path} must be an object or null.")
+    scope = str(value.get("scope") or "")
+    if scope in {"body", "origin"}:
+        if set(value) != {"scope"}:
+            raise ValueError(f"{path} has unexpected {scope} reference fields.")
+        return {"scope": scope}
+    if scope == "origin_feature":
+        if set(value) != {"scope", "index", "role"}:
+            raise ValueError(f"{path} has malformed origin-feature fields.")
+        index = value.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= 31:
+            raise ValueError(f"{path}.index is invalid.")
+        role = str(value.get("role") or "")
+        if not role or len(role) > 128:
+            raise ValueError(f"{path}.role is invalid.")
+        return {"scope": scope, "index": index, "role": role}
+    if scope == "history":
+        if set(value) != {"scope", "name"}:
+            raise ValueError(f"{path} has malformed history-reference fields.")
+        name = str(value.get("name") or "")
+        if name not in object_names:
+            raise ValueError(f"{path} refers to unknown history object {name!r}.")
+        return {"scope": scope, "name": name}
+    raise ValueError(f"{path} has unsupported reference scope {scope!r}.")
+
+
+def _validated_partdesign_history_subelements(
+    value: Any,
+    *,
+    object_names: set[str],
+    path: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "target",
+        "subelements",
+    }:
+        raise ValueError(f"{path} must contain target and subelements.")
+    raw_subelements = value.get("subelements")
+    if not isinstance(raw_subelements, list) or len(raw_subelements) > 256:
+        raise ValueError(f"{path}.subelements is invalid.")
+    subelements = [str(item) for item in raw_subelements]
+    if any(len(item) > 1024 for item in subelements):
+        raise ValueError(f"{path}.subelements contains an oversized name.")
+    return {
+        "target": _validated_partdesign_history_reference(
+            value.get("target"),
+            object_names=object_names,
+            path=f"{path}.target",
+        ),
+        "subelements": subelements,
+    }
+
+
+def _validated_partdesign_history_links(
+    value: Any,
+    *,
+    object_names: set[str],
+    path: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or len(value) > 512:
+        raise ValueError(f"{path} must be a bounded object.")
+    result: dict[str, Any] = {}
+    for raw_name, raw_specification in value.items():
+        name = str(raw_name)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"{path} has invalid property name {name!r}.")
+        if (
+            not isinstance(raw_specification, Mapping)
+            or set(raw_specification) != {"kind", "read_only", "value"}
+        ):
+            raise ValueError(f"{path}.{name} has malformed fields.")
+        kind = str(raw_specification.get("kind") or "")
+        read_only = raw_specification.get("read_only")
+        if not isinstance(read_only, bool):
+            raise ValueError(f"{path}.{name}.read_only must be boolean.")
+        raw = raw_specification.get("value")
+        if kind == "link":
+            clean = _validated_partdesign_history_reference(
+                raw,
+                object_names=object_names,
+                path=f"{path}.{name}.value",
+            )
+        elif kind == "link_list":
+            if not isinstance(raw, list) or len(raw) > 4096:
+                raise ValueError(f"{path}.{name}.value is invalid.")
+            clean = [
+                _validated_partdesign_history_reference(
+                    item,
+                    object_names=object_names,
+                    path=f"{path}.{name}.value[{index}]",
+                )
+                for index, item in enumerate(raw)
+            ]
+        elif kind == "link_sub":
+            clean = (
+                None
+                if raw is None
+                else _validated_partdesign_history_subelements(
+                    raw,
+                    object_names=object_names,
+                    path=f"{path}.{name}.value",
+                )
+            )
+        elif kind == "link_sub_list":
+            if not isinstance(raw, list) or len(raw) > 4096:
+                raise ValueError(f"{path}.{name}.value is invalid.")
+            clean = [
+                _validated_partdesign_history_subelements(
+                    item,
+                    object_names=object_names,
+                    path=f"{path}.{name}.value[{index}]",
+                )
+                for index, item in enumerate(raw)
+            ]
+        else:
+            raise ValueError(f"{path}.{name} has unsupported link kind {kind!r}.")
+        result[name] = {
+            "kind": kind,
+            "read_only": read_only,
+            "value": clean,
+        }
+    return result
+
+
+def _validate_partdesign_native_history(
+    prepared: Mapping[str, Any],
+    execution: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Load the worker's native Body snapshots before entering the document thread."""
+
+    metadata = execution.get("partdesign_native_history")
+    if metadata is None:
+        # Additive compatibility for attempts made by a pre-history worker.
+        return None
+    expected_fields = {
+        "schema",
+        "artifact_path",
+        "artifact_sha256",
+        "artifact_bytes",
+        "outputs",
+    }
+    if not isinstance(metadata, Mapping) or set(metadata) != expected_fields:
+        raise ValueError("Part Design native-history metadata is malformed.")
+    if metadata.get("schema") != _PARTDESIGN_NATIVE_HISTORY_SCHEMA:
+        raise ValueError("Part Design native-history schema is unsupported.")
+    expected_names = [
+        str(item["name"]) for item in list(prepared["expected_outputs"])
+    ]
+    if metadata.get("outputs") != expected_names:
+        raise ValueError("Part Design native history changed output identity.")
+
+    staging = Path(str(prepared["staging"])).resolve()
+    raw_relative = Path(str(metadata.get("artifact_path") or ""))
+    if raw_relative.is_absolute():
+        raise ValueError("Part Design native-history path must be relative.")
+    artifact = (staging / raw_relative).resolve()
+    if staging not in artifact.parents or not artifact.is_file():
+        raise ValueError("Part Design native-history artifact is missing.")
+    artifact_size = artifact.stat().st_size
+    reported_size = metadata.get("artifact_bytes")
+    if (
+        isinstance(reported_size, bool)
+        or not isinstance(reported_size, int)
+        or reported_size != artifact_size
+        or not 0 < artifact_size <= _MAX_PARTDESIGN_NATIVE_HISTORY_BYTES
+    ):
+        raise ValueError("Part Design native-history artifact size is invalid.")
+    encoded = artifact.read_bytes()
+    digest = hashlib.sha256(encoded).hexdigest()
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", str(metadata.get("artifact_sha256") or ""))
+        or digest != metadata["artifact_sha256"]
+    ):
+        raise ValueError("Part Design native-history artifact digest changed.")
+    try:
+        payload = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Part Design native-history artifact is invalid JSON: {exc}"
+        ) from exc
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"schema", "outputs"}
+        or payload.get("schema") != _PARTDESIGN_NATIVE_HISTORY_SCHEMA
+        or not isinstance(payload.get("outputs"), list)
+    ):
+        raise ValueError("Part Design native-history payload is malformed.")
+    histories = list(payload["outputs"])
+    if len(histories) != len(expected_names) or any(
+        not isinstance(item, Mapping) for item in histories
+    ):
+        raise ValueError("Part Design native-history outputs are malformed.")
+    if [str(item.get("output_name") or "") for item in histories] != expected_names:
+        raise ValueError("Part Design native-history payload changed output order.")
+
+    clean_histories: list[dict[str, Any]] = []
+    body_names: set[str] = set()
+    document_object_names: set[str] = set()
+    total_objects = 0
+    total_content_bytes = 0
+    for history_index, history in enumerate(histories):
+        path = f"partdesign_native_history.outputs[{history_index}]"
+        if not isinstance(history, Mapping) or set(history) != {
+            "output_name",
+            "body_name",
+            "body_label",
+            "representation",
+            "tip_name",
+            "objects",
+        }:
+            raise ValueError(f"{path} has malformed fields.")
+        body_name = str(history.get("body_name") or "")
+        if (
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", body_name)
+            or body_name in body_names
+            or body_name in document_object_names
+        ):
+            raise ValueError(f"{path}.body_name is invalid or duplicated.")
+        body_names.add(body_name)
+        document_object_names.add(body_name)
+        body_label = str(history.get("body_label") or "")
+        if not body_label or len(body_label) > 4096:
+            raise ValueError(f"{path}.body_label is invalid.")
+        representation = str(history.get("representation") or "")
+        if representation not in {"body", "publish"}:
+            raise ValueError(f"{path}.representation is invalid.")
+        raw_objects = history.get("objects")
+        if not isinstance(raw_objects, list):
+            raise ValueError(f"{path}.objects must be an array.")
+        total_objects += len(raw_objects)
+        if total_objects > _MAX_PARTDESIGN_NATIVE_HISTORY_OBJECTS:
+            raise ValueError("Part Design native history contains too many objects.")
+
+        if any(not isinstance(item, Mapping) for item in raw_objects):
+            raise ValueError(f"{path}.objects contains a malformed entry.")
+        names = [str(item.get("name") or "") for item in raw_objects]
+        object_names = set(names)
+        if (
+            len(object_names) != len(names)
+            or bool(document_object_names.intersection(object_names))
+            or any(
+                not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                for name in names
+            )
+        ):
+            raise ValueError(f"{path}.objects has invalid or duplicate names.")
+        document_object_names.update(object_names)
+        tip_name = str(history.get("tip_name") or "")
+        if tip_name and tip_name not in object_names:
+            raise ValueError(f"{path}.tip_name is not a history object.")
+
+        clean_objects = []
+        for object_index, item in enumerate(raw_objects):
+            object_path = f"{path}.objects[{object_index}]"
+            if not isinstance(item, Mapping) or set(item) != {
+                "name",
+                "label",
+                "type_id",
+                "content",
+                "content_sha256",
+                "links",
+                "visible",
+            }:
+                raise ValueError(f"{object_path} has malformed fields.")
+            type_id = str(item.get("type_id") or "")
+            if type_id not in _PARTDESIGN_NATIVE_HISTORY_TYPES:
+                raise ValueError(
+                    f"{object_path}.type_id {type_id!r} is not a native Body object."
+                )
+            label = str(item.get("label") or "")
+            if len(label) > 4096:
+                raise ValueError(f"{object_path}.label is oversized.")
+            raw_content = item.get("content")
+            if not isinstance(raw_content, str):
+                raise ValueError(f"{object_path}.content must be base64 text.")
+            try:
+                content = base64.b64decode(raw_content, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"{object_path}.content is invalid base64.") from exc
+            total_content_bytes += len(content)
+            if (
+                not content
+                or total_content_bytes > _MAX_PARTDESIGN_NATIVE_HISTORY_BYTES
+                or hashlib.sha256(content).hexdigest()
+                != str(item.get("content_sha256") or "")
+            ):
+                raise ValueError(f"{object_path}.content failed bounded digest validation.")
+            if not isinstance(item.get("visible"), bool):
+                raise ValueError(f"{object_path}.visible must be boolean.")
+            clean_objects.append(
+                {
+                    "name": names[object_index],
+                    "label": label,
+                    "type_id": type_id,
+                    "content": content,
+                    "links": _validated_partdesign_history_links(
+                        item.get("links"),
+                        object_names=object_names,
+                        path=f"{object_path}.links",
+                    ),
+                    "visible": bool(item["visible"]),
+                }
+            )
+        clean_histories.append(
+            {
+                "output_name": expected_names[history_index],
+                "body_name": body_name,
+                "body_label": body_label,
+                "representation": representation,
+                "tip_name": tip_name,
+                "objects": clean_objects,
+            }
+        )
+    return {
+        "schema": _PARTDESIGN_NATIVE_HISTORY_SCHEMA,
+        "artifact_sha256": digest,
+        "artifact_bytes": artifact_size,
+        "outputs": clean_histories,
+    }
+
+
 def validate_candidate(
     prepared: Mapping[str, Any], execution: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -13916,6 +14527,7 @@ def validate_candidate(
                 )
         validated.append(item)
     partdesign_validation = None
+    partdesign_native_history = None
     assembly_validation = None
     sketch_validation = None
     draft_validation = None
@@ -13942,6 +14554,10 @@ def validate_candidate(
             item["name"] for item in validated
         ]:
             raise ValueError("Part Design domain validation changed output identity.")
+        partdesign_native_history = _validate_partdesign_native_history(
+            prepared,
+            execution,
+        )
     elif pack.domain == "assembly":
         assembly_validation = _validate_assembly_execution(
             prepared,
@@ -14064,6 +14680,8 @@ def validate_candidate(
     }
     if partdesign_validation is not None:
         result["partdesign_validation"] = partdesign_validation
+    if partdesign_native_history is not None:
+        result["partdesign_native_history"] = partdesign_native_history
     if assembly_validation is not None:
         result["assembly_validation"] = assembly_validation
     if sketch_validation is not None:
@@ -14276,12 +14894,18 @@ def capture_editor_inspection_state(service: Any, domain: str, program_id: str) 
             observed=resolution.summary(),
         )
     scope = service.project_scope_snapshot()
+    document_program = contracts.capture_document_program_payload(
+        doc,
+        clean_domain,
+        clean_program_id,
+    )
     return {
         "tool_name": tool_name,
         "pack": pack,
         "program_id": clean_program_id,
         "project_root": str(scope.get("root") or ""),
         "live_programs": _live_programs(doc, clean_domain),
+        "document_program": document_program,
     }
 
 
@@ -14289,7 +14913,7 @@ def complete_inspection(captured: Mapping[str, Any]) -> dict[str, Any]:
     pack: contracts.VibeScriptWorkbenchPack = captured["pack"]
     program_id = str(captured["program_id"])
     try:
-        manifest = _load_manifest(captured["project_root"], pack, program_id)
+        manifest = _load_captured_manifest(captured, pack, program_id)
     except Exception as exc:
         return _failure(
             str(captured["tool_name"]),
@@ -14308,7 +14932,27 @@ def complete_inspection(captured: Mapping[str, Any]) -> dict[str, Any]:
     )
     adapter = contracts.get_domain_adapter(pack.domain)
     assert adapter is not None
-    return adapter.inspect(dict(captured), manifest | {"live_state": live})
+    inspected = adapter.inspect(dict(captured), manifest | {"live_state": live})
+    document_program = captured.get("document_program")
+    raw_draft = (
+        str(document_program.get("editor_draft") or "")
+        if isinstance(document_program, Mapping)
+        else ""
+    )
+    if raw_draft and inspected.get("ok") is True:
+        try:
+            draft = contracts.decode_editor_draft(
+                raw_draft,
+                expected_program_id=program_id,
+                expected_domain=pack.domain,
+            )
+        except Exception as exc:
+            inspected["editor_draft_error"] = str(exc)
+        else:
+            program = inspected.get("program")
+            if isinstance(program, dict):
+                program["editor_draft"] = draft
+    return inspected
 
 
 def prepare_delete(captured: Mapping[str, Any]) -> dict[str, Any]:
@@ -14316,7 +14960,12 @@ def prepare_delete(captured: Mapping[str, Any]) -> dict[str, Any]:
     arguments = dict(captured["arguments"])
     program_id = str(arguments.get("program_id") or "").strip().lower()
     try:
-        manifest = _load_manifest(captured["project_root"], pack, program_id)
+        manifest = _load_captured_manifest(
+            captured,
+            pack,
+            program_id,
+            hydrate_document_contract=True,
+        )
     except Exception as exc:
         _raise(
             str(captured["tool_name"]),
@@ -15023,23 +15672,61 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 "evaluation_model": (
                     "API calls build one immutable source-parametric modeling graph. Native "
                     "Body features and retained direct OCC operations may be composed in the "
-                    "same graph. An isolated FreeCADCmd document regenerates the graph from "
-                    "inputs, validates exact topology and declared measurements, and exports "
-                    "only detached BREP results for publication."
+                    "same graph, but composition support is not equal authoring preference: "
+                    "choose native sketch-and-feature history whenever it can represent the "
+                    "design. An isolated FreeCADCmd document regenerates the graph from inputs, "
+                    "validates exact topology and declared measurements, and exports both "
+                    "detached BREP results and a bounded native Body-history snapshot. "
+                    "Publication keeps the stable output identity while transactionally "
+                    "restoring its real Bodies, sketches, and features in the live document."
                 ),
+                "authoring_priority": {
+                    "default": (
+                        "For a Part Design solid, preserve native editable Body history. "
+                        "Use api.sketch for every planar section and feed those sketches to "
+                        "extrude, revolve, loft, sweep, or hole. Prefer a sequence of meaningful "
+                        "native features over one adopted direct solid."
+                    ),
+                    "planar_profile_rule": (
+                        "A closed section whose points lie on one plane is a sketch profile, "
+                        "including parallel sections at different offsets in a loft. Express "
+                        "it with 2D api.line/api.arc/api.circle geometry plus api.sketch plane "
+                        "and z_offset_mm, not line_3d/arc_3d/api.wire."
+                    ),
+                    "direct_topology_exception": (
+                        "Use retained direct OCC primitives, *_3d curves, api.wire, faces, "
+                        "shells, and arbitrary topology only when the intent is genuinely "
+                        "nonplanar, imported, repair-oriented, standalone, or cannot be "
+                        "represented by native sketch-and-feature history. Source brevity and "
+                        "avoiding constraints are not valid reasons."
+                    ),
+                    "do_not_regress": (
+                        "Never replace a working native sketch/feature history with direct "
+                        "topology merely to simplify source or pass validation. Repair the "
+                        "smallest failing sketch or feature instead."
+                    ),
+                    "verification": (
+                        "For profile-driven Body construction, inspect the accepted "
+                        "partdesign_data and confirm sketches plus native feature types are "
+                        "present. An empty sketches list and one adopted PartDesign::Feature "
+                        "indicate direct-model fallback and require an explicit geometric "
+                        "justification before completion."
+                    ),
+                },
                 "profile_contract": {
                     "geometry": (
                         "point, line, arc, circle, ellipse, and bspline are 2D Sketcher "
                         "geometry. The explicit line_3d, arc_3d, circle_3d, ellipse_3d, "
                         "bezier_3d, bspline_3d, nurbs_curve, and helix_curve names create "
-                        "standalone 3D curves."
+                        "standalone 3D curves and are not substitutes for planar Body profiles."
                     ),
                     "invariants": (
                         "Build constraints with api.constraint and reuse the exact geometry "
-                        "values in api.sketch. Set require_fully_constrained and "
-                        "require_closed_profile when downstream geometry depends on them; the "
-                        "worker rejects solver conflicts, redundancy, unresolved DoF, and "
-                        "open solid profiles."
+                        "values in api.sketch. A planar profile consumed by a solid feature is "
+                        "downstream-dependent: require a closed profile and fully constrain it "
+                        "unless the user explicitly requests remaining sketch freedom. The "
+                        "worker rejects solver conflicts, redundancy, unresolved DoF, and open "
+                        "solid profiles."
                     ),
                 },
                 "feature_contract": {
@@ -15074,9 +15761,13 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     ],
                     "dressup": ["fillet", "chamfer", "thickness", "hole", "draft"],
                     "publication": (
-                        "Use api.body for one exact solid Body feature or adopted direct solid. "
-                        "Use api.publish for an exact standalone solid, shell, face, wire, or "
-                        "compound. Pass api.material and api.appearance values directly to either "
+                        "Use api.body for one exact solid and normally pass it native "
+                        "sketch-based feature history. Sketch-based new_solid extrudes, revolves, "
+                        "and lofts remain native initial Body features instead of frozen adopted "
+                        "shapes. Passing a direct solid to api.body is an exception for geometry "
+                        "that native history cannot represent, not the default shortcut. Use "
+                        "api.publish for exact standalone solid, shell, face, wire, or compound "
+                        "topology. Pass api.material and api.appearance values directly to either "
                         "publisher so physical and visible properties regenerate with geometry. "
                         "Keep result names and types stable across regeneration."
                     ),
@@ -15119,10 +15810,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "The model-facing vocabulary names intent, not implementation: extrude "
-                        "replaces Pad/Pocket, revolve replaces Revolution/Groove, and boolean "
-                        "replaces Fuse/Cut/Common. Compatibility methods remain callable for "
-                        "saved programs but are not exported."
+                        "The model-facing vocabulary exposes one canonical operation per intent: "
+                        "extrude for linear material changes, revolve for axial material changes, "
+                        "and boolean for union, subtraction, or intersection. Saved compatibility "
+                        "spellings are intentionally absent from exports and model guidance."
                     ),
                 },
                 "semantic_interfaces": {
@@ -15150,9 +15841,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "ownership."
                     ),
                     "gui_thread": (
-                        "The document thread applies detached validated shapes and metadata "
-                        "only; it performs no provider wait, subprocess wait, recompute-heavy "
-                        "feature construction, or artifact I/O."
+                        "The document thread applies detached validated shapes, restores the "
+                        "already validated native history snapshot, and updates metadata. It "
+                        "performs no provider wait, subprocess wait, source execution, or "
+                        "artifact I/O."
                     ),
                 },
                 "domain_context": {
@@ -15168,8 +15860,10 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "sketcher": (
-                        "Use Sketcher when the requested result is an independently editable "
-                        "2D constraint definition rather than a Body feature history."
+                        "api.sketch is the normal embedded Part Design profile mechanism and "
+                        "does not require a workbench switch. Switch to the dedicated Sketcher "
+                        "domain only when the requested published result is an independently "
+                        "editable 2D constraint definition rather than a Part Design Body."
                     ),
                     "part_compatibility": (
                         "The old Part workbench is retired. Its direct OCC implementation remains "
@@ -15247,6 +15941,33 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                             "'selection': {'type':'query','element_type':'face',"
                             "'expected_count':1,'geometry_type':'plane','normal':[0,0,1]},"
                             "'description':'Top mating face'}}, label='Part')}"
+                        ),
+                        "expected_outputs": [{"name": "Part", "type": "solid"}],
+                    },
+                    {
+                        "goal": "native sketch-based parametric lofted Body",
+                        "source": (
+                            "def section(radius, z_offset, prefix, label):\n"
+                            " circle = api.circle([0,0], radius, "
+                            "name=prefix+'_Circle')\n"
+                            " constraints = [\n"
+                            "  api.constraint('radius',[circle],value=radius,"
+                            "name=prefix+'_Radius'),\n"
+                            "  api.constraint('coincident',[{'geometry':circle,"
+                            "'point':'center'},'origin'],name=prefix+'_Centered'),\n"
+                            " ]\n"
+                            " return api.sketch([circle], constraints, plane='XY', "
+                            "z_offset_mm=z_offset, require_fully_constrained=True, "
+                            "require_closed_profile=True, label=label)\n"
+                            "lower = section(inputs['lower_radius'], 0, 'Lower', "
+                            "'Lower Profile')\n"
+                            "middle = section(inputs['middle_radius'], "
+                            "inputs['height']*0.5, 'Middle', 'Middle Profile')\n"
+                            "upper = section(inputs['upper_radius'], inputs['height'], "
+                            "'Upper', 'Upper Profile')\n"
+                            "lofted = api.loft([lower,middle,upper], "
+                            "operation='new_solid', refine=True, label='Native Loft')\n"
+                            "result = {'Part': api.body(lofted, label='Lofted Part')}"
                         ),
                         "expected_outputs": [{"name": "Part", "type": "solid"}],
                     },

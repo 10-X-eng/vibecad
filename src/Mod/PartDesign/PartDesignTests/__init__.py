@@ -12,6 +12,7 @@ from . import TestLinearPattern
 from . import TestLoft
 from . import TestMirrored
 from . import TestMultiTransform
+from . import TestModelTreeBrowser
 from . import TestPad
 from . import TestPipe
 from . import TestPocket

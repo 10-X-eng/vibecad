@@ -73,6 +73,55 @@ def _write_v1_program(root: Path) -> Path:
     return directory
 
 
+def _write_v2_program(root: Path, source: str) -> tuple[Path, str]:
+    pack = _pack()
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "radius": {"type": "number", "exclusiveMinimum": 0},
+            "height": {"type": "number", "exclusiveMinimum": 0},
+        },
+        "required": ["radius", "height"],
+        "additionalProperties": False,
+    }
+    inputs = {"radius": 4.0, "height": 5.0}
+    expected_outputs = [{"name": "Part", "type": "solid"}]
+    revision = domains.program_revision(
+        domain=pack.domain,
+        source=source,
+        input_schema=input_schema,
+        inputs=inputs,
+        expected_outputs=expected_outputs,
+    )
+    directory = root / "vibescript" / pack.domain / PROGRAM_ID
+    directory.mkdir(parents=True)
+    manifest = {
+        "schema": domains.PROGRAM_SCHEMA,
+        "version": domains.PROGRAM_VERSION,
+        "program_id": PROGRAM_ID,
+        "domain": pack.domain,
+        "workbench": pack.workbench,
+        "label": "Saved Part",
+        "source": source,
+        "input_schema": input_schema,
+        "inputs": inputs,
+        "expected_outputs": expected_outputs,
+        "working_revision": revision,
+        "accepted_revision": revision,
+        "accepted_contract": None,
+        "live_outputs": {},
+        "latest_candidate": {
+            "revision": revision,
+            "status": "accepted",
+        },
+    }
+    (directory / "program.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    return directory, revision
+
+
 def test_partdesign_uses_the_exact_common_v2_lifecycle() -> None:
     pack = _pack()
     assert pack.production_ready is True
@@ -101,6 +150,9 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
         api.exported_names
     )
     assert {"pad", "pocket", "groove"}.isdisjoint(api.exported_names)
+    assert {"pad", "pocket", "groove"}.isdisjoint(PartDesignDomainAPI.__dict__)
+    assert all(not hasattr(api, name) for name in ("pad", "pocket", "groove"))
+    assert {"pad", "pocket", "groove"}.isdisjoint(dir(api))
     signatures = {
         name: str(inspect.signature(getattr(api, name)))
         for name in api.exported_names
@@ -121,6 +173,45 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     ]
     assert "api.material" in description["operation_selection"]["physical_material"]
     assert "0-255" in description["operation_selection"]["visible_appearance"]
+    priority = description["authoring_priority"]
+    assert "native editable Body history" in priority["default"]
+    assert "including parallel sections at different offsets in a loft" in priority[
+        "planar_profile_rule"
+    ]
+    assert "Source brevity and avoiding constraints are not valid reasons" in priority[
+        "direct_topology_exception"
+    ]
+    assert "Never replace a working native sketch/feature history" in priority[
+        "do_not_regress"
+    ]
+    assert "empty sketches list" in priority["verification"]
+    serialized_description = json.dumps(description, sort_keys=True)
+    assert "Pad" not in serialized_description
+    assert "Pocket" not in serialized_description
+    assert "Groove" not in serialized_description
+
+    exports = {
+        item["name"]: item for item in description["runtime_exports"]
+    }
+    for direct_name in ("line_3d", "arc_3d", "wire"):
+        assert "prefer api.sketch and native Body features" in exports[direct_name][
+            "description"
+        ]
+    assert "Planar sections should be ``api.sketch`` values" in exports["loft"][
+        "description"
+    ]
+    assert "Passing a direct solid is a fallback" in exports["body"]["description"]
+
+    loft_pattern = next(
+        pattern
+        for pattern in description["recommended_patterns"]
+        if pattern["goal"] == "native sketch-based parametric lofted Body"
+    )
+    loft_source = loft_pattern["source"]
+    assert "return api.sketch" in loft_source
+    assert "api.loft([lower,middle,upper]" in loft_source
+    assert "api.line_3d" not in loft_source
+    assert "api.wire" not in loft_source
 
 
 def test_partdesign_publication_material_and_appearance_are_explicit_and_immutable() -> None:
@@ -426,14 +517,126 @@ def test_canonical_material_features_extend_an_existing_body_feature() -> None:
 
 
 def test_legacy_material_names_remain_callable_but_are_not_exported() -> None:
-    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
-    profile = api.sketch([api.circle([0, 0], 5)])
-    base = api.pad(profile, 5)
-    cut_profile = api.sketch([api.circle([0, 0], 2)], z_offset_mm=5)
+    canonical = PartDesignDomainAPI(
+        PartDesignDomainAPI.exported_names,
+        OUTPUT_TYPES,
+    )
+    assert all(
+        not hasattr(canonical, name) for name in ("pad", "pocket", "groove")
+    )
+    assert {"pad", "pocket", "groove"}.isdisjoint(dir(canonical))
 
-    assert api.pocket(base, cut_profile, through_all=True).operation == "pocket"
-    assert api.groove(base, cut_profile).operation == "groove"
-    assert {"pad", "pocket", "groove"}.isdisjoint(api.exported_names)
+    saved_source = create_domain_api(
+        "partdesign",
+        PartDesignDomainAPI.exported_names,
+        OUTPUT_TYPES,
+        compatibility_methods=("pad", "pocket", "groove"),
+    )
+    profile = saved_source.sketch([saved_source.circle([0, 0], 5)])
+    base = saved_source.pad(profile, 5)
+    cut_profile = saved_source.sketch(
+        [saved_source.circle([0, 0], 2)],
+        z_offset_mm=5,
+    )
+
+    assert saved_source.pocket(base, cut_profile, through_all=True).operation == (
+        "pocket"
+    )
+    assert saved_source.groove(base, cut_profile).operation == "groove"
+    assert {"pad", "pocket", "groove"}.isdisjoint(saved_source.exported_names)
+
+
+def test_new_partdesign_source_cannot_use_saved_source_compatibility_calls(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "feature = api.pad(profile, inputs['height'])\n"
+        "result = {'Part': api.body(feature)}\n"
+    )
+    capture = _capture(
+        tmp_path,
+        operation="create_program",
+        arguments={
+            "program_name": "Canonical API Required",
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "radius": {"type": "number", "exclusiveMinimum": 0},
+                    "height": {"type": "number", "exclusiveMinimum": 0},
+                },
+                "required": ["radius", "height"],
+                "additionalProperties": False,
+            },
+            "inputs": {"radius": 4.0, "height": 5.0},
+            "expected_outputs": [{"name": "Part", "type": "solid"}],
+        },
+    )
+
+    with pytest.raises(runtime.DomainRuntimeFailure) as failure:
+        runtime.prepare_candidate(capture)
+
+    assert failure.value.payload["failure_code"] == (
+        "LEGACY_PARTDESIGN_API_NOT_AVAILABLE"
+    )
+    assert failure.value.payload["observed"]["retired_api_members"] == ["pad"]
+    assert not (tmp_path / "vibescript").exists()
+
+
+def test_edited_partdesign_source_must_finish_compatibility_migration(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "feature = api.pad(profile, inputs['height'], label='Original')\n"
+        "result = {'Part': api.body(feature)}\n"
+    )
+    _directory, revision = _write_v2_program(tmp_path, source)
+    capture = _capture(
+        tmp_path,
+        operation="edit_source",
+        arguments={
+            "program_id": PROGRAM_ID,
+            "expected_revision": revision,
+            "replacements": [{"old": "label='Original'", "new": "label='Edited'"}],
+        },
+    )
+
+    with pytest.raises(runtime.DomainRuntimeFailure) as failure:
+        runtime.prepare_candidate(capture)
+
+    assert failure.value.payload["failure_code"] == (
+        "LEGACY_PARTDESIGN_API_NOT_AVAILABLE"
+    )
+    assert failure.value.payload["observed"]["retired_api_members"] == ["pad"]
+
+
+def test_unchanged_saved_partdesign_source_gets_private_compatibility_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = (
+        "profile = api.sketch([api.circle([0,0], inputs['radius'])])\n"
+        "feature = api.pad(profile, inputs['height'])\n"
+        "result = {'Part': api.body(feature)}\n"
+    )
+    _directory, revision = _write_v2_program(tmp_path, source)
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    capture = _capture(
+        tmp_path,
+        operation="set_inputs",
+        arguments={
+            "program_id": PROGRAM_ID,
+            "expected_revision": revision,
+            "patch": {"height": 6.0},
+        },
+    )
+
+    prepared = runtime.prepare_candidate(capture)
+    assert prepared["source"] == source
+    assert prepared["worker_request"]["compatibility_methods"] == ["pad"]
+    runtime.abandon_prepared_candidate(prepared)
 
 
 def test_loft_rejects_conflicting_canonical_and_legacy_material_intent() -> None:
@@ -572,6 +775,7 @@ def test_reconfigure_stages_v2_in_the_existing_saved_program_directory(
     assert prepared["program_directory"] == str(directory)
     assert prepared["worker_request"]["domain"] == "partdesign"
     assert prepared["worker_request"]["source"] == source
+    assert prepared["worker_request"]["compatibility_methods"] == []
     persisted = json.loads((directory / "program.json").read_text(encoding="utf-8"))
     assert persisted["schema"] == domains.PROGRAM_SCHEMA
     assert persisted["source"] == source

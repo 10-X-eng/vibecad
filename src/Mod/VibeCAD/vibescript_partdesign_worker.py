@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -35,6 +36,39 @@ class PartDesignCandidateError(RuntimeError):
 _PART_DIRECT_OPERATIONS = frozenset(PartDomainAPI.exported_names.fget(None))
 _PUBLISHABLE_TYPES = frozenset({"solid", "shell", "face", "wire", "compound"})
 PARTDESIGN_PRESENTATION_SCHEMA = "vibecad-partdesign-presentation-v1"
+PARTDESIGN_NATIVE_HISTORY_SCHEMA = "vibecad-partdesign-native-history-v1"
+PARTDESIGN_NATIVE_HISTORY_ARTIFACT = "partdesign-native-history.json"
+PROP_CANDIDATE_OUTPUT = "VibeCADCandidateOutputName"
+PROP_CANDIDATE_NAME_PREFIX = "VibeCADCandidateNamePrefix"
+_LINK_PROPERTY_TYPES = {
+    "App::PropertyLink",
+    "App::PropertyXLink",
+    "App::PropertyLinkHidden",
+    "App::PropertyLinkChild",
+    "App::PropertyLinkGlobal",
+}
+_LINK_LIST_PROPERTY_TYPES = {
+    "App::PropertyLinkList",
+    "App::PropertyXLinkList",
+    "App::PropertyLinkListChild",
+    "App::PropertyLinkListGlobal",
+    "App::PropertyLinkListHidden",
+}
+_LINK_SUB_PROPERTY_TYPES = {
+    "App::PropertyLinkSub",
+    "App::PropertyXLinkSub",
+    "App::PropertyLinkSubChild",
+    "App::PropertyLinkSubGlobal",
+    "App::PropertyLinkSubHidden",
+    "App::PropertyXLinkSubHidden",
+}
+_LINK_SUB_LIST_PROPERTY_TYPES = {
+    "App::PropertyLinkSubList",
+    "App::PropertyXLinkSubList",
+    "App::PropertyLinkSubListChild",
+    "App::PropertyLinkSubListGlobal",
+    "App::PropertyLinkSubListHidden",
+}
 _MATERIAL_CARD_PROPERTIES = {
     "require_physical_properties",
     "require_appearance_properties",
@@ -50,6 +84,13 @@ _APPEARANCE_PROPERTIES = {
     "visibility",
     "selectable",
     "label",
+}
+_NATIVE_HISTORY_TRANSIENT_PROPERTIES = {
+    # FeatureExtrude replaced this persisted property with SideType.  Keeping
+    # the old value in a native-history snapshot makes restoreContent treat the
+    # snapshot like a deprecated script assignment and emit a warning.
+    "PartDesign::Pad": ("Midplane",),
+    "PartDesign::Pocket": ("Midplane",),
 }
 
 
@@ -384,6 +425,11 @@ def _set_label(obj: Any, properties: Mapping[str, Any], fallback: str) -> None:
     obj.Label = str(properties.get("label") or fallback)
 
 
+def _candidate_object_name(body: Any, kind: str, identity: str) -> str:
+    prefix = str(getattr(body, PROP_CANDIDATE_NAME_PREFIX, "") or "")
+    return f"{prefix}{kind}_{identity}"
+
+
 def _as_sketcher_payload(value: Any) -> Any:
     """Translate the embedded profile graph to the Sketcher evaluator contract."""
 
@@ -468,11 +514,11 @@ def _build_sketch(
     if graph_id in memo:
         return memo[graph_id]
     properties = _properties(payload)
-    name = f"Profile_{graph_id}"
+    name = _candidate_object_name(body, "Profile", graph_id)
     sketch = body.newObject("Sketcher::SketchObject", name)
     if sketch is None:
         raise PartDesignCandidateError("FreeCAD did not create the profile sketch.")
-    _set_label(sketch, properties, name)
+    _set_label(sketch, properties, f"Profile_{graph_id}")
     plane = str(properties.get("plane") or "XY")
     support = (_origin_feature(body, f"{plane}_Plane"), [""])
     if hasattr(sketch, "AttachmentSupport"):
@@ -1349,7 +1395,7 @@ def _build_feature(
     if graph_id in memo:
         return memo[graph_id]
     properties = _properties(payload)
-    name = f"Feature_{graph_id}"
+    name = _candidate_object_name(body, "Feature", graph_id)
     additive_base: Any | None = None
     subtractive_base: Any | None = None
     if operation == "pad":
@@ -1648,7 +1694,7 @@ def _build_feature(
         )
     if feature is None:
         raise PartDesignCandidateError(f"FreeCAD did not create api.{operation}.")
-    _set_label(feature, properties, name)
+    _set_label(feature, properties, f"Feature_{graph_id}")
     body.Tip = feature
     body.Document.recompute()
     shape = getattr(feature, "Shape", None)
@@ -1859,6 +1905,63 @@ def _evaluate_measurement_checks(
     return evidence
 
 
+def _native_initial_feature_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Promote compatible new-solid graphs to real initial Body features."""
+
+    operation = str(payload.get("operation") or "")
+    if str(payload.get("output_type") or "") != "solid":
+        return None
+    properties = _properties(payload)
+    promoted_operation = ""
+    if operation == "standalone_extrude":
+        profile = _payload(
+            _argument(payload, 0, context="api.extrude"),
+            context="api.extrude.profile",
+        )
+        if profile.get("operation") != "sketch" or properties.get("vector") is not None:
+            return None
+        promoted_operation = "pad"
+    elif operation == "standalone_revolve":
+        profile = _payload(
+            _argument(payload, 0, context="api.revolve"),
+            context="api.revolve.profile",
+        )
+        axis_origin = [
+            float(item) for item in list(properties.get("axis_origin") or [])
+        ]
+        if (
+            profile.get("operation") != "sketch"
+            or properties.get("axis_direction") is not None
+            or len(axis_origin) != 3
+            or any(abs(item) > 1.0e-12 for item in axis_origin)
+        ):
+            return None
+        promoted_operation = "revolve"
+    elif operation == "standalone_loft":
+        raw_sections = _argument(payload, 0, context="api.loft")
+        if not isinstance(raw_sections, list) or not raw_sections:
+            return None
+        sections = [
+            _payload(item, context=f"api.loft.sections[{index}]")
+            for index, item in enumerate(raw_sections)
+        ]
+        if not all(section.get("operation") == "sketch" for section in sections):
+            return None
+        promoted_operation = "loft"
+        properties["base"] = None
+        properties["subtractive"] = False
+    else:
+        return None
+
+    promoted = dict(payload)
+    promoted["operation"] = promoted_operation
+    promoted["output_type"] = "feature"
+    promoted["properties"] = properties
+    return promoted
+
+
 def validate_and_build_partdesign(
     document: Any,
     raw_result: Mapping[str, Any],
@@ -1866,6 +1969,7 @@ def validate_and_build_partdesign(
     root: Path,
     *,
     max_shape_subelements: int,
+    object_name_prefix: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build and validate unified Body or standalone parametric modeling graphs."""
 
@@ -1904,9 +2008,21 @@ def validate_and_build_partdesign(
         if publication_operation == "body" and output_type != "solid":
             raise PartDesignCandidateError("api.body can publish only one exact solid.")
         properties = _properties(definition)
-        body = document.addObject("PartDesign::Body", f"CandidateBody{index + 1}")
+        body_name = f"{object_name_prefix}CandidateBody{index + 1}"
+        body = document.addObject("PartDesign::Body", body_name)
         if body is None:
             raise PartDesignCandidateError("FreeCAD did not create PartDesign::Body.")
+        for property_name, value in (
+            (PROP_CANDIDATE_OUTPUT, name),
+            (PROP_CANDIDATE_NAME_PREFIX, object_name_prefix),
+        ):
+            if property_name not in list(getattr(body, "PropertiesList", []) or []):
+                body.addProperty(
+                    "App::PropertyString",
+                    property_name,
+                    "VibeCAD Native History",
+                )
+            setattr(body, property_name, value)
         _set_label(body, properties, name)
         memo: dict[str, Any] = {}
         sketch_evidence: list[dict[str, Any]] = []
@@ -1916,16 +2032,22 @@ def validate_and_build_partdesign(
         )
         final_feature = None
         if publication_operation == "body":
-            if source_definition.get("output_type") == "feature":
+            native_source = (
+                source_definition
+                if source_definition.get("output_type") == "feature"
+                else _native_initial_feature_payload(source_definition)
+            )
+            if native_source is not None:
                 final_feature = _build_feature(
-                    body, source_definition, memo, sketch_evidence
+                    body, native_source, memo, sketch_evidence
                 )
             elif source_definition.get("output_type") == "solid":
                 direct_shape = _build_model_shape(
                     body, source_definition, memo, sketch_evidence
                 )
                 final_feature = body.newObject(
-                    "PartDesign::Feature", f"AdoptedResult_{index + 1}"
+                    "PartDesign::Feature",
+                    f"{object_name_prefix}AdoptedResult_{index + 1}",
                 )
                 final_feature.Label = str(properties.get("label") or name)
                 final_feature.Shape = direct_shape
@@ -1974,6 +2096,7 @@ def validate_and_build_partdesign(
         ]
         data = {
             "body_label": str(getattr(body, "Label", "") or ""),
+            "body_object_name": str(getattr(body, "Name", "") or ""),
             "representation": publication_operation,
             "tip_type_id": str(getattr(final_feature, "TypeId", "") or ""),
             "tip_label": str(getattr(final_feature, "Label", "") or ""),
@@ -2004,3 +2127,230 @@ def validate_and_build_partdesign(
             }
         )
     return outputs, {"outputs": validation_outputs}
+
+
+def _native_history_target(
+    body: Any,
+    child_names: set[str],
+    target: Any,
+) -> dict[str, Any] | None:
+    if target is None:
+        return None
+    if target is body:
+        return {"scope": "body"}
+    origin = getattr(body, "Origin", None)
+    if target is origin:
+        return {"scope": "origin"}
+    origin_features = list(getattr(origin, "OriginFeatures", []) or [])
+    for index, feature in enumerate(origin_features):
+        if target is feature:
+            return {
+                "scope": "origin_feature",
+                "index": index,
+                "role": str(getattr(feature, "Role", "") or ""),
+            }
+    name = str(getattr(target, "Name", "") or "")
+    if name in child_names:
+        return {"scope": "history", "name": name}
+    raise PartDesignCandidateError(
+        "Part Design native history contains an unowned object reference.",
+        details={
+            "stage": "native_history",
+            "body": str(getattr(body, "Name", "") or ""),
+            "target": name,
+            "target_type": str(getattr(target, "TypeId", "") or ""),
+        },
+    )
+
+
+def _native_history_subelements(value: Any) -> tuple[Any, list[str]]:
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        raise PartDesignCandidateError(
+            "Part Design native history contains a malformed subelement link.",
+            details={"stage": "native_history"},
+        )
+    target, raw_subelements = value
+    if isinstance(raw_subelements, str):
+        subelements = [raw_subelements]
+    else:
+        subelements = [str(item) for item in list(raw_subelements or [])]
+    return target, subelements
+
+
+def _native_history_links(
+    body: Any,
+    children: list[Any],
+    obj: Any,
+) -> dict[str, Any]:
+    child_names = {
+        str(getattr(child, "Name", "") or "")
+        for child in children
+        if str(getattr(child, "Name", "") or "")
+    }
+    result: dict[str, Any] = {}
+    for property_name in list(getattr(obj, "PropertiesList", []) or []):
+        try:
+            property_type = str(obj.getTypeIdOfProperty(property_name) or "")
+            read_only = "ReadOnly" in set(
+                str(item)
+                for item in list(obj.getPropertyStatus(property_name) or [])
+            )
+        except Exception:
+            continue
+        if property_type in _LINK_PROPERTY_TYPES:
+            result[property_name] = {
+                "kind": "link",
+                "read_only": read_only,
+                "value": _native_history_target(
+                    body,
+                    child_names,
+                    getattr(obj, property_name, None),
+                ),
+            }
+        elif property_type in _LINK_LIST_PROPERTY_TYPES:
+            result[property_name] = {
+                "kind": "link_list",
+                "read_only": read_only,
+                "value": [
+                    _native_history_target(body, child_names, target)
+                    for target in list(getattr(obj, property_name, []) or [])
+                ],
+            }
+        elif property_type in _LINK_SUB_PROPERTY_TYPES:
+            raw = getattr(obj, property_name, None)
+            if raw in (None, (), []):
+                value = None
+            else:
+                target, subelements = _native_history_subelements(raw)
+                value = {
+                    "target": _native_history_target(body, child_names, target),
+                    "subelements": subelements,
+                }
+            result[property_name] = {
+                "kind": "link_sub",
+                "read_only": read_only,
+                "value": value,
+            }
+        elif property_type in _LINK_SUB_LIST_PROPERTY_TYPES:
+            values = []
+            for raw in list(getattr(obj, property_name, []) or []):
+                target, subelements = _native_history_subelements(raw)
+                values.append(
+                    {
+                        "target": _native_history_target(
+                            body,
+                            child_names,
+                            target,
+                        ),
+                        "subelements": subelements,
+                    }
+                )
+            result[property_name] = {
+                "kind": "link_sub_list",
+                "read_only": read_only,
+                "value": values,
+            }
+    return result
+
+
+def _native_history_content(obj: Any) -> bytes:
+    """Serialize canonical state without replaying deprecated property writes."""
+
+    made_transient: list[str] = []
+    properties = set(
+        str(item)
+        for item in list(getattr(obj, "PropertiesList", []) or [])
+    )
+    for property_name in _NATIVE_HISTORY_TRANSIENT_PROPERTIES.get(
+        str(getattr(obj, "TypeId", "") or ""),
+        (),
+    ):
+        if property_name not in properties:
+            continue
+        status = set(
+            str(item)
+            for item in list(obj.getPropertyStatus(property_name) or [])
+        )
+        if "Transient" not in status:
+            obj.setPropertyStatus(property_name, "Transient")
+            made_transient.append(property_name)
+    try:
+        return bytes(obj.dumpContent(9))
+    finally:
+        for property_name in made_transient:
+            obj.setPropertyStatus(property_name, "-Transient")
+
+
+def export_partdesign_native_history(
+    document: Any,
+    outputs: list[dict[str, Any]],
+    root: Path,
+) -> dict[str, Any]:
+    """Serialize the validated native Body histories for transactional publication."""
+
+    histories: list[dict[str, Any]] = []
+    for item in outputs:
+        output_name = str(item.get("name") or "")
+        data = item.get("partdesign_data")
+        if not isinstance(data, Mapping):
+            raise PartDesignCandidateError(
+                f"Part Design output {output_name!r} has no native history metadata.",
+                details={"stage": "native_history"},
+            )
+        body_name = str(data.get("body_object_name") or "")
+        body = document.getObject(body_name) if body_name else None
+        if body is None or str(getattr(body, "TypeId", "") or "") != "PartDesign::Body":
+            raise PartDesignCandidateError(
+                f"Part Design output {output_name!r} lost its validated Body.",
+                details={"stage": "native_history", "body": body_name},
+            )
+        children = list(getattr(body, "Group", []) or [])
+        objects = []
+        for obj in children:
+            content = _native_history_content(obj)
+            objects.append(
+                {
+                    "name": str(getattr(obj, "Name", "") or ""),
+                    "label": str(getattr(obj, "Label", "") or ""),
+                    "type_id": str(getattr(obj, "TypeId", "") or ""),
+                    "content": base64.b64encode(content).decode("ascii"),
+                    "content_sha256": hashlib.sha256(content).hexdigest(),
+                    "links": _native_history_links(body, children, obj),
+                    "visible": bool(
+                        getattr(getattr(obj, "ViewObject", None), "Visibility", False)
+                    ),
+                }
+            )
+        tip = getattr(body, "Tip", None)
+        histories.append(
+            {
+                "output_name": output_name,
+                "body_name": body_name,
+                "body_label": str(getattr(body, "Label", "") or output_name),
+                "representation": str(data.get("representation") or ""),
+                "tip_name": str(getattr(tip, "Name", "") or ""),
+                "objects": objects,
+            }
+        )
+
+    payload = {
+        "schema": PARTDESIGN_NATIVE_HISTORY_SCHEMA,
+        "outputs": histories,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    relative = Path("outputs") / PARTDESIGN_NATIVE_HISTORY_ARTIFACT
+    target = root / relative
+    target.write_bytes(encoded)
+    return {
+        "schema": PARTDESIGN_NATIVE_HISTORY_SCHEMA,
+        "artifact_path": str(relative),
+        "artifact_sha256": hashlib.sha256(encoded).hexdigest(),
+        "artifact_bytes": len(encoded),
+        "outputs": [str(item.get("name") or "") for item in outputs],
+    }

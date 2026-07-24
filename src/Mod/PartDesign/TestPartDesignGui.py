@@ -40,6 +40,7 @@ from PartDesignTests.TestMaterial import TestMaterial
 from PartDesignTests.TestActiveObject import TestActiveObject
 from PartDesignTests.TestConsolidatedPart import TestConsolidatedPartWorkbench
 from PartDesignTests.TestConsolidatedPartTools import TestConsolidatedPartTools
+from PartDesignTests.TestModelTreeBrowser import TestModelTreeBrowser
 from PartDesignTests.TestSuppressed import TestSuppressedStrikethrough
 from PartDesignTests.TestVibeScriptPresentation import TestVibeScriptPresentation
 

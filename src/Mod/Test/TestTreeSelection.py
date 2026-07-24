@@ -52,6 +52,14 @@ class TestSelectAllInstances(unittest.TestCase):
 
     def setUp(self):
         """Set up test document with objects."""
+        self.tree_params = FreeCAD.ParamGet(
+            "User parameter:BaseApp/Preferences/TreeView"
+        )
+        self.organize_model_by_type = self.tree_params.GetBool(
+            "OrganizeModelByType", True
+        )
+        # These tests intentionally exercise the legacy multi-instance tree.
+        self.tree_params.SetBool("OrganizeModelByType", False)
         self.doc = FreeCAD.newDocument("TestSelectAllInstances")
         FreeCADGui.ActiveDocument = FreeCADGui.getDocument(self.doc.Name)
 
@@ -59,6 +67,9 @@ class TestSelectAllInstances(unittest.TestCase):
         """Clean up test document."""
         Selection.clearSelection()
         FreeCAD.closeDocument(self.doc.Name)
+        self.tree_params.SetBool(
+            "OrganizeModelByType", self.organize_model_by_type
+        )
 
     def _get_tree_widget(self):
         """Get the main tree widget."""

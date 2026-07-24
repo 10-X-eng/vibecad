@@ -63,6 +63,7 @@
 #include "Macro.h"
 #include "MainWindow.h"
 #include "MenuManager.h"
+#include "ModelTreeBrowser.h"
 #include "TreeParams.h"
 #include "View3DInventor.h"
 #include "ViewProviderDocumentObject.h"
@@ -92,6 +93,7 @@ std::set<TreeWidget*> TreeWidget::Instances;
 static TreeWidget* _LastSelectedTreeWidget;
 const int TreeWidget::DocumentType = 1000;
 const int TreeWidget::ObjectType = 1001;
+const int TreeWidget::BrowserFolderType = 1002;
 static bool _DraggingActive;
 static bool _DragEventFilter;
 
@@ -340,6 +342,184 @@ public:
             item->setHighlight(set, mode);
         }
     }
+};
+
+// ---------------------------------------------------------------------------
+
+class Gui::BrowserFolderItem: public QTreeWidgetItem
+{
+public:
+    BrowserFolderItem(
+        DocumentItem* owner,
+        QTreeWidgetItem* parent,
+        DocumentObjectItem* logicalParent,
+        QString key,
+        QString label,
+        QByteArray iconName
+    )
+        : QTreeWidgetItem(parent, TreeWidget::BrowserFolderType)
+        , owner(owner)
+        , logicalParent(logicalParent)
+        , itemKey(std::move(key))
+        , iconName(std::move(iconName))
+    {
+        setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        setText(0, std::move(label));
+        setExpanded(false);
+        updateStatus();
+    }
+
+    DocumentItem* getOwnerDocument() const
+    {
+        return owner;
+    }
+
+    DocumentObjectItem* getLogicalParent() const
+    {
+        return logicalParent;
+    }
+
+    const QString& key() const
+    {
+        return itemKey;
+    }
+
+    void setAllVisible(bool visible)
+    {
+        std::vector<DocumentObjectItem*> items;
+        collectObjectItems(this, items);
+        for (auto* item : items) {
+            TreeWidget::setObjectItemVisibility(item, visible);
+        }
+        owner->updateBrowserFolderStatus();
+    }
+
+    void toggleVisibility()
+    {
+        std::vector<DocumentObjectItem*> items;
+        collectObjectItems(this, items);
+        if (items.empty()) {
+            return;
+        }
+        const bool allVisible = std::ranges::all_of(items, [](const auto* item) {
+            return TreeWidget::objectItemVisibility(item);
+        });
+        setAllVisible(!allVisible);
+    }
+
+    void updateStatus()
+    {
+        std::vector<DocumentObjectItem*> items;
+        collectObjectItems(this, items);
+
+        int visibleCount = 0;
+        for (const auto* item : items) {
+            visibleCount += TreeWidget::objectItemVisibility(item) ? 1 : 0;
+        }
+
+        const int total = static_cast<int>(items.size());
+        const bool anyVisible = visibleCount > 0;
+        const bool allVisible = total > 0 && visibleCount == total;
+
+        QIcon base = BitmapFactory().iconFromTheme(iconName.constData());
+        if (base.isNull()) {
+            base = BitmapFactory().iconFromTheme("folder");
+        }
+
+        if (isVisibilityIconEnabled() && total > 0) {
+            static QPixmap visiblePixmap;
+            static QPixmap invisiblePixmap;
+            if (visiblePixmap.isNull()) {
+                visiblePixmap = BitmapFactory().pixmap("TreeItemVisible");
+            }
+            if (invisiblePixmap.isNull()) {
+                invisiblePixmap = BitmapFactory().pixmap("TreeItemInvisible");
+            }
+
+            const int size = std::max(16, TreeWidget::getIconSize());
+            QPixmap basePixmap = base.pixmap(size, size);
+            const int spacing = owner->getTree()->style()->pixelMetric(
+                QStyle::PM_LayoutHorizontalSpacing
+            );
+            QPixmap combined(2 * size + spacing, size);
+            combined.fill(Qt::transparent);
+
+            QPainter painter(&combined);
+            if (anyVisible) {
+                if (!allVisible) {
+                    painter.setOpacity(0.55);
+                }
+                painter.drawPixmap(0, 0, size, size, visiblePixmap);
+                painter.setOpacity(1.0);
+            }
+            else {
+                painter.drawPixmap(0, 0, size, size, invisiblePixmap);
+            }
+            painter.drawPixmap(size + spacing, 0, size, size, basePixmap);
+            painter.end();
+            setIcon(0, QIcon(combined));
+        }
+        else {
+            setIcon(0, base);
+        }
+
+        if (total > 0 && !anyVisible) {
+            QStyleOptionViewItem option;
+            option.initFrom(owner->getTree());
+            setForeground(0, option.palette.color(QPalette::Disabled, QPalette::Text));
+        }
+        else {
+            setData(0, Qt::ForegroundRole, QVariant());
+        }
+
+        setToolTip(
+            0,
+            total == 1
+                ? TreeWidget::tr("%1 of 1 item visible").arg(visibleCount)
+                : TreeWidget::tr("%1 of %2 items visible").arg(visibleCount).arg(total)
+        );
+
+        bool hasTreeChild = false;
+        for (int index = 0; index < childCount(); ++index) {
+            if (!child(index)->isHidden()) {
+                hasTreeChild = true;
+                break;
+            }
+        }
+        setHidden(!hasTreeChild && !owner->showHidden());
+    }
+
+private:
+    static void collectObjectItems(
+        const QTreeWidgetItem* parent,
+        std::vector<DocumentObjectItem*>& items
+    )
+    {
+        for (int index = 0; index < parent->childCount(); ++index) {
+            auto* child = parent->child(index);
+            if (!child || child->isHidden()) {
+                continue;
+            }
+            if (child->type() == TreeWidget::ObjectType) {
+                auto* objectItem = static_cast<DocumentObjectItem*>(child);
+                if (objectItem->isBrowserProxy() && objectItem->object()
+                    && objectItem->object()->canToggleVisibility()) {
+                    // Stop at an object boundary.  For example, Bodies controls
+                    // Body visibility, while a nested Features folder controls
+                    // the history entries individually.
+                    items.push_back(objectItem);
+                }
+            }
+            else if (child->type() == TreeWidget::BrowserFolderType) {
+                collectObjectItems(child, items);
+            }
+        }
+    }
+
+    DocumentItem* owner;
+    DocumentObjectItem* logicalParent;
+    QString itemKey;
+    QByteArray iconName;
 };
 
 // ---------------------------------------------------------------------------
@@ -841,6 +1021,7 @@ void TreeWidget::selectAll()
         return;
     }
 
+    const bool isBrowserFolder = current->type() == BrowserFolderType;
     bool isGrp = false;
     if (current->type() == ObjectType) {
         isGrp = (static_cast<const DocumentObjectItem*>(current)->isGroup() != 0);
@@ -849,14 +1030,14 @@ void TreeWidget::selectAll()
     const QTreeWidgetItem* parent = current->parent();
 
     // if its not a group and got no parent, just select whole document immediately
-    if (!isGrp && (!parent || parent->type() == DocumentType)) {
+    if (!isGrp && !isBrowserFolder && (!parent || parent->type() == DocumentType)) {
         SelectAllGuard guard(inSelectAllOperation);
         selectAllDocumentLevel();
         clearSelectAllContext();
         return;
     }
 
-    const QTreeWidgetItem* targetNode = isGrp ? current : parent;
+    const QTreeWidgetItem* targetNode = (isGrp || isBrowserFolder) ? current : parent;
 
     SelectAllGuard guard(inSelectAllOperation);
     lastSelectAllParent = true;
@@ -897,6 +1078,11 @@ void TreeWidget::selectGroupItems(const QTreeWidgetItem* group, bool recursive)
     const int childCount = group->childCount();
     for (int i = 0; i < childCount; ++i) {
         QTreeWidgetItem* child = group->child(i);
+        if (child->type() == BrowserFolderType) {
+            // Virtual categories are transparent to selection semantics.
+            selectGroupItems(child, recursive);
+            continue;
+        }
         if (child->type() != TreeWidget::ObjectType) {
             continue;
         }
@@ -1325,6 +1511,36 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
             }
         }
     }
+    else if (this->contextItem && this->contextItem->type() == BrowserFolderType) {
+        contextMenu.clear();
+        auto* folder = static_cast<BrowserFolderItem*>(this->contextItem);
+
+        auto* showAll = contextMenu.addAction(tr("Show All"));
+        connect(showAll, &QAction::triggered, &contextMenu, [folder]() {
+            folder->setAllVisible(true);
+        });
+
+        auto* hideAll = contextMenu.addAction(tr("Hide All"));
+        connect(hideAll, &QAction::triggered, &contextMenu, [folder]() {
+            folder->setAllVisible(false);
+        });
+
+        contextMenu.addSeparator();
+        auto* expandAll = contextMenu.addAction(tr("Expand All"));
+        connect(expandAll, &QAction::triggered, &contextMenu, [folder]() {
+            folder->setExpanded(true);
+            for (QTreeWidgetItemIterator iterator(folder); *iterator; ++iterator) {
+                (*iterator)->setExpanded(true);
+            }
+        });
+
+        auto* collapseAll = contextMenu.addAction(tr("Collapse All"));
+        connect(collapseAll, &QAction::triggered, &contextMenu, [folder]() {
+            for (QTreeWidgetItemIterator iterator(folder); *iterator; ++iterator) {
+                (*iterator)->setExpanded(false);
+            }
+        });
+    }
 
 
     // add a submenu to active a document if two or more exist
@@ -1396,6 +1612,22 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
             hGrp->SetBool("HideInternalNames", !show);
             setColumnHidden(2, !show);
             header()->setVisible(action->isChecked() || internalNameAction->isChecked());
+        }
+    );
+
+    QAction* organizeModelAction = new QAction(tr("Organize Model by Type"), this);
+    organizeModelAction->setStatusTip(
+        tr("Groups bodies, sketches, construction geometry, and features without changing the document")
+    );
+    organizeModelAction->setCheckable(true);
+    organizeModelAction->setChecked(TreeParams::getOrganizeModelByType());
+    settingsMenu.addAction(organizeModelAction);
+    QObject::connect(
+        organizeModelAction,
+        &QAction::triggered,
+        this,
+        [organizeModelAction]() {
+            TreeParams::setOrganizeModelByType(organizeModelAction->isChecked());
         }
     );
 
@@ -2010,8 +2242,12 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
     }
 
     else if (event->key() == Qt::Key_Space && event->modifiers() == Qt::NoModifier) {
-        // Toggle each selected feature's own visibility directly
+        // Toggle selected objects or a whole virtual category.
         for (auto* raw : selectedItems()) {
+            if (raw->type() == BrowserFolderType) {
+                static_cast<BrowserFolderItem*>(raw)->toggleVisibility();
+                continue;
+            }
             if (raw->type() != ObjectType) {
                 continue;
             }
@@ -2027,6 +2263,9 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
                 appObj->getNameInDocument()
             );
         }
+        for (const auto& entry : DocumentMap) {
+            entry.second->updateBrowserFolderStatus();
+        }
         setFocus();
         event->accept();
         return;
@@ -2035,19 +2274,63 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
     QTreeWidget::keyPressEvent(event);
 }
 
+bool TreeWidget::objectItemVisibility(const DocumentObjectItem* item)
+{
+    if (!item || !item->object() || !item->object()->getObject()) {
+        return false;
+    }
+
+    auto* object = item->object()->getObject();
+    App::DocumentObject* parent = nullptr;
+    std::ostringstream subName;
+    item->getSubName(subName, parent);
+    if (parent) {
+        const int visible = parent->isElementVisible(object->getNameInDocument());
+        if (visible >= 0) {
+            return visible != 0;
+        }
+    }
+    return object->Visibility.getValue();
+}
+
+void TreeWidget::setObjectItemVisibility(DocumentObjectItem* item, bool visible)
+{
+    if (!item || !item->object() || !item->object()->getObject()
+        || !item->object()->canToggleVisibility()) {
+        return;
+    }
+
+    auto* object = item->object()->getObject();
+    App::DocumentObject* parent = nullptr;
+    std::ostringstream subName;
+    item->getSubName(subName, parent);
+    if (parent && parent->isElementVisible(object->getNameInDocument()) >= 0) {
+        parent->setElementVisible(object->getNameInDocument(), visible);
+    }
+    else {
+        object->Visibility.setValue(visible);
+    }
+    Selection().updateSelection(
+        visible,
+        object->getDocument()->getName(),
+        object->getNameInDocument()
+    );
+}
+
 void TreeWidget::mousePressEvent(QMouseEvent* event)
 {
     expandIndicatorPressed = false;
     if (isVisibilityIconEnabled()) {
         QTreeWidgetItem* item = itemAt(event->pos());
-        if (item && item->type() == TreeWidget::ObjectType && event->button() == Qt::LeftButton) {
-            auto objitem = static_cast<DocumentObjectItem*>(item);
-
+        if (item
+            && (item->type() == TreeWidget::ObjectType
+                || item->type() == TreeWidget::BrowserFolderType)
+            && event->button() == Qt::LeftButton) {
             // Mouse position relative to viewport
             auto mousePos = event->pos();
 
             // Rect occupied by the item relative to viewport
-            auto iconRect = visualItemRect(objitem);
+            auto iconRect = visualItemRect(item);
 
             auto style = this->style();
 
@@ -2067,24 +2350,30 @@ void TreeWidget::mousePressEvent(QMouseEvent* event)
 
             // If the visibility icon was clicked, toggle the DocumentObject visibility
             if (iconRect.contains(mousePos)) {
-                auto obj = objitem->object()->getObject();
-                char const* objname = obj->getNameInDocument();
-
-                App::DocumentObject* parent = nullptr;
-                std::ostringstream subName;
-                objitem->getSubName(subName, parent);
-
-                // Try the ElementVisible API, if that is not supported toggle the Visibility property
-                int visible = -1;
-                if (parent) {
-                    visible = parent->isElementVisible(objname);
-                }
-                if (parent && visible >= 0) {
-                    parent->setElementVisible(objname, !visible);
+                if (item->type() == TreeWidget::BrowserFolderType) {
+                    static_cast<BrowserFolderItem*>(item)->toggleVisibility();
                 }
                 else {
-                    visible = obj->Visibility.getValue();
-                    obj->Visibility.setValue(!visible);
+                    auto* objectItem = static_cast<DocumentObjectItem*>(item);
+                    auto* object = objectItem->object()->getObject();
+                    const char* objectName = object->getNameInDocument();
+
+                    App::DocumentObject* parent = nullptr;
+                    std::ostringstream subName;
+                    objectItem->getSubName(subName, parent);
+
+                    // Try ElementVisible first and fall back to the Visibility property.
+                    int visible = -1;
+                    if (parent) {
+                        visible = parent->isElementVisible(objectName);
+                    }
+                    if (parent && visible >= 0) {
+                        parent->setElementVisible(objectName, !visible);
+                    }
+                    else {
+                        visible = object->Visibility.getValue();
+                        object->Visibility.setValue(!visible);
+                    }
                 }
                 visibilityIconDoubleClickTimer.start();
 
@@ -2184,6 +2473,9 @@ void TreeWidget::mouseDoubleClickEvent(QMouseEvent* event)
                 }
             }
         }
+        else if (item->type() == TreeWidget::BrowserFolderType) {
+            item->setExpanded(!item->isExpanded());
+        }
     }
     catch (Base::Exception& e) {
         e.reportException();
@@ -2281,13 +2573,21 @@ public:
                 continue;
             }
             // ignore child elements if the parent is selected
-            if (sels.contains(ti->parent())) {
+            auto* item = static_cast<DocumentObjectItem*>(ti);
+            bool parentSelected = false;
+            for (auto* parent = item->getParentItem(); parent;
+                 parent = parent->getParentItem()) {
+                if (sels.contains(parent)) {
+                    parentSelected = true;
+                    break;
+                }
+            }
+            if (parentSelected) {
                 continue;
             }
             if (ti == targetItem) {
                 continue;
             }
-            auto item = static_cast<DocumentObjectItem*>(ti);
             items.emplace_back();
             auto& info = items.back();
             info.first = item;
@@ -2366,6 +2666,14 @@ Qt::DropAction getDropAction(int size, const int type)
         return Qt::MoveAction;
     }
 }
+
+QTreeWidgetItem* logicalDropParent(DocumentObjectItem* item)
+{
+    if (auto* parent = item->getParentItem()) {
+        return parent;
+    }
+    return item->getOwnerDocument();
+}
 }
 
 void TreeWidget::dragMoveEvent(QDragMoveEvent* event)
@@ -2418,7 +2726,7 @@ void TreeWidget::dragMoveEvent(QDragMoveEvent* event)
 
         // if we are in between or if target doesn't accept drops then the target is the parent
         if (da == Qt::MoveAction && (targetInfo.inThresholdZone || !vp->canDropObjects())) {
-            targetInfo.targetItem = targetInfo.targetItem->parent();
+            targetInfo.targetItem = logicalDropParent(targetItemObj);
             if (targetInfo.targetItem->type() == TreeWidget::DocumentType) {
                 leaveEvent(nullptr);
                 return;
@@ -2811,7 +3119,7 @@ bool TreeWidget::dropInObject(
 
     // if we are in between or if target doesn't accept drops then the target is the parent
     if (da == Qt::MoveAction && (targetInfo.inThresholdZone || !vp->canDropObjects())) {
-        targetInfo.targetItem = targetInfo.targetItem->parent();
+        targetInfo.targetItem = logicalDropParent(targetItemObj);
         if (targetInfo.targetItem->type() == TreeWidget::DocumentType) {
             return dropInDocument(event, targetInfo, items);
         }
@@ -3457,6 +3765,7 @@ void TreeWidget::slotShowHidden(const Gui::Document& Doc)
     auto it = DocumentMap.find(&Doc);
     if (it != DocumentMap.end()) {
         it->second->updateItemsVisibility(it->second, it->second->showHidden());
+        it->second->updateBrowserFolderStatus();
     }
 }
 
@@ -3614,11 +3923,14 @@ void TreeWidget::onUpdateStatus()
             if (data->itemHidden != itemHidden) {
                 for (auto& data : iter->second) {
                     data->itemHidden = itemHidden;
-                    if (data->docItem->showHidden()) {
-                        continue;
-                    }
                     for (auto item : data->items) {
-                        item->setHidden(itemHidden);
+                        const bool legacyHidden = TreeParams::getOrganizeModelByType()
+                            && !item->isBrowserProxy();
+                        item->setHidden(
+                            legacyHidden
+                            || (!data->docItem->showHidden()
+                                && (itemHidden || item->isBrowserDefaultHidden()))
+                        );
                     }
                 }
             }
@@ -3627,9 +3939,14 @@ void TreeWidget::onUpdateStatus()
         updateChildren(iter->first, iter->second, v.second.test(CS_Output), false);
     }
 
+    for (const auto& documentEntry : DocumentMap) {
+        documentEntry.second->refreshModelBrowser();
+    }
+
     FC_LOG("update item status");
     for (auto pos = DocumentMap.begin(); pos != DocumentMap.end(); ++pos) {
         pos->second->testStatus();
+        pos->second->updateBrowserFolderStatus();
     }
 
     // Checking for just restored documents
@@ -3715,9 +4032,18 @@ void TreeWidget::onUpdateStatus()
             }
         }
         if (data) {
-            auto item = data->rootItem;
+            auto item = data->docItem->modelBrowserActive
+                ? data->docItem->findBrowserItem(obj)
+                : data->rootItem;
             if (!item && !data->items.empty()) {
-                item = *data->items.begin();
+                for (auto* candidate : data->items) {
+                    if (data->docItem->isPresentationItem(candidate)) {
+                        item = candidate;
+                        break;
+                    }
+                }
+            }
+            if (item) {
                 data->docItem->showItem(item, false, true);
             }
             if (!errItem) {
@@ -3816,7 +4142,10 @@ void TreeWidget::onItemCollapsed(QTreeWidgetItem* item)
 {
     // object item collapsed
     if (item && item->type() == TreeWidget::ObjectType) {
-        static_cast<DocumentObjectItem*>(item)->setExpandedStatus(false);
+        auto* objectItem = static_cast<DocumentObjectItem*>(item);
+        if (!objectItem->isBrowserProxy()) {
+            objectItem->setExpandedStatus(false);
+        }
     }
 }
 
@@ -3825,8 +4154,10 @@ void TreeWidget::onItemExpanded(QTreeWidgetItem* item)
     // object item expanded
     if (item && item->type() == TreeWidget::ObjectType) {
         auto objItem = static_cast<DocumentObjectItem*>(item);
-        objItem->setExpandedStatus(true);
-        objItem->getOwnerDocument()->populateItem(objItem, false, false);
+        if (!objItem->isBrowserProxy()) {
+            objItem->setExpandedStatus(true);
+            objItem->getOwnerDocument()->populateItem(objItem, false, false);
+        }
     }
 }
 
@@ -4010,7 +4341,8 @@ void TreeWidget::onToggleVisibilityInTree()
 
             // update GUI
             auto ownerDocument = objectItem->getOwnerDocument();
-            bool hidden = !ownerDocument->showHidden() && !showInTree;
+            bool hidden = !ownerDocument->showHidden()
+                && (!showInTree || objectItem->isBrowserDefaultHidden());
             objectItem->setHidden(hidden);
             if (hidden) {
                 objectItem->setSelected(false);
@@ -4023,6 +4355,9 @@ void TreeWidget::changeEvent(QEvent* e)
 {
     if (e->type() == QEvent::LanguageChange) {
         setupText();
+        for (const auto& documentEntry : DocumentMap) {
+            documentEntry.second->refreshModelBrowser(true);
+        }
     }
 
     QTreeWidget::changeEvent(e);
@@ -4063,7 +4398,9 @@ void TreeWidget::onItemSelectionChanged()
         for (auto it = selItems.begin(); it != selItems.end();) {
             auto item = *it;
             if ((firstType == ObjectType && item->type() != ObjectType)
-                || (firstType == DocumentType && item != selItems.back())) {
+                || (firstType == DocumentType && item != selItems.back())
+                || (firstType == BrowserFolderType
+                    && item->type() != BrowserFolderType)) {
                 item->setSelected(false);
                 it = selItems.erase(it);
             }
@@ -4071,6 +4408,16 @@ void TreeWidget::onItemSelectionChanged()
                 ++it;
             }
         }
+    }
+
+    if (!selItems.empty() && selItems.back()->type() == BrowserFolderType) {
+        Selection().clearCompleteSelection();
+        for (auto& entry : DocumentMap) {
+            entry.second->clearSelection();
+        }
+        Gui::Selection().signalSelectionChanged(SelectionChanges());
+        this->blockSelection(lock);
+        return;
     }
 
     if (selItems.size() <= 1) {
@@ -4154,6 +4501,9 @@ void TreeWidget::updateVisibilityIcons()
                 objitem->testStatus(true);
             }
         }
+        for (const auto& documentEntry : tree->DocumentMap) {
+            documentEntry.second->updateBrowserFolderStatus();
+        }
         tree->resizeColumnToContents(0);
     }
 }
@@ -4175,7 +4525,8 @@ QList<QTreeWidgetItem*> TreeWidget::childrenOfItem(const QTreeWidgetItem& item) 
 
 void TreeWidget::onItemChanged(QTreeWidgetItem* item, int column)
 {
-    if (column == 0 && isSelectionCheckBoxesEnabled()) {
+    if (column == 0 && item && item->type() == ObjectType
+        && isSelectionCheckBoxesEnabled()) {
         bool selected = item->isSelected();
         bool checked = item->checkState(0) == Qt::Checked;
         if (checked != selected) {
@@ -4539,6 +4890,7 @@ void DocumentItem::slotNewObject(const Gui::ViewProviderDocumentObject& obj)
         FC_ERR("view provider not attached");
         return;
     }
+    modelBrowserDirty = true;
     getTree()->NewObjects[pDocument->getDocument()->getName()].push_back(obj.getObject()->getID());
     getTree()->_updateStatus();
 }
@@ -4602,6 +4954,10 @@ bool DocumentItem::createNewItem(
         item->setHidden(true);
     }
     item->testStatus(true);
+    if (TreeParams::getOrganizeModelByType()) {
+        item->setHidden(true);
+    }
+    modelBrowserDirty = true;
 
     populateItem(item);
     return true;
@@ -4610,6 +4966,813 @@ bool DocumentItem::createNewItem(
 ViewProviderDocumentObject* DocumentItem::getViewProvider(App::DocumentObject* obj)
 {
     return freecad_cast<ViewProviderDocumentObject*>(Application::Instance->getViewProvider(obj));
+}
+
+DocumentObjectItem* DocumentItem::createBrowserObjectItem(
+    App::DocumentObject* object,
+    QTreeWidgetItem* parent,
+    DocumentObjectItem* logicalParent,
+    bool browserDefaultHidden
+)
+{
+    if (!object || !parent) {
+        return nullptr;
+    }
+    const auto dataIt = ObjectMap.find(object);
+    if (dataIt == ObjectMap.end() || !dataIt->second || !dataIt->second->viewObject) {
+        return nullptr;
+    }
+
+    const auto& data = dataIt->second;
+    auto* item = new DocumentObjectItem(
+        this,
+        data,
+        true,
+        logicalParent,
+        browserDefaultHidden
+    );
+    parent->addChild(item);
+    item->setText(0, QString::fromUtf8(data->label.c_str()));
+    if (!data->label2.empty()) {
+        item->setText(1, QString::fromUtf8(data->label2.c_str()));
+    }
+    item->setText(2, QString::fromUtf8(data->internalName.c_str()));
+    item->setHidden(
+        !showHidden() && (browserDefaultHidden || !data->viewObject->showInTree())
+    );
+    item->populated = true;
+    item->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
+    item->testStatus(true);
+    return item;
+}
+
+DocumentObjectItem* DocumentItem::findBrowserItem(App::DocumentObject* object) const
+{
+    const auto dataIt = ObjectMap.find(object);
+    if (dataIt == ObjectMap.end()) {
+        return nullptr;
+    }
+    DocumentObjectItem* hidden = nullptr;
+    for (auto* item : dataIt->second->items) {
+        if (!item->isBrowserProxy()) {
+            continue;
+        }
+        if (!item->isHidden()) {
+            return item;
+        }
+        hidden = item;
+    }
+    return hidden;
+}
+
+bool DocumentItem::isPresentationItem(const DocumentObjectItem* item) const
+{
+    return item && item->isBrowserProxy() == modelBrowserActive;
+}
+
+void DocumentItem::clearModelBrowser()
+{
+    auto* tree = getTree();
+    if (!tree) {
+        return;
+    }
+
+    if (tree->editingItem && tree->editingItem->isBrowserProxy()
+        && tree->editingItem->getOwnerDocument() == this) {
+        tree->editingItem = nullptr;
+    }
+
+    const bool selectionLock = tree->blockSelection(true);
+    QSignalBlocker signalBlocker(tree);
+    for (int index = childCount() - 1; index >= 0; --index) {
+        auto* childItem = child(index);
+        const bool isBrowserRoot = childItem->type() == TreeWidget::BrowserFolderType
+            || (childItem->type() == TreeWidget::ObjectType
+                && static_cast<DocumentObjectItem*>(childItem)->isBrowserProxy());
+        if (isBrowserRoot) {
+            delete childItem;
+        }
+    }
+    tree->blockSelection(selectionLock);
+    modelBrowserActive = false;
+}
+
+void DocumentItem::setLegacyTreeVisible(bool visible)
+{
+    for (const auto& entry : ObjectMap) {
+        for (auto* item : entry.second->items) {
+            if (item->isBrowserProxy()) {
+                continue;
+            }
+            item->setHidden(!visible || (!showHidden() && !item->object()->showInTree()));
+            if (!visible) {
+                item->selected = 0;
+                item->mySubs.clear();
+                item->setSelected(false);
+                item->setCheckState(false);
+            }
+        }
+    }
+}
+
+void DocumentItem::updateBrowserFolderStatus()
+{
+    if (!modelBrowserActive) {
+        return;
+    }
+
+    std::vector<BrowserFolderItem*> folders;
+    std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* parent) {
+        for (int index = 0; index < parent->childCount(); ++index) {
+            auto* childItem = parent->child(index);
+            if (childItem->type() == TreeWidget::BrowserFolderType) {
+                auto* folder = static_cast<BrowserFolderItem*>(childItem);
+                if (folder->getOwnerDocument() == this) {
+                    folders.push_back(folder);
+                    collect(folder);
+                }
+            }
+            else if (
+                childItem->type() == TreeWidget::ObjectType
+                && static_cast<DocumentObjectItem*>(childItem)->isBrowserProxy()
+            ) {
+                collect(childItem);
+            }
+        }
+    };
+    collect(this);
+
+    // Inner folders determine whether their parents have visible children.
+    for (auto it = folders.rbegin(); it != folders.rend(); ++it) {
+        (*it)->updateStatus();
+    }
+}
+
+void DocumentItem::rebuildModelBrowser()
+{
+    auto* tree = getTree();
+    auto* appDocument = document()->getDocument();
+    if (!tree || !appDocument) {
+        return;
+    }
+
+    using Projection = ModelTreeBrowserProjection;
+    using Entry = Projection::Entry;
+    using Role = Projection::Role;
+
+    std::set<std::string> expandedObjects;
+    std::set<std::string> expandedFolders;
+    std::set<std::string> selectedObjects;
+
+    std::function<void(QTreeWidgetItem*)> captureState = [&](QTreeWidgetItem* parent) {
+        for (int index = 0; index < parent->childCount(); ++index) {
+            auto* childItem = parent->child(index);
+            if (childItem->type() == TreeWidget::BrowserFolderType) {
+                auto* folder = static_cast<BrowserFolderItem*>(childItem);
+                if (folder->isExpanded()) {
+                    expandedFolders.insert(folder->key().toStdString());
+                }
+                captureState(folder);
+            }
+            else if (childItem->type() == TreeWidget::ObjectType) {
+                auto* objectItem = static_cast<DocumentObjectItem*>(childItem);
+                if (!objectItem->isBrowserProxy()) {
+                    continue;
+                }
+                const std::string name = objectItem->getName();
+                if (objectItem->isExpanded()) {
+                    expandedObjects.insert(name);
+                }
+                if (objectItem->isSelected()) {
+                    selectedObjects.insert(name);
+                }
+                captureState(objectItem);
+            }
+        }
+    };
+    captureState(this);
+    const bool firstBuild = !modelBrowserActive;
+
+    const bool selectionLock = tree->blockSelection(true);
+    QSignalBlocker signalBlocker(tree);
+    clearModelBrowser();
+    setLegacyTreeVisible(false);
+
+    Projection projection(appDocument);
+    const auto& entries = projection.entries();
+    std::unordered_map<App::DocumentObject*, DocumentObjectItem*> proxies;
+    std::set<App::DocumentObject*> rendered;
+
+    auto entryAvailable = [&](const Entry& entry) {
+        return entry.object && ObjectMap.contains(entry.object);
+    };
+
+    auto objectKey = [](const App::DocumentObject* object) {
+        return object && object->getNameInDocument() ? std::string(object->getNameInDocument())
+                                                     : std::string();
+    };
+
+    auto contextKey = [&](const App::DocumentObject* object) {
+        return object ? objectKey(object) : std::string("$document");
+    };
+
+    auto logicalItem = [&](App::DocumentObject* object, DocumentObjectItem* fallback) {
+        const auto proxyIt = proxies.find(object);
+        return proxyIt == proxies.end() ? fallback : proxyIt->second;
+    };
+
+    auto makeFolder = [&](
+                          QTreeWidgetItem* parent,
+                          DocumentObjectItem* logicalParent,
+                          const std::string& context,
+                          const char* id,
+                          const QString& label,
+                          const char* icon
+                      ) {
+        const QString key = QString::fromStdString(context + "/folder:" + id);
+        auto* folder = new BrowserFolderItem(
+            this,
+            parent,
+            logicalParent,
+            key,
+            label,
+            QByteArray(icon)
+        );
+        folder->setExpanded(expandedFolders.contains(key.toStdString()));
+        return folder;
+    };
+
+    auto renderObject = [&](
+                            const Entry& entry,
+                            QTreeWidgetItem* parent,
+                            DocumentObjectItem* logicalParent
+                        ) -> DocumentObjectItem* {
+        if (!entryAvailable(entry)) {
+            return nullptr;
+        }
+        if (const auto existing = proxies.find(entry.object); existing != proxies.end()) {
+            return existing->second;
+        }
+
+        auto* item = createBrowserObjectItem(
+            entry.object,
+            parent,
+            logicalParent,
+            entry.publishedImplementation
+        );
+        if (!item) {
+            return nullptr;
+        }
+        proxies.emplace(entry.object, item);
+        rendered.insert(entry.object);
+
+        const std::string name = objectKey(entry.object);
+        const bool wasExpanded = expandedObjects.contains(name);
+        const bool persistedExpanded = entry.object->testStatus(App::Expand);
+        const bool defaultExpanded = firstBuild && entry.role == Role::Component;
+        item->setExpanded(wasExpanded || persistedExpanded || defaultExpanded);
+        const bool selected = selectedObjects.contains(name);
+        item->selected = selected ? 1 : 0;
+        item->setSelected(selected);
+        item->setCheckState(selected);
+        return item;
+    };
+
+    auto entriesMatching = [&](const std::function<bool(const Entry&)>& predicate) {
+        std::vector<const Entry*> result;
+        for (const auto& entry : entries) {
+            if (entryAvailable(entry) && !rendered.contains(entry.object) && predicate(entry)) {
+                result.push_back(&entry);
+            }
+        }
+        return result;
+    };
+
+    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderOrigin;
+    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderBody;
+    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderComponent;
+    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderGroup;
+
+    auto localOriginFeatureLabel = [](const Entry& entry, const QString& label) {
+        struct DefaultLabel
+        {
+            std::string_view namePrefix;
+            const char* source;
+        };
+        static constexpr DefaultLabel defaultLabels[] = {
+            {"X_Axis", "X-axis"},
+            {"Y_Axis", "Y-axis"},
+            {"Z_Axis", "Z-axis"},
+            {"XY_Plane", "XY-plane"},
+            {"XZ_Plane", "XZ-plane"},
+            {"YZ_Plane", "YZ-plane"},
+            {"Origin", "Origin-Point"},
+        };
+
+        const std::string name = entry.object && entry.object->getNameInDocument()
+            ? entry.object->getNameInDocument()
+            : "";
+        for (const auto& defaultLabel : defaultLabels) {
+            if (!name.starts_with(defaultLabel.namePrefix)) {
+                continue;
+            }
+            const QString translated = QApplication::translate(
+                "App::LocalCoordinateSystem",
+                defaultLabel.source
+            );
+            const QString source = QString::fromLatin1(defaultLabel.source);
+            for (const auto& base : {translated, source}) {
+                if (!label.startsWith(base)) {
+                    continue;
+                }
+                const QString suffix = label.mid(base.size());
+                if (!suffix.isEmpty()
+                    && std::ranges::all_of(suffix, [](QChar character) {
+                           return character.isDigit();
+                       })) {
+                    return base;
+                }
+            }
+            break;
+        }
+        return label;
+    };
+
+    renderOrigin = [&](const Entry& originEntry,
+                       QTreeWidgetItem* parent,
+                       DocumentObjectItem* logicalParent) {
+        auto* originItem = renderObject(originEntry, parent, logicalParent);
+        if (!originItem) {
+            return;
+        }
+        // Internal Origin names are document-unique (Origin, Origin001, ...),
+        // but each is the local Origin of its own component or Body.
+        originItem->setText(0, TreeWidget::tr("Origin"));
+        const auto features = entriesMatching([&](const Entry& entry) {
+            return entry.role == Role::OriginFeature
+                && entry.logicalParent == originEntry.object;
+        });
+        for (const auto* feature : features) {
+            auto* featureItem = renderObject(*feature, originItem, originItem);
+            if (featureItem) {
+                featureItem->setText(
+                    0,
+                    localOriginFeatureLabel(*feature, featureItem->text(0))
+                );
+            }
+        }
+        originItem->setChildIndicatorPolicy(
+            originItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                         : QTreeWidgetItem::DontShowIndicator
+        );
+    };
+
+    auto renderCategory = [&](
+                              QTreeWidgetItem* parent,
+                              DocumentObjectItem* contextItem,
+                              App::DocumentObject* contextObject,
+                              const char* id,
+                              const QString& label,
+                              const char* icon,
+                              const std::vector<const Entry*>& categoryEntries
+                          ) {
+        if (categoryEntries.empty()) {
+            return static_cast<BrowserFolderItem*>(nullptr);
+        }
+        auto* folder = makeFolder(
+            parent,
+            contextItem,
+            contextKey(contextObject),
+            id,
+            label,
+            icon
+        );
+        for (const auto* entry : categoryEntries) {
+            auto* logicalParent = logicalItem(entry->logicalParent, nullptr);
+            renderObject(*entry, folder, logicalParent);
+        }
+        return folder;
+    };
+
+    renderBody = [&](const Entry& bodyEntry,
+                     QTreeWidgetItem* parent,
+                     DocumentObjectItem* logicalParent) {
+        auto* bodyItem = renderObject(bodyEntry, parent, logicalParent);
+        if (!bodyItem) {
+            return;
+        }
+
+        const auto origins = entriesMatching([&](const Entry& entry) {
+            return entry.role == Role::Origin && entry.logicalParent == bodyEntry.object;
+        });
+        for (const auto* origin : origins) {
+            renderOrigin(*origin, bodyItem, bodyItem);
+        }
+
+        const auto features = entriesMatching([&](const Entry& entry) {
+            return entry.body == bodyEntry.object && entry.role == Role::Feature;
+        });
+        renderCategory(
+            bodyItem,
+            bodyItem,
+            bodyEntry.object,
+            "features",
+            TreeWidget::tr("Features"),
+            "PartDesign_Pad",
+            features
+        );
+        bodyItem->setChildIndicatorPolicy(
+            bodyItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                       : QTreeWidgetItem::DontShowIndicator
+        );
+    };
+
+    renderGroup = [&](const Entry& groupEntry,
+                      QTreeWidgetItem* parent,
+                      DocumentObjectItem* logicalParent) {
+        auto* groupItem = renderObject(groupEntry, parent, logicalParent);
+        if (!groupItem) {
+            return;
+        }
+        const auto children = entriesMatching([&](const Entry& entry) {
+            return entry.group == groupEntry.object;
+        });
+        for (const auto* child : children) {
+            if (child->role == Role::Group) {
+                renderGroup(*child, groupItem, groupItem);
+            }
+            else if (child->role == Role::Component) {
+                renderComponent(*child, groupItem, groupItem);
+            }
+            else if (child->role == Role::Body) {
+                renderBody(*child, groupItem, groupItem);
+            }
+            else if (child->role == Role::Origin) {
+                renderOrigin(*child, groupItem, groupItem);
+            }
+            else {
+                renderObject(*child, groupItem, groupItem);
+            }
+        }
+        groupItem->setChildIndicatorPolicy(
+            groupItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                        : QTreeWidgetItem::DontShowIndicator
+        );
+    };
+
+    renderComponent = [&](const Entry& componentEntry,
+                          QTreeWidgetItem* parent,
+                          DocumentObjectItem* logicalParent) {
+        auto* componentItem = renderObject(componentEntry, parent, logicalParent);
+        if (!componentItem) {
+            return;
+        }
+
+        const auto origins = entriesMatching([&](const Entry& entry) {
+            return entry.role == Role::Origin
+                && entry.logicalParent == componentEntry.object;
+        });
+        for (const auto* origin : origins) {
+            renderOrigin(*origin, componentItem, componentItem);
+        }
+
+        const auto parameters = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object && entry.role == Role::Parameter;
+        });
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "parameters",
+            TreeWidget::tr("Parameters"),
+            "VarSet",
+            parameters
+        );
+
+        const auto nestedComponents = entriesMatching([&](const Entry& entry) {
+            return entry.role == Role::Component
+                && entry.component == componentEntry.object;
+        });
+        if (!nestedComponents.empty()) {
+            auto* folder = makeFolder(
+                componentItem,
+                componentItem,
+                contextKey(componentEntry.object),
+                "components",
+                TreeWidget::tr("Components"),
+                "Std_Part"
+            );
+            for (const auto* nested : nestedComponents) {
+                renderComponent(*nested, folder, componentItem);
+            }
+        }
+
+        const auto bodies = entriesMatching([&](const Entry& entry) {
+            return entry.role == Role::Body && entry.component == componentEntry.object;
+        });
+        if (!bodies.empty()) {
+            auto* folder = makeFolder(
+                componentItem,
+                componentItem,
+                contextKey(componentEntry.object),
+                "bodies",
+                TreeWidget::tr("Bodies"),
+                "PartDesign_Body"
+            );
+            for (const auto* body : bodies) {
+                renderBody(*body, folder, componentItem);
+            }
+        }
+
+        const auto sketches = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object && entry.role == Role::Sketch;
+        });
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "sketches",
+            TreeWidget::tr("Sketches"),
+            "Sketcher_NewSketch",
+            sketches
+        );
+
+        const auto construction = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object
+                && entry.role == Role::Construction;
+        });
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "construction",
+            TreeWidget::tr("Construction"),
+            "PartDesign_Plane",
+            construction
+        );
+
+        const auto geometry = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object && entry.role == Role::Geometry;
+        });
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "geometry",
+            TreeWidget::tr("Geometry"),
+            "Part_Primitives",
+            geometry
+        );
+
+        const auto references = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object && entry.role == Role::Reference;
+        });
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "references",
+            TreeWidget::tr("References"),
+            "PartDesign_SubShapeBinder",
+            references
+        );
+
+        const auto groups = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object && entry.role == Role::Group
+                && !entry.group;
+        });
+        if (!groups.empty()) {
+            auto* folder = makeFolder(
+                componentItem,
+                componentItem,
+                contextKey(componentEntry.object),
+                "groups",
+                TreeWidget::tr("Groups"),
+                "folder"
+            );
+            for (const auto* group : groups) {
+                renderGroup(*group, folder, componentItem);
+            }
+        }
+
+        const auto other = entriesMatching([&](const Entry& entry) {
+            return entry.component == componentEntry.object && !entry.body && !entry.group
+                && entry.role == Role::Other;
+        });
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "other",
+            TreeWidget::tr("Other"),
+            "folder",
+            other
+        );
+
+        componentItem->setChildIndicatorPolicy(
+            componentItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                            : QTreeWidgetItem::DontShowIndicator
+        );
+    };
+
+    // Components are the primary browser roots, matching component-oriented CAD
+    // systems.  Type folders below handle document-level loose objects and Bodies.
+    const auto topComponents = entriesMatching([&](const Entry& entry) {
+        return entry.role == Role::Component && !entry.logicalParent && !entry.group;
+    });
+    for (const auto* component : topComponents) {
+        renderComponent(*component, this, nullptr);
+    }
+
+    const auto rootParameters = entriesMatching([&](const Entry& entry) {
+        return !entry.component && entry.role == Role::Parameter;
+    });
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "parameters",
+        TreeWidget::tr("Parameters"),
+        "VarSet",
+        rootParameters
+    );
+
+    const auto rootBodies = entriesMatching([&](const Entry& entry) {
+        return entry.role == Role::Body && !entry.component;
+    });
+    if (!rootBodies.empty()) {
+        auto* folder = makeFolder(
+            this,
+            nullptr,
+            contextKey(nullptr),
+            "bodies",
+            TreeWidget::tr("Bodies"),
+            "PartDesign_Body"
+        );
+        for (const auto* body : rootBodies) {
+            renderBody(*body, folder, nullptr);
+        }
+    }
+
+    const auto rootSketches = entriesMatching([&](const Entry& entry) {
+        return !entry.component && entry.role == Role::Sketch;
+    });
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "sketches",
+        TreeWidget::tr("Sketches"),
+        "Sketcher_NewSketch",
+        rootSketches
+    );
+
+    const auto rootConstruction = entriesMatching([&](const Entry& entry) {
+        return !entry.component && entry.role == Role::Construction;
+    });
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "construction",
+        TreeWidget::tr("Construction"),
+        "PartDesign_Plane",
+        rootConstruction
+    );
+
+    const auto rootGeometry = entriesMatching([&](const Entry& entry) {
+        return !entry.component && entry.role == Role::Geometry;
+    });
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "geometry",
+        TreeWidget::tr("Geometry"),
+        "Part_Primitives",
+        rootGeometry
+    );
+
+    const auto rootReferences = entriesMatching([&](const Entry& entry) {
+        return !entry.component && entry.role == Role::Reference;
+    });
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "references",
+        TreeWidget::tr("References"),
+        "PartDesign_SubShapeBinder",
+        rootReferences
+    );
+
+    const auto rootGroups = entriesMatching([&](const Entry& entry) {
+        return !entry.component && entry.role == Role::Group && !entry.group;
+    });
+    if (!rootGroups.empty()) {
+        auto* folder = makeFolder(
+            this,
+            nullptr,
+            contextKey(nullptr),
+            "groups",
+            TreeWidget::tr("Groups"),
+            "folder"
+        );
+        for (const auto* group : rootGroups) {
+            renderGroup(*group, folder, nullptr);
+        }
+    }
+
+    const auto rootOther = entriesMatching([&](const Entry& entry) {
+        return !entry.component && !entry.body && !entry.group && entry.role == Role::Other;
+    });
+    renderCategory(
+        this,
+        nullptr,
+        nullptr,
+        "other",
+        TreeWidget::tr("Other"),
+        "folder",
+        rootOther
+    );
+
+    // Never make a valid document object disappear because a new or third-party
+    // type did not match a known role.  The fallback remains deterministic and is
+    // deliberately presentation-only.
+    const auto unrendered = entriesMatching([](const Entry&) {
+        return true;
+    });
+    if (!unrendered.empty()) {
+        auto* folder = makeFolder(
+            this,
+            nullptr,
+            contextKey(nullptr),
+            "unclassified",
+            TreeWidget::tr("Other"),
+            "folder"
+        );
+        for (const auto* entry : unrendered) {
+            renderObject(
+                *entry,
+                folder,
+                logicalItem(entry->logicalParent, nullptr)
+            );
+        }
+    }
+
+    modelBrowserActive = true;
+    modelBrowserDirty = false;
+    updateBrowserFolderStatus();
+
+    if (Application::Instance->isInEdit(document())) {
+        ViewProviderDocumentObject* parentView = nullptr;
+        std::string subname;
+        auto* editingView = document()->getInEdit(&parentView, &subname);
+        auto* objectView = parentView ? parentView
+                                      : freecad_cast<ViewProviderDocumentObject*>(editingView);
+        if (objectView) {
+            tree->editingItem = findBrowserItem(objectView->getObject());
+        }
+    }
+
+    tree->blockSelection(selectionLock);
+}
+
+void DocumentItem::refreshModelBrowser(bool force)
+{
+    if (!TreeParams::getOrganizeModelByType()) {
+        if (modelBrowserActive) {
+            clearModelBrowser();
+        }
+        setLegacyTreeVisible(true);
+        modelBrowserDirty = true;
+        return;
+    }
+
+    setLegacyTreeVisible(false);
+    if (force) {
+        modelBrowserDirty = true;
+    }
+    if (modelBrowserDirty) {
+        rebuildModelBrowser();
+    }
+    else {
+        updateBrowserFolderStatus();
+    }
+}
+
+void TreeWidget::refreshModelBrowsers()
+{
+    for (auto* tree : Instances) {
+        if (!tree) {
+            continue;
+        }
+        for (const auto& documentEntry : tree->DocumentMap) {
+            documentEntry.second->refreshModelBrowser(true);
+        }
+        tree->viewport()->update();
+        tree->scheduleDelayedItemsLayout();
+    }
 }
 
 void TreeWidget::slotDeleteDocument(const Gui::Document& Doc)
@@ -4670,6 +5833,7 @@ void TreeWidget::_slotDeleteObject(const Gui::ViewProviderDocumentObject& view, 
         if (docItem == deletingDoc) {
             continue;
         }
+        docItem->modelBrowserDirty = true;
 
         auto doc = docItem->document()->getDocument();
         auto& items = data->items;
@@ -4741,6 +5905,9 @@ bool DocumentItem::populateObject(App::DocumentObject* obj)
         return false;
     }
     for (auto item : items) {
+        if (item->isBrowserProxy()) {
+            continue;
+        }
         if (item->populated) {
             return true;
         }
@@ -4755,6 +5922,11 @@ bool DocumentItem::populateObject(App::DocumentObject* obj)
 void DocumentItem::populateItem(DocumentObjectItem* item, bool refresh, bool delay)
 {
     (void)delay;
+
+    if (item->isBrowserProxy()) {
+        item->populated = true;
+        return;
+    }
 
     if (item->populated && !refresh) {
         return;
@@ -4970,7 +6142,11 @@ int DocumentItem::findRootIndex(App::DocumentObject* childObj)
     for (last = count - 1; last >= 0; --last) {
         auto citem = this->child(last);
         if (citem->type() == TreeWidget::ObjectType) {
-            auto vp = static_cast<DocumentObjectItem*>(citem)->object();
+            auto* objectItem = static_cast<DocumentObjectItem*>(citem);
+            if (objectItem->isBrowserProxy()) {
+                continue;
+            }
+            auto vp = objectItem->object();
             if (getTreeRank(vp) <= childTreeRank) {
                 return last + 1;
             }
@@ -4982,7 +6158,11 @@ int DocumentItem::findRootIndex(App::DocumentObject* childObj)
     for (first = 0; first < count; ++first) {
         auto citem = this->child(first);
         if (citem->type() == TreeWidget::ObjectType) {
-            auto vp = static_cast<DocumentObjectItem*>(citem)->object();
+            auto* objectItem = static_cast<DocumentObjectItem*>(citem);
+            if (objectItem->isBrowserProxy()) {
+                continue;
+            }
+            auto vp = objectItem->object();
             if (getTreeRank(vp) > childTreeRank) {
                 return first;
             }
@@ -5002,7 +6182,11 @@ int DocumentItem::findRootIndex(App::DocumentObject* childObj)
             if (citem->type() != TreeWidget::ObjectType) {
                 continue;
             }
-            auto vp = static_cast<DocumentObjectItem*>(citem)->object();
+            auto* objectItem = static_cast<DocumentObjectItem*>(citem);
+            if (objectItem->isBrowserProxy()) {
+                continue;
+            }
+            auto vp = objectItem->object();
             if (vp->getTreeRank() < childTreeRank) {
                 first = ++pos;
                 count -= step + 1;
@@ -5032,7 +6216,10 @@ void DocumentItem::sortObjectItems()
     for (int i = 0; i < this->childCount(); ++i) {
         QTreeWidgetItem* treeItem = this->child(i);
         if (treeItem->type() == TreeWidget::ObjectType) {
-            sortedItems.push_back(static_cast<DocumentObjectItem*>(treeItem));
+            auto* objectItem = static_cast<DocumentObjectItem*>(treeItem);
+            if (!objectItem->isBrowserProxy()) {
+                sortedItems.push_back(objectItem);
+            }
         }
     }
 
@@ -5048,7 +6235,8 @@ void DocumentItem::sortObjectItems()
     std::vector<bool> expansion;
     for (int i = 0; i < this->childCount(); ++i) {
         QTreeWidgetItem* treeItem = this->child(i);
-        if (treeItem->type() != TreeWidget::ObjectType) {
+        if (treeItem->type() != TreeWidget::ObjectType
+            || static_cast<DocumentObjectItem*>(treeItem)->isBrowserProxy()) {
             continue;
         }
 
@@ -5082,6 +6270,15 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     auto itEntry = ObjectTable.find(obj);
     if (itEntry == ObjectTable.end() || itEntry->second.empty()) {
         return;
+    }
+
+    const char* propertyName = prop.getName();
+    if (propertyName
+        && (strcmp(propertyName, "Group") == 0 || strcmp(propertyName, "Origin") == 0
+            || strstr(propertyName, "LinkedObject") != nullptr)) {
+        for (const auto& data : itEntry->second) {
+            data->docItem->modelBrowserDirty = true;
+        }
     }
 
     _updateStatus();
@@ -5274,6 +6471,9 @@ static unsigned int countExpandedItem(const QTreeWidgetItem* item)
         if (citem->type() != TreeWidget::ObjectType || !citem->isExpanded()) {
             continue;
         }
+        if (static_cast<const DocumentObjectItem*>(citem)->isBrowserProxy()) {
+            continue;
+        }
         auto obj = static_cast<const DocumentObjectItem*>(citem)->object()->getObject();
         if (obj->isAttachedToDocument()) {
             size += strlen(obj->getNameInDocument()) + countExpandedItem(citem);
@@ -5295,6 +6495,9 @@ static void saveExpandedItem(Base::Writer& writer, const QTreeWidgetItem* item)
         if (citem->type() != TreeWidget::ObjectType || !citem->isExpanded()) {
             continue;
         }
+        if (static_cast<const DocumentObjectItem*>(citem)->isBrowserProxy()) {
+            continue;
+        }
         auto obj = static_cast<const DocumentObjectItem*>(citem)->object()->getObject();
         if (obj->isAttachedToDocument()) {
             ++itemCount;
@@ -5311,6 +6514,9 @@ static void saveExpandedItem(Base::Writer& writer, const QTreeWidgetItem* item)
     for (int i = 0, count = item->childCount(); i < count; ++i) {
         auto citem = item->child(i);
         if (citem->type() != TreeWidget::ObjectType || !citem->isExpanded()) {
+            continue;
+        }
+        if (static_cast<const DocumentObjectItem*>(citem)->isBrowserProxy()) {
             continue;
         }
         auto obj = static_cast<const DocumentObjectItem*>(citem)->object()->getObject();
@@ -5398,6 +6604,9 @@ void DocumentItem::slotExpandObject(
     }
 
     FOREACH_ITEM(item, obj)
+    if (!isPresentationItem(item)) {
+        continue;
+    }
     // All document object items must always have a parent, either another
     // object item or document item. If not, then there is a bug somewhere
     // else.
@@ -5466,15 +6675,24 @@ void DocumentItem::slotScrollToObject(const Gui::ViewProviderDocumentObject& obj
     if (!obj.getObject() || !obj.getObject()->isAttachedToDocument()) {
         return;
     }
+    getTree()->_updateStatus(false);
     auto it = ObjectMap.find(obj.getObject());
     if (it == ObjectMap.end() || it->second->items.empty()) {
         return;
     }
-    auto item = it->second->rootItem;
+    auto item = modelBrowserActive ? findBrowserItem(obj.getObject()) : it->second->rootItem;
     if (!item) {
-        item = *it->second->items.begin();
+        for (auto* candidate : it->second->items) {
+            if (isPresentationItem(candidate)) {
+                item = candidate;
+                break;
+            }
+        }
     }
-    getTree()->_updateStatus(false);
+    if (!item) {
+        return;
+    }
+    showItem(item, false, true);
     getTree()->scrollToItem(item);
 }
 
@@ -5712,6 +6930,9 @@ App::DocumentObject* DocumentItem::getTopParent(App::DocumentObject* obj, std::s
     }
 
     for (auto item : it->second->items) {
+        if (item->isBrowserProxy()) {
+            continue;
+        }
         // non group object do not provide a coordinate system, hence its
         // claimed child is still in the global coordinate space, so the
         // child can still be considered a top level object
@@ -5723,6 +6944,9 @@ App::DocumentObject* DocumentItem::getTopParent(App::DocumentObject* obj, std::s
     // If no top level item, find an item that is closest to the top level
     std::multimap<int, DocumentObjectItem*> items;
     for (auto item : it->second->items) {
+        if (item->isBrowserProxy()) {
+            continue;
+        }
         int i = 0;
         for (auto parent = item->parent(); parent; ++i, parent = parent->parent()) {
             if (parent->isHidden()) {
@@ -5731,6 +6955,9 @@ App::DocumentObject* DocumentItem::getTopParent(App::DocumentObject* obj, std::s
             ++i;
         }
         items.emplace(i, item);
+    }
+    if (items.empty()) {
+        return obj;
     }
 
     App::DocumentObject* topParent = nullptr;
@@ -5757,14 +6984,27 @@ DocumentObjectItem* DocumentItem::findItem(App::DocumentObject* obj, const std::
         return nullptr;
     }
 
-    // There is only one instance in the tree view
-    if (it->second->items.size() == 1) {
-        return *(it->second->items.begin());
+    DocumentObjectItem* onlyItem = nullptr;
+    std::size_t itemCount = 0;
+    for (auto* candidate : it->second->items) {
+        if (!isPresentationItem(candidate)) {
+            continue;
+        }
+        onlyItem = candidate;
+        ++itemCount;
+    }
+
+    // There is only one instance in the active presentation.
+    if (itemCount == 1) {
+        return onlyItem;
     }
 
     // If there are multiple instances use the one with the same subname
     DocumentObjectItem* item {};
     for (auto jt : it->second->items) {
+        if (!isPresentationItem(jt)) {
+            continue;
+        }
         std::ostringstream str;
         App::DocumentObject* topParent = nullptr;
         jt->getSubName(str, topParent);
@@ -5799,16 +7039,33 @@ DocumentObjectItem* DocumentItem::findItemByObject(
         return nullptr;
     }
 
-    // When selecting the whole object (no subname), mark every tree instance so
-    // all appearances of the object are highlighted regardless of which tree item
-    // was allocated first.
+    // The typed browser deliberately has one visible item per object. Hidden
+    // dependency-tree instances must not capture selection or scrolling.
     if (select && *subname == 0) {
         for (auto item : it->second->items) {
+            if (!isPresentationItem(item)) {
+                continue;
+            }
             findItem(sync, item, subname, true);
         }
-        return it->second->rootItem
-            ? it->second->rootItem
-            : (it->second->items.empty() ? nullptr : *it->second->items.begin());
+        if (modelBrowserActive) {
+            return findBrowserItem(obj);
+        }
+        if (it->second->rootItem) {
+            return it->second->rootItem;
+        }
+        for (auto* item : it->second->items) {
+            if (isPresentationItem(item)) {
+                return item;
+            }
+        }
+        return nullptr;
+    }
+
+    if (modelBrowserActive) {
+        if (auto* browserItem = findBrowserItem(obj)) {
+            return findItem(sync, browserItem, subname, select);
+        }
     }
 
     // prefer top level item of this object
@@ -5817,6 +7074,9 @@ DocumentObjectItem* DocumentItem::findItemByObject(
     }
 
     for (auto item : it->second->items) {
+        if (!isPresentationItem(item)) {
+            continue;
+        }
         // non group object do not provide a coordinate system, hence its
         // claimed child is still in the global coordinate space, so the
         // child can still be considered a top level object
@@ -5828,6 +7088,9 @@ DocumentObjectItem* DocumentItem::findItemByObject(
     // If no top level item, find an item that is closest to the top level
     std::multimap<int, DocumentObjectItem*> items;
     for (auto item : it->second->items) {
+        if (!isPresentationItem(item)) {
+            continue;
+        }
         int i = 0;
         for (auto parent = item->parent(); parent; ++i, parent = parent->parent()) {
             ++i;
@@ -5925,6 +7188,9 @@ DocumentObjectItem* DocumentItem::findItem(
     auto it = ObjectMap.find(subObj);
     if (it != ObjectMap.end()) {
         for (auto child : it->second->items) {
+            if (!isPresentationItem(child)) {
+                continue;
+            }
             if (child->isChildOfItem(item)) {
                 found = true;
                 res = findItem(sync, child, nextsub, select);
@@ -5962,6 +7228,13 @@ void DocumentItem::selectItems(SelectionReason reason)
     DocumentObjectItem* oldSelect = nullptr;
 
     FOREACH_ITEM_ALL(item)
+    if (!isPresentationItem(item)) {
+        item->selected = 0;
+        item->mySubs.clear();
+        item->setSelected(false);
+        item->setCheckState(false);
+        continue;
+    }
     if (item->selected == 1) {
         // this means it is the old selection and is not in the current
         // selection
@@ -6066,6 +7339,9 @@ void DocumentItem::selectAllInstances(const ViewProviderDocumentObject& vpd)
 
     DocumentObjectItem* first = nullptr;
     FOREACH_ITEM(item, vpd);
+    if (!isPresentationItem(item)) {
+        continue;
+    }
     if (showItem(item, true) && !first) {
         first = item;
     }
@@ -6092,6 +7368,45 @@ void DocumentItem::setShowHidden(bool show)
 
 bool DocumentItem::showItem(DocumentObjectItem* item, bool select, bool force)
 {
+    if (item->isBrowserProxy()) {
+        if (item->isHidden()) {
+            if (!force) {
+                return false;
+            }
+            item->setHidden(false);
+        }
+
+        for (auto* ancestor = item->parent(); ancestor && ancestor != this;
+             ancestor = ancestor->parent()) {
+            if (ancestor->isHidden()) {
+                if (!force) {
+                    return false;
+                }
+                ancestor->setHidden(false);
+            }
+            if (ancestor->type() == TreeWidget::ObjectType) {
+                auto* objectAncestor = static_cast<DocumentObjectItem*>(ancestor);
+                if (force
+                    || !objectAncestor->object()->getObject()->testStatus(App::NoAutoExpand)) {
+                    ancestor->setExpanded(true);
+                }
+                else if (!select) {
+                    return false;
+                }
+            }
+            else {
+                // Type folders are purely presentational and must never prevent
+                // navigation to the object selected in the 3D view.
+                ancestor->setExpanded(true);
+            }
+        }
+        if (select) {
+            item->setSelected(true);
+            item->setCheckState(true);
+        }
+        return true;
+    }
+
     auto parent = item->parent();
     if (item->isHidden()) {
         if (!force) {
@@ -6127,7 +7442,16 @@ void DocumentItem::updateItemsVisibility(QTreeWidgetItem* item, bool show)
 {
     if (item->type() == TreeWidget::ObjectType) {
         auto objitem = static_cast<DocumentObjectItem*>(item);
-        objitem->setHidden(!show && !objitem->object()->showInTree());
+        if (TreeParams::getOrganizeModelByType() && !objitem->isBrowserProxy()) {
+            objitem->setHidden(true);
+        }
+        else {
+            objitem->setHidden(
+                !show
+                && (!objitem->object()->showInTree()
+                    || objitem->isBrowserDefaultHidden())
+            );
+        }
     }
     for (int i = 0; i < item->childCount(); ++i) {
         updateItemsVisibility(item->child(i), show);
@@ -6183,13 +7507,22 @@ void DocumentItem::setBaseIcon(int column, const QIcon& base)
 
 static int countItems;
 
-DocumentObjectItem::DocumentObjectItem(DocumentItem* ownerDocItem, DocumentObjectDataPtr data)
+DocumentObjectItem::DocumentObjectItem(
+    DocumentItem* ownerDocItem,
+    DocumentObjectDataPtr data,
+    bool browserProxy,
+    DocumentObjectItem* browserLogicalParent,
+    bool browserDefaultHidden
+)
     : QTreeWidgetItem(TreeWidget::ObjectType)
     , myOwner(ownerDocItem)
     , myData(data)
     , previousStatus(-1)
     , selected(0)
     , populated(false)
+    , browserProxy(browserProxy)
+    , browserLogicalParent(browserLogicalParent)
+    , browserDefaultHidden(browserDefaultHidden)
 {
     setFlags(flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
     setCheckState(false);
@@ -6617,6 +7950,15 @@ void DocumentObjectItem::setData(int column, int role, const QVariant& value)
 
 bool DocumentObjectItem::isChildOfItem(DocumentObjectItem* item)
 {
+    if (browserProxy) {
+        for (auto* parentItem = getParentItem(); parentItem;
+             parentItem = parentItem->getParentItem()) {
+            if (parentItem == item) {
+                return true;
+            }
+        }
+        return false;
+    }
     for (auto pitem = parent(); pitem; pitem = pitem->parent()) {
         if (pitem == item) {
             return true;
@@ -6633,6 +7975,9 @@ bool DocumentObjectItem::requiredAtRoot(bool excludeSelf) const
     bool checkMap = true;
     for (auto item : myData->items) {
         if (excludeSelf && item == this) {
+            continue;
+        }
+        if (item->isBrowserProxy()) {
             continue;
         }
         auto pi = item->getParentItem();
@@ -6746,7 +8091,10 @@ int DocumentObjectItem::isParentGroup() const
 
 DocumentObjectItem* DocumentObjectItem::getParentItem() const
 {
-    if (parent()->type() != TreeWidget::ObjectType) {
+    if (browserProxy) {
+        return browserLogicalParent;
+    }
+    if (!parent() || parent()->type() != TreeWidget::ObjectType) {
         return nullptr;
     }
     return static_cast<DocumentObjectItem*>(parent());

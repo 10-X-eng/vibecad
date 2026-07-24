@@ -18,20 +18,35 @@ from VibeCADInspection import (
     capture_inspection,
     complete_inspection,
 )
-from VibeCADProject import _validated_conversation_turns
+from VibeCADProject import VibeCADConversationStore, _validated_conversation_turns
 import VibeCADProvider as provider
 import VibeCADSession as session
 from VibeCADTools import ToolSpec
 from tool_impl.service import core_inspect
 
 
-def _prompt_payload(prompt: str, context: dict) -> tuple[dict, str]:
-    rendered = session._provider_prompt(prompt, context)
+def _prompt_payload(
+    prompt: str,
+    context: dict,
+    *,
+    recent_conversation: list[dict] | None = None,
+    current_user_message: str | None = None,
+) -> tuple[dict, dict, str]:
+    rendered = session._provider_prompt(
+        prompt,
+        context,
+        recent_conversation=recent_conversation,
+        current_user_message=current_user_message,
+    )
     prefix = "VIBECAD_CONTEXT_JSON\n"
-    marker = "\nEND_VIBECAD_CONTEXT_JSON\n\n"
+    marker = "\nEND_VIBECAD_CONTEXT_JSON\n\nRECENT_CONVERSATION_JSON\n"
+    conversation_marker = "\nEND_RECENT_CONVERSATION_JSON\n\n"
     assert rendered.startswith(prefix)
-    encoded, remainder = rendered[len(prefix) :].split(marker, 1)
-    return json.loads(encoded), remainder
+    encoded, conversation_and_remainder = rendered[len(prefix) :].split(marker, 1)
+    encoded_conversation, remainder = conversation_and_remainder.split(
+        conversation_marker, 1
+    )
+    return json.loads(encoded), json.loads(encoded_conversation), remainder
 
 
 def _active_state(object_count: int = 10) -> dict:
@@ -75,7 +90,7 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         "provider_tool_schemas": [{"name": "core.inspect"}],
     }
 
-    payload, remainder = _prompt_payload(current, context)
+    payload, conversation, remainder = _prompt_payload(current, context)
 
     assert set(payload) == {"active_state"}
     assert set(payload["active_state"]) == {
@@ -83,6 +98,11 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         "modeling_surface",
         "document",
         "selection",
+    }
+    assert conversation == {
+        "turns": [],
+        "omitted_turn_count": 0,
+        "truncated_turn_count": 0,
     }
     assert remainder == f"CURRENT_USER_MESSAGE\n{current}"
     assert current not in json.dumps(payload)
@@ -92,31 +112,71 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         assert forbidden not in serialized
 
 
-def test_turn_history_is_never_copied_into_model_context() -> None:
-    prior_user = "u" * 6000
-    prior_assistant = "a" * 6000
+def test_turn_history_is_supplied_separately_from_model_state_packet() -> None:
+    prior_user = "What hole diameter did I specify?"
+    prior_assistant = "You specified a 6 mm through-hole."
+    current = "What was the last question I asked?"
+    turns = [
+        {"role": "user", "content": "obsolete question"},
+        {"role": "assistant", "content": "obsolete answer"},
+        {"role": "user", "content": prior_user},
+        {"role": "assistant", "content": prior_assistant},
+        {"role": "system", "content": "internal status must not become dialogue"},
+        {"role": "user", "content": current},
+    ]
     context = {
         **_active_state(),
-        "conversation": {
-            "conversation": [
-                {"role": "user", "content": prior_user},
-                {"role": "assistant", "content": prior_assistant},
-                {"role": "user", "content": "follow up"},
-            ]
-        },
+        "conversation": {"conversation": turns},
     }
 
-    payload, _ = _prompt_payload("follow up", context)
+    payload, conversation, remainder = _prompt_payload(
+        current,
+        context,
+        recent_conversation=turns,
+        current_user_message=current,
+    )
     assert payload == {"active_state": _active_state()}
-    serialized = json.dumps(payload)
-    assert prior_user not in serialized
-    assert prior_assistant not in serialized
-    assert "previous_completed_exchange" not in serialized
+    assert conversation["turns"] == [
+        {"role": "user", "content": "obsolete question"},
+        {"role": "assistant", "content": "obsolete answer"},
+        {"role": "user", "content": prior_user},
+        {"role": "assistant", "content": prior_assistant},
+    ]
+    assert conversation["omitted_turn_count"] == 0
+    assert conversation["truncated_turn_count"] == 0
+    assert current not in json.dumps(conversation)
+    assert "internal status" not in json.dumps(conversation)
+    assert remainder == f"CURRENT_USER_MESSAGE\n{current}"
+    assert prior_user not in json.dumps(payload)
+
+
+def test_recent_conversation_window_keeps_newest_turns_within_hard_limits() -> None:
+    turns = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"turn-{index:02d} " + ("é" * 10000),
+            "tool_trace": [{"must": "not leak"}],
+        }
+        for index in range(40)
+    ]
+
+    payload = session._recent_conversation_payload(turns)
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode()
+
+    assert len(encoded) <= session.MAX_RECENT_CONVERSATION_JSON_BYTES
+    assert 0 < len(payload["turns"]) <= session.MAX_RECENT_CONVERSATION_TURNS
+    assert payload["turns"][-1]["content"].startswith("turn-39")
+    assert all(set(turn) == {"role", "content"} for turn in payload["turns"])
+    assert payload["omitted_turn_count"] == len(turns) - len(payload["turns"])
+    assert payload["truncated_turn_count"] > 0
+    assert b"must not leak" not in encoded
 
 
 @pytest.mark.parametrize("object_count", (10, 100, 1000))
 def test_turn_context_size_does_not_scale_with_document_objects(object_count: int) -> None:
-    payload, _ = _prompt_payload("Continue.", _active_state(object_count))
+    payload, _conversation, _ = _prompt_payload(
+        "Continue.", _active_state(object_count)
+    )
     encoded = json.dumps(payload, separators=(",", ":")).encode()
 
     assert len(encoded) < 2048
@@ -256,6 +316,199 @@ def test_session_conversation_artifact_write_stays_off_document_thread() -> None
 
     assert history["conversation_id"] == "1" * 32
     assert events == ["capture", "persist", "accept"]
+
+
+def test_session_conversation_history_read_stays_off_document_thread() -> None:
+    in_document_callback = False
+    events: list[str] = []
+
+    class _Service:
+        def prepare_conversation_history_read(self):
+            assert in_document_callback is True
+            events.append("capture")
+            return {"conversation_id": "1" * 32}
+
+        def complete_conversation_history_read(self, prepared):
+            assert in_document_callback is False
+            assert prepared["conversation_id"] == "1" * 32
+            events.append("read")
+            return {
+                "conversation_id": "1" * 32,
+                "conversation": [{"role": "user", "content": "Earlier request"}],
+            }
+
+        def accept_conversation_history_read(self, prepared, history):
+            assert in_document_callback is True
+            assert history["conversation_id"] == prepared["conversation_id"]
+            events.append("accept")
+            return {"accepted": True}
+
+    def dispatch(operation):
+        nonlocal in_document_callback
+        assert in_document_callback is False
+        in_document_callback = True
+        try:
+            return operation()
+        finally:
+            in_document_callback = False
+
+    history = session._load_conversation_for_session(_Service(), dispatch)
+
+    assert history["conversation"] == [
+        {"role": "user", "content": "Earlier request"}
+    ]
+    assert events == ["capture", "read", "accept"]
+
+
+def test_conversation_history_read_is_scoped_to_the_selected_thread(
+    tmp_path,
+) -> None:
+    store = VibeCADConversationStore(tmp_path)
+    first = store.active_history()
+    first_id = first["conversation_id"]
+    store.write_conversation(
+        first_id,
+        [{"role": "user", "content": "Question from the selected thread."}],
+    )
+    second = store.create_conversation()
+    second_id = second["conversation_id"]
+    store.write_conversation(
+        second_id,
+        [{"role": "user", "content": "Question from another thread."}],
+    )
+    store.activate_conversation(first_id)
+
+    service = object.__new__(VibeCADService)
+    service._conversation_cache = []
+    service._conversation_cache_key = None
+    service._conversation_cache_document_uid = None
+    service.project_scope_snapshot = lambda: {"root": str(tmp_path)}
+    service._active_document_uid = lambda: "document-uid"
+
+    prepared = service.prepare_conversation_history_read()
+    history = service.complete_conversation_history_read(prepared)
+
+    assert history["conversation_id"] == first_id
+    assert [turn["content"] for turn in history["conversation"]] == [
+        "Question from the selected thread."
+    ]
+    assert service.accept_conversation_history_read(prepared, history) == {
+        "accepted": True,
+        "conversation_id": first_id,
+        "turn_count": 1,
+    }
+
+    stale_read = service.prepare_conversation_history_read()
+    service._set_conversation_cache(store.activate_conversation(second_id))
+    stale_history = service.complete_conversation_history_read(stale_read)
+
+    assert service.accept_conversation_history_read(
+        stale_read, stale_history
+    ) == {
+        "accepted": False,
+        "reason": "active_conversation_changed",
+    }
+
+
+def test_run_prompt_includes_active_thread_history_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "What was the last question I asked?"
+    active_history = [
+        {"role": "user", "content": "Make the mounting hole 6 mm."},
+        {"role": "assistant", "content": "The mounting hole is now 6 mm."},
+        {"role": "user", "content": "What diameter is the mounting hole?"},
+        {"role": "assistant", "content": "It is 6 mm."},
+    ]
+
+    class _Service:
+        def __init__(self):
+            self.conversation = [dict(item) for item in active_history]
+            self.other_thread_text = "This belongs to a different conversation."
+            self.persisted_conversation_ids: list[str | None] = []
+
+        def document_persistence_state(self):
+            return {"enabled": True}
+
+        def active_workbench_name(self):
+            return "AssemblyWorkbench"
+
+        def prepare_conversation_turn(
+            self,
+            role,
+            content,
+            *,
+            provider=None,
+            metadata=None,
+            conversation_id=None,
+        ):
+            return {
+                "conversation_id": conversation_id,
+                "entry": {"role": role, "content": content},
+            }
+
+        def persist_prepared_conversation_turn(self, prepared):
+            requested = prepared.get("conversation_id")
+            self.persisted_conversation_ids.append(requested)
+            self.conversation.append(dict(prepared["entry"]))
+            return {
+                "path": "/active/conversation.json",
+                "conversation_id": "a" * 32,
+                "conversation": [dict(item) for item in self.conversation],
+                "written": True,
+            }
+
+        def accept_persisted_conversation_turn(self, history, prepared):
+            return {"accepted": True}
+
+    class _Provider(provider.BaseProvider):
+        def __init__(self):
+            self.prompt = ""
+
+        def run(self, prompt, context, **kwargs):
+            self.prompt = prompt
+            return provider.ProviderResult("I can see the prior question.")
+
+    service = _Service()
+    active_provider = _Provider()
+    context = {
+        **_active_state(),
+        "provider_tool_schemas": [],
+    }
+    monkeypatch.setattr(
+        session,
+        "_prime_modeling_engine_for_session",
+        lambda active_service, dispatch: "native",
+    )
+    monkeypatch.setattr(
+        session,
+        "_context_for_provider",
+        lambda active_service, trigger: dict(context),
+    )
+    monkeypatch.setattr(
+        session,
+        "make_provider_tool_runner",
+        lambda *args, **kwargs: lambda *tool_args: {"ok": True},
+    )
+
+    response = session.run_prompt(
+        current,
+        service=service,
+        provider=active_provider,
+        prefer_online=False,
+    )
+
+    assert response.error is None
+    assert active_provider.prompt.count(current) == 1
+    assert "What diameter is the mounting hole?" in active_provider.prompt
+    assert "It is 6 mm." in active_provider.prompt
+    assert service.other_thread_text not in active_provider.prompt
+    assert active_provider.prompt.endswith(f"CURRENT_USER_MESSAGE\n{current}")
+    assert service.persisted_conversation_ids == [None, "a" * 32]
+    assert service.conversation[-1] == {
+        "role": "assistant",
+        "content": "I can see the prior question.",
+    }
 
 
 def test_session_modeling_engine_manifest_read_stays_off_document_thread() -> None:

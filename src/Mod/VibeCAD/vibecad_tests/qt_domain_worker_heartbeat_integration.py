@@ -82,7 +82,8 @@ WORKER_CASES = (
         "solid",
         "circle = api.circle([0,0], 4)\n"
         "profile = api.sketch([circle], label='Heartbeat Profile')\n"
-        "tip = api.pad(profile, 8, label='Heartbeat Pad')\n"
+        "tip = api.extrude(profile, 8, operation='add_material', "
+        "label='Heartbeat Extrusion')\n"
         "result = {'Result': api.body(tip, label=str(total))}\n",
     ),
     (

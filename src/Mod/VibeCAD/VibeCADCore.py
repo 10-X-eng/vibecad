@@ -4067,6 +4067,95 @@ class VibeCADService:
             "document_saved": False,
         }
 
+    def prepare_conversation_history_read(self) -> dict[str, Any]:
+        """Capture the selected thread identity without reading its artifacts."""
+
+        scope = self.project_scope_snapshot()
+        project_root = str(scope.get("root") or "")
+        document_uid = str(self._active_document_uid() or "")
+        cache_key = str(self._conversation_cache_key or "")
+        conversation_id: str | None = None
+        cached_conversation: list[dict[str, Any]] | None = None
+
+        if (
+            project_root
+            and document_uid == self._conversation_cache_document_uid
+            and cache_key
+        ):
+            cached_path = Path(cache_key)
+            if cached_path.parent.parent == Path(project_root):
+                candidate = cached_path.stem.lower()
+                if re.fullmatch(r"[0-9a-f]{32}", candidate):
+                    conversation_id = candidate
+                    cached_conversation = [
+                        dict(item)
+                        for item in self._conversation_cache
+                        if isinstance(item, dict)
+                    ]
+
+        return {
+            "project_root": project_root,
+            "document_uid": document_uid,
+            "conversation_id": conversation_id,
+            "cache_key": cache_key,
+            "cached_conversation": cached_conversation,
+        }
+
+    @staticmethod
+    def complete_conversation_history_read(
+        prepared: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Load a captured conversation without consulting the live document."""
+
+        project_root = str(prepared.get("project_root") or "").strip()
+        if not project_root:
+            return {"conversation_id": None, "conversation": []}
+
+        store = VibeCADConversationStore(project_root)
+        conversation_id = str(prepared.get("conversation_id") or "").strip()
+        cached = prepared.get("cached_conversation")
+        if conversation_id and isinstance(cached, list):
+            return {
+                "path": str(store.thread_path(conversation_id)),
+                "store_path": str(store.directory),
+                "conversation_id": conversation_id,
+                "conversation": [
+                    dict(item) for item in cached if isinstance(item, dict)
+                ],
+            }
+        return (
+            store.history(conversation_id)
+            if conversation_id
+            else store.active_history()
+        )
+
+    def accept_conversation_history_read(
+        self,
+        prepared: dict[str, Any],
+        history: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Accept an off-thread read only while the same project/thread is selected."""
+
+        scope = self.project_scope_snapshot()
+        current_identity = (
+            str(scope.get("root") or ""),
+            str(self._active_document_uid() or ""),
+            str(self._conversation_cache_key or ""),
+        )
+        expected_identity = (
+            str(prepared.get("project_root") or ""),
+            str(prepared.get("document_uid") or ""),
+            str(prepared.get("cache_key") or ""),
+        )
+        if current_identity != expected_identity:
+            return {"accepted": False, "reason": "active_conversation_changed"}
+        self._set_conversation_cache(history)
+        return {
+            "accepted": True,
+            "conversation_id": history.get("conversation_id"),
+            "turn_count": len(history.get("conversation") or []),
+        }
+
     def _load_conversation_for_active_document(
         self,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:

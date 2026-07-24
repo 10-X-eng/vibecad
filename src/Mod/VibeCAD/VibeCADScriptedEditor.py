@@ -875,6 +875,11 @@ def _build_widget():
     actions_layout.setVerticalSpacing(6)
     actions = (
         ("New", "VibeScriptedNew", "Create a new source-backed model"),
+        (
+            "Save",
+            "VibeScriptedSave",
+            "Save the current source and inputs in this FreeCAD document",
+        ),
         ("Build", "VibeScriptedRender", "Build and validate the current working source"),
         ("Apply", "VibeScriptedAccept", "Publish the current validated candidate"),
         (
@@ -1180,6 +1185,7 @@ class ScriptedEditorController:
         self.root._vibecad_bridge.completed.connect(self._preview_completed)
         self.button("VibeScriptedNew").clicked.connect(self.new_model)
         self.button("VibeScriptedImport").clicked.connect(self.import_model)
+        self.button("VibeScriptedSave").clicked.connect(self.save)
         self.button("VibeScriptedRender").clicked.connect(self.render)
         self.button("VibeScriptedAccept").clicked.connect(self.accept)
         self.button("VibeScriptedRevert").clicked.connect(self.revert)
@@ -1288,6 +1294,199 @@ class ScriptedEditorController:
             if str(getattr(obj, "Name", "") or "")
         ]
 
+    def _vibescript_program_objects(self, doc: Any | None = None) -> list[Any]:
+        if self.engine != "vibescript" or not self.model_id:
+            return []
+        if doc is None:
+            doc = App.ActiveDocument
+        if doc is None or str(getattr(doc, "Uid", "") or "") != self.document_uid:
+            return []
+        import VibeCADVibeScriptDomains as domain_contracts
+
+        return [
+            obj
+            for obj in list(getattr(doc, "Objects", []) or [])
+            if str(
+                getattr(obj, domain_contracts.PROP_PROGRAM_ID, "") or ""
+            )
+            == self.model_id
+            and str(
+                getattr(obj, domain_contracts.PROP_PROGRAM_DOMAIN, "") or ""
+            )
+            == self.domain
+        ]
+
+    def _vibescript_contract_owner(self, doc: Any | None = None) -> Any | None:
+        import VibeCADVibeScriptDomains as domain_contracts
+
+        objects = self._vibescript_program_objects(doc)
+        if not objects:
+            return None
+        expected_outputs = list(self.model.get("expected_outputs") or [])
+        first_output = (
+            str(expected_outputs[0].get("name") or "")
+            if expected_outputs and isinstance(expected_outputs[0], dict)
+            else ""
+        )
+        return min(
+            objects,
+            key=lambda obj: (
+                not bool(
+                    str(
+                        getattr(
+                            obj,
+                            domain_contracts.PROP_PROGRAM_CONTRACT,
+                            "",
+                        )
+                        or ""
+                    )
+                ),
+                bool(
+                    str(
+                        getattr(
+                            obj,
+                            domain_contracts.PROP_PROGRAM_OUTPUT,
+                            "",
+                        )
+                        or ""
+                    )
+                ),
+                str(
+                    getattr(
+                        obj,
+                        domain_contracts.PROP_PROGRAM_OUTPUT,
+                        "",
+                    )
+                    or ""
+                )
+                != first_output,
+                str(getattr(obj, "Name", "") or ""),
+            ),
+        )
+
+    @staticmethod
+    def _set_hidden_string_property(
+        obj: Any,
+        name: str,
+        value: str,
+        description: str,
+    ) -> None:
+        properties = set(getattr(obj, "PropertiesList", []) or [])
+        if name not in properties:
+            obj.addProperty("App::PropertyString", name, "VibeCAD", description)
+        setattr(obj, name, value)
+        setter = getattr(obj, "setEditorMode", None)
+        if callable(setter):
+            setter(name, 2)
+
+    def _persist_vibescript_draft(self) -> bool:
+        if (
+            self.engine != "vibescript"
+            or not self.model_id
+            or not self.editor_active
+        ):
+            return False
+        doc = App.ActiveDocument
+        owner = self._vibescript_contract_owner(doc)
+        if owner is None:
+            self.status.setText("This script has no document object to save into.")
+            return False
+        import VibeCADVibeScriptDomains as domain_contracts
+
+        try:
+            encoded = domain_contracts.encode_editor_draft(
+                program_id=self.model_id,
+                domain=self.domain,
+                base_revision=self.working_revision,
+                source=self.source.toPlainText(),
+                input_schema=dict(self.model.get("input_schema") or {}),
+                inputs_json=self.parameters.toPlainText(),
+                expected_outputs=list(self.model.get("expected_outputs") or []),
+            )
+            for obj in self._vibescript_program_objects(doc):
+                value = encoded if obj is owner else ""
+                if (
+                    obj is owner
+                    or domain_contracts.PROP_PROGRAM_EDITOR_DRAFT
+                    in set(getattr(obj, "PropertiesList", []) or [])
+                ):
+                    self._set_hidden_string_property(
+                        obj,
+                        domain_contracts.PROP_PROGRAM_EDITOR_DRAFT,
+                        value,
+                        "Unbuilt VibeScript editor source and inputs.",
+                    )
+            return True
+        except Exception as exc:
+            self.status.setText(f"Could not save the VibeScript draft in this document: {exc}")
+            return False
+
+    def _clear_vibescript_draft(self, doc: Any | None = None) -> None:
+        import VibeCADVibeScriptDomains as domain_contracts
+
+        for obj in self._vibescript_program_objects(doc):
+            if domain_contracts.PROP_PROGRAM_EDITOR_DRAFT not in set(
+                getattr(obj, "PropertiesList", []) or []
+            ):
+                continue
+            setattr(obj, domain_contracts.PROP_PROGRAM_EDITOR_DRAFT, "")
+
+    def _embed_loaded_vibescript_contract(self) -> None:
+        if self.engine != "vibescript" or not self.accepted_revision:
+            return
+        owner = self._vibescript_contract_owner()
+        if owner is None:
+            return
+        accepted = self.model.get("accepted_contract")
+        if not isinstance(accepted, dict):
+            if self.accepted_revision != self.working_revision:
+                return
+            accepted = {
+                "source": self.model.get("source"),
+                "input_schema": self.model.get("input_schema"),
+                "inputs": self.model.get("parameters"),
+                "expected_outputs": self.model.get("expected_outputs"),
+            }
+        import VibeCADVibeScriptDomains as domain_contracts
+
+        pack = domain_contracts.get_vibescript_pack(
+            get_service().active_workbench_name()
+        )
+        if pack is None or pack.domain != self.domain:
+            return
+        try:
+            encoded = domain_contracts.encode_document_program_contract(
+                pack,
+                program_id=self.model_id,
+                label=str(self.model.get("label") or self.model_id),
+                revision=self.accepted_revision,
+                source=str(accepted.get("source") or ""),
+                input_schema=dict(accepted.get("input_schema") or {}),
+                inputs=dict(accepted.get("inputs") or {}),
+                expected_outputs=list(accepted.get("expected_outputs") or []),
+            )
+            for obj in self._vibescript_program_objects():
+                self._set_hidden_string_property(
+                    obj,
+                    domain_contracts.PROP_PROGRAM_LABEL,
+                    str(self.model.get("label") or self.model_id),
+                    "Stable VibeScript program label.",
+                )
+                value = encoded if obj is owner else ""
+                if (
+                    obj is owner
+                    or domain_contracts.PROP_PROGRAM_CONTRACT
+                    in set(getattr(obj, "PropertiesList", []) or [])
+                ):
+                    self._set_hidden_string_property(
+                        obj,
+                        domain_contracts.PROP_PROGRAM_CONTRACT,
+                        value,
+                        "Portable accepted VibeScript source, inputs, and output contract.",
+                    )
+        except Exception as exc:
+            _warn(f"Could not embed the accepted VibeScript contract: {exc}")
+
     def _deselect_model(self, *, update_selector: bool):
         self._cancel_preview(restore_accepted=True)
         self._clear_source_watch()
@@ -1364,6 +1563,17 @@ class ScriptedEditorController:
             self._set_point_artifact_items([], "Point data is available in Points.")
         self.button("VibeScriptedImport").setVisible(self.engine == "openscad")
         self.button("VibeScriptedExport").setVisible(self.engine != "vibescript")
+        self.button("VibeScriptedSave").setVisible(self.engine == "vibescript")
+        self.button("VibeScriptedAccept").setVisible(self.engine != "vibescript")
+        self.button("VibeScriptedRevert").setVisible(self.engine != "vibescript")
+        self.button("VibeScriptedRender").setToolTip(
+            (
+                "Validate the current source and inputs, then update the model"
+                if self.engine == "vibescript"
+                else "Build and validate the current working source"
+            )
+        )
+        self.button("VibeScriptedRevert").setText("Revert")
         self.file_selector.setVisible(self.engine == "openscad")
         self.fidelity_selector.setVisible(self.engine == "openscad")
         if not scripted:
@@ -1639,7 +1849,21 @@ class ScriptedEditorController:
         for item in models:
             label = str(item.get("label") or item.get("model_id"))
             state = str(item.get("state") or "")
-            self.selector.addItem(f"{label}  [{state}]", str(item.get("model_id") or ""))
+            if self.engine == "vibescript":
+                state = {
+                    "accepted": "built",
+                    "accepted_current": "built",
+                    "accepted_document": "built",
+                    "working_candidate": "needs build",
+                    "working_candidate_not_accepted": "needs build",
+                    "reconfiguration_required": "needs update",
+                    "live_outputs_only": "built",
+                }.get(state, state)
+            suffix = f"  [{state}]" if state else ""
+            self.selector.addItem(
+                f"{label}{suffix}",
+                str(item.get("model_id") or ""),
+            )
         index = self.selector.findData(target) if target else 0
         if index < 0:
             index = 0
@@ -1826,12 +2050,26 @@ class ScriptedEditorController:
         self.model_id = model_id
         self.working_revision = str(self.model.get("working_revision") or "")
         self.accepted_revision = str(self.model.get("accepted_revision") or "")
+        editor_draft = self.model.get("editor_draft")
+        restore_draft = bool(
+            isinstance(editor_draft, dict)
+            and str(editor_draft.get("base_revision") or "")
+            == self.working_revision
+        )
         self.source_path = _model_source_path(self.engine, self.model)
         main_name = "model.scad" if self.engine == "openscad" else "model.py"
         source_files = self.model.get("source_files")
         if not isinstance(source_files, dict):
             source_files = {main_name: str(self.model.get("source") or "")}
         self.source_files = {str(path): str(content) for path, content in source_files.items()}
+        if restore_draft:
+            self.source_files[main_name] = str(editor_draft.get("source") or "")
+            self.model["input_schema"] = dict(
+                editor_draft.get("input_schema") or {}
+            )
+            self.model["expected_outputs"] = list(
+                editor_draft.get("expected_outputs") or []
+            )
         self.current_source_file = (
             main_name
             if main_name in self.source_files
@@ -1839,6 +2077,15 @@ class ScriptedEditorController:
         )
         input_values = dict(self.model.get("parameters") or {})
         input_schema = dict(self.model.get("input_schema") or {})
+        parameters_text = json.dumps(input_values, indent=2, sort_keys=True)
+        if restore_draft:
+            parameters_text = str(editor_draft.get("inputs_json") or "")
+            try:
+                draft_values = json.loads(parameters_text or "{}")
+            except ValueError:
+                draft_values = None
+            if isinstance(draft_values, dict):
+                input_values = draft_values
         if not input_schema and input_values:
             inferred_properties: dict[str, dict[str, str]] = {}
             for name, value in input_values.items():
@@ -1877,7 +2124,6 @@ class ScriptedEditorController:
         source_text = self.source_files.get(self.current_source_file, "")
         if self.source.toPlainText() != source_text:
             self.source.setPlainText(source_text)
-        parameters_text = json.dumps(input_values, indent=2, sort_keys=True)
         if self.parameters.toPlainText() != parameters_text:
             self.parameters.setPlainText(parameters_text)
         self.inputs.set_contract(input_schema, input_values, self.reference_options)
@@ -1897,13 +2143,29 @@ class ScriptedEditorController:
         self._watch_source()
         self.active_vibescript_candidate = None
         self._set_dirty(False)
+        if self.engine == "vibescript":
+            self._embed_loaded_vibescript_contract()
         fidelity = str(self.model.get("fidelity") or "not built")
         conversion = str(self.model.get("conversion_mode") or "")
-        self.status.setText(
-            f"{self.engine} | working {self.working_revision[:10]} | "
-            f"accepted {self.accepted_revision[:10] or 'none'} | "
-            f"{conversion + ' | ' if conversion else ''}{fidelity}"
-        )
+        if restore_draft:
+            self.status.setText(
+                "Loaded saved source and inputs from this document. "
+                "Press Build to update the model."
+            )
+        elif self.engine == "vibescript":
+            self.status.setText(
+                (
+                    "The model is built from the saved source and inputs."
+                    if self.working_revision == self.accepted_revision
+                    else "The saved source and inputs need to be built."
+                )
+            )
+        else:
+            self.status.setText(
+                f"{self.engine} | working {self.working_revision[:10]} | "
+                f"accepted {self.accepted_revision[:10] or 'none'} | "
+                f"{conversion + ' | ' if conversion else ''}{fidelity}"
+            )
         self.diagnostics.clear()
         latest = self.model.get("latest_attempt") or {}
         failure = latest.get("failure") if isinstance(latest, dict) else None
@@ -1959,7 +2221,7 @@ class ScriptedEditorController:
             self._invalidate_preview_for_edit()
         self._set_dirty(True)
         if first_change:
-            self.status.setText("Source modified. Press Build to validate it.")
+            self.status.setText("Source modified. Press Save or Build.")
 
     def _parameters_changed(self):
         if self.loading or not self.editor_active or not self.model_id:
@@ -1967,9 +2229,33 @@ class ScriptedEditorController:
         first_change = not self.dirty
         if first_change or self.busy or self.active_prepared is not None:
             self._invalidate_preview_for_edit()
+        try:
+            values = json.loads(self.parameters.toPlainText() or "{}")
+        except ValueError:
+            values = None
+        if isinstance(values, dict):
+            schema = dict(self.model.get("input_schema") or {})
+            if self.engine == "vibescript":
+                import VibeCADVibeScriptDomains as domain_contracts
+
+                schema = domain_contracts.synchronize_input_schema(
+                    schema,
+                    values,
+                )
+                self.model["input_schema"] = schema
+            if schema:
+                self.loading = True
+                try:
+                    self.inputs.set_contract(
+                        schema,
+                        values,
+                        self.reference_options,
+                    )
+                finally:
+                    self.loading = False
         self._set_dirty(True)
         if first_change:
-            self.status.setText("Inputs modified. Press Build to validate them.")
+            self.status.setText("Inputs modified. Press Save or Build.")
 
     def _schema_inputs_changed(self):
         if self.loading or not self.editor_active or not self.model_id:
@@ -1986,7 +2272,7 @@ class ScriptedEditorController:
             self.loading = False
         self._invalidate_preview_for_edit()
         self._set_dirty(True)
-        self.status.setText("Inputs modified. Press Build to validate them.")
+        self.status.setText("Inputs modified. Press Save or Build.")
 
     def _fidelity_changed(self, _index: int):
         if self.loading or not self.editor_active or self.engine != "openscad" or not self.model_id:
@@ -2128,8 +2414,17 @@ class ScriptedEditorController:
             self.status.setText("Inputs must be a JSON object.")
             return None
         schema = dict(self.model.get("input_schema") or {})
+        if self.engine == "vibescript":
+            import VibeCADVibeScriptDomains as domain_contracts
+
+            schema = domain_contracts.synchronize_input_schema(schema, value)
+            self.model["input_schema"] = schema
         if schema:
-            self.inputs.set_contract(schema, value, self.reference_options)
+            self.loading = True
+            try:
+                self.inputs.set_contract(schema, value, self.reference_options)
+            finally:
+                self.loading = False
         return value
 
     def _invalidate_preview_for_edit(self):
@@ -2138,8 +2433,44 @@ class ScriptedEditorController:
         self._cancel_preview(restore_accepted=True)
         self.active_vibescript_candidate = None
 
+    def _save_vibescript_draft(self, *, show_status: bool) -> bool:
+        if self.engine != "vibescript" or not self.model_id:
+            return False
+        self.source_files[self.current_source_file] = self.source.toPlainText()
+        if not self._persist_vibescript_draft():
+            return False
+        doc = App.ActiveDocument
+        if doc is None:
+            self.status.setText("There is no FreeCAD document to save.")
+            return False
+        try:
+            if str(getattr(doc, "FileName", "") or ""):
+                doc.save()
+            else:
+                Gui.runCommand("Std_Save")
+                if not str(getattr(doc, "FileName", "") or ""):
+                    self.status.setText("Save was cancelled.")
+                    return False
+        except Exception as exc:
+            self.status.setText(f"Could not save the FreeCAD document: {exc}")
+            return False
+        self._set_dirty(False)
+        if show_status:
+            self.status.setText(
+                "Saved source and inputs in the FreeCAD file. "
+                "Press Build to update the model."
+            )
+        return True
+
+    def save(self) -> None:
+        self._save_vibescript_draft(show_status=True)
+
     def render(self):
         if not self.editor_active or not self.model_id or self.engine not in SCRIPTED_ENGINES:
+            return
+        if self.engine == "vibescript" and not self._save_vibescript_draft(
+            show_status=False
+        ):
             return
         parameters = self._parse_parameters()
         if parameters is None:
@@ -2241,7 +2572,7 @@ class ScriptedEditorController:
         generation = self.generation
         domain = self.domain
         self.active_vibescript_candidate = None
-        self.status.setText("Building and validating candidate in the isolated worker...")
+        self.status.setText("Building and validating the model...")
         self.busy = True
         self._update_actions()
 
@@ -2321,16 +2652,26 @@ class ScriptedEditorController:
             self.busy = False
             result = event.get("result")
             if not isinstance(result, dict) or result.get("ok") is not True:
+                adopted = bool(
+                    isinstance(result, dict)
+                    and self._adopt_failed_vibescript_revision(result)
+                )
                 self._show_failure(
                     result
                     if isinstance(result, dict)
                     else {"error": "The VibeScript build returned no structured result."}
                 )
+                if adopted:
+                    self.status.setText(
+                        f"{str(result.get('error') or 'Build failed.')} "
+                        "The source and inputs remain editable; correct them and press "
+                        "Build again."
+                    )
                 return
             candidate = result.get("_editor_candidate")
             if not isinstance(candidate, dict):
                 self._show_failure(
-                    {"error": "The VibeScript build returned no validated editor candidate."}
+                    {"error": "The VibeScript build returned no validated model result."}
                 )
                 return
             self.active_vibescript_candidate = candidate
@@ -2338,15 +2679,17 @@ class ScriptedEditorController:
             if isinstance(prepared_candidate, dict):
                 self.model["source"] = str(prepared_candidate.get("source") or "")
                 self.model["parameters"] = dict(prepared_candidate.get("inputs") or {})
+                self.model["input_schema"] = dict(
+                    prepared_candidate.get("input_schema") or {}
+                )
+                self.model["expected_outputs"] = list(
+                    prepared_candidate.get("expected_outputs") or []
+                )
             self.working_revision = str(result.get("working_revision") or "")
+            self.model["working_revision"] = self.working_revision
             self.preview_revision = self.working_revision
-            self._set_dirty(False)
             self.diagnostics.clear()
-            self.status.setText(
-                f"Build passed | candidate {self.working_revision[:10]} | "
-                "accepted geometry is unchanged. Press Apply to publish it."
-            )
-            self._update_actions()
+            self._start_vibescript_apply()
             return
         if event_kind == "vibescript_editor_apply":
             if (
@@ -2359,6 +2702,9 @@ class ScriptedEditorController:
             self.busy = False
             result = event.get("result")
             if not isinstance(result, dict) or result.get("ok") is not True:
+                self._set_dirty(True)
+                if self._persist_vibescript_draft():
+                    self._set_dirty(False)
                 self._show_failure(
                     result
                     if isinstance(result, dict)
@@ -2370,9 +2716,21 @@ class ScriptedEditorController:
             self.active_vibescript_candidate = None
             self.accepted_revision = revision
             self.preview_revision = ""
-            self.status.setText(
-                f"Applied VibeScript revision {revision[:10]} to stable native outputs."
-            )
+            self._clear_vibescript_draft()
+            self._set_dirty(False)
+            self.model = {}
+            try:
+                doc = App.ActiveDocument
+                if doc is not None and str(getattr(doc, "FileName", "") or ""):
+                    doc.save()
+            except Exception as exc:
+                self.status.setText(
+                    f"Model updated, but the FreeCAD file could not be saved: {exc}"
+                )
+            else:
+                self.status.setText(
+                    f"Model updated and saved ({revision[:10]})."
+                )
             self.refresh(model_id)
             return
         if event_kind in {
@@ -2496,9 +2854,13 @@ class ScriptedEditorController:
                 return
             self.accepted_revision = revision
             self.preview_revision = ""
+            if model_id == self.model_id:
+                self._clear_vibescript_draft()
+            self._set_dirty(False)
+            self.model = {}
             self.diagnostics.clear()
             self.status.setText(
-                f"Accepted VibeScript revision {revision[:10]} | native typed outputs"
+                f"Model built from saved source and inputs ({revision[:10]})."
             )
             self.refresh(model_id)
             return
@@ -2611,7 +2973,7 @@ class ScriptedEditorController:
         _ensure_document_thread_invoker()
         self.generation += 1
         generation = self.generation
-        self.status.setText("Applying validated candidate to stable native outputs...")
+        self.status.setText("Updating the model from the validated build...")
         self.busy = True
         self._update_actions()
 
@@ -2646,6 +3008,15 @@ class ScriptedEditorController:
             )
             if answer != self.QtWidgets.QMessageBox.Discard:
                 return
+        if (
+            self.engine == "vibescript"
+            and self.working_revision
+            and self.working_revision == self.accepted_revision
+        ):
+            self._clear_vibescript_draft()
+            self._cancel_preview(restore_accepted=True)
+            self.refresh(self.model_id)
+            return
         self.generation += 1
         self.active_vibescript_candidate = None
         self._clear_source_watch()
@@ -2940,6 +3311,34 @@ class ScriptedEditorController:
         if had_live_preview and doc is not None and active_model_id:
             remove_preview(doc, active_model_id, restore_accepted=restore_accepted)
 
+    def _adopt_failed_vibescript_revision(
+        self,
+        payload: dict[str, Any],
+    ) -> bool:
+        failed = payload.get("failed_candidate")
+        if not isinstance(failed, dict):
+            return False
+        if str(failed.get("program_id") or "") != self.model_id:
+            return False
+        revision = str(failed.get("revision") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", revision):
+            return False
+        self.working_revision = revision
+        self.model["working_revision"] = revision
+        self.model["source"] = self.source.toPlainText()
+        try:
+            values = json.loads(self.parameters.toPlainText() or "{}")
+        except ValueError:
+            values = None
+        if isinstance(values, dict):
+            self.model["parameters"] = values
+        self.preview_revision = ""
+        self.active_vibescript_candidate = None
+        self._set_dirty(True)
+        if self._persist_vibescript_draft():
+            self._set_dirty(False)
+        return True
+
     def _show_failure(self, payload: dict[str, Any]):
         self.busy = False
         self.status.setText(str(payload.get("error") or "Scripted model operation failed."))
@@ -3008,6 +3407,9 @@ class ScriptedEditorController:
         new_supported = self.engine != "vibescript" or self.domain in _DOMAIN_EDITOR_NEW_TYPES
         self.button("VibeScriptedNew").setEnabled(ready and new_supported)
         self.button("VibeScriptedImport").setEnabled(ready and self.engine == "openscad")
+        self.button("VibeScriptedSave").setEnabled(
+            bool(ready and self.engine == "vibescript" and self.model_id)
+        )
         self.button("VibeScriptedRender").setEnabled(bool(ready and self.model_id))
         applicable = (
             self.active_vibescript_candidate is not None

@@ -64,6 +64,15 @@ PROP_PROGRAM_DOMAIN = "VibeCADVibeScriptDomain"
 PROP_PROGRAM_WORKBENCH = "VibeCADVibeScriptWorkbench"
 PROP_PROGRAM_REVISION = "VibeCADVibeScriptRevision"
 PROP_PROGRAM_OUTPUT = "VibeCADVibeScriptOutputName"
+PROP_PROGRAM_LABEL = "VibeCADVibeScriptProgramLabel"
+PROP_PROGRAM_CONTRACT = "VibeCADVibeScriptProgramContract"
+PROP_PROGRAM_EDITOR_DRAFT = "VibeCADVibeScriptEditorDraft"
+
+DOCUMENT_PROGRAM_SCHEMA = "vibecad-vibescript-document-program-v1"
+EDITOR_DRAFT_SCHEMA = "vibecad-vibescript-editor-draft-v1"
+MAX_DOCUMENT_PROGRAM_BYTES = (
+    MAX_SOURCE_BYTES + (2 * MAX_INPUT_BYTES) + (256 * 1024)
+)
 
 LIFECYCLE_OPERATIONS: tuple[str, ...] = (
     "describe_api",
@@ -177,13 +186,19 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "partdesign",
         "Part Design",
         ("solid", "shell", "face", "wire", "compound"),
-        "Author one source-parametric 3D graph. Use explicit new_solid, new_surface, "
-        "add_material, or remove_material intent; use boolean for union/subtract/intersect "
-        "and compound for deliberately disconnected geometry. Body adopts an exact solid; "
-        "publish accepts standalone solid, shell, face, wire, or compound geometry. "
-        "Use material plus appearance on body/publish for physical catalog properties and "
-        "source-parametric display styling. Implementation names such as Pad, Pocket, and "
-        "Groove are compatibility-only.",
+        "Author one source-parametric 3D graph with native editable Body history as "
+        "the default. Every planar profile used by extrude, revolve, loft, sweep, or "
+        "hole must be an api.sketch so its sketch and feature remain editable in the "
+        "tree. Use line_3d, arc_3d, wire, direct primitives, and other retained OCC "
+        "topology only for genuinely nonplanar, imported, repair, standalone, or "
+        "otherwise unrepresentable geometry; never choose direct topology merely "
+        "because it is shorter to author. Use explicit new_solid, new_surface, "
+        "add_material, or remove_material intent; use boolean for "
+        "union/subtract/intersect and compound for deliberately disconnected geometry. "
+        "Body publishes one solid, while publish accepts standalone solid, shell, face, "
+        "wire, or compound geometry. Use material plus appearance on body/publish for "
+        "physical catalog properties and source-parametric display styling. Use only "
+        "the canonical exported operation names returned by scope='api'.",
         (
             "from_object",
             "box",
@@ -626,6 +641,55 @@ def list_vibescript_packs() -> list[dict[str, Any]]:
     return result
 
 
+def capture_document_program_payload(
+    doc: Any,
+    domain: str,
+    program_id: str,
+) -> dict[str, str]:
+    """Capture one bounded portable contract/draft without touching geometry."""
+
+    clean_domain = str(domain or "").strip().lower()
+    clean_program_id = str(program_id or "").strip().lower()
+    contracts: set[str] = set()
+    drafts: set[str] = set()
+    labels: set[str] = set()
+    for obj in list(getattr(doc, "Objects", []) or []):
+        properties = set(getattr(obj, "PropertiesList", []) or [])
+        if not {PROP_PROGRAM_ID, PROP_PROGRAM_DOMAIN} <= properties:
+            continue
+        if (
+            str(getattr(obj, PROP_PROGRAM_ID, "") or "") != clean_program_id
+            or str(getattr(obj, PROP_PROGRAM_DOMAIN, "") or "") != clean_domain
+        ):
+            continue
+        label = str(getattr(obj, PROP_PROGRAM_LABEL, "") or "").strip()
+        if label:
+            labels.add(label)
+        contract = str(getattr(obj, PROP_PROGRAM_CONTRACT, "") or "")
+        if contract:
+            contracts.add(contract)
+        draft = str(getattr(obj, PROP_PROGRAM_EDITOR_DRAFT, "") or "")
+        if draft:
+            drafts.add(draft)
+    if len(contracts) > 1:
+        raise ValueError(
+            f"Program {clean_program_id} has conflicting portable document contracts."
+        )
+    if len(drafts) > 1:
+        raise ValueError(
+            f"Program {clean_program_id} has conflicting document editor drafts."
+        )
+    if len(labels) > 1:
+        raise ValueError(f"Program {clean_program_id} has conflicting document labels.")
+    return {
+        "program_id": clean_program_id,
+        "domain": clean_domain,
+        "label": next(iter(labels), ""),
+        "contract": next(iter(contracts), ""),
+        "editor_draft": next(iter(drafts), ""),
+    }
+
+
 def capture_domain_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
     """Capture bounded live identities without filesystem or geometry traversal."""
 
@@ -646,9 +710,26 @@ def capture_domain_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
                 "program_id": program_id,
                 "domain": clean_domain,
                 "workbench": str(getattr(obj, PROP_PROGRAM_WORKBENCH, "") or ""),
+                "label": str(getattr(obj, PROP_PROGRAM_LABEL, "") or ""),
                 "working_revision": str(getattr(obj, PROP_PROGRAM_REVISION, "") or ""),
+                "portable_document_contract": bool(
+                    str(getattr(obj, PROP_PROGRAM_CONTRACT, "") or "")
+                ),
+                "editor_draft": bool(
+                    str(getattr(obj, PROP_PROGRAM_EDITOR_DRAFT, "") or "")
+                ),
                 "live_outputs": [],
             },
+        )
+        if not item["label"]:
+            item["label"] = str(getattr(obj, PROP_PROGRAM_LABEL, "") or "")
+        item["portable_document_contract"] = bool(
+            item["portable_document_contract"]
+            or str(getattr(obj, PROP_PROGRAM_CONTRACT, "") or "")
+        )
+        item["editor_draft"] = bool(
+            item["editor_draft"]
+            or str(getattr(obj, PROP_PROGRAM_EDITOR_DRAFT, "") or "")
         )
         output_name = str(getattr(obj, PROP_PROGRAM_OUTPUT, "") or "")
         if output_name:
@@ -2914,6 +2995,11 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             and str(output.get("name") or "")
             and "." not in str(output.get("name") or "")
         }
+        if item.get("portable_document_contract"):
+            item["accepted_revision"] = str(item.get("working_revision") or "")
+            item["state"] = "accepted_document"
+        else:
+            item["state"] = "live_outputs_only"
         native_by_id[program_id] = item
     programs: dict[str, dict[str, Any]] = dict(native_by_id)
     if artifact_by_id:
@@ -4166,6 +4252,109 @@ def validate_inputs(inputs: Any) -> dict[str, Any]:
     return result
 
 
+def _infer_input_value_schema(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, list):
+        branches: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in value:
+            branch = _infer_input_value_schema(item)
+            key = json.dumps(branch, sort_keys=True, separators=(",", ":"))
+            if key not in seen:
+                seen.add(key)
+                branches.append(branch)
+        if not branches:
+            items: dict[str, Any] = {}
+        elif len(branches) == 1:
+            items = branches[0]
+        else:
+            items = {"oneOf": branches[:8]}
+        return {
+            "type": "array",
+            "items": items,
+            "maxItems": MAX_ARRAY_ITEMS,
+        }
+    if isinstance(value, dict):
+        properties = {
+            str(name): _infer_input_value_schema(item)
+            for name, item in value.items()
+        }
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+        if set(value) == {"document_uid", "object_name"}:
+            schema["x-vibecad-reference"] = True
+        elif set(value) == {"artifact_id"}:
+            schema["x-vibecad-point-artifact"] = True
+            schema["properties"]["artifact_id"]["pattern"] = "^[0-9a-f]{32}$"
+        return schema
+    return {}
+
+
+def synchronize_input_schema(
+    schema: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep existing constraints while making edited input names buildable."""
+
+    current = dict(schema) if isinstance(schema, Mapping) else {}
+    old_properties = (
+        dict(current.get("properties") or {})
+        if isinstance(current.get("properties"), Mapping)
+        else {}
+    )
+    old_required = {
+        str(name)
+        for name in list(current.get("required") or [])
+        if isinstance(name, str)
+    }
+    clean_inputs = {str(name): value for name, value in inputs.items()}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, value in clean_inputs.items():
+        if name in old_properties and isinstance(old_properties[name], Mapping):
+            properties[name] = dict(old_properties[name])
+            if name in old_required:
+                required.append(name)
+        else:
+            properties[name] = _infer_input_value_schema(value)
+            required.append(name)
+    for name, property_schema in old_properties.items():
+        clean_name = str(name)
+        if (
+            clean_name not in properties
+            and clean_name not in old_required
+            and isinstance(property_schema, Mapping)
+        ):
+            properties[clean_name] = dict(property_schema)
+    result = {
+        key: value
+        for key, value in current.items()
+        if key not in {"type", "properties", "required", "additionalProperties"}
+    }
+    result.update(
+        {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        }
+    )
+    return result
+
+
 def _validate_input_schema_node(schema: Any, *, path: str, depth: int = 0) -> None:
     if not isinstance(schema, dict):
         raise ValueError(f"{path} must be a JSON Schema object.")
@@ -4502,6 +4691,243 @@ def program_revision_with_references(
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _encode_document_program_payload(payload: Mapping[str, Any], label: str) -> str:
+    encoded = json.dumps(
+        dict(payload),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    size = len(encoded.encode("utf-8"))
+    if size > MAX_DOCUMENT_PROGRAM_BYTES:
+        raise ValueError(
+            f"{label} is {size} bytes; the portable document limit is "
+            f"{MAX_DOCUMENT_PROGRAM_BYTES} bytes."
+        )
+    return encoded
+
+
+def _decode_document_program_payload(raw: str, label: str) -> dict[str, Any]:
+    encoded = str(raw or "")
+    size = len(encoded.encode("utf-8"))
+    if not encoded:
+        raise ValueError(f"{label} is empty.")
+    if size > MAX_DOCUMENT_PROGRAM_BYTES:
+        raise ValueError(
+            f"{label} is {size} bytes; the portable document limit is "
+            f"{MAX_DOCUMENT_PROGRAM_BYTES} bytes."
+        )
+    try:
+        value = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must contain one JSON object.")
+    return value
+
+
+def encode_document_program_contract(
+    pack: VibeScriptWorkbenchPack,
+    *,
+    program_id: str,
+    label: str,
+    revision: str,
+    source: str,
+    input_schema: Any,
+    inputs: Any,
+    expected_outputs: Any,
+) -> str:
+    """Serialize an accepted program contract into its owning FCStd object."""
+
+    clean_program_id = str(program_id or "").strip().lower()
+    clean_revision = str(revision or "").strip().lower()
+    clean_label = str(label or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{32}", clean_program_id):
+        raise ValueError("A portable VibeScript program requires a stable program id.")
+    if not re.fullmatch(r"[0-9a-f]{64}", clean_revision):
+        raise ValueError("A portable VibeScript program requires an accepted revision.")
+    if not clean_label or len(clean_label) > 120:
+        raise ValueError("A portable VibeScript program requires a bounded label.")
+    clean = validate_program_contract(
+        pack,
+        source=source,
+        input_schema=input_schema,
+        inputs=inputs,
+        expected_outputs=expected_outputs,
+    )
+    contract_revision = program_revision(domain=pack.domain, **clean)
+    return _encode_document_program_payload(
+        {
+            "schema": DOCUMENT_PROGRAM_SCHEMA,
+            "program_schema": PROGRAM_SCHEMA,
+            "program_id": clean_program_id,
+            "domain": pack.domain,
+            "workbench": pack.workbench,
+            "label": clean_label,
+            "revision": clean_revision,
+            "contract_revision": contract_revision,
+            **clean,
+        },
+        "Portable VibeScript program contract",
+    )
+
+
+def decode_document_program_contract(
+    raw: str,
+    pack: VibeScriptWorkbenchPack,
+    *,
+    expected_program_id: str = "",
+    expected_revision: str = "",
+) -> dict[str, Any]:
+    """Validate an FCStd-embedded program and return a normal v2 manifest."""
+
+    value = _decode_document_program_payload(
+        raw,
+        "Portable VibeScript program contract",
+    )
+    if value.get("schema") != DOCUMENT_PROGRAM_SCHEMA:
+        raise ValueError("Unsupported portable VibeScript program schema.")
+    if value.get("program_schema") != PROGRAM_SCHEMA:
+        raise ValueError("The portable program does not contain a VibeScript v2 contract.")
+    program_id = str(value.get("program_id") or "").strip().lower()
+    revision = str(value.get("revision") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", program_id):
+        raise ValueError("The portable VibeScript program id is invalid.")
+    if not re.fullmatch(r"[0-9a-f]{64}", revision):
+        raise ValueError("The portable VibeScript revision is invalid.")
+    if expected_program_id and program_id != str(expected_program_id).strip().lower():
+        raise ValueError("The portable VibeScript program id does not match its owner.")
+    if expected_revision and revision != str(expected_revision).strip().lower():
+        raise ValueError("The portable VibeScript revision does not match its owner.")
+    if str(value.get("domain") or "") != pack.domain:
+        raise ValueError("The portable VibeScript program belongs to another domain.")
+    if str(value.get("workbench") or "") != pack.workbench:
+        raise ValueError("The portable VibeScript program belongs to another workbench.")
+    label = str(value.get("label") or "").strip()
+    if not label or len(label) > 120:
+        raise ValueError("The portable VibeScript program label is invalid.")
+    clean = validate_program_contract(
+        pack,
+        source=str(value.get("source") or ""),
+        input_schema=value.get("input_schema"),
+        inputs=value.get("inputs"),
+        expected_outputs=value.get("expected_outputs"),
+    )
+    contract_revision = program_revision(domain=pack.domain, **clean)
+    if contract_revision != str(value.get("contract_revision") or ""):
+        raise ValueError("The portable VibeScript program contract digest changed.")
+    accepted_contract = {**clean, "revision": revision}
+    return {
+        "schema": PROGRAM_SCHEMA,
+        "version": PROGRAM_VERSION,
+        "program_id": program_id,
+        "domain": pack.domain,
+        "workbench": pack.workbench,
+        "label": label,
+        **clean,
+        "working_revision": revision,
+        "accepted_revision": revision,
+        "accepted_contract": accepted_contract,
+        "live_outputs": {},
+        "latest_candidate": {
+            "revision": revision,
+            "status": "accepted",
+            "portable_document_contract": True,
+        },
+        "portable_document_contract": True,
+    }
+
+
+def encode_editor_draft(
+    *,
+    program_id: str,
+    domain: str,
+    base_revision: str,
+    source: str,
+    input_schema: Mapping[str, Any],
+    inputs_json: str,
+    expected_outputs: list[Mapping[str, Any]],
+) -> str:
+    """Serialize unvalidated editor text without requiring a successful build."""
+
+    clean_program_id = str(program_id or "").strip().lower()
+    clean_domain = str(domain or "").strip().lower()
+    clean_revision = str(base_revision or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", clean_program_id):
+        raise ValueError("A VibeScript editor draft requires a stable program id.")
+    if not clean_domain:
+        raise ValueError("A VibeScript editor draft requires a domain.")
+    if clean_revision and not re.fullmatch(r"[0-9a-f]{64}", clean_revision):
+        raise ValueError("A VibeScript editor draft has an invalid base revision.")
+    if len(str(source).encode("utf-8")) > MAX_SOURCE_BYTES:
+        raise ValueError("The VibeScript editor draft source is too large.")
+    if len(str(inputs_json).encode("utf-8")) > MAX_INPUT_BYTES:
+        raise ValueError("The VibeScript editor draft inputs are too large.")
+    return _encode_document_program_payload(
+        {
+            "schema": EDITOR_DRAFT_SCHEMA,
+            "program_id": clean_program_id,
+            "domain": clean_domain,
+            "base_revision": clean_revision,
+            "source": str(source),
+            "input_schema": dict(input_schema),
+            "inputs_json": str(inputs_json),
+            "expected_outputs": [dict(item) for item in expected_outputs],
+        },
+        "VibeScript editor draft",
+    )
+
+
+def decode_editor_draft(
+    raw: str,
+    *,
+    expected_program_id: str = "",
+    expected_domain: str = "",
+) -> dict[str, Any]:
+    """Read an editor draft while deliberately leaving source/inputs unvalidated."""
+
+    value = _decode_document_program_payload(raw, "VibeScript editor draft")
+    if value.get("schema") != EDITOR_DRAFT_SCHEMA:
+        raise ValueError("Unsupported VibeScript editor draft schema.")
+    program_id = str(value.get("program_id") or "").strip().lower()
+    domain = str(value.get("domain") or "").strip().lower()
+    base_revision = str(value.get("base_revision") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", program_id):
+        raise ValueError("The VibeScript editor draft program id is invalid.")
+    if expected_program_id and program_id != str(expected_program_id).strip().lower():
+        raise ValueError("The VibeScript editor draft belongs to another program.")
+    if expected_domain and domain != str(expected_domain).strip().lower():
+        raise ValueError("The VibeScript editor draft belongs to another domain.")
+    if base_revision and not re.fullmatch(r"[0-9a-f]{64}", base_revision):
+        raise ValueError("The VibeScript editor draft base revision is invalid.")
+    source = value.get("source")
+    inputs_json = value.get("inputs_json")
+    input_schema = value.get("input_schema")
+    expected_outputs = value.get("expected_outputs")
+    if (
+        not isinstance(source, str)
+        or not isinstance(inputs_json, str)
+        or not isinstance(input_schema, dict)
+        or not isinstance(expected_outputs, list)
+        or any(not isinstance(item, dict) for item in expected_outputs)
+    ):
+        raise ValueError("The VibeScript editor draft fields are malformed.")
+    if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
+        raise ValueError("The VibeScript editor draft source is too large.")
+    if len(inputs_json.encode("utf-8")) > MAX_INPUT_BYTES:
+        raise ValueError("The VibeScript editor draft inputs are too large.")
+    return {
+        "program_id": program_id,
+        "domain": domain,
+        "base_revision": base_revision,
+        "source": source,
+        "input_schema": dict(input_schema),
+        "inputs_json": inputs_json,
+        "expected_outputs": [dict(item) for item in expected_outputs],
+    }
 
 
 def migrate_program_manifest(
