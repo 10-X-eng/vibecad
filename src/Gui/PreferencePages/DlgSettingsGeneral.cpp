@@ -26,9 +26,7 @@
 #include <cmath>
 #include <limits>
 #include <QApplication>
-#include <QFileDialog>
 #include <QLocale>
-#include <QMessageBox>
 #include <QString>
 #include <algorithm>
 
@@ -41,16 +39,10 @@
 
 #include <Gui/Action.h>
 #include <Gui/Application.h>
-#include <Gui/Dialogs/DlgCreateNewPreferencePackImp.h>
-#include <Gui/Dialogs/DlgPreferencesImp.h>
-#include <Gui/Dialogs/DlgPreferencePackManagementImp.h>
-#include <Gui/Dialogs/DlgRevertToBackupConfigImp.h>
 #include <Gui/MainWindow.h>
 #include <Gui/OverlayManager.h>
 #include <Gui/ParamHandler.h>
-#include <Gui/PreferencePackManager.h>
-#include <Gui/View3DInventor.h>
-#include <Gui/View3DInventorViewer.h>
+#include <Gui/ThemeManager.h>
 #include <Gui/Language/Translator.h>
 
 #include "DlgSettingsGeneral.h"
@@ -58,7 +50,6 @@
 
 using namespace Gui;
 using namespace Gui::Dialog;
-namespace fs = std::filesystem;
 using Base::QuantityFormat;
 using Base::UnitsApi;
 
@@ -79,55 +70,16 @@ DlgSettingsGeneral::DlgSettingsGeneral(QWidget* parent)
 {
     ui->setupUi(this);
 
-    recreatePreferencePackMenu();
-
     for (const char* option : Translator::formattingOptions) {
         ui->UseLocaleFormatting->addItem(QCoreApplication::translate("Gui::Translator", option));
     }
 
-    ui->themesCombobox->setEnabled(true);
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (doc) {
-        Gui::View3DInventor* view = qobject_cast<Gui::View3DInventor*>(doc->getActiveView());
-        if (view) {
-            Gui::View3DInventorViewer* viewer = view->getViewer();
-            if (viewer->isEditing()) {
-                ui->ImportConfig->setEnabled(false);
-                ui->SaveNewPreferencePack->setEnabled(false);
-                ui->ManagePreferencePacks->setEnabled(false);
-                ui->themesCombobox->setEnabled(false);
-                ui->moreThemesLabel->setEnabled(false);
-            }
-        }
-    }
-    if (ui->themesCombobox->isEnabled()) {
-        connect(ui->ImportConfig, &QPushButton::clicked, this, &DlgSettingsGeneral::onImportConfigClicked);
-        connect(
-            ui->SaveNewPreferencePack,
-            &QPushButton::clicked,
-            this,
-            &DlgSettingsGeneral::saveAsNewPreferencePack
-        );
-        ui->ManagePreferencePacks->setToolTip(tr("Manage preference packs"));
-        connect(
-            ui->ManagePreferencePacks,
-            &QPushButton::clicked,
-            this,
-            &DlgSettingsGeneral::onManagePreferencePacksClicked
-        );
-        connect(
-            ui->themesCombobox,
-            qOverload<int>(&QComboBox::activated),
-            this,
-            &DlgSettingsGeneral::onThemeChanged
-        );
-        connect(ui->moreThemesLabel, &QLabel::linkActivated, this, &DlgSettingsGeneral::onLinkActivated);
-    }
-
-    // If there are any saved config file backs, show the revert button, otherwise hide it:
-    const auto& backups = Application::Instance->prefPackManager()->configBackups();
-    ui->RevertToSavedConfig->setEnabled(backups.empty());
-    connect(ui->RevertToSavedConfig, &QPushButton::clicked, this, &DlgSettingsGeneral::revertToSavedConfig);
+    connect(
+        ui->themesCombobox,
+        qOverload<int>(&QComboBox::activated),
+        this,
+        &DlgSettingsGeneral::onThemeChanged
+    );
 
     connect(
         ui->comboBox_UnitSystem,
@@ -147,9 +99,6 @@ DlgSettingsGeneral::DlgSettingsGeneral(QWidget* parent)
     const auto visible = UnitsApi::isMultiUnitLength();
     ui->comboBox_FracInch->setVisible(visible);
     ui->fractionalInchLabel->setVisible(visible);
-    ui->moreThemesLabel->setEnabled(
-        Application::Instance->commandManager().getCommandByName("Std_AddonMgr") != nullptr
-    );
 }
 
 /**
@@ -379,7 +328,12 @@ void DlgSettingsGeneral::resetSettingsToDefaults()
         "User parameter:BaseApp/Preferences/MainWindow"
     );
     // reset "Theme" parameter
+    hGrp->RemoveASCII("AppearanceMode");
     hGrp->RemoveASCII("Theme");
+    hGrp->RemoveASCII("StyleSheet");
+    hGrp->RemoveASCII("OverlayActiveStyleSheet");
+    hGrp->RemoveASCII("ThemeStyleParametersFile");
+    hGrp->RemoveASCII("QtStyle");
     // reset "TiledBackground" parameter
     hGrp->RemoveBool("TiledBackground");
 
@@ -406,94 +360,21 @@ void DlgSettingsGeneral::resetSettingsToDefaults()
 
 void DlgSettingsGeneral::saveThemes()
 {
-    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/MainWindow"
+    const auto mode = static_cast<ThemeManager::Mode>(
+        ui->themesCombobox->currentData().toInt()
     );
-
-    // First we check if the theme has actually changed.
-    std::string previousTheme = hGrp->GetASCII("Theme", "").c_str();
-    std::string newTheme = ui->themesCombobox->currentText().toStdString();
-
-    if (previousTheme == newTheme) {
-        themeChanged = false;
-        return;
-    }
-
-    // Save the name of the theme
-    hGrp->SetASCII("Theme", newTheme);
-
-    // Then we apply the themepack.
-    Application::Instance->prefPackManager()->rescan();
-    auto packs = Application::Instance->prefPackManager()->preferencePacks();
-
-    for (const auto& pack : packs) {
-        if (pack.first == newTheme) {
-
-            if (Application::Instance->prefPackManager()->apply(pack.first)) {
-                auto parentDialog = qobject_cast<DlgPreferencesImp*>(this->window());
-                if (parentDialog) {
-                    parentDialog->reload();
-                }
-            }
-            break;
-        }
-    }
-
+    Application::Instance->themeManager()->apply(mode);
     themeChanged = false;
 }
 
 void DlgSettingsGeneral::loadThemes()
 {
     ui->themesCombobox->clear();
+    ui->themesCombobox->addItem(tr("Light"), static_cast<int>(ThemeManager::Mode::Light));
+    ui->themesCombobox->addItem(tr("Dark"), static_cast<int>(ThemeManager::Mode::Dark));
 
-    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/MainWindow"
-    );
-
-    QString currentTheme = QString::fromLatin1(hGrp->GetASCII("Theme", "").c_str());
-
-    Application::Instance->prefPackManager()->rescan();
-    auto packs = Application::Instance->prefPackManager()->preferencePacks();
-    QString currentStyleSheet = QString::fromLatin1(hGrp->GetASCII("StyleSheet", "").c_str());
-    QFileInfo fi(currentStyleSheet);
-    currentStyleSheet = fi.baseName();
-    QString themeClassic = QStringLiteral("classic");  // handle the upcoming name change
-    QString themeDefault = QStringLiteral("VibeDark");
-    bool foundDefaultTheme = false;
-    QString similarTheme;
-    QString packName;
-    for (const auto& pack : packs) {
-        if (pack.second.metadata().type() == "Theme") {
-            packName = QString::fromStdString(pack.first);
-            if (packName == themeDefault) {
-                foundDefaultTheme = true;
-            }
-            if (packName.contains(themeClassic, Qt::CaseInsensitive)) {
-                themeClassic = QString::fromStdString(pack.first);
-            }
-            if (packName.contains(currentStyleSheet, Qt::CaseInsensitive)) {
-                similarTheme = QString::fromStdString(pack.first);
-            }
-            ui->themesCombobox->addItem(QString::fromStdString(pack.first));
-        }
-    }
-
-    if (currentTheme.isEmpty()) {
-        if (!currentStyleSheet.isEmpty() && !similarTheme.isEmpty()) {  // a user upgrading from
-                                                                        // 0.21 or earlier
-            hGrp->SetASCII("Theme", similarTheme.toStdString());
-            currentTheme = QString::fromLatin1(hGrp->GetASCII("Theme", "").c_str());
-        }
-        else {  // a brand new user
-            hGrp->SetASCII("Theme", (foundDefaultTheme ? themeDefault : themeClassic).toStdString());
-            currentTheme = QString::fromLatin1(hGrp->GetASCII("Theme", "").c_str());
-        }
-    }
-
-    int index = ui->themesCombobox->findText(currentTheme);
-    if (index >= 0 && index < ui->themesCombobox->count()) {
-        ui->themesCombobox->setCurrentIndex(index);
-    }
+    const int current = static_cast<int>(Application::Instance->themeManager()->currentMode());
+    ui->themesCombobox->setCurrentIndex(ui->themesCombobox->findData(current));
 }
 
 int DlgSettingsGeneral::getCurrentIconSize() const
@@ -623,194 +504,6 @@ void DlgSettingsGeneral::loadDockWindowVisibility()
     ui->treeMode->setCurrentIndex(index);
 }
 
-void DlgSettingsGeneral::recreatePreferencePackMenu()
-{
-    ui->PreferencePacks->setRowCount(0);  // Begin by clearing whatever is there
-    ui->PreferencePacks->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft);
-    ui->PreferencePacks->setColumnCount(3);
-    ui->PreferencePacks->setSelectionMode(QAbstractItemView::SelectionMode::NoSelection);
-    ui->PreferencePacks->horizontalHeader()->setStretchLastSection(false);
-    ui->PreferencePacks->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeMode::Stretch);
-    ui->PreferencePacks->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeMode::Stretch);
-    ui->PreferencePacks->horizontalHeader()->setSectionResizeMode(
-        2,
-        QHeaderView::ResizeMode::ResizeToContents
-    );
-    QStringList columnHeaders;
-    columnHeaders << tr("Preference Pack Name") << tr("Tags")
-                  << QString();  // for the "Load" buttons
-    ui->PreferencePacks->setHorizontalHeaderLabels(columnHeaders);
-
-    // Populate the Preference Packs list
-    Application::Instance->prefPackManager()->rescan();
-    auto packs = Application::Instance->prefPackManager()->preferencePacks();
-
-    // Remove the Themes.
-    std::vector<std::string> packsToRemove;
-    for (const auto& pack : packs) {
-        if (pack.second.metadata().type() == "Theme") {
-            packsToRemove.push_back(pack.first);  // Store the keys to remove later
-        }
-    }
-    for (const auto& key : packsToRemove) {
-        packs.erase(key);  // Remove the elements from the map
-    }
-
-    ui->PreferencePacks->setRowCount(packs.size());
-
-    int row = 0;
-    QIcon icon = style()->standardIcon(QStyle::SP_DialogApplyButton);
-    for (const auto& pack : packs) {
-        auto name = new QTableWidgetItem(QString::fromStdString(pack.first));
-        name->setToolTip(QString::fromStdString(pack.second.metadata().description()));
-        ui->PreferencePacks->setItem(row, 0, name);
-        auto tags = pack.second.metadata().tag();
-        QString tagString;
-        for (const auto& tag : tags) {
-            if (tagString.isEmpty()) {
-                tagString.append(QString::fromStdString(tag));
-            }
-            else {
-                tagString.append(QStringLiteral(", ") + QString::fromStdString(tag));
-            }
-        }
-        auto kind = new QTableWidgetItem(tagString);
-        ui->PreferencePacks->setItem(row, 1, kind);
-        auto button = new QPushButton(icon, tr("Apply"));
-        button->setEnabled(true);
-        Gui::Document* doc = Gui::Application::Instance->activeDocument();
-        if (doc) {
-            Gui::View3DInventor* view = qobject_cast<Gui::View3DInventor*>(doc->getActiveView());
-            if (view) {
-                Gui::View3DInventorViewer* viewer = view->getViewer();
-                if (viewer->isEditing()) {
-                    button->setEnabled(false);
-                }
-            }
-        }
-        if (button->isEnabled()) {
-            button->setToolTip(
-                tr("Applies the %1 preference pack").arg(QString::fromStdString(pack.first))
-            );
-            connect(button, &QPushButton::clicked, this, [this, pack]() {
-                onLoadPreferencePackClicked(pack.first);
-            });
-        }
-        ui->PreferencePacks->setCellWidget(row, 2, button);
-        ++row;
-    }
-}
-
-void DlgSettingsGeneral::saveAsNewPreferencePack()
-{
-    // Create and run a modal New PreferencePack dialog box
-    auto packs = Application::Instance->prefPackManager()->preferencePackNames();
-    newPreferencePackDialog = std::make_unique<DlgCreateNewPreferencePackImp>(this);
-    newPreferencePackDialog->setPreferencePackTemplates(
-        Application::Instance->prefPackManager()->templateFiles()
-    );
-    newPreferencePackDialog->setPreferencePackNames(packs);
-    connect(
-        newPreferencePackDialog.get(),
-        &DlgCreateNewPreferencePackImp::accepted,
-        this,
-        &DlgSettingsGeneral::newPreferencePackDialogAccepted
-    );
-    newPreferencePackDialog->open();
-}
-
-void DlgSettingsGeneral::revertToSavedConfig()
-{
-    revertToBackupConfigDialog = std::make_unique<DlgRevertToBackupConfigImp>(this);
-    connect(revertToBackupConfigDialog.get(), &DlgRevertToBackupConfigImp::accepted, this, [this]() {
-        auto parentDialog = qobject_cast<DlgPreferencesImp*>(this->window());
-        if (parentDialog) {
-            parentDialog->reload();
-        }
-    });
-    revertToBackupConfigDialog->open();
-}
-
-void DlgSettingsGeneral::newPreferencePackDialogAccepted()
-{
-    auto preferencePackTemplates = Application::Instance->prefPackManager()->templateFiles();
-    auto selection = newPreferencePackDialog->selectedTemplates();
-    std::vector<PreferencePackManager::TemplateFile> selectedTemplates;
-    std::copy_if(
-        preferencePackTemplates.begin(),
-        preferencePackTemplates.end(),
-        std::back_inserter(selectedTemplates),
-        [selection](PreferencePackManager::TemplateFile& tf) {
-            for (const auto& item : selection) {
-                if (item.group == tf.group && item.name == tf.name) {
-                    return true;
-                }
-            }
-            return false;
-        }
-    );
-    auto preferencePackName = newPreferencePackDialog->preferencePackName();
-    auto preferencePackDirectory = newPreferencePackDialog->preferencePackDirectory();
-    Application::Instance->prefPackManager()
-        ->save(preferencePackName, preferencePackDirectory, selectedTemplates);
-    recreatePreferencePackMenu();
-}
-
-void DlgSettingsGeneral::onManagePreferencePacksClicked()
-{
-    if (!this->preferencePackManagementDialog) {
-        this->preferencePackManagementDialog = std::make_unique<DlgPreferencePackManagementImp>(this);
-        connect(
-            this->preferencePackManagementDialog.get(),
-            &DlgPreferencePackManagementImp::packVisibilityChanged,
-            this,
-            &DlgSettingsGeneral::recreatePreferencePackMenu
-        );
-    }
-    this->preferencePackManagementDialog->show();
-}
-
-void DlgSettingsGeneral::onImportConfigClicked()
-{
-    auto path = fs::path(
-        QFileDialog::getOpenFileName(
-            this,
-            tr("Choose a FreeCAD config file to import"),
-            QString(),
-            QStringLiteral("*.cfg")
-        )
-            .toStdString()
-    );
-    if (!path.empty()) {
-        // Create a name from the filename:
-        auto packName = path.filename().stem().string();
-        std::replace(packName.begin(), packName.end(), '_', ' ');
-        auto existingPacks = Application::Instance->prefPackManager()->preferencePackNames();
-        if (std::ranges::find(existingPacks, packName) != existingPacks.end()) {
-            auto result = QMessageBox::question(
-                this,
-                tr("File exists"),
-                tr("A preference pack with that name already exists. Overwrite?")
-            );
-            if (result == QMessageBox::No) {  // Maybe someday ask for a new name?
-                return;
-            }
-        }
-        Application::Instance->prefPackManager()->importConfig(packName, path);
-        recreatePreferencePackMenu();
-    }
-}
-
-void DlgSettingsGeneral::onLoadPreferencePackClicked(const std::string& packName)
-{
-    if (Application::Instance->prefPackManager()->apply(packName)) {
-        auto parentDialog = qobject_cast<DlgPreferencesImp*>(this->window());
-        if (parentDialog) {
-            parentDialog->reload();
-        }
-    }
-}
-
 void DlgSettingsGeneral::onUnitSystemIndexChanged(const int index)
 {
     if (index < 0) {
@@ -828,25 +521,6 @@ void DlgSettingsGeneral::onThemeChanged(int index)
 {
     Q_UNUSED(index);
     themeChanged = true;
-}
-
-void DlgSettingsGeneral::onLinkActivated(const QString& link)
-{
-    auto const addonManagerLink = QStringLiteral("freecad:Std_AddonMgr");
-
-    if (link != addonManagerLink) {
-        return;
-    }
-
-    // Set the user preferences to include only preference packs.
-    // This is a quick and dirty way to open Addon Manager with only themes.
-    auto pref = App::GetApplication().GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Addons"
-    );
-    pref->SetInt("PackageTypeSelection", 3);  // 3 stands for Preference Packs
-    pref->SetInt("StatusSelection", 0);       // 0 stands for any installation status
-
-    Gui::Application::Instance->commandManager().runCommandByName("Std_AddonMgr");
 }
 
 ///////////////////////////////////////////////////////////

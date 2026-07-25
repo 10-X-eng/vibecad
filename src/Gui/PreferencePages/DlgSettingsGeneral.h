@@ -36,9 +36,6 @@ namespace Gui
 namespace Dialog
 {
 class Ui_DlgSettingsGeneral;
-class DlgCreateNewPreferencePackImp;
-class DlgPreferencePackManagementImp;
-class DlgRevertToBackupConfigImp;
 
 /** This class implements the settings for the application.
  *  You can change window style, size of pixmaps, size of recent file list and so on
@@ -65,13 +62,7 @@ protected:
     void changeEvent(QEvent* event) override;
 
 protected Q_SLOTS:
-    void onLoadPreferencePackClicked(const std::string& packName);
-    void recreatePreferencePackMenu();
-    void newPreferencePackDialogAccepted();
-    void onManagePreferencePacksClicked();
-    void onImportConfigClicked();
     void onThemeChanged(int index);
-    void onLinkActivated(const QString& link);
 
 public Q_SLOTS:
     void onUnitSystemIndexChanged(int index);
@@ -81,8 +72,6 @@ private:
     void saveDockWindowVisibility();
     void loadDockWindowVisibility();
     void setRecentFileSize();
-    void saveAsNewPreferencePack();
-    void revertToSavedConfig();
     bool setLanguage();  // Returns true if language has been changed
     void setNumberLocale(bool force = false);
     void setDecimalPointConversion(bool on);
@@ -95,9 +84,6 @@ private:
     int localeIndex;
     bool themeChanged;
     std::unique_ptr<Ui_DlgSettingsGeneral> ui;
-    std::unique_ptr<DlgCreateNewPreferencePackImp> newPreferencePackDialog;
-    std::unique_ptr<DlgPreferencePackManagementImp> preferencePackManagementDialog;
-    std::unique_ptr<DlgRevertToBackupConfigImp> revertToBackupConfigDialog;
 };
 
 }  // namespace Dialog

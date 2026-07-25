@@ -15,193 +15,6 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QGroupBox" name="groupBox">
-     <property name="title">
-      <string>Theme Customization</string>
-     </property>
-     <layout class="QVBoxLayout" name="verticalLayout_2">
-      <item>
-       <widget class="QLabel" name="label">
-        <property name="text">
-         <string>Customize the current theme. The offered settings are optional for theme developers so they may or may not have an effect in the current theme.</string>
-        </property>
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <layout class="QGridLayout" columnstretch="2,1">
-        <item row="0" column="0">
-         <widget class="QLabel" name="label1">
-          <property name="text">
-           <string>Accent color 1</string>
-          </property>
-          <property name="buddy">
-           <cstring>ThemeAccentColor1</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="0" column="1">
-         <widget class="Gui::PrefColorButton" name="ThemeAccentColor1">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="toolTip">
-           <string>This color might be used by your theme to let you customize it.</string>
-          </property>
-          <property name="color" stdset="0">
-           <color>
-            <red>85</red>
-            <green>123</green>
-            <blue>182</blue>
-           </color>
-          </property>
-          <property name="prefEntry" stdset="0">
-           <cstring>ThemeAccentColor1</cstring>
-          </property>
-          <property name="prefPath" stdset="0">
-           <cstring>Themes</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="0">
-         <widget class="QLabel" name="label2">
-          <property name="text">
-           <string>Accent color 2</string>
-          </property>
-          <property name="buddy">
-           <cstring>ThemeAccentColor2</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="2" column="0">
-         <widget class="QLabel" name="label3">
-          <property name="text">
-           <string>Accent color 3</string>
-          </property>
-          <property name="buddy">
-           <cstring>ThemeAccentColor3</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="3" column="0">
-         <widget class="QLabel" name="styleSheetLabel">
-          <property name="text">
-           <string>Style sheet (advanced)</string>
-          </property>
-          <property name="buddy">
-           <cstring>StyleSheets</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="4" column="0">
-         <widget class="QLabel" name="label_2">
-          <property name="text">
-           <string>Overlay style sheet</string>
-          </property>
-          <property name="buddy">
-           <cstring>OverlayStyleSheets</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="1">
-         <widget class="Gui::PrefColorButton" name="ThemeAccentColor2">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="toolTip">
-           <string>This color might be used by your theme to let you customize it.</string>
-          </property>
-          <property name="color" stdset="0">
-           <color>
-            <red>85</red>
-            <green>123</green>
-            <blue>182</blue>
-           </color>
-          </property>
-          <property name="prefEntry" stdset="0">
-           <cstring>ThemeAccentColor2</cstring>
-          </property>
-          <property name="prefPath" stdset="0">
-           <cstring>Themes</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="2" column="1">
-         <widget class="Gui::PrefColorButton" name="ThemeAccentColor3">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="toolTip">
-           <string>This color might be used by your theme to let you customize it.</string>
-          </property>
-          <property name="color" stdset="0">
-           <color>
-            <red>85</red>
-            <green>123</green>
-            <blue>182</blue>
-           </color>
-          </property>
-          <property name="prefEntry" stdset="0">
-           <cstring>ThemeAccentColor3</cstring>
-          </property>
-          <property name="prefPath" stdset="0">
-           <cstring>Themes</cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="3" column="1">
-         <widget class="Gui::PrefComboBox" name="StyleSheets">
-          <property name="toolTip">
-           <string>Style sheet how user interface will look like</string>
-          </property>
-          <property name="prefEntry" stdset="0">
-           <cstring>StyleSheet</cstring>
-          </property>
-          <property name="prefPath" stdset="0">
-           <cstring>MainWindow</cstring>
-          </property>
-          <property name="prefType" stdset="0">
-           <cstring></cstring>
-          </property>
-         </widget>
-        </item>
-        <item row="4" column="1">
-         <widget class="Gui::PrefComboBox" name="OverlayStyleSheets">
-          <property name="prefEntry" stdset="0">
-           <cstring>OverlayActiveStyleSheet</cstring>
-          </property>
-          <property name="prefPath" stdset="0">
-           <cstring>MainWindow</cstring>
-          </property>
-          <property name="prefType" stdset="0">
-           <cstring></cstring>
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </item>
-      <item>
-       <widget class="QPushButton" name="themeEditorButton">
-        <property name="text">
-         <string>Open Theme Editor</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
     <widget class="QGroupBox" name="groupBox_2">
      <property name="title">
       <string>Tree View</string>
@@ -545,18 +358,8 @@
  </widget>
  <customwidgets>
   <customwidget>
-   <class>Gui::ColorButton</class>
-   <extends>QPushButton</extends>
-   <header>Gui/Widgets.h</header>
-  </customwidget>
-  <customwidget>
    <class>Gui::PrefSpinBox</class>
    <extends>QSpinBox</extends>
-   <header>Gui/PrefWidgets.h</header>
-  </customwidget>
-  <customwidget>
-   <class>Gui::PrefColorButton</class>
-   <extends>Gui::ColorButton</extends>
    <header>Gui/PrefWidgets.h</header>
   </customwidget>
   <customwidget>
@@ -564,18 +367,8 @@
    <extends>QCheckBox</extends>
    <header>Gui/PrefWidgets.h</header>
   </customwidget>
-  <customwidget>
-   <class>Gui::PrefComboBox</class>
-   <extends>QComboBox</extends>
-   <header>Gui/PrefWidgets.h</header>
-  </customwidget>
  </customwidgets>
  <tabstops>
-  <tabstop>ThemeAccentColor1</tabstop>
-  <tabstop>ThemeAccentColor2</tabstop>
-  <tabstop>ThemeAccentColor3</tabstop>
-  <tabstop>StyleSheets</tabstop>
-  <tabstop>OverlayStyleSheets</tabstop>
   <tabstop>fontSizeSpinBox</tabstop>
   <tabstop>iconSizeSpinBox</tabstop>
   <tabstop>resizableColumnsCheckBox</tabstop>

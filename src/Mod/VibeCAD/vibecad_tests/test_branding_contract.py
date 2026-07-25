@@ -157,6 +157,62 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
             application.processEvents()
 
 
+class TestVibeCADRibbonChrome(unittest.TestCase):
+    """Validate the live task-oriented chrome, not only its source contract."""
+
+    def test_ribbon_replaces_workbench_chrome_without_removing_native_actions(
+        self,
+    ) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        import FreeCADGui as Gui
+        from PySide import QtCore, QtWidgets
+
+        application = QtWidgets.QApplication.instance()
+        main_window = Gui.getMainWindow()
+        self.assertIsNotNone(application)
+        self.assertIsNotNone(main_window)
+        application.processEvents()
+
+        ribbon = main_window.findChild(QtWidgets.QWidget, "VibeCADRibbon")
+        toolbar = main_window.findChild(QtWidgets.QToolBar, "VibeCADRibbonToolBar")
+        tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
+        search = main_window.findChild(QtWidgets.QLineEdit, "VibeCADCommandSearch")
+        app_button = main_window.findChild(QtWidgets.QToolButton, "VibeCADAppButton")
+        theme_toggle = main_window.findChild(
+            QtWidgets.QToolButton, "VibeCADThemeToggle"
+        )
+
+        self.assertIsNotNone(ribbon)
+        self.assertIsNotNone(toolbar)
+        self.assertIsNotNone(tabs)
+        self.assertIsNotNone(search)
+        self.assertIsNotNone(app_button)
+        self.assertIsNotNone(theme_toggle)
+        self.assertTrue(toolbar.isVisible())
+        self.assertFalse(toolbar.toggleViewAction().isVisible())
+        self.assertFalse(main_window.menuBar().isVisible())
+        self.assertEqual(
+            [tabs.tabText(index) for index in range(tabs.count())],
+            ["Model", "Assemble", "Inspect", "Analyze", "Manufacture", "Drawing"],
+        )
+
+        for candidate in main_window.findChildren(QtWidgets.QToolBar):
+            if candidate is toolbar:
+                continue
+            if (
+                main_window.toolBarArea(candidate)
+                != QtCore.Qt.ToolBarArea.NoToolBarArea
+            ):
+                self.assertFalse(
+                    candidate.isVisible(),
+                    f"native toolbar remained visible: {candidate.objectName()}",
+                )
+
+
 def test_windows_installer_uses_vibecad_identity() -> None:
     installer = _source("package/WindowsInstaller/FreeCAD-installer.nsi")
     declarations = _source("package/WindowsInstaller/include/declarations.nsh")
@@ -503,51 +559,162 @@ def test_assistant_panel_uses_vibecad_product_name() -> None:
     assert "Looking at the current VibeCAD document..." in panel_source
 
 
-def test_vibecad_preferences_keep_user_workbenches_enabled() -> None:
-    config = ROOT / "src/Gui/PreferencePacks/VibeCAD Preferences/VibeCAD Preferences.cfg"
-    root = ET.parse(config).getroot()
-    assert not any(
-        node.get("Name") == "BackgroundAutoloadModules" for node in root.iter("FCText")
-    )
-    workbench_group = next(
-        group
-        for group in root.iter("FCParamGroup")
-        if group.get("Name") == "Workbenches"
-    )
-    disabled_value = next(
-        child
-        for child in workbench_group
-        if child.tag == "FCText" and child.get("Name") == "Disabled"
-    )
-    ordered_value = next(
-        child
-        for child in workbench_group
-        if child.tag == "FCText" and child.get("Name") == "Ordered"
-    )
-    disabled = set(filter(None, (disabled_value.text or "").split(",")))
-    ordered = list(filter(None, (ordered_value.text or "").split(",")))
-    user_workbenches = {
-        "PartDesignWorkbench",
-        "SketcherWorkbench",
-        "DraftWorkbench",
-        "SurfaceWorkbench",
-        "AssemblyWorkbench",
-        "SpreadsheetWorkbench",
-        "MaterialWorkbench",
-        "MeshWorkbench",
-        "MeshPartWorkbench",
-        "PointsWorkbench",
-        "ReverseEngineeringWorkbench",
-        "InspectionWorkbench",
-        "RobotWorkbench",
-        "FemWorkbench",
-        "CAMWorkbench",
-        "TechDrawWorkbench",
+def test_vibecad_ships_exactly_two_constrained_appearance_profiles() -> None:
+    themes = ROOT / "src/Gui/Themes"
+    configs = sorted(themes.glob("*.cfg"))
+    assert [path.name for path in configs] == ["Dark.cfg", "Light.cfg"]
+
+    schemas: dict[str, set[tuple[str, str, str]]] = {}
+    forbidden_keys = {
+        "AutoloadModule",
+        "AutoRemoveRedundants",
+        "BackgroundAutoloadModules",
+        "Disabled",
+        "EnablePreselection",
+        "EnableSelection",
+        "LastModule",
+        "LockToolBars",
+        "MainWindowState",
+        "Ordered",
+        "RefineModel",
+        "SectionView",
+        "ShowOnStartup",
+        "ToolbarIconSize",
+        "UseVBO",
+    }
+    required_main_window_keys = {
+        "AppearanceMode",
+        "Theme",
+        "QtStyle",
+        "StyleSheet",
+        "OverlayActiveStyleSheet",
+        "ThemeStyleParametersFile",
     }
 
-    assert disabled == {"TestWorkbench", "NoneWorkbench"}
-    assert disabled.isdisjoint(user_workbenches)
-    assert "FastenersWorkbench" in ordered
+    for config in configs:
+        root = ET.parse(config).getroot()
+        schema: set[tuple[str, str, str]] = set()
+
+        def collect(group: ET.Element, path: tuple[str, ...]) -> None:
+            name = group.get("Name")
+            next_path = path + ((name,) if name else ())
+            for child in group:
+                if child.tag == "FCParamGroup":
+                    collect(child, next_path)
+                else:
+                    key = child.get("Name", "")
+                    assert key not in forbidden_keys
+                    schema.add(("/".join(next_path), child.tag, key))
+
+        for group in root.findall("FCParamGroup"):
+            collect(group, ())
+        schemas[config.stem] = schema
+
+        main_window = next(
+            group
+            for group in root.iter("FCParamGroup")
+            if group.get("Name") == "MainWindow"
+        )
+        assert {child.get("Name") for child in main_window} == required_main_window_keys
+        values = {child.get("Name"): child.text for child in main_window}
+        assert values["AppearanceMode"] == config.stem
+        assert values["Theme"] == config.stem
+        assert values["QtStyle"] == "Fusion"
+        assert values["StyleSheet"] == f"Vibe{config.stem}.qss"
+        assert values["OverlayActiveStyleSheet"] == f"Vibe{config.stem}_Overlay.qss"
+        assert values["ThemeStyleParametersFile"] == (
+            f"qss:parameters/{config.stem}.yaml"
+        )
+
+    assert schemas["Light"] == schemas["Dark"]
+
+
+def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:
+    gui_cmake = _source("src/Gui/CMakeLists.txt")
+    stylesheet_cmake = _source("src/Gui/Stylesheets/CMakeLists.txt")
+    general_ui = _source("src/Gui/PreferencePages/DlgSettingsGeneral.ui")
+    advanced_ui = _source("src/Gui/PreferencePages/DlgSettingsUI.ui")
+    startup = _source("src/Gui/StartupProcess.cpp")
+    start_selector = _source("src/Mod/Start/Gui/ThemeSelectorWidget.cpp")
+    start_cmake = _source("src/Mod/Start/Gui/CMakeLists.txt")
+    start_resources = _source("src/Mod/Start/Gui/Resources/Start.qrc")
+
+    assert "add_subdirectory(PreferencePacks)" not in gui_cmake
+    assert "add_subdirectory(Themes)" in gui_cmake
+    assert not any((ROOT / "src/Gui/PreferencePacks").rglob("*.*"))
+    assert '"FreeCAD.qss"' not in stylesheet_cmake
+    assert '"overlay/Freecad Overlay.qss"' not in stylesheet_cmake
+    assert "FILE(GLOB Images_Files2" not in stylesheet_cmake
+    assert "${Images_Files2}" not in stylesheet_cmake
+    assert not (ROOT / "src/Gui/Stylesheets/FreeCAD.qss").exists()
+    assert not (ROOT / "src/Gui/Stylesheets/images_classic").exists()
+    assert not (
+        ROOT / "src/Gui/Stylesheets/overlay/Freecad Overlay.qss"
+    ).exists()
+    assert "parameters/Dark.yaml" in stylesheet_cmake
+    assert "parameters/Light.yaml" in stylesheet_cmake
+    assert "ThemeAccentColor" not in _source(
+        "src/Gui/Stylesheets/parameters/Dark.yaml"
+    )
+    assert "ThemeAccentColor" not in _source(
+        "src/Gui/Stylesheets/parameters/Light.yaml"
+    )
+
+    for removed_surface in (
+        "Preference Packs",
+        "moreThemesLabel",
+        "Import Configuration",
+        "Theme Customization",
+        "Accent color",
+        "Style sheet (advanced)",
+        "Open Theme Editor",
+    ):
+        assert removed_surface not in general_ui + advanced_ui
+
+    assert "prefPackManager()->apply" not in startup
+    assert "themeManager()->applyCurrent(false)" in startup
+    assert "prefPackManager" not in start_selector
+    assert "Theme::Classic" not in start_selector
+    assert "FreeCAD Classic" not in start_selector
+    assert "Std_AddonMgr" not in start_selector
+    assert 'tr("Light")' in start_selector
+    assert 'tr("Dark")' in start_selector
+    assert "ThemeManager::Mode::Light" in start_selector
+    assert "ThemeManager::Mode::Dark" in start_selector
+    assert "Theme_thumbnail_classic.png" not in start_cmake + start_resources
+
+
+def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
+    ribbon = _source("src/Gui/VibeCADRibbon.cpp")
+    startup = _source("src/Gui/StartupProcess.cpp")
+
+    for label, workbench in (
+        ("Model", "PartDesignWorkbench"),
+        ("Assemble", "AssemblyWorkbench"),
+        ("Inspect", "InspectionWorkbench"),
+        ("Analyze", "FemWorkbench"),
+        ("Manufacture", "CAMWorkbench"),
+        ("Drawing", "TechDrawWorkbench"),
+    ):
+        assert f'{{"{label}", "{workbench}"}}' in ribbon
+
+    for object_name in (
+        "VibeCADRibbonToolBar",
+        "VibeCADRibbon",
+        "VibeCADAppButton",
+        "VibeCADCommandSearch",
+        "VibeCADThemeToggle",
+        "VibeCADRibbonTabs",
+    ):
+        assert f'QStringLiteral("{object_name}")' in ribbon
+
+    assert "workbench->getToolbarItems()" in ribbon
+    assert "command->getAction()->action()" in ribbon
+    assert "Qt::Key_Alt" in ribbon
+    assert "Qt::Key_F10" in ribbon
+    assert "mainWindow->menuBar()->hide();" in ribbon
+    assert 'QStringLiteral("VibeCAD_OpenPreferences")' in ribbon
+    assert "VibeCADRibbon::install(mainWindow);" in startup
 
 
 def test_vibecad_migrates_its_obsolete_background_autoload_before_use() -> None:

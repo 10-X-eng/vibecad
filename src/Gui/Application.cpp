@@ -92,6 +92,7 @@
 #include "MainWindow.h"
 #include "Macro.h"
 #include "PreferencePackManager.h"
+#include "ThemeManager.h"
 #include "PythonConsolePy.h"
 #include "PythonDebugger.h"
 #include "MainWindowPy.h"
@@ -270,8 +271,10 @@ struct ApplicationP
             macroMngr = nullptr;
         }
 
-        // Create the Theme Manager
+        // Retained for public API compatibility with preference-pack add-ons.
         prefPackManager = new PreferencePackManager();
+        // VibeCAD themes are constrained appearance profiles, not preference packs.
+        themeMngr = new ThemeManager();
         // Create the Style Parameter Manager
         styleParameterManager = new StyleParameters::ParameterManager();
     }
@@ -280,6 +283,7 @@ struct ApplicationP
     {
         delete macroMngr;
         delete prefPackManager;
+        delete themeMngr;
     }
 
     /// list of all handled documents
@@ -290,6 +294,7 @@ struct ApplicationP
 
     MacroManager* macroMngr;
     PreferencePackManager* prefPackManager;
+    ThemeManager* themeMngr;
     StyleParameters::ParameterManager* styleParameterManager;
 
     /// List of all registered views
@@ -495,7 +500,7 @@ void Application::initStyleParameterManager()
             return path;
         }
 
-        return fmt::format("qss:parameters/{}.yaml", hMainWindowGrp->GetASCII("Theme", "Classic"));
+        return fmt::format("qss:parameters/{}.yaml", hMainWindowGrp->GetASCII("Theme", "Dark"));
     };
 
     auto themeParametersSource = new StyleParameters::YamlParameterSource(
@@ -2306,6 +2311,11 @@ CommandManager& Application::commandManager()
 Gui::PreferencePackManager* Application::prefPackManager()
 {
     return d->prefPackManager;
+}
+
+Gui::ThemeManager* Application::themeManager()
+{
+    return d->themeMngr;
 }
 
 Gui::StyleParameters::ParameterManager* Application::styleParameterManager()

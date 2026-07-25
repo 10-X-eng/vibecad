@@ -12,7 +12,7 @@ else()
 endif()
 
 add_subdirectory(Stylesheets)
-add_subdirectory(PreferencePacks)
+add_subdirectory(Themes)
 add_subdirectory(PreferencePackTemplates)
 
 if(BUILD_WITH_CONDA)
@@ -1343,6 +1343,8 @@ SET(FreeCADGui_CPP_SRCS
     SpaceballEvent.cpp
     StatusBarLabel.cpp
     PreferencePackManager.cpp
+    ThemeManager.cpp
+    VibeCADRibbon.cpp
     ProgramInformation.cpp
     Thumbnail.cpp
     Utilities.cpp
@@ -1389,6 +1391,8 @@ SET(FreeCADGui_SRCS
     Control.h
     SpaceballEvent.h
     PreferencePackManager.h
+    ThemeManager.h
+    VibeCADRibbon.h
     ProgramInformation.h
     Thumbnail.h
     Tools.h

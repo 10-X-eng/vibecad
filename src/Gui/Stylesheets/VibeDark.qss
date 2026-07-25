@@ -1600,3 +1600,89 @@ QPushButton#VibeScriptedAccept {
 QLabel#VibeScriptedStatus {
   color: #9fb0c2;
   padding: 2px; }
+
+/* VibeCAD application strip and task ribbon */
+QToolBar#VibeCADRibbonToolBar {
+  spacing: 0px;
+  padding: 0px;
+  background-color: #0e1116;
+  border-bottom: 1px solid #29313c; }
+
+QWidget#VibeCADRibbon,
+QWidget#VibeCADApplicationStrip,
+QWidget#VibeCADDomainStrip {
+  background-color: #0e1116; }
+
+QWidget#VibeCADApplicationStrip {
+  min-height: 34px;
+  border-bottom: 1px solid #202731; }
+
+QWidget#VibeCADDomainStrip {
+  min-height: 29px; }
+
+QToolButton#VibeCADAppButton {
+  min-width: 72px;
+  padding: 4px 10px;
+  color: #ffffff;
+  font-weight: 600;
+  background-color: #16334d;
+  border-color: #145a92; }
+
+QLineEdit#VibeCADCommandSearch {
+  min-height: 25px;
+  padding: 2px 9px;
+  background-color: #10141a;
+  border: 1px solid #29313c;
+  border-radius: 7px; }
+
+QLineEdit#VibeCADCommandSearch:focus {
+  border-color: #4dabf7; }
+
+QTabBar#VibeCADRibbonTabs {
+  background-color: #0e1116; }
+
+QTabBar#VibeCADRibbonTabs::tab {
+  min-width: 70px;
+  min-height: 27px;
+  padding: 0px 12px;
+  color: #9aa7b4;
+  background-color: transparent;
+  border: 0px solid transparent;
+  border-bottom: 2px solid transparent; }
+
+QTabBar#VibeCADRibbonTabs::tab:hover {
+  color: #e8edf2;
+  background-color: #1d242d; }
+
+QTabBar#VibeCADRibbonTabs::tab:selected {
+  color: #ffffff;
+  background-color: #171c23;
+  border-bottom-color: #4dabf7; }
+
+QWidget#VibeCADRibbonPage {
+  background-color: #171c23;
+  border-top: 1px solid #202731; }
+
+QFrame[ribbonGroup="true"] {
+  background-color: transparent;
+  border-right: 1px solid #29313c; }
+
+QWidget#VibeCADRibbonGroupExpanded {
+  background-color: transparent; }
+
+QLabel#VibeCADRibbonGroupTitle {
+  min-height: 13px;
+  padding-top: 1px;
+  color: #7f8b96;
+  font-size: 9px;
+  background-color: transparent; }
+
+QToolButton#VibeCADRibbonCollapsedGroup,
+QToolButton#VibeCADRibbonPageMore {
+  min-height: 50px;
+  padding: 2px 6px;
+  color: #c7d0da; }
+
+QToolButton#VibeCADRibbonGroupMore {
+  color: #9aa7b4;
+  padding: 3px 5px; }
