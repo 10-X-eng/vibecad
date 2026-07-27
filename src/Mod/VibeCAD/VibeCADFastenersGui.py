@@ -140,9 +140,12 @@ class _FastenerDialog:
 
         self.filter_edit = QtGui.QLineEdit()
         self.filter_edit.setPlaceholderText(
-            _translate("Filter by standard, family, or description")
+            _translate("Search standard, type, description, or size")
         )
         form.addRow(_translate("Find"), self.filter_edit)
+
+        self.match_label = QtGui.QLabel()
+        form.addRow("", self.match_label)
 
         self.family_combo = QtGui.QComboBox()
         self.family_combo.addItem(_translate("All families"), "")
@@ -207,26 +210,26 @@ class _FastenerDialog:
         return False
 
     def _refresh_standards(self, *_args: Any) -> None:
+        from VibeCADFasteners import _catalog_search_rank
+
         current = str(
             self._data(self.standard_combo)
             or self._initial.get("standard")
             or ""
         )
-        query = self.filter_edit.text().strip().casefold()
+        query = self.filter_edit.text().strip()
         family = str(self._data(self.family_combo) or "")
-        rows = [
-            row
+        ranked_rows = [
+            (rank, str(row["standard"]), row)
             for row in self._rows
             if (not family or str(row["family"]) == family)
-            and (
-                not query
-                or query
-                in (
-                    f"{row['standard']} {row['family']} "
-                    f"{row['description']}"
-                ).casefold()
-            )
+            if (rank := _catalog_search_rank(query, row)) is not None
         ]
+        ranked_rows.sort(key=lambda item: (item[0], item[1]))
+        rows = [item[2] for item in ranked_rows]
+        self.match_label.setText(
+            _translate("Matching standards: {count}").format(count=len(rows))
+        )
         self.standard_combo.blockSignals(True)
         self.standard_combo.clear()
         for row in rows:
@@ -235,11 +238,29 @@ class _FastenerDialog:
                 str(row["standard"]),
             )
         self.standard_combo.blockSignals(False)
-        if current:
+        if current and not query:
             self._select_data(self.standard_combo, current)
         if self.standard_combo.count() and self.standard_combo.currentIndex() < 0:
             self.standard_combo.setCurrentIndex(0)
         self._refresh_standard()
+
+    def _preferred_size(self, sizes: list[str]) -> str:
+        from VibeCADFasteners import _catalog_search_terms
+
+        query_terms = _catalog_search_terms(self.filter_edit.text())
+        normalized = [
+            (size, re.sub(r"\s+", "", size).casefold())
+            for size in sizes
+        ]
+        for term in query_terms:
+            for size, candidate in normalized:
+                if term == candidate:
+                    return size
+        for term in query_terms:
+            for size, candidate in normalized:
+                if term and term in candidate:
+                    return size
+        return ""
 
     def _refresh_standard(self, *_args: Any) -> None:
         from VibeCADFasteners import describe_standard
@@ -256,12 +277,12 @@ class _FastenerDialog:
         self.description_label.setText(str(details["description"]))
         for size in details["nominal_threads"]:
             self.size_combo.addItem(str(size), str(size))
-        requested = (
-            self._initial.get("nominal_size")
-            if standard == str(self._initial.get("standard") or "")
-            else None
-        )
-        if requested is not None:
+        requested = self._preferred_size(list(details["nominal_threads"]))
+        if not requested and standard == str(
+            self._initial.get("standard") or ""
+        ):
+            requested = self._initial.get("nominal_size")
+        if requested:
             self._select_data(self.size_combo, requested)
         self.size_combo.blockSignals(False)
         self._refresh_size()

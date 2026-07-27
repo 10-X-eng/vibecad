@@ -78,10 +78,11 @@ public:
         // the 3D container for independently controlled history objects.
         App::DocumentObject* publicationRepresentation {};
 
-        // Body-owned result objects represented in the Features folder. A
-        // paired Body row suppresses these whenever its published solid is
-        // toggled so sketches, datums, and references remain independent
-        // without leaving a second solid visible.
+        // Body-owned result objects represented in the Features folder. The
+        // paired publication is the default renderer; enabling one result
+        // temporarily gates that publication and previews exactly one
+        // cumulative history state. Parent hide/show remains reversible while
+        // sketches, datums, and references stay independent.
         std::vector<App::DocumentObject*> bodyResultRepresentations;
 
         // Older VibeScript documents gave an adopted result the same label as

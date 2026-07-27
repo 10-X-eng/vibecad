@@ -77,7 +77,7 @@ namespace sp = std::placeholders;
     qApp->translate("Workbench", "Split");
     qApp->translate("Workbench", "Compound");
     qApp->translate("Workbench", "Inspect and Appearance");
-    qApp->translate("Workbench", "Model Structure");
+    qApp->translate("Workbench", "Part Design Helper Features");
     qApp->translate("Workbench", "Standard Components");
     qApp->translate("Workbench", "Create and Remove Material");
     qApp->translate("Workbench", "Boolean, Split, and Repair");
@@ -598,7 +598,7 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
 {
     Gui::ToolBarItem* root = StdWorkbench::setupToolBars();
     Gui::ToolBarItem* part = new Gui::ToolBarItem(root);
-    part->setCommand("Model Structure");
+    part->setCommand("Part Design Helper Features");
 
     *part << "PartDesign_Body"
           << "PartDesign_CompSketches"
@@ -606,13 +606,6 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
           << "Part_CheckGeometry"
           << "PartDesign_SubShapeBinder"
           << "PartDesign_Clone";
-
-    part = new Gui::ToolBarItem(root);
-    part->setCommand("Standard Components");
-    *part << "VibeCAD_InsertStandardFastener"
-          << "VibeCAD_EditStandardFastener"
-          << "VibeCAD_CreateMatchingFastenerHole"
-          << "VibeCAD_AttachStandardFastener";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Create and Remove Material");
@@ -677,6 +670,13 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
           << "Part_CompJoinFeatures"
           << "Part_CompSplitFeatures"
           << "Part_Defeaturing";
+
+    part = new Gui::ToolBarItem(root);
+    part->setCommand("Standard Components");
+    *part << "VibeCAD_InsertStandardFastener"
+          << "VibeCAD_EditStandardFastener"
+          << "VibeCAD_CreateMatchingFastenerHole"
+          << "VibeCAD_AttachStandardFastener";
 
     return root;
 }

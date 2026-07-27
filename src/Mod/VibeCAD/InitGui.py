@@ -25,6 +25,16 @@ def _check_bundled_fasteners() -> bool:
         return False
 
 
+def _load_ribbon_extension_commands() -> None:
+    """Register native commands used outside their legacy workbench page."""
+
+    for module_name in ("InspectionGui", "MeshPartGui", "PartGui"):
+        try:
+            __import__(module_name)
+        except Exception as exc:
+            _warn(f"VibeCAD ribbon extension {module_name} failed to load: {exc}")
+
+
 def _restore_vibecad_disabled_workbenches() -> bool:
     """Undo only the exact disabled lists previously written by VibeCAD."""
 
@@ -163,6 +173,7 @@ try:
     import VibeCADGui
 
     VibeCADGui.ensure_commands_registered()
+    _load_ribbon_extension_commands()
     if fasteners_available:
         try:
             import VibeCADFastenersGui

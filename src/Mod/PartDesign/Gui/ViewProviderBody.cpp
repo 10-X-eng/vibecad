@@ -29,6 +29,7 @@
 #include <App/Document.h>
 #include <App/Origin.h>
 #include <App/Part.h>
+#include <App/PropertyStandard.h>
 #include <App/VarSet.h>
 #include <Base/Console.h>
 #include <Gui/ActionFunction.h>
@@ -49,6 +50,25 @@
 
 using namespace PartDesignGui;
 namespace sp = std::placeholders;
+
+namespace
+{
+
+bool preservesSavedHistoryVisibility(const PartDesign::Body* body)
+{
+    if (!body) {
+        return false;
+    }
+    const auto* property = dynamic_cast<const App::PropertyString*>(
+        body->getPropertyByName("VibeCADPartDesignHistoryPresentation")
+    );
+    return property
+        && property->getStrValue().starts_with(
+            "vibecad-partdesign-history-presentation-"
+        );
+}
+
+}  // namespace
 
 const char* PartDesignGui::ViewProviderBody::BodyModeEnum[] = {"Through", "Tip", nullptr};
 
@@ -609,6 +629,14 @@ void ViewProviderBody::show()
     PartGui::ViewProviderPart::show();
 
     auto* body = static_cast<PartDesign::Body*>(getObject());
+
+    // Scripted publications render their accepted solid through a stable link.
+    // Their native Body is an independently controllable history container, so
+    // reopening it must preserve the saved visibility of every history feature
+    // instead of implicitly enabling the Tip.
+    if (preservesSavedHistoryVisibility(body)) {
+        return;
+    }
 
     auto tip = body->Tip.getValue();
     if (!tip || tip->Visibility.getValue()) {

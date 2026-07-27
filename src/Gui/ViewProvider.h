@@ -83,6 +83,8 @@ enum ViewStatus
     isRestoring = 2,
     UpdatingView = 3,
     TouchDocument = 4,
+    VisibilityGateClosed = 5,
+    VisibilityGateTransition = 6,
 };
 
 

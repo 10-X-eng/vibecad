@@ -350,18 +350,26 @@ public:
 class Gui::BrowserFolderItem: public QTreeWidgetItem
 {
 public:
+    enum class VisibilityMode
+    {
+        IndependentItems,
+        LatestPreview,
+    };
+
     BrowserFolderItem(
         DocumentItem* owner,
         QTreeWidgetItem* parent,
         DocumentObjectItem* logicalParent,
         QString key,
         QString label,
-        QByteArray iconName
+        QByteArray iconName,
+        VisibilityMode visibilityMode = VisibilityMode::IndependentItems
     )
         : QTreeWidgetItem(parent, TreeWidget::BrowserFolderType)
         , owner(owner)
         , itemKey(std::move(key))
         , iconName(std::move(iconName))
+        , visibilityMode(visibilityMode)
     {
         if (logicalParent) {
             // Keep the name only; item pointers dangle between an object
@@ -397,10 +405,25 @@ public:
         return itemKey;
     }
 
+    bool previewsLatest() const
+    {
+        return visibilityMode == VisibilityMode::LatestPreview;
+    }
+
     void setAllVisible(bool visible)
     {
         std::vector<DocumentObjectItem*> items;
         collectObjectItems(this, items);
+        if (visible && previewsLatest() && !items.empty()) {
+            // Part Design features are cumulative history states, not
+            // independent layers. "Show" previews the latest feature instead
+            // of drawing every historical solid on top of the final result.
+            for (auto* item : items) {
+                TreeWidget::setObjectItemVisibility(item, item == items.back());
+            }
+            owner->updateBrowserFolderStatus();
+            return;
+        }
         for (auto* item : items) {
             TreeWidget::setObjectItemVisibility(item, visible);
         }
@@ -414,10 +437,12 @@ public:
         if (items.empty()) {
             return;
         }
-        const bool allVisible = std::ranges::all_of(items, [](const auto* item) {
+        const bool anyVisible = std::ranges::any_of(items, [](const auto* item) {
             return TreeWidget::objectItemVisibility(item);
         });
-        setAllVisible(!allVisible);
+        // A partially visible folder hides on the next click. For Features,
+        // the following click previews the latest cumulative history state.
+        setAllVisible(!anyVisible);
     }
 
     void updateStatus()
@@ -534,6 +559,7 @@ private:
     std::string logicalParentName;
     QString itemKey;
     QByteArray iconName;
+    VisibilityMode visibilityMode;
 };
 
 // ---------------------------------------------------------------------------
@@ -1529,12 +1555,17 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
         contextMenu.clear();
         auto* folder = static_cast<BrowserFolderItem*>(this->contextItem);
 
-        auto* showAll = contextMenu.addAction(tr("Show All"));
+        const bool featureFolder = folder->previewsLatest();
+        auto* showAll = contextMenu.addAction(
+            featureFolder ? tr("Preview Latest") : tr("Show All")
+        );
         connect(showAll, &QAction::triggered, &contextMenu, [folder]() {
             folder->setAllVisible(true);
         });
 
-        auto* hideAll = contextMenu.addAction(tr("Hide All"));
+        auto* hideAll = contextMenu.addAction(
+            featureFolder ? tr("Clear Preview") : tr("Hide All")
+        );
         connect(hideAll, &QAction::triggered, &contextMenu, [folder]() {
             folder->setAllVisible(false);
         });
@@ -2266,7 +2297,7 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
                 continue;
             }
             auto* objectItem = static_cast<DocumentObjectItem*>(raw);
-            if (objectItem->visibilityPeer()) {
+            if (objectItem->isBrowserProxy()) {
                 setObjectItemVisibility(
                     objectItem,
                     !objectItemVisibility(objectItem)
@@ -2310,18 +2341,10 @@ bool TreeWidget::objectItemVisibility(const DocumentObjectItem* item)
     // history and 3D container, while the stable publication peer is the
     // user-visible solid.  The Body must remain shown so independently enabled
     // sketches and feature previews can render. Its browser row reports the
-    // effective solid visibility: the publication or any explicit result
-    // preview.
+    // parent visibility from the stable publication. Feature rows retain their
+    // own visibility even while this parent gate suppresses their rendering.
     if (const auto* peer = item->visibilityPeer()) {
-        if (peer->Visibility.getValue()) {
-            return true;
-        }
-        for (const auto* dependent : item->visibilityDependents()) {
-            if (dependent->Visibility.getValue()) {
-                return true;
-            }
-        }
-        return false;
+        return peer->Visibility.getValue();
     }
 
     auto* object = item->object()->getObject();
@@ -2352,21 +2375,17 @@ void TreeWidget::setObjectItemVisibility(
 
     auto* object = item->object()->getObject();
     if (auto* peer = item->visibilityPeer()) {
-        // The row represents the stable solid publication. Keep the native
-        // Body enabled only as a scene container for sketches and datums, and
-        // suppress every native solid result so hiding this row actually
-        // removes the solid from the viewport.
+        // The native Body remains a scene container for independently visible
+        // sketches and datums. The published solid is the persistent parent
+        // state; result features inherit it through a non-destructive rendering
+        // gate and keep their own Visibility values.
         if (!object->Visibility.getValue()) {
             object->Visibility.setValue(true);
-        }
-        for (auto* dependent : item->visibilityDependents()) {
-            if (dependent->Visibility.getValue()) {
-                dependent->Visibility.setValue(false);
-            }
         }
         if (peer->Visibility.getValue() != visible) {
             peer->Visibility.setValue(visible);
         }
+        item->syncVisibilityDependents();
         if (updateSelection) {
             Selection().updateSelection(
                 visible,
@@ -2396,6 +2415,7 @@ void TreeWidget::setObjectItemVisibility(
     }
     if (auto* parentItem = item->getParentItem();
         parentItem && parentItem->visibilityPeer()) {
+        parentItem->syncVisibilityDependents(visible ? object : nullptr);
         parentItem->testStatus(true);
     }
 }
@@ -2423,7 +2443,7 @@ bool TreeWidget::applyModelBrowserVisibility(
             continue;
         }
         auto* item = documentIt->second->findBrowserItem(object);
-        if (!item || !item->visibilityPeer()) {
+        if (!item || !item->isBrowserProxy()) {
             continue;
         }
         const bool visible = requestedVisibility < 0
@@ -2475,7 +2495,7 @@ void TreeWidget::mousePressEvent(QMouseEvent* event)
                 }
                 else {
                     auto* objectItem = static_cast<DocumentObjectItem*>(item);
-                    if (objectItem->visibilityPeer()) {
+                    if (objectItem->isBrowserProxy()) {
                         setObjectItemVisibility(
                             objectItem,
                             !objectItemVisibility(objectItem)
@@ -5142,6 +5162,7 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
             );
         }
     }
+    item->syncVisibilityDependents();
     parent->addChild(item);
     item->setText(0, QString::fromUtf8(data->label.c_str()));
     if (!data->label2.empty()) {
@@ -5195,6 +5216,13 @@ void DocumentItem::clearModelBrowser()
 
     const bool selectionLock = tree->blockSelection(true);
     QSignalBlocker signalBlocker(tree);
+    for (const auto& entry : ObjectMap) {
+        for (auto* item : entry.second->items) {
+            if (item->isBrowserProxy()) {
+                item->syncVisibilityDependents(nullptr, true);
+            }
+        }
+    }
     for (int index = childCount() - 1; index >= 0; --index) {
         auto* childItem = child(index);
         const bool isBrowserRoot = childItem->type() == TreeWidget::BrowserFolderType
@@ -5247,7 +5275,9 @@ void DocumentItem::updateBrowserFolderStatus()
                 childItem->type() == TreeWidget::ObjectType
                 && static_cast<DocumentObjectItem*>(childItem)->isBrowserProxy()
             ) {
-                collect(childItem);
+                auto* objectItem = static_cast<DocumentObjectItem*>(childItem);
+                objectItem->syncVisibilityDependents();
+                collect(objectItem);
             }
         }
     };
@@ -5338,7 +5368,9 @@ void DocumentItem::rebuildModelBrowser()
                           const std::string& context,
                           const char* id,
                           const QString& label,
-                          const char* icon
+                          const char* icon,
+                          BrowserFolderItem::VisibilityMode visibilityMode =
+                              BrowserFolderItem::VisibilityMode::IndependentItems
                       ) {
         const QString key = QString::fromStdString(context + "/folder:" + id);
         auto* folder = new BrowserFolderItem(
@@ -5347,7 +5379,8 @@ void DocumentItem::rebuildModelBrowser()
             logicalParent,
             key,
             label,
-            QByteArray(icon)
+            QByteArray(icon),
+            visibilityMode
         );
         folder->setExpanded(expandedFolders.contains(key.toStdString()));
         return folder;
@@ -5601,7 +5634,9 @@ void DocumentItem::rebuildModelBrowser()
                               const char* id,
                               const QString& label,
                               const char* icon,
-                              const std::vector<const Entry*>& categoryEntries
+                              const std::vector<const Entry*>& categoryEntries,
+                              BrowserFolderItem::VisibilityMode visibilityMode =
+                                  BrowserFolderItem::VisibilityMode::IndependentItems
                           ) {
         if (categoryEntries.empty()) {
             return static_cast<BrowserFolderItem*>(nullptr);
@@ -5612,7 +5647,8 @@ void DocumentItem::rebuildModelBrowser()
             contextKey(contextObject),
             id,
             label,
-            icon
+            icon,
+            visibilityMode
         );
         for (const auto* entry : categoryEntries) {
             auto* logicalParent = logicalItem(entry->logicalParent, nullptr);
@@ -5642,7 +5678,8 @@ void DocumentItem::rebuildModelBrowser()
             "features",
             TreeWidget::tr("Features"),
             "PartDesign_Pad",
-            features
+            features,
+            BrowserFolderItem::VisibilityMode::LatestPreview
         );
         bodyItem->setChildIndicatorPolicy(
             bodyItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
@@ -6549,9 +6586,31 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
 
     _updateStatus();
 
-    // Let's not waste time on the newly added Visibility property in
-    // DocumentObject.
+    // Visibility changes must update the final-versus-history presentation
+    // synchronously. In particular, an adopted Part::Feature does not receive
+    // Part Design's native single-feature visibility handling.
     if (&prop == &obj->Visibility) {
+        std::set<DocumentItem*> documents;
+        for (const auto& data : itEntry->second) {
+            if (data && data->docItem) {
+                documents.insert(data->docItem);
+            }
+        }
+        for (auto* document : documents) {
+            auto* changedItem = document->findBrowserItem(obj);
+            auto* parentItem = changedItem ? changedItem->getParentItem() : nullptr;
+            if (parentItem && parentItem->visibilityPeer()) {
+                parentItem->syncVisibilityDependents(
+                    obj->Visibility.getValue() ? obj : nullptr
+                );
+            }
+            else {
+                // The changed object may be the hidden publication peer rather
+                // than a visible history row. Refreshing all paired Body rows
+                // resolves that relationship without depending on tree focus.
+                document->updateBrowserFolderStatus();
+            }
+        }
         return;
     }
 
@@ -7931,6 +7990,96 @@ std::vector<App::DocumentObject*> DocumentObjectItem::visibilityDependents() con
     return dependents;
 }
 
+void DocumentObjectItem::syncVisibilityDependents(
+    App::DocumentObject* preferredPreview,
+    bool releaseGate
+) const
+{
+    if (!Application::Instance) {
+        return;
+    }
+    auto* peer = visibilityPeer();
+    if (!peer && !releaseGate) {
+        return;
+    }
+    const auto dependents = visibilityDependents();
+    auto viewProviderFor = [](App::DocumentObject* object) {
+        return freecad_cast<ViewProviderDocumentObject*>(
+            Application::Instance->getViewProvider(object)
+        );
+    };
+
+    if (releaseGate) {
+        if (peer) {
+            if (auto* viewProvider = viewProviderFor(peer)) {
+                viewProvider->setVisibilityGate(true);
+            }
+        }
+        for (auto* dependent : dependents) {
+            if (auto* viewProvider = viewProviderFor(dependent)) {
+                viewProvider->setVisibilityGate(true);
+            }
+        }
+        return;
+    }
+
+    App::DocumentObject* activePreview = nullptr;
+    if (preferredPreview && preferredPreview->Visibility.getValue()
+        && std::ranges::find(dependents, preferredPreview) != dependents.end()) {
+        activePreview = preferredPreview;
+    }
+    if (!activePreview) {
+        // Prefer the latest enabled history state when repairing a document
+        // saved by an older build that allowed several results to be visible.
+        const auto visible = std::ranges::find_if(
+            dependents.rbegin(),
+            dependents.rend(),
+            [](const auto* dependent) {
+                return dependent && dependent->Visibility.getValue();
+            }
+        );
+        if (visible != dependents.rend()) {
+            activePreview = *visible;
+        }
+    }
+
+    // Native Part Design already makes its own Feature subclasses exclusive.
+    // Adopted Part results do not participate in that rule, so normalize the
+    // entire projected history to one persisted preview state.
+    for (auto* dependent : dependents) {
+        if (dependent && dependent != activePreview
+            && dependent->Visibility.getValue()) {
+            dependent->Visibility.setValue(false);
+        }
+    }
+
+    const bool bodyVisible = peer->Visibility.getValue();
+    auto* peerViewProvider = viewProviderFor(peer);
+
+    // Close obsolete scene branches before opening the chosen one. This
+    // ordering prevents even a transient frame containing coincident solids.
+    if (peerViewProvider && (!bodyVisible || activePreview)) {
+        peerViewProvider->setVisibilityGate(false);
+    }
+    for (auto* dependent : dependents) {
+        auto* viewProvider = freecad_cast<ViewProviderDocumentObject*>(
+            Application::Instance->getViewProvider(dependent)
+        );
+        if (viewProvider
+            && (!bodyVisible || !activePreview || dependent != activePreview)) {
+            viewProvider->setVisibilityGate(false);
+        }
+    }
+    if (bodyVisible && activePreview) {
+        if (auto* viewProvider = viewProviderFor(activePreview)) {
+            viewProvider->setVisibilityGate(true);
+        }
+    }
+    else if (bodyVisible && peerViewProvider) {
+        peerViewProvider->setVisibilityGate(true);
+    }
+}
+
 void DocumentObjectItem::testStatus(bool resetStatus)
 {
     QIcon icon, icon2;
@@ -8131,16 +8280,8 @@ void DocumentObjectItem::testStatus(bool resetStatus, QIcon& icon1, QIcon& icon2
     if (visible < 0) {
         visible = object()->isShow() ? 1 : 0;
     }
-    if (const auto* peer = visibilityPeer()) {
-        visible = peer->Visibility.getValue() ? 1 : 0;
-        if (!visible) {
-            for (const auto* dependent : visibilityDependents()) {
-                if (dependent->Visibility.getValue()) {
-                    visible = 1;
-                    break;
-                }
-            }
-        }
+    if (browserProxy) {
+        visible = TreeWidget::objectItemVisibility(this) ? 1 : 0;
     }
 
     auto obj = object()->getObject();

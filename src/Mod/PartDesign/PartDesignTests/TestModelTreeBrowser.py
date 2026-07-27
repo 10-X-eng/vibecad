@@ -365,10 +365,16 @@ class TestModelTreeBrowser(unittest.TestCase):
     def _tree_and_document_item(self):
         main_window = Gui.getMainWindow()
         for tree in main_window.findChildren(QtGui.QTreeWidget):
+            matches = []
             for index in range(tree.topLevelItemCount()):
                 item = tree.topLevelItem(index)
                 if not item.isHidden() and item.text(0) == self.document.Label:
-                    return tree, item
+                    matches.append(item)
+            # Closing and immediately reopening the same file can briefly
+            # leave both identically labelled document rows in Qt's event
+            # queue. Never send input to the retired row.
+            if len(matches) == 1:
+                return tree, matches[0]
         return None, None
 
     def _browser_ready(self):
@@ -436,6 +442,76 @@ class TestModelTreeBrowser(unittest.TestCase):
             tuple(obj.Name for obj in self.vibe_body.Group),
             self.expected_vibe_body_group,
         )
+
+    def _reopen_vibe_document(self, path):
+        from VibeCADVibeScriptDomainPublication import (
+            restore_partdesign_history_presentation,
+        )
+
+        closing_label = self.document.Label
+        App.closeDocument(self.document.Name)
+
+        def retired_tree_removed():
+            main_window = Gui.getMainWindow()
+            for tree in main_window.findChildren(QtGui.QTreeWidget):
+                for index in range(tree.topLevelItemCount()):
+                    item = tree.topLevelItem(index)
+                    if not item.isHidden() and item.text(0) == closing_label:
+                        return None
+            return True
+
+        self.assertIsNotNone(_wait_until(retired_tree_removed))
+        self.document = App.openDocument(path)
+        self.assertIsNotNone(_wait_until(self._browser_ready))
+        self.vibe_component = self.document.getObject("VibeProgram")
+        self.vibe_body = self.document.getObject("VibeCandidateBody")
+        self.vibe_result = self.document.getObject("VibePD_AdoptedResult_1")
+        self.vibe_part_result = self.document.getObject(
+            "VibeRetainedPartResult"
+        )
+        self.vibe_sketch = self.document.getObject("VibeBladeProfile")
+        self.vibe_output = self.document.getObject("VibeUtilityBlade")
+        restore_partdesign_history_presentation(self.document)
+        # Loading and presentation repair can each schedule a coalesced browser
+        # rebuild. Interact only with the settled projection.
+        _event_step(250)
+
+    def _vibe_feature_folder_status(self):
+        _tree, document_item = self._tree_and_document_item()
+        component = _child(document_item, "Vibe Program")
+        bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+        body = _child(bodies, "Utility Blade 38755A29")
+        folder = _child(body, "Features", BROWSER_FOLDER_TYPE)
+        return folder.toolTip(0) if folder is not None else None
+
+    def _toggle_vibe_feature_folder(self):
+        tree, document_item = self._tree_and_document_item()
+        component = _child(document_item, "Vibe Program")
+        bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+        body = _child(bodies, "Utility Blade 38755A29")
+        folder = _child(body, "Features", BROWSER_FOLDER_TYPE)
+        if tree is None or folder is None:
+            return False
+        tree.clearSelection()
+        tree.setCurrentItem(folder)
+        folder.setSelected(True)
+        tree.setFocus()
+        _press_space(tree)
+        return True
+
+    def _toggle_vibe_body(self):
+        tree, document_item = self._tree_and_document_item()
+        component = _child(document_item, "Vibe Program")
+        bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+        body = _child(bodies, "Utility Blade 38755A29")
+        if tree is None or body is None:
+            return False
+        tree.clearSelection()
+        tree.setCurrentItem(body)
+        body.setSelected(True)
+        tree.setFocus()
+        _press_space(tree)
+        return True
 
     def test_browser_groups_by_type_with_one_visible_item_per_object(self):
         tree, document_item = self._browser_items()
@@ -624,14 +700,72 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertNotIn(self.vibe_output.Label, visible_labels)
         self.assertIs(self.vibe_output.getLinkedObject(), self.vibe_target)
 
-        # The Body row controls the stable rendered output without disabling
-        # the native Body that owns independently visible history objects.
+        # The stable publication is the default solid renderer.
         self.vibe_body.Visibility = True
+        self.vibe_result.Visibility = False
+        self.vibe_part_result.Visibility = False
+        self.vibe_output.Visibility = True
+        _event_step()
+        self.assertTrue(_renders_in_active_scene(self.vibe_output))
+        self.assertFalse(_renders_in_active_scene(self.vibe_result))
+        self.assertFalse(_renders_in_active_scene(self.vibe_part_result))
+
+        # Enabling a history result previews it and suppresses the stable
+        # publication without changing the Body row's persistent visibility.
+        self.vibe_result.ViewObject.BoundingBox = True
         self.vibe_result.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_output.Visibility
+                and self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and _renders_in_active_scene(self.vibe_result)
+            )
+        )
+
+        # Adopted Part::Feature results are subject to the same single-preview
+        # rule even though native Part Design does not make them exclusive.
         self.vibe_part_result.Visibility = True
-        # Reproduce the reported state: the Body row's publication is hidden,
-        # but native Part Design and retained Part results are still drawing.
-        self.vibe_output.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and _renders_in_active_scene(self.vibe_part_result)
+            )
+        )
+
+        # Features is a preview controller, not a request to draw every
+        # cumulative solid. Clearing it restores the final publication;
+        # enabling it previews only the latest result.
+        tree.clearSelection()
+        tree.setCurrentItem(features)
+        features.setSelected(True)
+        tree.setFocus()
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+                and _renders_in_active_scene(self.vibe_output)
+            )
+        )
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and _renders_in_active_scene(self.vibe_part_result)
+            )
+        )
+
+        # The Body row is a non-destructive parent gate. Hiding it removes both
+        # final and preview solids while retaining the active preview.
+        _event_step()
         tree.clearSelection()
         tree.setCurrentItem(body_item)
         body_item.setSelected(True)
@@ -642,8 +776,20 @@ class TestModelTreeBrowser(unittest.TestCase):
                 lambda: self.vibe_body.Visibility
                 and not self.vibe_output.Visibility
                 and not self.vibe_result.Visibility
-                and not self.vibe_part_result.Visibility
-            )
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
+            ),
+            (
+                self.vibe_body.Visibility,
+                self.vibe_output.Visibility,
+                self.vibe_result.Visibility,
+                self.vibe_part_result.Visibility,
+                _renders_in_active_scene(self.vibe_output),
+                _renders_in_active_scene(self.vibe_result),
+                _renders_in_active_scene(self.vibe_part_result),
+            ),
         )
         _press_space(tree)
         self.assertIsNotNone(
@@ -651,14 +797,15 @@ class TestModelTreeBrowser(unittest.TestCase):
                 lambda: self.vibe_body.Visibility
                 and self.vibe_output.Visibility
                 and not self.vibe_result.Visibility
-                and not self.vibe_part_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and _renders_in_active_scene(self.vibe_part_result)
             )
         )
 
         # Standard visibility commands must use the same projected Body
         # contract even after focus leaves the tree.
-        self.vibe_result.Visibility = True
-        self.vibe_part_result.Visibility = True
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.vibe_body)
         Gui.runCommand("Std_HideSelection")
@@ -667,8 +814,20 @@ class TestModelTreeBrowser(unittest.TestCase):
                 lambda: self.vibe_body.Visibility
                 and not self.vibe_output.Visibility
                 and not self.vibe_result.Visibility
-                and not self.vibe_part_result.Visibility
-            )
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
+            ),
+            (
+                self.vibe_body.Visibility,
+                self.vibe_output.Visibility,
+                self.vibe_result.Visibility,
+                self.vibe_part_result.Visibility,
+                _renders_in_active_scene(self.vibe_output),
+                _renders_in_active_scene(self.vibe_result),
+                _renders_in_active_scene(self.vibe_part_result),
+            ),
         )
         Gui.runCommand("Std_ShowSelection")
         self.assertIsNotNone(
@@ -676,7 +835,45 @@ class TestModelTreeBrowser(unittest.TestCase):
                 lambda: self.vibe_body.Visibility
                 and self.vibe_output.Visibility
                 and not self.vibe_result.Visibility
-                and not self.vibe_part_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and _renders_in_active_scene(self.vibe_part_result)
+            )
+        )
+
+        # The virtual Bodies folder must use the same reversible parent gate.
+        tree.clearSelection()
+        tree.setCurrentItem(bodies)
+        bodies.setSelected(True)
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
+            ),
+            (
+                self.vibe_output.Visibility,
+                self.vibe_result.Visibility,
+                self.vibe_part_result.Visibility,
+                _renders_in_active_scene(self.vibe_output),
+                _renders_in_active_scene(self.vibe_result),
+                _renders_in_active_scene(self.vibe_part_result),
+            ),
+        )
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and _renders_in_active_scene(self.vibe_part_result)
             )
         )
 
@@ -729,13 +926,14 @@ class TestModelTreeBrowser(unittest.TestCase):
 
         self.vibe_body.Visibility = True
         self.vibe_result.Visibility = True
-        self.vibe_part_result.Visibility = True
+        self.vibe_part_result.Visibility = False
         self.vibe_output.Visibility = True
         self.vibe_sketch.Visibility = False
         _event_step()
         self.assertFalse(_renders_in_active_scene(self.vibe_sketch))
         self.assertTrue(_renders_in_active_scene(self.vibe_result))
-        self.assertTrue(_renders_in_active_scene(self.vibe_part_result))
+        self.assertFalse(_renders_in_active_scene(self.vibe_part_result))
+        self.assertFalse(_renders_in_active_scene(self.vibe_output))
 
         tree.clearSelection()
         tree.setCurrentItem(body_item)
@@ -746,8 +944,10 @@ class TestModelTreeBrowser(unittest.TestCase):
             _wait_until(
                 lambda: self.vibe_body.Visibility
                 and not self.vibe_output.Visibility
-                and not self.vibe_result.Visibility
+                and self.vibe_result.Visibility
                 and not self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
             )
         )
         self.assertFalse(_renders_in_active_scene(self.vibe_output))
@@ -764,14 +964,33 @@ class TestModelTreeBrowser(unittest.TestCase):
             _wait_until(
                 lambda: self.vibe_body.Visibility
                 and self.vibe_sketch.Visibility
-                and not self.vibe_result.Visibility
+                and self.vibe_result.Visibility
                 and not self.vibe_part_result.Visibility
                 and not self.vibe_output.Visibility
+                and not _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
             )
         )
         self.assertTrue(_renders_in_active_scene(self.vibe_sketch))
         _triangles, lines = _rendered_primitive_counts(self.vibe_body)
         self.assertGreater(lines, 0)
+
+        tree.clearSelection()
+        tree.setCurrentItem(body_item)
+        body_item.setSelected(True)
+        _press_space(tree)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: self.vibe_output.Visibility
+                and self.vibe_sketch.Visibility
+                and self.vibe_result.Visibility
+                and not self.vibe_part_result.Visibility
+                and _renders_in_active_scene(self.vibe_sketch)
+                and _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
+                and not _renders_in_active_scene(self.vibe_output)
+            )
+        )
         self._assert_document_unchanged()
 
     def test_legacy_hidden_body_restores_as_a_sketch_render_container(self):
@@ -916,6 +1135,92 @@ class TestModelTreeBrowser(unittest.TestCase):
             _wait_until(lambda: self.grouped_sketch.Visibility)
         )
         self._assert_document_unchanged()
+
+    def test_partially_visible_features_folder_can_hide_and_show(self):
+        second = self.feature_body.newObject(
+            "PartDesign::Feature",
+            "SecondFeature",
+        )
+        second.Label = "Second Feature"
+        second.Shape = Part.makeBox(2, 2, 2)
+        self.feature_body.Tip = second
+        self.document.recompute()
+
+        def feature_folder():
+            _tree, document_item = self._tree_and_document_item()
+            component = _child(document_item, "Browser Component")
+            bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+            body = _child(bodies, "Feature Body")
+            return _child(body, "Features", BROWSER_FOLDER_TYPE)
+
+        def toggle_features():
+            tree, document_item = self._tree_and_document_item()
+            component = _child(document_item, "Browser Component")
+            bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+            body = _child(bodies, "Feature Body")
+            folder = _child(body, "Features", BROWSER_FOLDER_TYPE)
+            if tree is None or folder is None:
+                return False
+            tree.clearSelection()
+            tree.setCurrentItem(folder)
+            folder.setSelected(True)
+            tree.setFocus()
+            _press_space(tree)
+            return True
+
+        self.feature.Visibility = True
+        second.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.feature.Visibility and second.Visibility
+            )
+        )
+        # The model browser coalesces object additions before rebuilding its
+        # projection. Do not retain a Qt item from the superseded projection.
+        _event_step(250)
+        snapshot = self._browser_snapshot()
+        self.assertTrue(
+            _snapshot_has_path(
+                snapshot,
+                (
+                    self.document.Label,
+                    "Browser Component",
+                    "Bodies",
+                    "Feature Body",
+                    "Features",
+                    "Second Feature",
+                ),
+            ),
+            snapshot,
+        )
+        # Let the coalesced projection update finish before retaining a Qt item
+        # for an input event. Rebuilds replace every browser proxy.
+        _event_step()
+
+        # A partial Features folder clears on the first click, then previews
+        # only the latest cumulative history state on the next click.
+        self.assertTrue(toggle_features())
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.feature.Visibility
+                and not second.Visibility
+            )
+        )
+
+        self.assertTrue(toggle_features())
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.feature.Visibility and second.Visibility
+            )
+        )
+
+        self.assertTrue(toggle_features())
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.feature.Visibility
+                and not second.Visibility
+            )
+        )
 
     def test_selection_uses_logical_ownership_not_virtual_folders(self):
         tree, _document_item = self._browser_items()
@@ -1098,6 +1403,122 @@ class TestModelTreeBrowser(unittest.TestCase):
                     (self.document.Label, "Vibe Program", "Geometry"),
                 ),
                 snapshot,
+            )
+
+    def test_visible_feature_folder_survives_save_and_reopen(self):
+        from VibeCADVibeScriptDomainPublication import (
+            PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+            PROP_PARTDESIGN_HISTORY_PRESENTATION,
+            _configure_partdesign_history_presentation,
+        )
+
+        _configure_partdesign_history_presentation(self.vibe_body)
+        self.assertTrue(self._toggle_vibe_feature_folder())
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and _renders_in_active_scene(self.vibe_part_result)
+            )
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="vibecad_visible_features_"
+        ) as temporary_directory:
+            path = os.path.join(temporary_directory, "features.FCStd")
+            self.document.saveAs(path)
+            self._reopen_vibe_document(path)
+
+            self.assertEqual(
+                getattr(
+                    self.vibe_body,
+                    PROP_PARTDESIGN_HISTORY_PRESENTATION,
+                ),
+                PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+            )
+            self.assertFalse(self.vibe_result.Visibility)
+            self.assertTrue(self.vibe_part_result.Visibility)
+            self.assertFalse(_renders_in_active_scene(self.vibe_output))
+            self.assertTrue(_renders_in_active_scene(self.vibe_part_result))
+            status = _wait_until(self._vibe_feature_folder_status)
+            self.assertIsNotNone(status, self._browser_snapshot())
+            self.assertTrue(status.startswith("1 of 2"), status)
+
+    def test_hidden_feature_folder_survives_save_and_reopen(self):
+        from VibeCADVibeScriptDomainPublication import (
+            _configure_partdesign_history_presentation,
+        )
+
+        _configure_partdesign_history_presentation(self.vibe_body)
+        self.assertFalse(self.vibe_result.Visibility)
+        self.assertFalse(self.vibe_part_result.Visibility)
+
+        with tempfile.TemporaryDirectory(
+            prefix="vibecad_hidden_features_"
+        ) as temporary_directory:
+            path = os.path.join(temporary_directory, "features.FCStd")
+            self.document.saveAs(path)
+            self._reopen_vibe_document(path)
+
+            self.assertTrue(self.vibe_output.Visibility)
+            self.assertFalse(self.vibe_result.Visibility)
+            self.assertFalse(self.vibe_part_result.Visibility)
+            status = _wait_until(self._vibe_feature_folder_status)
+            self.assertIsNotNone(status, self._browser_snapshot())
+            self.assertTrue(status.startswith("0 of 2"), status)
+
+    def test_hidden_body_gate_survives_reopen_and_restores_features(self):
+        from VibeCADVibeScriptDomainPublication import (
+            _configure_partdesign_history_presentation,
+        )
+
+        _configure_partdesign_history_presentation(self.vibe_body)
+        self.assertTrue(self._toggle_vibe_feature_folder())
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and _renders_in_active_scene(self.vibe_part_result)
+            )
+        )
+        self.assertTrue(self._toggle_vibe_body())
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: not self.vibe_output.Visibility
+                and not self.vibe_result.Visibility
+                and self.vibe_part_result.Visibility
+                and not _renders_in_active_scene(self.vibe_output)
+                and not _renders_in_active_scene(self.vibe_result)
+                and not _renders_in_active_scene(self.vibe_part_result)
+            )
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="vibecad_hidden_body_"
+        ) as temporary_directory:
+            path = os.path.join(temporary_directory, "body.FCStd")
+            self.document.saveAs(path)
+            self._reopen_vibe_document(path)
+
+            self.assertFalse(self.vibe_output.Visibility)
+            self.assertFalse(self.vibe_result.Visibility)
+            self.assertTrue(self.vibe_part_result.Visibility)
+            self.assertFalse(_renders_in_active_scene(self.vibe_output))
+            self.assertFalse(_renders_in_active_scene(self.vibe_result))
+            self.assertFalse(_renders_in_active_scene(self.vibe_part_result))
+
+            self.assertTrue(self._toggle_vibe_body())
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: self.vibe_output.Visibility
+                    and not self.vibe_result.Visibility
+                    and self.vibe_part_result.Visibility
+                    and not _renders_in_active_scene(self.vibe_output)
+                    and not _renders_in_active_scene(self.vibe_result)
+                    and _renders_in_active_scene(self.vibe_part_result)
+                )
             )
 
     def test_legacy_dependency_tree_remains_available_as_fallback(self):

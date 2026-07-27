@@ -253,7 +253,8 @@ void ViewProviderDocumentObject::hide()
 {
     ViewProvider::hide();
     // use this bit to check whether 'Visibility' must be adjusted
-    if (!Visibility.testStatus(App::Property::User2)) {
+    if (!testStatus(ViewStatus::VisibilityGateTransition)
+        && !Visibility.testStatus(App::Property::User2)) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(false);
         Visibility.setStatus(App::Property::User2, false);
@@ -273,7 +274,7 @@ void ViewProviderDocumentObject::setShowable(bool enable)
 
     _Showable = enable;
     int which = getModeSwitch()->whichChild.getValue();
-    if (_Showable && which == -1 && Visibility.getValue()) {
+    if (_Showable && isVisibilityGateOpen() && which == -1 && Visibility.getValue()) {
         setModeSwitch();
     }
     else if (!_Showable) {
@@ -281,6 +282,40 @@ void ViewProviderDocumentObject::setShowable(bool enable)
             ViewProvider::hide();
         }
     }
+}
+
+void ViewProviderDocumentObject::setVisibilityGate(bool enable)
+{
+    if (isVisibilityGateOpen() == enable) {
+        return;
+    }
+
+    setStatus(Gui::ViewStatus::VisibilityGateClosed, !enable);
+    if (!enable) {
+        // Run the complete view-provider hook chain (bounding boxes and other
+        // auxiliary rendering included). hide() changes only scene state; the
+        // persistent Visibility property remains the child's own intent.
+        Base::ObjectStatusLocker<ViewStatus, ViewProviderDocumentObject> lock(
+            ViewStatus::VisibilityGateTransition,
+            this
+        );
+        hide();
+    }
+    else if (_Showable && Visibility.getValue()) {
+        // Run derived show hooks while bypassing only the normal independent-
+        // child veto. The feature is not being shown independently here; its
+        // already-enabled rendering is being restored with its parent.
+        Base::ObjectStatusLocker<ViewStatus, ViewProviderDocumentObject> lock(
+            ViewStatus::VisibilityGateTransition,
+            this
+        );
+        show();
+    }
+}
+
+bool ViewProviderDocumentObject::isVisibilityGateOpen() const
+{
+    return !testStatus(Gui::ViewStatus::VisibilityGateClosed);
 }
 
 void ViewProviderDocumentObject::startDefaultEditMode()
@@ -304,14 +339,21 @@ void ViewProviderDocumentObject::addDefaultAction(QMenu* menu, const QString& te
 
 void ViewProviderDocumentObject::setModeSwitch()
 {
-    if (isShowable()) {
+    if (isShowable() && isVisibilityGateOpen()) {
         ViewProvider::setModeSwitch();
     }
 }
 
 void ViewProviderDocumentObject::show()
 {
-    if (TreeWidget::isObjectShowable(getObject())) {
+    if (!isVisibilityGateOpen()) {
+        // Keep Visibility enabled so reopening the parent gate restores this
+        // object exactly as the user left it.
+        ViewProvider::hide();
+        return;
+    }
+    if (testStatus(ViewStatus::VisibilityGateTransition)
+        || TreeWidget::isObjectShowable(getObject())) {
         ViewProvider::show();
     }
     else {

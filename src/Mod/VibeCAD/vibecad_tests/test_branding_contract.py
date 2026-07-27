@@ -197,7 +197,7 @@ class TestVibeCADRibbonChrome(unittest.TestCase):
         self.assertFalse(main_window.menuBar().isVisible())
         self.assertEqual(
             [tabs.tabText(index) for index in range(tabs.count())],
-            ["Model", "Assemble", "Inspect", "Analyze", "Manufacture", "Drawing"],
+            ["Model", "Assemble", "Mesh", "Analyze", "Manufacture", "Drawing"],
         )
 
         for candidate in main_window.findChildren(QtWidgets.QToolBar):
@@ -687,11 +687,13 @@ def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:
 def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     ribbon = _source("src/Gui/VibeCADRibbon.cpp")
     startup = _source("src/Gui/StartupProcess.cpp")
+    vibecad_gui_startup = _source("src/Mod/VibeCAD/InitGui.py")
+    mesh_workbench = _source("src/Mod/Mesh/Gui/Workbench.cpp")
 
     for label, workbench in (
         ("Model", "PartDesignWorkbench"),
         ("Assemble", "AssemblyWorkbench"),
-        ("Inspect", "InspectionWorkbench"),
+        ("Mesh", "MeshWorkbench"),
         ("Analyze", "FemWorkbench"),
         ("Manufacture", "CAMWorkbench"),
         ("Drawing", "TechDrawWorkbench"),
@@ -702,6 +704,11 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         "VibeCADRibbonToolBar",
         "VibeCADRibbon",
         "VibeCADAppButton",
+        "VibeCADDocumentTabs",
+        "VibeCADLeadingTools",
+        "VibeCADTrailingTools",
+        "VibeCADRibbonGroupMenu",
+        "VibeCADRibbonSearch",
         "VibeCADCommandSearch",
         "VibeCADThemeToggle",
         "VibeCADRibbonTabs",
@@ -713,6 +720,15 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert "Qt::Key_Alt" in ribbon
     assert "Qt::Key_F10" in ribbon
     assert "mainWindow->menuBar()->hide();" in ribbon
+    assert "sourceDocumentTabs->hide();" in ribbon
+    assert "documentTabs->setTabsClosable(true);" in ribbon
+    assert "groupMenu->setPopupMode(QToolButton::InstantPopup);" in ribbon
+    assert "sharedInspectionCommands()" in ribbon
+    assert 'new RibbonGroup(QObject::tr("Inspect")' in ribbon
+    assert '("InspectionGui", "MeshPartGui", "PartGui")' in vibecad_gui_startup
+    assert 'convert->setCommand("Mesh Convert")' in mesh_workbench
+    assert '<< "Part_ShapeFromMesh"' in mesh_workbench
+    assert '<< "MeshPart_CurveOnMesh"' in mesh_workbench
     assert 'QStringLiteral("VibeCAD_OpenPreferences")' in ribbon
     assert "VibeCADRibbon::install(mainWindow);" in startup
 

@@ -27,12 +27,19 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QIcon>
 #include <QKeyEvent>
-#include <QLabel>
+#include <QKeySequence>
 #include <QLineEdit>
+#include <QList>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMdiArea>
+#include <QMdiSubWindow>
+#include <QPointer>
 #include <QResizeEvent>
+#include <QSet>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStringListModel>
 #include <QStyle>
@@ -41,6 +48,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 #include <App/DocumentObject.h>
 
@@ -65,7 +73,7 @@ struct DomainDefinition
 constexpr std::array<DomainDefinition, 6> domains = {{
     {"Model", "PartDesignWorkbench"},
     {"Assemble", "AssemblyWorkbench"},
-    {"Inspect", "InspectionWorkbench"},
+    {"Mesh", "MeshWorkbench"},
     {"Analyze", "FemWorkbench"},
     {"Manufacture", "CAMWorkbench"},
     {"Drawing", "TechDrawWorkbench"},
@@ -75,6 +83,8 @@ struct CommandEntry
 {
     QAction* action = nullptr;
     bool separator = false;
+    QList<QAction*> childActions;
+    Gui::ActionGroup* actionGroup = nullptr;
 };
 
 using CommandEntries = std::vector<CommandEntry>;
@@ -90,15 +100,33 @@ QString sanitizedObjectName(QString value)
     return value;
 }
 
-QToolButton* actionButton(QAction* action, QWidget* parent)
+void connectActionGroupMenu(QMenu* menu, Gui::ActionGroup* actionGroup)
+{
+    if (!menu || !actionGroup) {
+        return;
+    }
+    QObject::connect(menu, &QMenu::aboutToShow, actionGroup, [actionGroup, menu]() {
+        Q_EMIT actionGroup->aboutToShow(menu);
+    });
+    QObject::connect(menu, &QMenu::aboutToHide, actionGroup, [actionGroup, menu]() {
+        Q_EMIT actionGroup->aboutToHide(menu);
+    });
+}
+
+QToolButton* actionButton(const CommandEntry& entry, QWidget* parent)
 {
     auto* button = new QToolButton(parent);
-    button->setDefaultAction(action);
+    button->setDefaultAction(entry.action);
+    button->setProperty("ribbonCommand", true);
     button->setAutoRaise(true);
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    button->setIconSize(QSize(20, 20));
+    button->setIconSize(QSize(28, 28));
     button->setFocusPolicy(Qt::StrongFocus);
-    if (action->menu()) {
+    if (!entry.childActions.isEmpty()) {
+        auto* menu = new QMenu(button);
+        menu->addActions(entry.childActions);
+        connectActionGroupMenu(menu, entry.actionGroup);
+        button->setMenu(menu);
         button->setPopupMode(QToolButton::MenuButtonPopup);
     }
     return button;
@@ -127,7 +155,14 @@ void appendMenuEntries(QMenu* menu, const CommandEntries& entries, int skipActio
             menu->addSeparator();
             separatorPending = false;
         }
-        menu->addAction(entry.action);
+        if (entry.childActions.isEmpty()) {
+            menu->addAction(entry.action);
+        }
+        else {
+            auto* submenu = menu->addMenu(entry.action->icon(), entry.action->text());
+            submenu->addActions(entry.childActions);
+            connectActionGroupMenu(submenu, entry.actionGroup);
+        }
         hasAction = true;
     }
 }
@@ -175,29 +210,23 @@ public:
             if (!entry.action || addedActions >= primaryActionCount) {
                 continue;
             }
-            commandsLayout->addWidget(actionButton(entry.action, commands));
+            commandsLayout->addWidget(actionButton(entry, commands));
             ++addedActions;
         }
 
-        if (entryActionCount(_entries) > primaryActionCount) {
-            auto* more = new QToolButton(commands);
-            more->setObjectName(QStringLiteral("VibeCADRibbonGroupMore"));
-            more->setText(QObject::tr("More"));
-            more->setToolTip(QObject::tr("More %1 tools").arg(_title));
-            more->setToolButtonStyle(Qt::ToolButtonTextOnly);
-            more->setPopupMode(QToolButton::InstantPopup);
-            more->setAutoRaise(true);
-            auto* menu = new QMenu(more);
-            appendMenuEntries(menu, _entries, primaryActionCount);
-            more->setMenu(menu);
-            commandsLayout->addWidget(more);
-        }
-
-        auto* titleLabel = new QLabel(_title, _expanded);
-        titleLabel->setObjectName(QStringLiteral("VibeCADRibbonGroupTitle"));
-        titleLabel->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
         expandedLayout->addWidget(commands, 0, Qt::AlignHCenter);
-        expandedLayout->addWidget(titleLabel);
+
+        auto* groupMenu = new QToolButton(_expanded);
+        groupMenu->setObjectName(QStringLiteral("VibeCADRibbonGroupMenu"));
+        groupMenu->setText(_title.toUpper());
+        groupMenu->setToolTip(QObject::tr("Open all %1 tools").arg(_title));
+        groupMenu->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        groupMenu->setPopupMode(QToolButton::InstantPopup);
+        groupMenu->setAutoRaise(true);
+        auto* groupMenuEntries = new QMenu(groupMenu);
+        appendMenuEntries(groupMenuEntries, _entries);
+        groupMenu->setMenu(groupMenuEntries);
+        expandedLayout->addWidget(groupMenu);
 
         _collapsed = new QToolButton(this);
         _collapsed->setObjectName(QStringLiteral("VibeCADRibbonCollapsedGroup"));
@@ -212,10 +241,8 @@ public:
         outer->addWidget(_expanded);
         outer->addWidget(_collapsed);
 
-        const int labelWidth = fontMetrics().horizontalAdvance(_title) + 34;
-        _expandedWidth = std::max(labelWidth, addedActions * 34
-                + (entryActionCount(_entries) > primaryActionCount ? 52 : 0)
-                + 10);
+        const int labelWidth = fontMetrics().horizontalAdvance(_title.toUpper()) + 30;
+        _expandedWidth = std::max(labelWidth, addedActions * 42 + 12);
         _collapsedWidth = std::clamp(labelWidth, 68, 120);
         setFixedHeight(56);
         setCollapsed(false);
@@ -385,7 +412,10 @@ std::vector<GroupDefinition> sketchGroups()
 {
     return {
         {QObject::tr("Finish"),
-         {"Sketcher_LeaveSketch", "Sketcher_ViewSketch", "Sketcher_ViewSection"}},
+         {"Sketcher_LeaveSketch",
+          "Sketcher_CancelSketch",
+          "Sketcher_ViewSketch",
+          "Sketcher_ViewSection"}},
         {QObject::tr("Geometry"),
          {"Sketcher_CreatePoint",
           "Sketcher_CompLine",
@@ -442,13 +472,36 @@ std::vector<GroupDefinition> sketchGroups()
     };
 }
 
-std::vector<GroupDefinition> inspectionGroups()
+std::vector<GroupDefinition> sketchSetupGroups()
 {
     return {
-        {QObject::tr("Measure"), {"Std_Measure", "Std_MassProperties"}},
-        {QObject::tr("Inspect"), {"Inspection_VisualInspection", "Inspection_InspectElement"}},
-        {QObject::tr("Validate"), {"Part_CheckGeometry"}},
+        {QObject::tr("Sketch"),
+         {"Sketcher_NewSketch",
+          "Sketcher_EditSketch",
+          "Sketcher_MapSketch",
+          "Sketcher_ReorientSketch",
+          "Sketcher_ValidateSketch",
+          "Sketcher_MergeSketches",
+          "Sketcher_MirrorSketch"}},
     };
+}
+
+const std::vector<QString>& sharedInspectionCommands()
+{
+    static const std::vector<QString> commands = {
+        QStringLiteral("Std_Measure"),
+        QStringLiteral("Std_MassProperties"),
+        QStringLiteral("Inspection_VisualInspection"),
+        QStringLiteral("Inspection_InspectElement"),
+        QStringLiteral("Part_CheckGeometry"),
+    };
+    return commands;
+}
+
+bool isSharedInspectionCommand(const QString& command)
+{
+    const std::vector<QString>& commands = sharedInspectionCommands();
+    return std::find(commands.begin(), commands.end(), command) != commands.end();
 }
 
 bool isStandardToolbar(const std::string& title)
@@ -470,8 +523,45 @@ bool isStandardToolbar(const std::string& title)
         != standard.end();
 }
 
-QString presentationGroupTitle(QString title)
+QString presentationGroupTitle(const std::string& implementationTitle)
 {
+    static const std::array<std::pair<const char*, const char*>, 25> groupTitles = {{
+        {"Part Design Helper Features", QT_TRANSLATE_NOOP("VibeCADRibbon", "Structure")},
+        {"Create and Remove Material", QT_TRANSLATE_NOOP("VibeCADRibbon", "Solids")},
+        {"Finish Shape", QT_TRANSLATE_NOOP("VibeCADRibbon", "Finish")},
+        {"Transform Features", QT_TRANSLATE_NOOP("VibeCADRibbon", "Transform")},
+        {"Standalone and Surface Geometry", QT_TRANSLATE_NOOP("VibeCADRibbon", "Geometry")},
+        {"Boolean, Split, and Repair", QT_TRANSLATE_NOOP("VibeCADRibbon", "Modify")},
+        {"Standard Components", QT_TRANSLATE_NOOP("VibeCADRibbon", "Fasteners")},
+        {"Electromagnetic Boundary Conditions",
+         QT_TRANSLATE_NOOP("VibeCADRibbon", "Electromagnetics")},
+        {"Fluid Boundary Conditions", QT_TRANSLATE_NOOP("VibeCADRibbon", "Fluids")},
+        {"Geometrical Analysis Features", QT_TRANSLATE_NOOP("VibeCADRibbon", "Geometry")},
+        {"Mechanical Boundary Conditions and Loads",
+         QT_TRANSLATE_NOOP("VibeCADRibbon", "Mechanics")},
+        {"Thermal Boundary Conditions and Loads",
+         QT_TRANSLATE_NOOP("VibeCADRibbon", "Thermal")},
+        {"Project Setup", QT_TRANSLATE_NOOP("VibeCADRibbon", "Setup")},
+        {"Tool Commands", QT_TRANSLATE_NOOP("VibeCADRibbon", "Tools")},
+        {"New Operations", QT_TRANSLATE_NOOP("VibeCADRibbon", "Operations")},
+        {"Path Modification", QT_TRANSLATE_NOOP("VibeCADRibbon", "Modify")},
+        {"TechDraw Extend Dimensions", QT_TRANSLATE_NOOP("VibeCADRibbon", "Extend")},
+        {"TechDraw File Access", QT_TRANSLATE_NOOP("VibeCADRibbon", "Files")},
+        {"Mesh Tools", QT_TRANSLATE_NOOP("VibeCADRibbon", "Tools")},
+        {"Mesh Convert", QT_TRANSLATE_NOOP("VibeCADRibbon", "Convert")},
+        {"Mesh Modify", QT_TRANSLATE_NOOP("VibeCADRibbon", "Modify")},
+        {"Mesh Boolean", QT_TRANSLATE_NOOP("VibeCADRibbon", "Boolean")},
+        {"Mesh Cutting", QT_TRANSLATE_NOOP("VibeCADRibbon", "Cut")},
+        {"Mesh Segmentation", QT_TRANSLATE_NOOP("VibeCADRibbon", "Segment")},
+        {"Mesh Analyze", QT_TRANSLATE_NOOP("VibeCADRibbon", "Analyze")},
+    }};
+    for (const auto& [sourceTitle, presentationTitle] : groupTitles) {
+        if (implementationTitle == sourceTitle) {
+            return QCoreApplication::translate("VibeCADRibbon", presentationTitle);
+        }
+    }
+
+    QString title = QCoreApplication::translate("Workbench", implementationTitle.c_str());
     static const std::array<const char*, 8> implementationPrefixes = {
         "Part Design ",
         "PartDesign ",
@@ -501,23 +591,35 @@ struct Gui::VibeCADRibbon::Private
         , mainWindow(window)
     {}
 
-    QAction* commandAction(const QString& commandName) const
+    CommandEntry commandEntry(const QString& commandName) const
     {
         Command* command = Application::Instance->commandManager().getCommandByName(
             commandName.toUtf8().constData()
         );
         if (!command) {
-            return nullptr;
+            return {};
         }
         command->initAction();
         if (!command->getAction()) {
-            return nullptr;
+            return {};
         }
         QAction* action = command->getAction()->action();
-        if (action) {
-            action->setProperty("VibeCADCommandId", commandName);
+        if (!action) {
+            return {};
         }
-        return action;
+        action->setProperty("VibeCADCommandId", commandName);
+        auto* actionGroup = dynamic_cast<ActionGroup*>(command->getAction());
+        return {
+            action,
+            false,
+            actionGroup ? actionGroup->actions() : QList<QAction*>(),
+            actionGroup,
+        };
+    }
+
+    QAction* commandAction(const QString& commandName) const
+    {
+        return commandEntry(commandName).action;
     }
 
     CommandEntries resolveEntries(const std::vector<QString>& commands) const
@@ -526,10 +628,10 @@ struct Gui::VibeCADRibbon::Private
         entries.reserve(commands.size());
         for (const QString& command : commands) {
             if (command == QStringLiteral("Separator")) {
-                entries.push_back({nullptr, true});
+                entries.push_back({nullptr, true, {}, nullptr});
             }
-            else if (QAction* action = commandAction(command)) {
-                entries.push_back({action, false});
+            else if (CommandEntry entry = commandEntry(command); entry.action) {
+                entries.push_back(std::move(entry));
             }
         }
         return entries;
@@ -555,11 +657,7 @@ struct Gui::VibeCADRibbon::Private
                 std::back_inserter(commandNames),
                 [](const std::string& command) { return QString::fromStdString(command); }
             );
-            const QString displayTitle = title == "TechDraw Extend Dimensions"
-                ? QObject::tr("Extend")
-                : presentationGroupTitle(
-                      QCoreApplication::translate("Workbench", title.c_str())
-                  );
+            const QString displayTitle = presentationGroupTitle(title);
             result.emplace_back(displayTitle, std::move(commandNames));
         }
         return result;
@@ -570,8 +668,8 @@ struct Gui::VibeCADRibbon::Private
         if (inSketchEdit) {
             return sketchGroups();
         }
-        if (WorkbenchManager::instance()->activeName() == "InspectionWorkbench") {
-            return inspectionGroups();
+        if (WorkbenchManager::instance()->activeName() == "SketcherWorkbench") {
+            return sketchSetupGroups();
         }
         return currentWorkbenchGroups();
     }
@@ -579,6 +677,17 @@ struct Gui::VibeCADRibbon::Private
     void rebuildPage()
     {
         std::vector<RibbonGroup*> groups;
+        bool inspectionAdded = false;
+
+        const auto addInspectionGroup = [this, &groups, &inspectionAdded]() {
+            CommandEntries entries = resolveEntries(sharedInspectionCommands());
+            if (entryActionCount(entries) > 0) {
+                groups.push_back(
+                    new RibbonGroup(QObject::tr("Inspect"), std::move(entries))
+                );
+                inspectionAdded = true;
+            }
+        };
 
         // View controls stay present in every CAD domain.
         CommandEntries viewEntries = resolveEntries(
@@ -589,44 +698,44 @@ struct Gui::VibeCADRibbon::Private
         }
 
         for (const auto& [title, commands] : pageGroups()) {
-            CommandEntries entries = resolveEntries(commands);
+            if (!inSketchEdit && title == QObject::tr("Fasteners")) {
+                addInspectionGroup();
+            }
+
+            std::vector<QString> domainCommands = commands;
+            if (!inSketchEdit) {
+                std::erase_if(domainCommands, isSharedInspectionCommand);
+            }
+            CommandEntries entries = resolveEntries(domainCommands);
             if (entryActionCount(entries) > 0) {
                 groups.push_back(new RibbonGroup(title, std::move(entries)));
             }
+        }
+        if (!inSketchEdit && !inspectionAdded) {
+            addInspectionGroup();
         }
         page->setGroups(std::move(groups));
     }
 
     void updateThemeButton() const
     {
+        if (!themeButton) {
+            return;
+        }
         const ThemeManager::Mode mode = Application::Instance->themeManager()->currentMode();
         const bool dark = mode == ThemeManager::Mode::Dark;
-        themeButton->setText(dark ? QObject::tr("Dark") : QObject::tr("Light"));
+        themeButton->setText(QString());
+        themeButton->setIcon(QIcon(QStringLiteral(":/icons/Std_SetAppearance.svg")));
         themeButton->setToolTip(
             dark ? QObject::tr("Switch to Light mode") : QObject::tr("Switch to Dark mode")
+        );
+        themeButton->setAccessibleName(
+            dark ? QObject::tr("Dark appearance") : QObject::tr("Light appearance")
         );
         themeButton->setProperty(
             "appearanceMode",
             QString::fromLatin1(ThemeManager::modeName(mode))
         );
-    }
-
-    void updateApplicationStrip(int width) const
-    {
-        const bool compact = width < 1050;
-        for (QToolButton* button : {assistantButton, settingsButton}) {
-            if (button) {
-                button->setToolButtonStyle(
-                    compact ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon
-                );
-            }
-        }
-        if (assistantButton) {
-            assistantButton->setText(QObject::tr("Assistant"));
-        }
-        if (settingsButton) {
-            settingsButton->setText(QObject::tr("Settings"));
-        }
     }
 
     void toggleTheme()
@@ -642,8 +751,7 @@ struct Gui::VibeCADRibbon::Private
     QToolButton* addCommandButton(
         QHBoxLayout* layout,
         const QString& command,
-        const QString& objectName,
-        bool showText
+        const QString& objectName
     ) const
     {
         QAction* action = commandAction(command);
@@ -661,9 +769,7 @@ struct Gui::VibeCADRibbon::Private
             button->setEnabled(false);
             button->setText(command);
         }
-        button->setToolButtonStyle(
-            showText ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly
-        );
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         layout->addWidget(button);
         return button;
     }
@@ -673,64 +779,126 @@ struct Gui::VibeCADRibbon::Private
         auto* strip = new QWidget(root);
         strip->setObjectName(QStringLiteral("VibeCADApplicationStrip"));
         auto* layout = new QHBoxLayout(strip);
-        layout->setContentsMargins(2, 1, 2, 1);
-        layout->setSpacing(2);
+        layout->setContentsMargins(4, 2, 4, 2);
+        layout->setSpacing(4);
 
-        appButton = new QToolButton(strip);
+        auto* leadingTools = new QWidget(strip);
+        leadingTools->setObjectName(QStringLiteral("VibeCADLeadingTools"));
+        auto* leadingLayout = new QHBoxLayout(leadingTools);
+        leadingLayout->setContentsMargins(0, 0, 0, 0);
+        leadingLayout->setSpacing(1);
+
+        appButton = new QToolButton(leadingTools);
         appButton->setObjectName(QStringLiteral("VibeCADAppButton"));
-        appButton->setText(QStringLiteral("VibeCAD"));
-        appButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        appButton->setIcon(QIcon(QStringLiteral(":/icons/vibecad.svg")));
+        appButton->setIconSize(QSize(24, 24));
+        appButton->setToolTip(QObject::tr("VibeCAD menu"));
+        appButton->setAccessibleName(QObject::tr("VibeCAD menu"));
+        appButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
         appButton->setPopupMode(QToolButton::InstantPopup);
         appButton->setAutoRaise(true);
         appMenu = new QMenu(appButton);
         appButton->setMenu(appMenu);
         QObject::connect(appMenu, &QMenu::aboutToShow, q, [this]() { populateAppMenu(); });
-        layout->addWidget(appButton);
+        leadingLayout->addWidget(appButton);
 
         addCommandButton(
-            layout,
-            QStringLiteral("Std_New"),
-            QStringLiteral("VibeCADRibbonNew"),
-            false
-        );
-        addCommandButton(
-            layout,
+            leadingLayout,
             QStringLiteral("Std_Open"),
-            QStringLiteral("VibeCADRibbonOpen"),
-            false
+            QStringLiteral("VibeCADRibbonOpen")
         );
         addCommandButton(
-            layout,
+            leadingLayout,
             QStringLiteral("Std_Save"),
-            QStringLiteral("VibeCADRibbonSave"),
-            false
+            QStringLiteral("VibeCADRibbonSave")
         );
 
         auto* fileSeparator = new QFrame(strip);
         fileSeparator->setFrameShape(QFrame::VLine);
         fileSeparator->setObjectName(QStringLiteral("VibeCADRibbonSeparator"));
-        layout->addWidget(fileSeparator);
+        leadingLayout->addWidget(fileSeparator);
 
         addCommandButton(
-            layout,
+            leadingLayout,
             QStringLiteral("Std_Undo"),
-            QStringLiteral("VibeCADRibbonUndo"),
-            false
+            QStringLiteral("VibeCADRibbonUndo")
         );
         addCommandButton(
-            layout,
+            leadingLayout,
             QStringLiteral("Std_Redo"),
-            QStringLiteral("VibeCADRibbonRedo"),
-            false
+            QStringLiteral("VibeCADRibbonRedo")
         );
+        layout->addWidget(leadingTools);
 
-        commandSearch = new QLineEdit(strip);
+        documentTabs = new QTabBar(strip);
+        documentTabs->setObjectName(QStringLiteral("VibeCADDocumentTabs"));
+        documentTabs->setDocumentMode(true);
+        documentTabs->setDrawBase(false);
+        documentTabs->setTabsClosable(true);
+        documentTabs->setMovable(true);
+        documentTabs->setExpanding(true);
+        documentTabs->setUsesScrollButtons(true);
+        documentTabs->setElideMode(Qt::ElideMiddle);
+        documentTabs->setIconSize(QSize(16, 16));
+        documentTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        QObject::connect(documentTabs, &QTabBar::currentChanged, q, [this](int index) {
+            activateDocumentTab(index);
+        });
+        QObject::connect(documentTabs, &QTabBar::tabCloseRequested, q, [this](int index) {
+            closeDocumentTab(index);
+        });
+        QObject::connect(documentTabs, &QTabBar::tabMoved, q, [this](int from, int to) {
+            moveDocumentTab(from, to);
+        });
+        layout->addWidget(documentTabs, 1);
+
+        newDocumentButton = addCommandButton(
+            layout,
+            QStringLiteral("Std_New"),
+            QStringLiteral("VibeCADRibbonNew")
+        );
+        if (newDocumentButton) {
+            newDocumentButton->setIcon(QIcon(QStringLiteral(":/icons/list-add.svg")));
+            newDocumentButton->setToolTip(QObject::tr("New document"));
+        }
+
+        auto* trailingTools = new QWidget(strip);
+        trailingTools->setObjectName(QStringLiteral("VibeCADTrailingTools"));
+        auto* trailingLayout = new QHBoxLayout(trailingTools);
+        trailingLayout->setContentsMargins(0, 0, 0, 0);
+        trailingLayout->setSpacing(1);
+
+        searchButton = new QToolButton(trailingTools);
+        searchButton->setObjectName(QStringLiteral("VibeCADRibbonSearch"));
+        searchButton->setIcon(QIcon::fromTheme(
+            QStringLiteral("edit-find"),
+            QIcon(QStringLiteral(":/icons/zoom-selection.svg"))
+        ));
+        searchButton->setIconSize(QSize(18, 18));
+        searchButton->setToolTip(QObject::tr("Search commands (Ctrl+K)"));
+        searchButton->setAccessibleName(QObject::tr("Search commands"));
+        searchButton->setAutoRaise(true);
+        searchButton->setPopupMode(QToolButton::InstantPopup);
+
+        searchMenu = new QMenu(searchButton);
+        searchMenu->setObjectName(QStringLiteral("VibeCADCommandSearchMenu"));
+        auto* searchPanel = new QWidget(searchMenu);
+        auto* searchLayout = new QHBoxLayout(searchPanel);
+        searchLayout->setContentsMargins(8, 7, 8, 7);
+        searchLayout->setSpacing(0);
+
+        commandSearch = new QLineEdit(searchPanel);
         commandSearch->setObjectName(QStringLiteral("VibeCADCommandSearch"));
         commandSearch->setPlaceholderText(QObject::tr("Search commands"));
         commandSearch->setClearButtonEnabled(true);
-        commandSearch->setMinimumWidth(100);
-        commandSearch->setMaximumWidth(360);
-        commandSearch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        commandSearch->setMinimumWidth(320);
+        commandSearch->setMaximumWidth(420);
+        searchLayout->addWidget(commandSearch);
+        auto* searchWidgetAction = new QWidgetAction(searchMenu);
+        searchWidgetAction->setDefaultWidget(searchPanel);
+        searchMenu->addAction(searchWidgetAction);
+        searchButton->setMenu(searchMenu);
+
         searchModel = new QStringListModel(q);
         commandCompleter = new QCompleter(searchModel, q);
         commandCompleter->setCaseSensitivity(Qt::CaseInsensitive);
@@ -747,37 +915,258 @@ struct Gui::VibeCADRibbon::Private
         QObject::connect(commandSearch, &QLineEdit::returnPressed, q, [this]() {
             runSearchCommand(commandSearch->text());
         });
-        layout->addWidget(commandSearch, 1);
+        QObject::connect(searchMenu, &QMenu::aboutToShow, q, [this]() {
+            QTimer::singleShot(0, commandSearch, [this]() {
+                commandSearch->setFocus(Qt::ShortcutFocusReason);
+                commandSearch->selectAll();
+            });
+        });
+        trailingLayout->addWidget(searchButton);
 
-        themeButton = new QToolButton(strip);
+        themeButton = new QToolButton(trailingTools);
         themeButton->setObjectName(QStringLiteral("VibeCADThemeToggle"));
         themeButton->setAutoRaise(true);
-        themeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        themeButton->setIconSize(QSize(18, 18));
+        themeButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
         QObject::connect(themeButton, &QToolButton::clicked, q, [this]() { toggleTheme(); });
         updateThemeButton();
-        layout->addWidget(themeButton);
+        trailingLayout->addWidget(themeButton);
 
         assistantButton = addCommandButton(
-            layout,
+            trailingLayout,
             QStringLiteral("VibeCAD_OpenAssistant"),
-            QStringLiteral("VibeCADRibbonAssistant"),
-            true
+            QStringLiteral("VibeCADRibbonAssistant")
         );
         settingsButton = addCommandButton(
-            layout,
+            trailingLayout,
             QStringLiteral("VibeCAD_OpenPreferences"),
-            QStringLiteral("VibeCADRibbonSettings"),
-            true
+            QStringLiteral("VibeCADRibbonSettings")
         );
-        for (QToolButton* button : {assistantButton, settingsButton}) {
-            if (button && button->defaultAction()) {
-                QObject::connect(button->defaultAction(), &QAction::changed, q, [this]() {
-                    QTimer::singleShot(0, q, [this]() { updateApplicationStrip(root->width()); });
-                });
+        layout->addWidget(trailingTools);
+
+        searchShortcut = new QAction(QObject::tr("Search commands"), q);
+        searchShortcut->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+        searchShortcut->setShortcutContext(Qt::ApplicationShortcut);
+        mainWindow->addAction(searchShortcut);
+        QObject::connect(searchShortcut, &QAction::triggered, q, [this]() {
+            if (searchButton) {
+                searchButton->showMenu();
+            }
+        });
+
+        rootLayout->addWidget(strip);
+        attachDocumentTabs();
+    }
+
+    void scheduleDocumentTabsSync()
+    {
+        if (!documentTabsSyncTimer.isActive()) {
+            documentTabsSyncTimer.start(0);
+        }
+    }
+
+    void observeDocumentWindows()
+    {
+        QMdiArea* mdiArea = mainWindow->getMdiArea();
+        if (!mdiArea) {
+            return;
+        }
+        for (QMdiSubWindow* subWindow :
+             mdiArea->subWindowList(QMdiArea::CreationOrder)) {
+            if (!subWindow || observedDocumentWindows.contains(subWindow)) {
+                continue;
+            }
+            observedDocumentWindows.insert(subWindow);
+            QObject::connect(
+                subWindow,
+                &QWidget::windowTitleChanged,
+                q,
+                [this]() { scheduleDocumentTabsSync(); }
+            );
+            QObject::connect(
+                subWindow,
+                &QWidget::windowIconChanged,
+                q,
+                [this]() { scheduleDocumentTabsSync(); }
+            );
+            QObject::connect(subWindow, &QObject::destroyed, q, [this, subWindow]() {
+                observedDocumentWindows.remove(subWindow);
+                scheduleDocumentTabsSync();
+            });
+        }
+    }
+
+    void syncDocumentTabs()
+    {
+        if (!documentTabs || !sourceDocumentTabs) {
+            return;
+        }
+
+        collapseSourceDocumentTabs();
+        observeDocumentWindows();
+        syncingDocumentTabs = true;
+
+        while (documentTabs->count() > sourceDocumentTabs->count()) {
+            documentTabs->removeTab(documentTabs->count() - 1);
+        }
+        while (documentTabs->count() < sourceDocumentTabs->count()) {
+            documentTabs->addTab(QString());
+        }
+
+        const QIcon fallbackIcon(QStringLiteral(":/icons/Document.svg"));
+        for (int index = 0; index < sourceDocumentTabs->count(); ++index) {
+            documentTabs->setTabText(index, sourceDocumentTabs->tabText(index));
+            const QIcon icon = sourceDocumentTabs->tabIcon(index);
+            documentTabs->setTabIcon(index, icon.isNull() ? fallbackIcon : icon);
+            documentTabs->setTabToolTip(index, sourceDocumentTabs->tabToolTip(index));
+            documentTabs->setTabEnabled(index, sourceDocumentTabs->isTabEnabled(index));
+            documentTabs->setTabData(index, sourceDocumentTabs->tabData(index));
+        }
+        documentTabs->setCurrentIndex(sourceDocumentTabs->currentIndex());
+        syncingDocumentTabs = false;
+    }
+
+    void collapseSourceDocumentTabs()
+    {
+        if (!sourceDocumentTabs) {
+            return;
+        }
+        if (!sourceDocumentTabsGeometryCaptured) {
+            sourceDocumentTabsMinimumHeight = sourceDocumentTabs->minimumHeight();
+            sourceDocumentTabsMaximumHeight = sourceDocumentTabs->maximumHeight();
+            sourceDocumentTabsStyleSheet = sourceDocumentTabs->styleSheet();
+            sourceDocumentTabsGeometryCaptured = true;
+
+            const QString separator =
+                sourceDocumentTabsStyleSheet.isEmpty() ? QString() : QStringLiteral("\n");
+            sourceDocumentTabs->setStyleSheet(
+                sourceDocumentTabsStyleSheet + separator
+                + QStringLiteral(
+                    "QTabBar#mdiAreaTabBar, QTabBar#mdiAreaTabBar::tab {"
+                    " min-width: 0px; max-width: 0px; width: 0px;"
+                    " min-height: 0px; max-height: 0px; height: 0px;"
+                    " padding: 0px; margin: 0px; border: 0px;"
+                    "}"
+                    "QTabBar#mdiAreaTabBar::close-button {"
+                    " width: 0px; height: 0px;"
+                    " padding: 0px; margin: 0px; border: 0px;"
+                    "}"
+                )
+            );
+
+            // QMdiArea derives its viewport margins directly from the tab
+            // bar's sizeHint(). Refresh its private layout after changing that
+            // hint so the reclaimed space is available immediately.
+            if (QMdiArea* mdiArea = mainWindow->getMdiArea()) {
+                const bool documentMode = mdiArea->documentMode();
+                mdiArea->setDocumentMode(!documentMode);
+                mdiArea->setDocumentMode(documentMode);
             }
         }
 
-        rootLayout->addWidget(strip);
+        // Retain the source bar as the MDI controller for activation, close,
+        // and reorder operations while its ribbon mirror owns presentation.
+        sourceDocumentTabs->setFixedHeight(0);
+        sourceDocumentTabs->hide();
+        sourceDocumentTabs->updateGeometry();
+    }
+
+    void restoreSourceDocumentTabs()
+    {
+        if (!sourceDocumentTabs) {
+            return;
+        }
+        if (sourceDocumentTabsGeometryCaptured) {
+            sourceDocumentTabs->setStyleSheet(sourceDocumentTabsStyleSheet);
+            sourceDocumentTabs->setMinimumHeight(sourceDocumentTabsMinimumHeight);
+            sourceDocumentTabs->setMaximumHeight(sourceDocumentTabsMaximumHeight);
+            if (QMdiArea* mdiArea = mainWindow->getMdiArea()) {
+                const bool documentMode = mdiArea->documentMode();
+                mdiArea->setDocumentMode(!documentMode);
+                mdiArea->setDocumentMode(documentMode);
+            }
+        }
+        sourceDocumentTabs->show();
+        sourceDocumentTabs->updateGeometry();
+    }
+
+    void attachDocumentTabs()
+    {
+        QMdiArea* mdiArea = mainWindow->getMdiArea();
+        if (!mdiArea) {
+            return;
+        }
+        sourceDocumentTabs =
+            mdiArea->findChild<QTabBar*>(QStringLiteral("mdiAreaTabBar"));
+        if (!sourceDocumentTabs) {
+            return;
+        }
+
+        sourceDocumentTabs->installEventFilter(q);
+        mdiArea->installEventFilter(q);
+        mdiArea->viewport()->installEventFilter(q);
+        QObject::connect(
+            sourceDocumentTabs,
+            &QTabBar::currentChanged,
+            q,
+            [this](int) { scheduleDocumentTabsSync(); }
+        );
+        QObject::connect(
+            sourceDocumentTabs,
+            &QTabBar::tabMoved,
+            q,
+            [this](int, int) { scheduleDocumentTabsSync(); }
+        );
+        QObject::connect(
+            mdiArea,
+            &QMdiArea::subWindowActivated,
+            q,
+            [this](QMdiSubWindow*) { scheduleDocumentTabsSync(); }
+        );
+        collapseSourceDocumentTabs();
+        syncDocumentTabs();
+    }
+
+    void activateDocumentTab(int index)
+    {
+        if (syncingDocumentTabs || !sourceDocumentTabs || index < 0
+            || index >= sourceDocumentTabs->count()) {
+            return;
+        }
+        sourceDocumentTabs->setCurrentIndex(index);
+    }
+
+    void closeDocumentTab(int index)
+    {
+        if (!sourceDocumentTabs || index < 0 || index >= sourceDocumentTabs->count()) {
+            return;
+        }
+
+        const bool invoked = QMetaObject::invokeMethod(
+            sourceDocumentTabs,
+            "tabCloseRequested",
+            Qt::DirectConnection,
+            Q_ARG(int, index)
+        );
+        if (!invoked) {
+            sourceDocumentTabs->setCurrentIndex(index);
+            if (QMdiSubWindow* active = mainWindow->getMdiArea()->activeSubWindow()) {
+                active->close();
+            }
+        }
+        scheduleDocumentTabsSync();
+    }
+
+    void moveDocumentTab(int from, int to)
+    {
+        if (syncingDocumentTabs || !sourceDocumentTabs || from == to || from < 0 || to < 0
+            || from >= sourceDocumentTabs->count() || to >= sourceDocumentTabs->count()) {
+            return;
+        }
+        syncingDocumentTabs = true;
+        sourceDocumentTabs->moveTab(from, to);
+        syncingDocumentTabs = false;
+        scheduleDocumentTabsSync();
     }
 
     void buildDomainStrip(QVBoxLayout* rootLayout)
@@ -845,7 +1234,6 @@ struct Gui::VibeCADRibbon::Private
         refreshSearch();
         syncDomainToWorkbench(QString::fromStdString(WorkbenchManager::instance()->activeName()));
         rebuildPage();
-        updateApplicationStrip(root->width());
         enforceChrome();
     }
 
@@ -895,6 +1283,7 @@ struct Gui::VibeCADRibbon::Private
         }
         toolbar->toggleViewAction()->setVisible(false);
         toolbar->show();
+        collapseSourceDocumentTabs();
         if (!legacyMenuVisible) {
             mainWindow->menuBar()->hide();
         }
@@ -919,7 +1308,7 @@ struct Gui::VibeCADRibbon::Private
         refreshSearch();
         rebuildPage();
         updateThemeButton();
-        updateApplicationStrip(root->width());
+        syncDocumentTabs();
         enforceChrome();
     }
 
@@ -954,7 +1343,63 @@ struct Gui::VibeCADRibbon::Private
             return;
         }
         commandSearch->clear();
+        if (searchMenu) {
+            searchMenu->close();
+        }
         Application::Instance->commandManager().runCommandByName(commandId.toUtf8().constData());
+    }
+
+    int sketchTabIndex() const
+    {
+        for (int index = 0; index < tabs->count(); ++index) {
+            if (tabs->tabData(index).toString().isEmpty()) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    void setDomainTabsEnabled(bool enabled)
+    {
+        const QSignalBlocker blocker(tabs);
+        for (int index = 0; index < tabs->count(); ++index) {
+            if (!tabs->tabData(index).toString().isEmpty()) {
+                tabs->setTabEnabled(index, enabled);
+            }
+        }
+    }
+
+    int showSketchTab()
+    {
+        int sketchIndex = sketchTabIndex();
+        const QSignalBlocker blocker(tabs);
+        syncingTabs = true;
+        if (sketchIndex < 0) {
+            if (tabs->currentIndex() >= 0) {
+                previousDomain = tabs->currentIndex();
+            }
+            sketchIndex = tabs->addTab(QObject::tr("Sketch"));
+            tabs->setTabData(sketchIndex, QString());
+            tabs->setTabTextColor(sketchIndex, QColor(QStringLiteral("#4dabf7")));
+        }
+        tabs->setCurrentIndex(sketchIndex);
+        syncingTabs = false;
+        return sketchIndex;
+    }
+
+    void removeSketchTabAndSelect(int targetIndex)
+    {
+        const QSignalBlocker blocker(tabs);
+        syncingTabs = true;
+        for (int index = tabs->count() - 1; index >= 0; --index) {
+            if (tabs->tabData(index).toString().isEmpty()) {
+                tabs->removeTab(index);
+            }
+        }
+        if (tabs->count() > 0) {
+            tabs->setCurrentIndex(std::clamp(targetIndex, 0, tabs->count() - 1));
+        }
+        syncingTabs = false;
     }
 
     void activateDomain(int index)
@@ -964,30 +1409,37 @@ struct Gui::VibeCADRibbon::Private
         }
         const QString workbench = tabs->tabData(index).toString();
         if (workbench.isEmpty()) {
-            if (inSketchEdit) {
-                rebuildPage();
-            }
+            rebuildPage();
             return;
         }
-        inSketchEdit = false;
+        if (inSketchEdit) {
+            showSketchTab();
+            return;
+        }
         Application::Instance->activateWorkbench(workbench.toUtf8().constData());
         scheduleRefresh();
     }
 
     void syncDomainToWorkbench(const QString& workbench)
     {
+        if (workbench == QStringLiteral("SketcherWorkbench")) {
+            showSketchTab();
+            setDomainTabsEnabled(!inSketchEdit);
+            return;
+        }
         if (inSketchEdit) {
             return;
         }
+        int targetIndex = previousDomain;
         for (int index = 0; index < tabs->count(); ++index) {
             if (tabs->tabData(index).toString() == workbench) {
-                syncingTabs = true;
-                tabs->setCurrentIndex(index);
-                syncingTabs = false;
+                targetIndex = index;
                 previousDomain = index;
-                return;
+                break;
             }
         }
+        setDomainTabsEnabled(true);
+        removeSketchTabAndSelect(targetIndex);
     }
 
     void enterSketchEdit(const ViewProviderDocumentObject& provider)
@@ -1001,22 +1453,8 @@ struct Gui::VibeCADRibbon::Private
             return;
         }
         inSketchEdit = true;
-        previousDomain = tabs->currentIndex();
-        int sketchIndex = -1;
-        for (int index = 0; index < tabs->count(); ++index) {
-            if (tabs->tabData(index).toString().isEmpty()) {
-                sketchIndex = index;
-                break;
-            }
-        }
-        if (sketchIndex < 0) {
-            sketchIndex = tabs->addTab(QObject::tr("Sketch"));
-            tabs->setTabData(sketchIndex, QString());
-            tabs->setTabTextColor(sketchIndex, QColor(QStringLiteral("#4dabf7")));
-        }
-        syncingTabs = true;
-        tabs->setCurrentIndex(sketchIndex);
-        syncingTabs = false;
+        showSketchTab();
+        setDomainTabsEnabled(false);
         rebuildPage();
         QTimer::singleShot(0, q, [this]() { enforceChrome(); });
     }
@@ -1027,14 +1465,10 @@ struct Gui::VibeCADRibbon::Private
             return;
         }
         inSketchEdit = false;
-        for (int index = tabs->count() - 1; index >= 0; --index) {
-            if (tabs->tabData(index).toString().isEmpty()) {
-                tabs->removeTab(index);
-            }
-        }
-        syncingTabs = true;
-        tabs->setCurrentIndex(std::clamp(previousDomain, 0, tabs->count() - 1));
-        syncingTabs = false;
+        setDomainTabsEnabled(true);
+        syncDomainToWorkbench(
+            QString::fromStdString(WorkbenchManager::instance()->activeName())
+        );
         rebuildPage();
         QTimer::singleShot(0, q, [this]() { enforceChrome(); });
     }
@@ -1046,17 +1480,30 @@ struct Gui::VibeCADRibbon::Private
     QToolButton* appButton = nullptr;
     QMenu* appMenu = nullptr;
     QAction* fullMenuAction = nullptr;
+    QTabBar* documentTabs = nullptr;
+    QPointer<QTabBar> sourceDocumentTabs;
+    int sourceDocumentTabsMinimumHeight = 0;
+    int sourceDocumentTabsMaximumHeight = QWIDGETSIZE_MAX;
+    QString sourceDocumentTabsStyleSheet;
+    bool sourceDocumentTabsGeometryCaptured = false;
+    QToolButton* newDocumentButton = nullptr;
     QLineEdit* commandSearch = nullptr;
     QStringListModel* searchModel = nullptr;
     QCompleter* commandCompleter = nullptr;
     QHash<QString, QString> searchCommands;
+    QToolButton* searchButton = nullptr;
+    QMenu* searchMenu = nullptr;
+    QAction* searchShortcut = nullptr;
     QToolButton* themeButton = nullptr;
     QToolButton* assistantButton = nullptr;
     QToolButton* settingsButton = nullptr;
     QTabBar* tabs = nullptr;
     RibbonPage* page = nullptr;
     QTimer refreshTimer;
+    QTimer documentTabsSyncTimer;
+    QSet<QMdiSubWindow*> observedDocumentWindows;
     bool syncingTabs = false;
+    bool syncingDocumentTabs = false;
     bool inSketchEdit = false;
     bool legacyMenuVisible = false;
     bool pendingAltToggle = false;
@@ -1088,6 +1535,14 @@ Gui::VibeCADRibbon::VibeCADRibbon(MainWindow* mainWindow)
     d->refreshTimer.setSingleShot(true);
     d->refreshTimer.setParent(this);
     connect(&d->refreshTimer, &QTimer::timeout, this, [this]() { d->refresh(); });
+    d->documentTabsSyncTimer.setSingleShot(true);
+    d->documentTabsSyncTimer.setParent(this);
+    connect(
+        &d->documentTabsSyncTimer,
+        &QTimer::timeout,
+        this,
+        [this]() { d->syncDocumentTabs(); }
+    );
     connect(mainWindow, &MainWindow::workbenchActivated, this, [this](const QString& workbench) {
         d->syncDomainToWorkbench(workbench);
         d->scheduleRefresh();
@@ -1118,10 +1573,26 @@ Gui::VibeCADRibbon::~VibeCADRibbon()
     if (qApp) {
         qApp->removeEventFilter(this);
     }
+    if (d->sourceDocumentTabs) {
+        d->sourceDocumentTabs->removeEventFilter(this);
+        d->restoreSourceDocumentTabs();
+    }
 }
 
 bool Gui::VibeCADRibbon::eventFilter(QObject* watched, QEvent* event)
 {
+    QMdiArea* mdiArea = d->mainWindow->getMdiArea();
+    const bool isDocumentChrome =
+        watched == d->sourceDocumentTabs
+        || watched == mdiArea
+        || (mdiArea && watched == mdiArea->viewport());
+    if (isDocumentChrome
+        && (event->type() == QEvent::ChildAdded || event->type() == QEvent::ChildRemoved
+            || event->type() == QEvent::LayoutRequest
+            || event->type() == QEvent::UpdateRequest)) {
+        d->scheduleDocumentTabsSync();
+    }
+
     if (event->type() == QEvent::KeyPress) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (!keyEvent->isAutoRepeat() && keyEvent->key() == Qt::Key_Alt) {
@@ -1148,7 +1619,12 @@ bool Gui::VibeCADRibbon::eventFilter(QObject* watched, QEvent* event)
         }
     }
     else if (event->type() == QEvent::Show) {
-        if (auto* toolbar = qobject_cast<QToolBar*>(watched)) {
+        if (watched == d->sourceDocumentTabs) {
+            QTimer::singleShot(0, this, [this]() {
+                d->collapseSourceDocumentTabs();
+            });
+        }
+        else if (auto* toolbar = qobject_cast<QToolBar*>(watched)) {
             if (toolbar != d->toolbar && d->isMainWindowToolbar(toolbar)) {
                 QTimer::singleShot(0, this, [this]() { d->enforceChrome(); });
             }
@@ -1159,9 +1635,6 @@ bool Gui::VibeCADRibbon::eventFilter(QObject* watched, QEvent* event)
     }
     else if (event->type() == QEvent::LanguageChange && watched == qApp) {
         d->scheduleRefresh();
-    }
-    else if (event->type() == QEvent::Resize && watched == d->root) {
-        d->updateApplicationStrip(static_cast<QResizeEvent*>(event)->size().width());
     }
     return QObject::eventFilter(watched, event);
 }

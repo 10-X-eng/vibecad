@@ -303,6 +303,40 @@ def _verify_document_lifecycle(root: Path) -> dict:
 
 
 def _verify_search_and_failures() -> dict:
+    partial_size = search_catalog("m3", limit=100)
+    assert partial_size["total_matches"] > 0
+    assert "M3" in partial_size["results"][0]["nominal_threads"]
+    assert all(
+        any(
+            "m3" in str(size).casefold()
+            for size in row["nominal_threads"]
+        )
+        for row in partial_size["results"]
+    )
+    cross_field = search_catalog("m3 socket", limit=100)
+    assert cross_field["total_matches"] > 0
+    assert "M3" in cross_field["results"][0]["nominal_threads"]
+    assert all(
+        "socket" in (
+            f"{row['standard']} {row['family']} {row['description']}"
+        ).casefold()
+        and any(
+            "m3" in str(size).casefold()
+            for size in row["nominal_threads"]
+        )
+        for row in cross_field["results"]
+    )
+    partial_standard = search_catalog("476", limit=100)
+    assert any(
+        row["standard"] == "ISO4762"
+        for row in partial_standard["results"]
+    )
+    split_family = search_catalog("press nut", limit=100)
+    assert [
+        row["standard"]
+        for row in split_family["results"]
+    ] == ["PEMPressNut"]
+
     result = search_catalog(
         "socket head",
         standard="ISO4762",
@@ -374,6 +408,10 @@ def _verify_search_and_failures() -> dict:
         else:
             raise AssertionError(f"{name} was silently accepted")
     return {
+        "partial_size_matches": partial_size["total_matches"],
+        "cross_field_matches": cross_field["total_matches"],
+        "partial_standard_match": "ISO4762",
+        "split_family_match": "PEMPressNut",
         "exact_constructor": constructor,
         "nearest_is_data_only": True,
         "hard_failures": failures,

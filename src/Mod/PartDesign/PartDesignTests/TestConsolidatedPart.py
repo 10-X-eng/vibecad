@@ -86,7 +86,7 @@ RETIRED_REDUNDANT_COMMANDS = {
 LEGACY_COMPATIBILITY_COMMANDS = {"Sketcher_NewSketch"}
 
 MODEL_TOOLBARS = {
-    "Model Structure": [
+    "Part Design Helper Features": [
         "PartDesign_Body",
         "PartDesign_CompSketches",
         "Sketcher_ValidateSketch",

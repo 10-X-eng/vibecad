@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Regression coverage for independently rendered Part Design history."""
+"""Regression coverage for exclusive Part Design history previews."""
 
 from __future__ import annotations
 
@@ -165,7 +165,7 @@ def test_presentation_hides_retained_part_results_in_the_body() -> None:
     assert stable.ViewObject.Visibility is True
 
 
-def test_current_presentation_repairs_container_and_hides_native_solid() -> None:
+def test_current_presentation_repairs_container_and_preserves_history() -> None:
     document, body, sketch, result, stable = _legacy_document(
         body_visible=True,
         publication_visible=False,
@@ -179,10 +179,35 @@ def test_current_presentation_repairs_container_and_hides_native_solid() -> None
 
     assert body.ViewObject.Visibility is True
     assert sketch.ViewObject.Visibility is False
-    assert result.ViewObject.Visibility is False
+    assert result.ViewObject.Visibility is True
     assert stable.ViewObject.Visibility is True
     assert restored["migrated_bodies"] == []
-    assert restored["changed_objects"] == ["BladeBody", "BladeResult"]
+    assert restored["changed_objects"] == ["BladeBody"]
+
+
+def test_current_presentation_keeps_only_latest_enabled_history_result() -> None:
+    document, body, _sketch, result, stable = _legacy_document(
+        body_visible=True,
+        publication_visible=True,
+    )
+    publication.restore_partdesign_history_presentation(document)
+    retained_part_result = _Object(
+        "BooleanResult",
+        "Part::Feature",
+        visible=True,
+        result_feature=True,
+    )
+    body.Group.append(retained_part_result)
+    document.Objects.append(retained_part_result)
+    result.ViewObject.Visibility = True
+
+    restored = publication.restore_partdesign_history_presentation(document)
+
+    assert body.ViewObject.Visibility is True
+    assert result.ViewObject.Visibility is False
+    assert retained_part_result.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is True
+    assert restored["changed_objects"] == ["BladeResult"]
 
 
 def test_body_repair_undoes_freecad_automatically_showing_the_tip() -> None:

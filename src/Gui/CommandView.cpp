@@ -2509,6 +2509,7 @@ VibeCADCmdToggleGrid::VibeCADCmdToggleGrid()
     sToolTipText = QT_TR_NOOP("Toggles the reference grid in 3D views");
     sStatusTip = sToolTipText;
     sWhatsThis = "VibeCAD_ToggleGrid";
+    sPixmap = "Draft_Grid";
 }
 
 void VibeCADCmdToggleGrid::activated(int iMsg)

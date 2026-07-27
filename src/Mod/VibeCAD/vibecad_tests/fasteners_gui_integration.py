@@ -81,6 +81,62 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 len(dialog._rows),
                 len(catalog_index()["standards"]),
             )
+
+            dialog.filter_edit.setText("m3")
+            self.assertGreater(dialog.standard_combo.count(), 0)
+            self.assertEqual(dialog.size_combo.currentData(), "M3")
+
+            dialog.filter_edit.setText("m3 socket")
+            self.assertGreater(dialog.standard_combo.count(), 0)
+            self.assertEqual(dialog.size_combo.currentData(), "M3")
+            matching_standards = {
+                str(dialog.standard_combo.itemData(index))
+                for index in range(dialog.standard_combo.count())
+            }
+            matching_rows = [
+                row
+                for row in dialog._rows
+                if str(row["standard"]) in matching_standards
+            ]
+            self.assertEqual(
+                len(matching_rows),
+                dialog.standard_combo.count(),
+            )
+            self.assertTrue(
+                all(
+                    "socket"
+                    in (
+                        f"{row['standard']} {row['family']} "
+                        f"{row['description']}"
+                    ).casefold()
+                    and any(
+                        "m3" in str(size).casefold()
+                        for size in row["nominal_threads"]
+                    )
+                    for row in matching_rows
+                )
+            )
+            exact_m3_standard = next(
+                row["standard"]
+                for row in matching_rows
+                if "M3" in row["nominal_threads"]
+            )
+            exact_m3_index = dialog.standard_combo.findData(
+                exact_m3_standard
+            )
+            self.assertGreaterEqual(exact_m3_index, 0)
+            dialog.standard_combo.setCurrentIndex(exact_m3_index)
+            self.assertEqual(dialog.size_combo.currentData(), "M3")
+
+            dialog.filter_edit.setText("476")
+            self.assertGreaterEqual(
+                dialog.standard_combo.findData("ISO4762"),
+                0,
+            )
+            self.assertIn(
+                str(dialog.standard_combo.count()),
+                dialog.match_label.text(),
+            )
         finally:
             dialog.dialog.close()
 

@@ -604,6 +604,10 @@ public:
 private:
     App::DocumentObject* visibilityPeer() const;
     std::vector<App::DocumentObject*> visibilityDependents() const;
+    void syncVisibilityDependents(
+        App::DocumentObject* preferredPreview = nullptr,
+        bool releaseGate = false
+    ) const;
     void setCheckState(bool checked);
     void getExpandedSnapshot(std::vector<bool>& snapshot) const;
     void applyExpandedSnapshot(

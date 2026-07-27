@@ -10745,13 +10745,35 @@ def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
             continue
 
         # The implementation Body is a permanent scene parent for sketches and
-        # datums, never a second solid renderer. ViewProviderBody::show()
-        # automatically enables its Tip, so hide every result feature after
-        # repairing the Body even when this schema was already saved.
+        # datums. A result feature may persist as the explicit history preview,
+        # but cumulative history states must never render together. Keep the
+        # latest enabled result when repairing documents saved by an older
+        # build that allowed several results to remain visible.
+        feature_visibility = [
+            (
+                feature,
+                bool(
+                    getattr(
+                        getattr(feature, "ViewObject", None),
+                        "Visibility",
+                        False,
+                    )
+                ),
+            )
+            for feature in _partdesign_history_result_features(body)
+        ]
+        active_feature = next(
+            (
+                feature
+                for feature, visible in reversed(feature_visibility)
+                if visible
+            ),
+            None,
+        )
         if _set_view_visibility(body, True):
             changed_objects.add(body_name)
-        for feature in _partdesign_history_result_features(body):
-            if _set_view_visibility(feature, False):
+        for feature, _visible in feature_visibility:
+            if _set_view_visibility(feature, feature is active_feature):
                 changed_objects.add(str(getattr(feature, "Name", "") or ""))
 
     return {

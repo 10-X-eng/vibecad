@@ -244,8 +244,13 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     mesh->setCommand("Mesh Tools");
     *mesh << "Mesh_Import"
           << "Mesh_Export"
-          << "Mesh_FromPartShape"
           << "Mesh_BuildRegularSolid";
+
+    Gui::ToolBarItem* convert = new Gui::ToolBarItem(root);
+    convert->setCommand("Mesh Convert");
+    *convert << "Mesh_FromPartShape"
+             << "Part_ShapeFromMesh"
+             << "MeshPart_CurveOnMesh";
 
     Gui::ToolBarItem* modifying = new Gui::ToolBarItem(root);
     modifying->setCommand("Mesh Modify");

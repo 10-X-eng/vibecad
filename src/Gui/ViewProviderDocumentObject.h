@@ -199,6 +199,15 @@ public:
     void setShowable(bool enable);
     bool isShowable() const;
 
+    /** Gate rendering inherited from a presentation parent.
+     *
+     * Unlike Visibility, this does not alter persistent user intent. Closing
+     * the gate removes the object from the scene; reopening it renders the
+     * object again only when its own Visibility remains enabled.
+     */
+    void setVisibilityGate(bool enable);
+    bool isVisibilityGateOpen() const;
+
     /** Start the edit mode with ViewProvider::Default */
     void startDefaultEditMode();
 

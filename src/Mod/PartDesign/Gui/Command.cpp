@@ -2690,9 +2690,9 @@ public:
     {
         sAppModule = "PartDesign";
         sGroup = "PartDesign";
-        sMenuText = QT_TR_NOOP("Create Datum");
-        sToolTipText = QT_TR_NOOP("Creates a datum object or local coordinate system");
-        sWhatsThis = "PartDesign_CompDatums";
+        sMenuText = QT_TR_NOOP("Sketch Tools");
+        sToolTipText = QT_TR_NOOP("Creates, maps, or edits a sketch");
+        sWhatsThis = "PartDesign_CompSketches";
         sStatusTip = sToolTipText;
         eType = ForEdit;
 
