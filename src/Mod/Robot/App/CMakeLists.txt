@@ -52,6 +52,7 @@ SET(Robot_SRCS
     RobotObject.h
     TrajectoryObject.cpp
     TrajectoryObject.h
+    TimelineSupport.h
     TrajectoryDressUpObject.cpp
     TrajectoryDressUpObject.h
     TrajectoryCompound.cpp

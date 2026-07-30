@@ -26,6 +26,7 @@
 
 #include <App/GeoFeature.h>
 #include <App/PropertyGeo.h>
+#include <App/SuppressibleExtension.h>
 
 #include <Mod/Robot/RobotGlobal.h>
 
@@ -63,6 +64,9 @@ public:
 protected:
     /// get called by the container when a property has changed
     void onChanged(const App::Property* prop) override;
+
+private:
+    App::SuppressibleExtension suppressibleExtension;
 };
 
 }  // namespace Robot

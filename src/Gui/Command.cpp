@@ -398,9 +398,7 @@ public:
 
     ~TaskDialogCommandInvocationScope()
     {
-        Gui::TaskView::TaskDialog::endCommandInvocation(
-            std::uncaught_exceptions() == exceptionCount
-        );
+        Gui::TaskView::TaskDialog::endCommandInvocation(std::uncaught_exceptions() == exceptionCount);
     }
 
 private:
@@ -488,8 +486,7 @@ void Command::_invoke(int id, bool disablelog)
             }
             else {
                 Gui::SelectionLogDisabler seldisabler;
-                const auto submittedLines =
-                    manager->getSubmittedCommandLines();
+                const auto submittedLines = manager->getSubmittedCommandLines();
                 std::ostringstream ss;
                 ss << "### Begin command " << sName;
                 // Add a pending line to mark the start of a command
@@ -498,10 +495,7 @@ void Command::_invoke(int id, bool disablelog)
 
                 activated(id);
 
-                if (
-                    manager->getSubmittedCommandLines()
-                    == submittedLines
-                ) {
+                if (manager->getSubmittedCommandLines() == submittedLines) {
                     // This command does not record any lines, lets do it for
                     // it. The above LogDisabler is to prevent nested command
                     // logging, i.e. we only auto log the first invoking
@@ -595,20 +589,15 @@ bool Command::canInvoke()
 
     if (!(eType & ForEdit)) {
         App::Document* document = getDocument();
-        if ((!Gui::Control().isAllowedAlterDocument(document)
-             && eType & AlterDoc)
-            || (!Gui::Control().isAllowedAlterView(document)
-                && eType & Alter3DView)
-            || (!Gui::Control().isAllowedAlterSelection(document)
-                && eType & AlterSelection)) {
+        if ((!Gui::Control().isAllowedAlterDocument(document) && eType & AlterDoc)
+            || (!Gui::Control().isAllowedAlterView(document) && eType & Alter3DView)
+            || (!Gui::Control().isAllowedAlterSelection(document) && eType & AlterSelection)) {
             return false;
         }
 
         if (document && (eType & AlterDoc)) {
-            const int booked =
-                document->getBookedTransactionID();
-            const bool hasTransaction =
-                booked != App::NullTransaction
+            const int booked = document->getBookedTransactionID();
+            const bool hasTransaction = booked != App::NullTransaction
                 || document->hasPendingTransaction();
             if (hasTransaction) {
                 // Only a synchronously nested child command may continue the
@@ -616,11 +605,8 @@ bool Command::canInvoke()
                 // new user-action boundary there is no enclosing owner, so a
                 // caller-owned T is always refused. A pending journal with no
                 // booked ID is inconsistent and cannot be adopted.
-                const int owned =
-                    TaskView::TaskDialog::
-                        ownedEnclosingTransactionId(document);
-                if (booked == App::NullTransaction
-                    || owned != booked) {
+                const int owned = TaskView::TaskDialog::ownedEnclosingTransactionId(document);
+                if (booked == App::NullTransaction || owned != booked) {
                     return false;
                 }
             }
@@ -760,11 +746,7 @@ int Command::openCommand(App::Document* document, std::string name)
 int Command::openActiveDocumentCommand(App::TransactionName name, int tid)
 {
     if (Gui::Document* guidoc = getGuiApplication()->activeDocument()) {
-        return openDocumentCommand(
-            guidoc->getDocument(),
-            std::move(name),
-            tid
-        );
+        return openDocumentCommand(guidoc->getDocument(), std::move(name), tid);
     }
     return App::NullTransaction;
 }
@@ -778,21 +760,11 @@ int Command::openActiveDocumentCommand(std::string name, int tid)
         tid
     );
 }
-int Command::openDocumentCommand(
-    App::Document* document,
-    App::TransactionName name,
-    int tid
-)
+int Command::openDocumentCommand(App::Document* document, App::TransactionName name, int tid)
 {
-    return document
-        ? document->setActiveTransaction(std::move(name), tid)
-        : App::NullTransaction;
+    return document ? document->setActiveTransaction(std::move(name), tid) : App::NullTransaction;
 }
-int Command::openDocumentCommand(
-    App::Document* document,
-    std::string name,
-    int tid
-)
+int Command::openDocumentCommand(App::Document* document, std::string name, int tid)
 {
     return openDocumentCommand(
         document,
@@ -820,20 +792,14 @@ void Command::commitCommand(int tid)
 {
     if (tid != App::NullTransaction) {
         std::vector<App::Document*> documents;
-        for (auto* document :
-             App::GetApplication().getDocuments()) {
-            if (document
-                && document->getBookedTransactionID() == tid) {
+        for (auto* document : App::GetApplication().getDocuments()) {
+            if (document && document->getBookedTransactionID() == tid) {
                 documents.push_back(document);
             }
         }
         if (App::GetApplication().commitTransaction(tid)) {
             for (auto* document : documents) {
-                Gui::TaskView::TaskDialog::
-                    recordCommandTransactionCompletion(
-                    document,
-                    tid
-                );
+                Gui::TaskView::TaskDialog::recordCommandTransactionCompletion(document, tid);
             }
         }
     }
@@ -847,20 +813,14 @@ void Command::abortCommand(int tid)
 {
     if (tid != App::NullTransaction) {
         std::vector<App::Document*> documents;
-        for (auto* document :
-             App::GetApplication().getDocuments()) {
-            if (document
-                && document->getBookedTransactionID() == tid) {
+        for (auto* document : App::GetApplication().getDocuments()) {
+            if (document && document->getBookedTransactionID() == tid) {
                 documents.push_back(document);
             }
         }
         if (App::GetApplication().abortTransaction(tid)) {
             for (auto* document : documents) {
-                Gui::TaskView::TaskDialog::
-                    recordCommandTransactionCompletion(
-                    document,
-                    tid
-                );
+                Gui::TaskView::TaskDialog::recordCommandTransactionCompletion(document, tid);
             }
         }
     }
@@ -987,11 +947,8 @@ App::DocumentObject* Command::_runDocumentObjectCommand(
     const std::string documentUid = document.Uid.getValueStr();
     const App::Document* expectedDocumentAddress = &document;
     if (documentName.empty() || documentUid.empty()
-        || App::GetApplication().getDocument(documentName.c_str())
-            != expectedDocumentAddress) {
-        throw Base::RuntimeError(
-            "A document-object command requires an exact live document identity"
-        );
+        || App::GetApplication().getDocument(documentName.c_str()) != expectedDocumentAddress) {
+        throw Base::RuntimeError("A document-object command requires an exact live document identity");
     }
 
     LogDisabler d1;
@@ -1006,10 +963,8 @@ App::DocumentObject* Command::_runDocumentObjectCommand(
     }
 
     Py::Object pythonResult = Base::Interpreter().runStringObject(expression.constData());
-    App::Document* resolvedDocument =
-        App::GetApplication().getDocument(documentName.c_str());
-    if (resolvedDocument != expectedDocumentAddress
-        || !resolvedDocument
+    App::Document* resolvedDocument = App::GetApplication().getDocument(documentName.c_str());
+    if (resolvedDocument != expectedDocumentAddress || !resolvedDocument
         || resolvedDocument->Uid.getValueStr() != documentUid) {
         throw Base::RuntimeError(
             "The expected document identity changed while the Python factory was running"
@@ -2186,6 +2141,7 @@ const char* PythonGroupCommand::getAccel() const
 
 bool PythonGroupCommand::isExclusive() const
 {
+    Base::PyGILStateLocker lock;
     PyObject* item = PyDict_GetItemString(_pcPyResource, "Exclusive");
     if (!item) {
         return false;
@@ -2204,6 +2160,7 @@ bool PythonGroupCommand::isExclusive() const
 
 bool PythonGroupCommand::hasDropDownMenu() const
 {
+    Base::PyGILStateLocker lock;
     PyObject* item = PyDict_GetItemString(_pcPyResource, "DropDownMenu");
     if (!item) {
         return true;

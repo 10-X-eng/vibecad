@@ -39,6 +39,8 @@
 #include <Base/Writer.h>
 
 #include "RobotAlgos.h"
+#include <algorithm>
+
 #include "Trajectory.h"
 
 
@@ -60,9 +62,7 @@ Trajectory::Trajectory(const Trajectory& Trac)
     }
     std::unique_ptr<KDL::Trajectory_Composite> trajectory;
     if (Trac.pcTrajectory) {
-        trajectory.reset(
-            static_cast<KDL::Trajectory_Composite*>(Trac.pcTrajectory->Clone())
-        );
+        trajectory.reset(static_cast<KDL::Trajectory_Composite*>(Trac.pcTrajectory->Clone()));
     }
     vpcWaypoints.reserve(waypoints.size());
     for (auto& waypoint : waypoints) {
@@ -150,7 +150,8 @@ double Trajectory::getVelocity(double time) const
 
 void Trajectory::deleteLast(unsigned int n)
 {
-    for (unsigned int i = 0; i <= n; i++) {
+    n = std::min<unsigned int>(n, vpcWaypoints.size());
+    for (unsigned int i = 0; i < n; ++i) {
         delete (*vpcWaypoints.rbegin());
         vpcWaypoints.pop_back();
     }

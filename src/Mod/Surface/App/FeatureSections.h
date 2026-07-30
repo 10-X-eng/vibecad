@@ -25,6 +25,7 @@
 #pragma once
 
 #include <App/PropertyLinks.h>
+#include <App/SuppressibleExtension.h>
 #include <Mod/Part/App/FeaturePartSpline.h>
 #include <Mod/Surface/SurfaceGlobal.h>
 
@@ -43,11 +44,15 @@ public:
 
     // recalculate the feature
     App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
     /// returns the type name of the view provider
     const char* getViewProviderName() const override
     {
         return "SurfaceGui::ViewProviderSections";
     }
+
+private:
+    App::SuppressibleExtension suppressibleExtension;
 };
 
 }  // Namespace Surface

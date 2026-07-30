@@ -23,6 +23,10 @@
  ***************************************************************************/
 
 
+#include <App/Application.h>
+#include <App/Document.h>
+#include <Gui/Control.h>
+
 #include "TaskDlgSimulate.h"
 
 
@@ -37,9 +41,22 @@ TaskDlgSimulate::TaskDlgSimulate(
     Robot::RobotObject* pcRobotObject,
     Robot::TrajectoryObject* pcTrajectoryObject
 )
+    : TaskDlgSimulate(
+          pcRobotObject,
+          pcTrajectoryObject,
+          pcRobotObject ? pcRobotObject->getDocument()
+                        : (pcTrajectoryObject ? pcTrajectoryObject->getDocument() : nullptr)
+      )
+{}
+
+TaskDlgSimulate::TaskDlgSimulate(
+    Robot::RobotObject* pcRobotObject,
+    Robot::TrajectoryObject* pcTrajectoryObject,
+    App::Document* taskDocument
+)
     : TaskDialog()
 {
-    rob = new TaskRobot6Axis(pcRobotObject);
+    rob = new TaskRobot6Axis(pcRobotObject, nullptr, true);
     ctr = new TaskRobotControl(pcRobotObject);
 
     trac = new TaskTrajectory(pcRobotObject, pcTrajectoryObject);
@@ -51,6 +68,29 @@ TaskDlgSimulate::TaskDlgSimulate(
     Content.push_back(ctr);
     Content.push_back(trac);
     Content.push_back(msg);
+    auto* robotDocument = pcRobotObject ? pcRobotObject->getDocument() : nullptr;
+    auto* trajectoryDocument = pcTrajectoryObject ? pcTrajectoryObject->getDocument() : nullptr;
+    if (!taskDocument) {
+        taskDocument = robotDocument;
+    }
+    if (taskDocument) {
+        setDocumentName(taskDocument->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
+    if (taskDocument && (robotDocument || trajectoryDocument)) {
+        sourceDocumentCloseConnection = App::GetApplication().signalBeforeCloseDocument.connect(
+            [this, robotDocument, trajectoryDocument](const App::Document& closing) {
+                if (&closing != robotDocument && &closing != trajectoryDocument) {
+                    return;
+                }
+                sourceDocumentCloseConnection.disconnect();
+                auto* attached = App::GetApplication().getDocument(getDocumentName().c_str());
+                if (attached) {
+                    Gui::Control().reject(attached);
+                }
+            }
+        );
+    }
 }
 
 //==== calls from the TaskView ===============================================================
@@ -67,11 +107,17 @@ void TaskDlgSimulate::clicked(int)
 
 bool TaskDlgSimulate::accept()
 {
+    trac->stopSimulation();
+    trac->restorePreview();
+    rob->restorePreview();
     return true;
 }
 
 bool TaskDlgSimulate::reject()
 {
+    trac->stopSimulation();
+    trac->restorePreview();
+    rob->restorePreview();
     return true;
 }
 

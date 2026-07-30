@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
-
 ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -102,9 +101,7 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
         self.assertIsNotNone(application)
         root = VibeCADGui._build_panel_widget()
         try:
-            self.assertIsNone(
-                root.findChild(QtWidgets.QLabel, "VibeProviderIdentity")
-            )
+            self.assertIsNone(root.findChild(QtWidgets.QLabel, "VibeProviderIdentity"))
             root.resize(414, 800)
             root.show()
             application.processEvents()
@@ -167,9 +164,7 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
 
             root.resize(760, 800)
             application.processEvents()
-            full_label_width = int(
-                composer.property("VibeFullLabelRequiredWidth")
-            )
+            full_label_width = int(composer.property("VibeFullLabelRequiredWidth"))
             self.assertGreaterEqual(
                 composer.width(),
                 full_label_width,
@@ -259,7 +254,15 @@ class TestVibeCADRibbonChrome(unittest.TestCase):
         self.assertFalse(main_window.menuBar().isVisible())
         self.assertEqual(
             [tabs.tabText(index) for index in range(tabs.count())],
-            ["Model", "Assemble", "Mesh", "Analyze", "Manufacture", "Drawing"],
+            [
+                "Model",
+                "Assemble",
+                "Mesh",
+                "Analyze",
+                "Manufacture",
+                "Drawing",
+                "Parameters",
+            ],
         )
 
         for candidate in main_window.findChildren(QtWidgets.QToolBar):
@@ -318,7 +321,9 @@ def test_every_runtime_entry_point_uses_only_the_vibecad_config_namespace() -> N
         assert 'Config()["ExeVendor"] = "FreeCAD"' not in source
 
 
-def test_fresh_gui_profiles_initialize_the_native_tree_before_main_window_construction() -> None:
+def test_fresh_gui_profiles_initialize_the_native_tree_before_main_window_construction() -> (
+    None
+):
     main_gui = _source("src/Main/MainGui.cpp")
 
     defaults = main_gui.split("static void initializeVibeCADDockDefaults()", 1)[1]
@@ -326,7 +331,7 @@ def test_fresh_gui_profiles_initialize_the_native_tree_before_main_window_constr
     assert 'GetGroup("TreeView")' in defaults
     assert 'GetGroup("PropertyView")' in defaults
     assert 'GetGroup("ComboView")' in defaults
-    assert defaults.count('hasBoolParameter(') == 3
+    assert defaults.count("hasBoolParameter(") == 3
     assert 'treeView->SetBool("Enabled", true)' in defaults
     assert 'propertyView->SetBool("Enabled", false)' in defaults
     assert 'comboView->SetBool("Enabled", false)' in defaults
@@ -344,7 +349,10 @@ def test_vibecad_docks_are_registered_before_native_window_restore() -> None:
     startup = _source("src/Gui/StartupProcess.cpp")
 
     assert "QtCore.QTimer.singleShot(0, apply_context_debug_preferences)" not in gui
-    assert "QtCore.QTimer.singleShot(0, ensure_scripted_model_editor_registered)" not in gui
+    assert (
+        "QtCore.QTimer.singleShot(0, ensure_scripted_model_editor_registered)"
+        not in gui
+    )
     assert "ensure_scripted_model_editor_registered()" in gui
     assert "QtCore.QTimer.singleShot(0, _register_startup_assistant)" not in init_gui
     assert "VibeCADGui.ensure_commands_registered()" in init_gui
@@ -369,7 +377,9 @@ def test_vibecad_docks_are_registered_before_native_window_restore() -> None:
 
 def test_vibecad_docks_use_native_standard_workbench_declarations() -> None:
     workbench = _source("src/Gui/Workbench.cpp")
-    setup = workbench.split("DockWindowItems* StdWorkbench::setupDockWindows() const", 1)[1]
+    setup = workbench.split(
+        "DockWindowItems* StdWorkbench::setupDockWindows() const", 1
+    )[1]
     setup = setup.split("return root;", 1)[0]
 
     assert 'root->addDockWidget("Std_TaskView"' in setup
@@ -545,9 +555,9 @@ def test_python_dock_registration_defers_creation_to_workbench_setup() -> None:
     binding = _source("src/Gui/MainWindowPy.cpp")
     manager = _source("src/Gui/DockWindowManager.cpp")
 
-    registration = binding.split(
-        "Py::Object MainWindowPy::registerDockWindow", 1
-    )[1].split("Py::Object MainWindowPy::removeDockWindow", 1)[0]
+    registration = binding.split("Py::Object MainWindowPy::registerDockWindow", 1)[
+        1
+    ].split("Py::Object MainWindowPy::removeDockWindow", 1)[0]
     assert "dwm->registerDockWindow(name, widget)" in registration
     assert "dwm->addDockWindow" not in registration
     assert "dw->show()" not in registration
@@ -557,11 +567,13 @@ def test_python_dock_registration_defers_creation_to_workbench_setup() -> None:
 
 def test_native_late_docks_consume_saved_entry_before_default_placement() -> None:
     source = _source("src/Gui/DockWindowManager.cpp")
-    addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[1].split(
-        "QWidget* DockWindowManager::getDockWindow", 1
-    )[0]
+    addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[
+        1
+    ].split("QWidget* DockWindowManager::getDockWindow", 1)[0]
 
-    assert addition.index("dw->setObjectName") < addition.index("mw->restoreDockWidget(dw)")
+    assert addition.index("dw->setObjectName") < addition.index(
+        "mw->restoreDockWidget(dw)"
+    )
     assert addition.index("dw->toggleViewAction()->setData") < addition.index(
         "mw->restoreDockWidget(dw)"
     )
@@ -574,9 +586,9 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     source = _source("src/Gui/DockWindowManager.cpp")
     overlay = _source("src/Gui/OverlayManager.cpp")
     overlay_widgets = _source("src/Gui/OverlayWidgets.cpp")
-    addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[1].split(
-        "QWidget* DockWindowManager::getDockWindow", 1
-    )[0]
+    addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[
+        1
+    ].split("QWidget* DockWindowManager::getDockWindow", 1)[0]
     persistence = addition.split(
         "connect(dw->toggleViewAction(), &QAction::triggered", 1
     )[1]
@@ -609,23 +621,20 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     # OverlayManager keeps its public direct-initialization behavior for
     # unmanaged docks, but must defer managed docks to the requested-state
     # owner above.
-    direct_initialization = overlay.split(
-        "void OverlayManager::initDockWidget", 1
-    )[1].split("bool OverlayManager::setDockWidgetVisible", 1)[0]
-    direct_toggle = overlay.split(
-        "void OverlayManager::onToggleDockWidget", 1
-    )[1].split("void OverlayManager::onDockVisibleChange", 1)[0]
+    direct_initialization = overlay.split("void OverlayManager::initDockWidget", 1)[
+        1
+    ].split("bool OverlayManager::setDockWidgetVisible", 1)[0]
+    direct_toggle = overlay.split("void OverlayManager::onToggleDockWidget", 1)[
+        1
+    ].split("void OverlayManager::onDockVisibleChange", 1)[0]
     assert "dw->toggleViewAction()" in direct_initialization
     assert "&OverlayManager::onToggleDockWidget" in direct_initialization
     assert "DockWindowManager::instance()->managesDockWidget(dock)" in direct_toggle
     assert "splitter->widget(i)->setVisible(presented)" in overlay_widgets
     assert "if (count() && !hasPresentedWidget)" in overlay_widgets
-    assert (
-        overlay_widgets.index(
-            "OverlayManager::instance()->synchronizePersistentPresentation(this)"
-        )
-        < overlay_widgets.index("if (count() && !hasPresentedWidget)")
-    )
+    assert overlay_widgets.index(
+        "OverlayManager::instance()->synchronizePersistentPresentation(this)"
+    ) < overlay_widgets.index("if (count() && !hasPresentedWidget)")
     assert "DockWindowManager::instance()->isVisibilityRequested(dock)" in overlay
 
 
@@ -636,7 +645,10 @@ def test_corrupt_duplicate_dock_state_is_repaired_after_startup() -> None:
     )[0]
 
     assert "QTimer::singleShot(0" in load
-    assert "DockWindowManager::repairDuplicateDockState(this, duplicateRepairState)" in load
+    assert (
+        "DockWindowManager::repairDuplicateDockState(this, duplicateRepairState)"
+        in load
+    )
     assert 'SetASCII("MainWindowState", saveState().toBase64().constData())' in load
 
 
@@ -672,7 +684,10 @@ def test_release_packages_share_canonical_artifact_basename() -> None:
 
     for bundle_script, platform_suffix in (
         (linux_bundle, 'version_name="${artifact_base}-Linux-$(uname -m)"'),
-        (macos_bundle, 'version_name="${artifact_base}-macOS${deploy_target%%.*}-$(uname -m)"'),
+        (
+            macos_bundle,
+            'version_name="${artifact_base}-macOS${deploy_target%%.*}-$(uname -m)"',
+        ),
         (windows_bundle, 'version_name="${artifact_base}-Windows-$(uname -m)"'),
     ):
         assert "resolve_release_artifact_name.py" in bundle_script
@@ -681,7 +696,10 @@ def test_release_packages_share_canonical_artifact_basename() -> None:
 
     assert '--version "${release_version}"' in release_workflow
     assert '--artifact-basename "${artifact_basename}"' in release_workflow
-    assert 'deb_path="$output_dir/${artifact_basename}-Linux-${deb_arch}.deb"' in deb_builder
+    assert (
+        'deb_path="$output_dir/${artifact_basename}-Linux-${deb_arch}.deb"'
+        in deb_builder
+    )
     assert "package/rattler-build/osx/VibeCAD-*.dmg" in macos_workflow
     assert "package/rattler-build/osx/VibeCAD_*.dmg" not in macos_workflow
 
@@ -791,14 +809,10 @@ def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:
     assert "${Images_Files2}" not in stylesheet_cmake
     assert not (ROOT / "src/Gui/Stylesheets/FreeCAD.qss").exists()
     assert not (ROOT / "src/Gui/Stylesheets/images_classic").exists()
-    assert not (
-        ROOT / "src/Gui/Stylesheets/overlay/Freecad Overlay.qss"
-    ).exists()
+    assert not (ROOT / "src/Gui/Stylesheets/overlay/Freecad Overlay.qss").exists()
     assert "parameters/Dark.yaml" in stylesheet_cmake
     assert "parameters/Light.yaml" in stylesheet_cmake
-    assert "ThemeAccentColor" not in _source(
-        "src/Gui/Stylesheets/parameters/Dark.yaml"
-    )
+    assert "ThemeAccentColor" not in _source("src/Gui/Stylesheets/parameters/Dark.yaml")
     assert "ThemeAccentColor" not in _source(
         "src/Gui/Stylesheets/parameters/Light.yaml"
     )
@@ -840,8 +854,21 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
         ("Analyze", "FemWorkbench"),
         ("Manufacture", "CAMWorkbench"),
         ("Drawing", "TechDrawWorkbench"),
+        ("Parameters", "SpreadsheetWorkbench"),
     ):
         assert f'{{"{label}", "{workbench}"}}' in ribbon
+
+    compact_ribbon = "".join(ribbon.split())
+    for workbench in (
+        "SurfaceWorkbench",
+        "PointsWorkbench",
+        "ReverseEngineeringWorkbench",
+        "RobotWorkbench",
+    ):
+        assert f'appendComposed("{workbench}"' in compact_ribbon
+    assert 'appendComposed("DraftWorkbench"' not in compact_ribbon
+
+    assert "initializeWorkbench(const char* name)" in _source("src/Gui/Application.cpp")
 
     for object_name in (
         "VibeCADRibbonToolBar",
@@ -878,9 +905,9 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
 
 def test_vibecad_migrates_its_obsolete_background_autoload_before_use() -> None:
     startup = _source("src/Gui/StartupProcess.cpp")
-    activation = startup.split("void StartupPostProcess::activateWorkbench()", 1)[1].split(
-        "void StartupPostProcess::setStyleSheet()", 1
-    )[0]
+    activation = startup.split("void StartupPostProcess::activateWorkbench()", 1)[
+        1
+    ].split("void StartupPostProcess::setStyleSheet()", 1)[0]
     assert activation.index("migrateVibeCADBackgroundAutoload(wb);") < activation.index(
         "autoloadModules(wb);"
     )
@@ -934,7 +961,9 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
         "scheduled:_setup_always_on_grid",
     ]
 
-    preferences.disabled = "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
+    preferences.disabled = (
+        "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
+    )
     assert namespace["_restore_vibecad_disabled_workbenches"]() is False
     assert preferences.disabled == (
         "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
@@ -1149,9 +1178,7 @@ def test_vibecad_bootstrap_migrates_removed_openscad_preferences(monkeypatch) ->
         loader_locals,
     )
 
-    assert workbenches.values["Ordered"] == (
-        "PartDesignWorkbench,MeshWorkbench"
-    )
+    assert workbenches.values["Ordered"] == ("PartDesignWorkbench,MeshWorkbench")
     assert workbenches.values["Disabled"] == "TestWorkbench,NoneWorkbench"
     assert general.values["BackgroundAutoloadModules"] == (
         "MeshWorkbench,PartDesignWorkbench"
@@ -1160,12 +1187,9 @@ def test_vibecad_bootstrap_migrates_removed_openscad_preferences(monkeypatch) ->
     assert general.values["LastModule"] == "MeshWorkbench"
     assert migration.values["VibeCADRemovedOpenSCADWorkbench2026"] is True
     assert any(
-        "OpenSCAD workbench references to Mesh" in warning
-        for warning in warnings
+        "OpenSCAD workbench references to Mesh" in warning for warning in warnings
     )
 
     workbenches.values["Ordered"] = "OpenSCADWorkbench,PartDesignWorkbench"
     assert loader_locals["_migrate_removed_openscad_workbench"]() is False
-    assert workbenches.values["Ordered"] == (
-        "OpenSCADWorkbench,PartDesignWorkbench"
-    )
+    assert workbenches.values["Ordered"] == ("OpenSCADWorkbench,PartDesignWorkbench")

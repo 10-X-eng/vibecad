@@ -27,6 +27,7 @@
 #include <Base/Placement.h>
 #include <Gui/Selection/SoFCSelection.h>
 #include <Gui/ViewProviderGeometryObject.h>
+#include <Gui/ViewProviderSuppressibleExtension.h>
 #include <Inventor/VRMLnodes/SoVRMLTransform.h>
 #include <Mod/Robot/RobotGlobal.h>
 
@@ -38,7 +39,8 @@ class SoTrackballDragger;
 namespace RobotGui
 {
 
-class RobotGuiExport ViewProviderRobotObject: public Gui::ViewProviderGeometryObject
+class RobotGuiExport ViewProviderRobotObject: public Gui::ViewProviderGeometryObject,
+                                              public Gui::ViewProviderSuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(RobotGui::ViewProviderRobotObject);
 

@@ -50,6 +50,8 @@ PROPERTY_SOURCE(RobotGui::ViewProviderRobotObject, Gui::ViewProviderGeometryObje
 
 ViewProviderRobotObject::ViewProviderRobotObject()
 {
+    Gui::ViewProviderSuppressibleExtension::initExtension(this);
+
     ADD_PROPERTY(Manipulator, (0));
 
     pcRobotRoot = new Gui::SoFCSelection();

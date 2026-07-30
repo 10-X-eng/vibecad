@@ -432,6 +432,10 @@ bool BlendCurvePanel::reject()
 TaskBlendCurve::TaskBlendCurve(ViewProviderBlendCurve* vp)
     : widget {new BlendCurvePanel(vp)}
 {
+    if (auto* object = vp->getObject()) {
+        setDocumentName(object->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     addTaskBox(Gui::BitmapFactory().pixmap("Surface_BlendCurve"), widget);
 }
 

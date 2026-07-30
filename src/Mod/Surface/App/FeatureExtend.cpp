@@ -39,6 +39,7 @@
 #include <Base/Tools.h>
 
 #include "FeatureExtend.h"
+#include "FeatureTimelineSupport.h"
 
 
 using namespace Surface;
@@ -50,6 +51,7 @@ PROPERTY_SOURCE(Surface::Extend, Part::Spline)
 
 Extend::Extend()
 {
+    suppressibleExtension.initExtension(this);
     ADD_PROPERTY(Face, (nullptr));
     Face.setScope(App::LinkScope::Global);
     ADD_PROPERTY(Tolerance, (0.1));
@@ -90,14 +92,27 @@ short Extend::mustExecute() const
     if (ExtendVPos.isTouched()) {
         return 1;
     }
-    return 0;
+    if (suppressibleExtension.Suppressed.isTouched()) {
+        return 1;
+    }
+    return Part::Spline::mustExecute();
 }
 
 App::DocumentObjectExecReturn* Extend::execute()
 {
+    Shape.setValue(TopoDS_Shape());
+    if (TimelineSupport::isSuppressedOrInactive(*this, suppressibleExtension)) {
+        return App::DocumentObject::StdReturn;
+    }
+
     App::DocumentObject* part = Face.getValue();
     if (!part || !part->isDerivedFrom<Part::Feature>()) {
         return new App::DocumentObjectExecReturn("No shape linked.");
+    }
+    if (!TimelineSupport::isUsableInput(*this, part)) {
+        return new App::DocumentObjectExecReturn(
+            "The selected face is not available at the current History position."
+        );
     }
     const auto& faces = Face.getSubValues();
     if (faces.size() != 1) {

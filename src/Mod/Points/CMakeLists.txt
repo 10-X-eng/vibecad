@@ -7,6 +7,12 @@ endif(BUILD_GUI)
 
 set(Points_Scripts
     Init.py
+    TestPointsGui.py
+)
+
+set(Points_TestScripts
+    PointsTests/__init__.py
+    PointsTests/TestVibeCADRibbonTools.py
 )
 
 if(BUILD_GUI)
@@ -24,6 +30,8 @@ SET(PointsCommands_SRCS
 
 SET(PointsAllScripts
     ${PointsCommands_SRCS}
+    ${Points_TestScripts}
+    TestPointsGui.py
 )
 
 ADD_CUSTOM_TARGET(PointsScripts ALL
@@ -34,3 +42,4 @@ fc_copy_sources(PointsScripts "${CMAKE_BINARY_DIR}/Mod/Points" ${PointsAllScript
 # install directories for Python packages
 INSTALL(FILES ${Points_Scripts} DESTINATION Mod/Points)
 INSTALL(FILES ${PointsCommands_SRCS} DESTINATION Mod/Points/pointscommands)
+INSTALL(FILES ${Points_TestScripts} DESTINATION Mod/Points/PointsTests)

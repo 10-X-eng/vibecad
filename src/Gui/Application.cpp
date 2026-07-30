@@ -166,6 +166,51 @@ using namespace Gui;
 
 namespace
 {
+std::string initializeWorkbenchHandler(PyObject* workbenchDictionary, const char* name)
+{
+    PyObject* pythonWorkbench = PyDict_GetItemString(workbenchDictionary, name);
+    if (!pythonWorkbench) {
+        return {};
+    }
+
+    Py::Object handler(pythonWorkbench);
+    Py::Callable classNameMethod(handler.getAttr(std::string("GetClassName")));
+    Py::Tuple args;
+    Py::String classNameResult(classNameMethod.apply(args));
+    std::string className = classNameResult.as_std_string("ascii");
+
+    if (!handler.hasAttr(std::string("__Workbench__"))) {
+        const Base::Type initialType = Base::Type::fromName(className.c_str());
+        if (!initialType.isBad()
+            && initialType.isDerivedFrom(Gui::PythonBaseWorkbench::getClassTypeId())) {
+            Workbench* workbench = WorkbenchManager::instance()->createWorkbench(name, className);
+            if (!workbench) {
+                throw Py::RuntimeError("Failed to instantiate workbench of type " + className);
+            }
+            handler.setAttr(std::string("__Workbench__"), Py::Object(workbench->getPyObject(), true));
+        }
+
+        Py::Callable initialize(handler.getAttr(std::string("Initialize")));
+        initialize.apply(args);
+
+        classNameResult = Py::String(classNameMethod.apply(args));
+        className = classNameResult.as_std_string("ascii");
+
+        Workbench* workbench = WorkbenchManager::instance()->getWorkbench(name);
+        if (!workbench) {
+            workbench = WorkbenchManager::instance()->createWorkbench(name, className);
+        }
+        if (!workbench) {
+            throw Py::RuntimeError("Failed to instantiate workbench of type " + className);
+        }
+        if (!handler.hasAttr(std::string("__Workbench__"))) {
+            handler.setAttr(std::string("__Workbench__"), Py::Object(workbench->getPyObject(), true));
+        }
+    }
+
+    return className;
+}
+
 void requestPlatformColorScheme(const QString& qssFile)
 {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
@@ -183,7 +228,8 @@ void requestPlatformColorScheme(const QString& qssFile)
     else if (
         lowerName.contains(QStringLiteral("vibelight"))
         || lowerName.contains(QStringLiteral("openlight"))
-        || lowerName.contains(QStringLiteral("freecad light"))) {
+        || lowerName.contains(QStringLiteral("freecad light"))
+    ) {
         hints->setColorScheme(Qt::ColorScheme::Light);
     }
     else if (qssFile.isEmpty()) {
@@ -1935,6 +1981,26 @@ bool Application::setUserEditMode(const std::string& mode)
  * The old workbench gets deactivated before. If the workbench to the handler is already
  * active or if the switch fails false is returned.
  */
+bool Application::initializeWorkbench(const char* name)
+{
+    Base::PyGILStateLocker lock;
+    try {
+        initializeWorkbenchHandler(_pcWorkbenchDictionary, name);
+        return WorkbenchManager::instance()->getWorkbench(name) != nullptr;
+    }
+    catch (Py::Exception&) {
+        Base::PyException error;
+        Base::Console().error("Failed to initialize workbench '%s': %s\n", name, error.what());
+        if (!d->startingUp) {
+            Base::Console().error("%s\n", error.getStackTrace().c_str());
+        }
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Failed to initialize workbench '%s': %s\n", name, error.what());
+    }
+    return false;
+}
+
 bool Application::activateWorkbench(const char* name)
 {
     bool ok = false;
@@ -1961,34 +2027,8 @@ bool Application::activateWorkbench(const char* name)
     }
 
     try {
-        std::string type;
+        const std::string type = initializeWorkbenchHandler(_pcWorkbenchDictionary, name);
         Py::Object handler(pcWorkbench);
-        if (!handler.hasAttr(std::string("__Workbench__"))) {
-            // call its GetClassName method if possible
-            Py::Callable method(handler.getAttr(std::string("GetClassName")));
-            Py::Tuple args;
-            Py::String result(method.apply(args));
-            type = result.as_std_string("ascii");
-            if (Base::Type::fromName(type.c_str())
-                    .isDerivedFrom(Gui::PythonBaseWorkbench::getClassTypeId())) {
-                Workbench* wb = WorkbenchManager::instance()->createWorkbench(name, type);
-                if (!wb) {
-                    throw Py::RuntimeError("Failed to instantiate workbench of type " + type);
-                }
-                handler.setAttr(std::string("__Workbench__"), Py::Object(wb->getPyObject(), true));
-            }
-
-            // import the matching module first
-            Py::Callable activate(handler.getAttr(std::string("Initialize")));
-            activate.apply(args);
-
-            // Dependent on the implementation of a workbench handler the type
-            // can be defined after the call of Initialize()
-            if (type.empty()) {
-                Py::String result(method.apply(args));
-                type = result.as_std_string("ascii");
-            }
-        }
 
         // does the Python workbench handler have changed the workbench?
         Workbench* curWb = WorkbenchManager::instance()->active();
@@ -2000,15 +2040,6 @@ bool Application::activateWorkbench(const char* name)
             getMainWindow()->activateWorkbench(QString::fromLatin1(name));
             this->signalActivateWorkbench(name);
             ok = true;
-        }
-
-        // if we still not have this member then it must be built-in C++ workbench
-        // which could be created after loading the appropriate module
-        if (!handler.hasAttr(std::string("__Workbench__"))) {
-            Workbench* wb = WorkbenchManager::instance()->getWorkbench(name);
-            if (wb) {
-                handler.setAttr(std::string("__Workbench__"), Py::Object(wb->getPyObject(), true));
-            }
         }
 
         // If the method Deactivate is available we call it
@@ -2306,16 +2337,12 @@ MacroManager* Application::macroManager()
     return d->macroMngr;
 }
 
-void Application::setDurableTaskResultPreparer(
-    DurableTaskResultPreparer preparer
-)
+void Application::setDurableTaskResultPreparer(DurableTaskResultPreparer preparer)
 {
     d->durableTaskResultPreparer = std::move(preparer);
 }
 
-void Application::setDurableTaskResultIntentPreparer(
-    DurableTaskResultIntentPreparer preparer
-)
+void Application::setDurableTaskResultIntentPreparer(DurableTaskResultIntentPreparer preparer)
 {
     d->durableTaskResultIntentPreparer = std::move(preparer);
 }
@@ -2345,17 +2372,11 @@ void Application::prepareDurableTaskResults(
         return;
     }
 
-    const bool automatic = std::ranges::all_of(
-        intents,
-        [](const DurableTaskResultIntent& intent) {
-            return intent.ownership
-                == DurableTaskResultOwnership::Automatic;
-        }
-    );
+    const bool automatic = std::ranges::all_of(intents, [](const DurableTaskResultIntent& intent) {
+        return intent.ownership == DurableTaskResultOwnership::Automatic;
+    });
     if (!automatic) {
-        throw Base::RuntimeError(
-            "No durable result preparer can honor explicit ownership"
-        );
+        throw Base::RuntimeError("No durable result preparer can honor explicit ownership");
     }
     if (d->durableTaskResultPreparer) {
         d->durableTaskResultPreparer(document, objectIds);

@@ -36,6 +36,8 @@ SET(RobotGui_SRCS_Commands
     CommandTrajectory.cpp
     CommandInsertRobot.cpp
     CommandExport.cpp
+    OperationSupport.cpp
+    OperationSupport.h
 )
 SOURCE_GROUP("Commands" FILES ${RobotGui_SRCS_Commands})
 

@@ -35,7 +35,8 @@ class SpreadsheetWorkbench(Workbench):
 
     def __init__(self):
         self.__class__.Icon = (
-            FreeCAD.getResourceDir() + "Mod/Spreadsheet/Resources/icons/SpreadsheetWorkbench.svg"
+            FreeCAD.getResourceDir()
+            + "Mod/Spreadsheet/Resources/icons/SpreadsheetWorkbench.svg"
         )
         self.__class__.MenuText = "Spreadsheet"
         self.__class__.ToolTip = "Spreadsheet workbench"
@@ -49,6 +50,8 @@ class SpreadsheetWorkbench(Workbench):
 
 
 Gui.addWorkbench(SpreadsheetWorkbench())
+
+App.__unit_test__ += ["TestSpreadsheetGui"]
 
 # Append the open handler
 FreeCAD.addImportType("Spreadsheet formats (*.csv *.CSV)", "SpreadsheetGui")

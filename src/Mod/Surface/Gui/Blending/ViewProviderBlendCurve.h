@@ -36,6 +36,10 @@ class ViewProviderBlendCurve: public PartGui::ViewProviderSpline
 public:
     QIcon getIcon() const override;
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
 protected:
     bool setEdit(int ModNum) override;

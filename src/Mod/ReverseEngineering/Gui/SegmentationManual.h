@@ -32,6 +32,10 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/Mesh/Gui/MeshSelection.h>
 
+namespace App
+{
+class Document;
+}
 
 namespace ReverseEngineeringGui
 {
@@ -48,6 +52,11 @@ class SegmentationManual: public QWidget
 
 public:
     explicit SegmentationManual(QWidget* parent = nullptr, Qt::WindowFlags fl = Qt::WindowFlags());
+    explicit SegmentationManual(
+        App::Document* document,
+        QWidget* parent = nullptr,
+        Qt::WindowFlags fl = Qt::WindowFlags()
+    );
     ~SegmentationManual() override;
     void reject();
     void createSegment();
@@ -75,6 +84,7 @@ private:
 private:
     std::unique_ptr<Ui_SegmentationManual> ui;
     MeshGui::MeshSelection meshSel;
+    std::unique_ptr<Private> d;
 };
 
 /**
@@ -86,6 +96,7 @@ class TaskSegmentationManual: public Gui::TaskView::TaskDialog
 
 public:
     TaskSegmentationManual();
+    explicit TaskSegmentationManual(App::Document* document);
 
 public:
     bool accept() override;

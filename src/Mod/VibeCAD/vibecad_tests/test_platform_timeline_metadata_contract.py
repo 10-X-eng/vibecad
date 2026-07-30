@@ -7,7 +7,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 _REPOSITORY = Path(__file__).resolve().parents[4]
 _CANONICAL_STATUSES = ("Hidden", "LockDynamic", "NoRecompute")
 
@@ -121,16 +120,10 @@ def test_fem_member_activity_delegates_to_the_shared_history_contract():
         "_is_suppressed",
     )
 
-    assert (
-        "document.isObjectUsableAtCurrentTimelinePosition(member)"
-        in local_usability
-    )
+    assert "document.isObjectUsableAtCurrentTimelinePosition(member)" in local_usability
     assert "getLinkedObject" not in local_usability
     assert "VibeCADTimeline" not in local_usability
-    assert (
-        "_is_usable_at_current_timeline_position(member)"
-        in compatibility
-    )
+    assert "_is_usable_at_current_timeline_position(member)" in compatibility
 
 
 def test_python_domain_helpers_apply_the_complete_history_metadata_contract():
@@ -221,14 +214,17 @@ def test_inspection_and_material_reject_future_history_targets():
         "std::vector<App::DocumentObject*> VisualInspection::candidateObjects(",
         "namespace InspectionGui",
     )
+    inspection_source = _cpp_function(
+        "src/Mod/Inspection/App/InspectionSource.cpp",
+        "bool isSourceUsable(",
+        "bool resolveSource(",
+    )
     inspection_commands = _cpp_function(
         "src/Mod/Inspection/Gui/Command.cpp",
         "bool CmdInspectElement::isActive()",
         "void CreateInspectionCommands()",
     )
-    material_identity = _source(
-        "src/Mod/Material/Gui/SelectionTargetIdentity.cpp"
-    )
+    material_identity = _source("src/Mod/Material/Gui/SelectionTargetIdentity.cpp")
     material_commands = _cpp_function(
         "src/Mod/Material/Gui/Command.cpp",
         "App::Document* activeMutationDocument()",
@@ -240,20 +236,14 @@ def test_inspection_and_material_reject_future_history_targets():
     )
 
     assert (
-        inspection_candidates.count(
-            "isObjectUsableAtCurrentPosition("
-        )
-        == 2
+        "Inspection::resolveSource(candidate, document, source)"
+        in inspection_candidates
     )
+    assert inspection_source.count("isObjectUsableAtCurrentPosition(") == 2
     assert "isObjectUsableAtCurrentPosition(feature)" in inspection_commands
 
     assert "isActiveTimelineTarget(object)" in material_identity
-    assert (
-        material_identity.count(
-            "isObjectUsableAtCurrentPosition("
-        )
-        == 2
-    )
+    assert material_identity.count("isObjectUsableAtCurrentPosition(") == 2
     assert "SelectionTargetIdentity::capture(" in material_commands
     assert "target->resolveObject() != selected.pObject" in material_commands
     for inspector in material_inspectors:
@@ -381,9 +371,7 @@ def test_cam_selected_subelements_are_persistent_parametric_dependencies():
     area_header = _source("src/Mod/CAM/App/FeatureArea.h")
     area = _source("src/Mod/CAM/App/FeatureArea.cpp")
     path_shape = _source("src/Mod/CAM/App/FeaturePathShape.cpp")
-    path_compound = _source(
-        "src/Mod/CAM/App/FeaturePathCompound.cpp"
-    )
+    path_compound = _source("src/Mod/CAM/App/FeaturePathCompound.cpp")
 
     resource = python
     factory = _python_function(
@@ -397,11 +385,9 @@ def test_cam_selected_subelements_are_persistent_parametric_dependencies():
     assert 'document.addObject("Part::FeaturePython"' in factory
     assert "_CAMSubshapeResource(" in factory
 
-    assert command.count(
-        "PathCommands.createSubshapeResource("
-    ) == 2
+    assert command.count("PathCommands.createSubshapeResource(") == 2
     assert "setattr(__resource__, 'Shape'" not in command
-    assert "setattr(__resource__, \"Shape\"" not in command
+    assert 'setattr(__resource__, "Shape"' not in command
 
     assert "App::PropertyLinkSub WorkPlaneSource;" in area_header
     assert "App::PropertyBool WorkPlaneSourceEnabled;" in area_header
@@ -518,9 +504,7 @@ def test_new_part_joint_preview_is_internal_before_it_gets_an_editor_contract():
         "__init__",
     )
 
-    classify = create_joint.index(
-        "classifyProvisionalTimelineInternalObject"
-    )
+    classify = create_joint.index("classifyProvisionalTimelineInternalObject")
     construct = create_joint.index("Joint(")
     assert classify < construct
     assert (
@@ -560,26 +544,25 @@ def test_targeted_domain_gui_builds_stage_their_runtime_python():
         "FemGuiScriptsTarget",
         "FemPythonUi",
     ):
-        assert dependency in fem[
-            fem.index("add_dependencies(\n        FemGui") :
-        ]
+        assert dependency in fem[fem.index("add_dependencies(\n        FemGui") :]
 
     path_target = cam[
-        cam.index("ADD_CUSTOM_TARGET(PathScripts ALL") :
-        cam.index("SET(test_files")
+        cam.index("ADD_CUSTOM_TARGET(PathScripts ALL") : cam.index("SET(test_files")
     ]
     assert "${Path_Scripts}" in path_target
     path_copy = cam[
-        cam.index("fc_copy_sources(\n    PathScripts") :
-        cam.index("fc_copy_sources(Tests")
+        cam.index("fc_copy_sources(\n    PathScripts") : cam.index(
+            "fc_copy_sources(Tests"
+        )
     ]
     assert "${Path_Scripts}" in path_copy
     assert "add_dependencies(PathGui PathScripts)" in cam
 
     assert "add_dependencies(TechDrawGui TechDraw_Data)" in techdraw
     material_dependencies = material[
-        material.index("add_dependencies(\n        MatGui") :
-        material.index("\n    )", material.index("add_dependencies(\n        MatGui"))
+        material.index("add_dependencies(\n        MatGui") : material.index(
+            "\n    )", material.index("add_dependencies(\n        MatGui")
+        )
     ]
     for dependency in (
         "MaterialScripts",
@@ -601,25 +584,18 @@ def test_multi_output_replacements_publish_before_hiding_existing_inputs():
         "bool TaskCreateElementSet::publishWorkingMesh(",
     )
 
-    inspection_publish = inspection.index(
-        "timeline->publishProvisionalOperationBlock("
-    )
+    inspection_publish = inspection.index("timeline->publishProvisionalOperationBlock(")
     inspection_hide = inspection.index(
         "view->Visibility.setValue(false)",
         inspection_publish,
     )
     assert inspection_publish < inspection_hide
-    assert (
-        "view->Visibility.setValue(false)"
-        not in inspection[:inspection_publish]
-    )
+    assert "view->Visibility.setValue(false)" not in inspection[:inspection_publish]
 
     erase_restore = erase_elements.index(
         "sourceViewProvider->Visibility.setValue(true)"
     )
-    erase_publish = erase_elements.index(
-        "timeline->publishProvisionalOperationBlock("
-    )
+    erase_publish = erase_elements.index("timeline->publishProvisionalOperationBlock(")
     erase_hide = erase_elements.index(
         "sourceViewProvider->Visibility.setValue(false)",
         erase_publish,
@@ -641,19 +617,13 @@ def test_measure_acceptance_has_one_exact_history_candidate_per_save():
     # The persistent Measurements folder is structural UI organization, not a
     # second feature-history operation. Therefore each Save transaction has
     # one exact candidate: the directly returned measurement/result object.
-    assert (
-        "return !operation->isDerivedFrom<DocumentObjectGroup>();"
-        in timeline
-    )
+    assert "return !operation->isDerivedFrom<DocumentObjectGroup>();" in timeline
     assert "_mMeasureObject = dynamic_cast<Measure::MeasureBase*>(" in measure
     assert "auto* acceptedMeasurement = _mMeasureObject;" in measure
     assert "ensureGroup(_mMeasureObject);" in measure
     assert "markCommandInteractionStateDurable();" in measure
 
-    assert (
-        'auto* obj = doc->addObject("Measure::Result", "MassProperties");'
-        in mass
-    )
+    assert 'auto* obj = doc->addObject("Measure::Result", "MassProperties");' in mass
     assert "group->addObject(obj);" in mass
     assert "markCommandInteractionStateDurable();" in mass
 
@@ -675,10 +645,7 @@ def test_measure_acceptance_has_one_exact_history_candidate_per_save():
     assert "targetDocumentUid = document->Uid.getValueStr();" in mass
     assert "document->Uid.getValueStr() == targetDocumentUid" in mass
     assert "std::string currentDatumDocumentUid;" in mass_header
-    assert (
-        "document->Uid.getValueStr() != currentDatumDocumentUid"
-        in mass
-    )
+    assert "document->Uid.getValueStr() != currentDatumDocumentUid" in mass
 
 
 def test_measurements_only_read_the_current_history_state():
@@ -696,7 +663,9 @@ def test_measurements_only_read_the_current_history_state():
     assert "isTimelineSelectionActive(object)" in measure
     assert "isTimelineSelectionActive(subObject)" in measure
     assert "isTimelineSelectionActive(pickedObject)" in mass
-    assert "isTimelineSelectionActive(materialObj)" in mass
+    assert (
+        "isTimelineSelectionActive(\n                occurrence.materialOwner" in mass
+    )
     assert "isTimelineSelectionActive(resolved)" in mass
     assert "isTimelineSelectionActive(coordSystem)" in mass
     assert "TimelineSelection.h" in cmake

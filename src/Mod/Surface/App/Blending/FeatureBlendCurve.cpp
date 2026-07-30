@@ -35,6 +35,7 @@
 #include <Base/Tools.h>
 
 #include "FeatureBlendCurve.h"
+#include "../FeatureTimelineSupport.h"
 
 
 using namespace Surface;
@@ -47,6 +48,7 @@ PROPERTY_SOURCE(Surface::FeatureBlendCurve, Part::Spline)
 
 FeatureBlendCurve::FeatureBlendCurve()
 {
+    suppressibleExtension.initExtension(this);
     ADD_PROPERTY_TYPE(StartEdge, (nullptr), "FirstEdge", App::Prop_None, "Edge support of the start point");
     ADD_PROPERTY_TYPE(
         StartContinuity,
@@ -111,7 +113,10 @@ short FeatureBlendCurve::mustExecute() const
     if (EndSize.isTouched()) {
         return 1;
     }
-    return 0;
+    if (suppressibleExtension.Suppressed.isTouched()) {
+        return 1;
+    }
+    return Part::Spline::mustExecute();
 }
 
 BlendPoint FeatureBlendCurve::GetBlendPoint(
@@ -168,6 +173,17 @@ BlendPoint FeatureBlendCurve::GetBlendPoint(
 
 App::DocumentObjectExecReturn* FeatureBlendCurve::execute()
 {
+    Shape.setValue(TopoDS_Shape());
+    if (TimelineSupport::isSuppressedOrInactive(*this, suppressibleExtension)) {
+        return App::DocumentObject::StdReturn;
+    }
+    if (!TimelineSupport::isUsableInput(*this, StartEdge.getValue())
+        || !TimelineSupport::isUsableInput(*this, EndEdge.getValue())) {
+        return new App::DocumentObjectExecReturn(
+            "A blend edge is not available at the current History position."
+        );
+    }
+
     BlendPoint bp1 = GetBlendPoint(StartEdge, StartParameter, StartContinuity);
     BlendPoint bp2 = GetBlendPoint(EndEdge, EndParameter, EndContinuity);
 

@@ -37,11 +37,15 @@
 #include <Inventor/nodes/SoPointSet.h>
 
 #include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Vector3D.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/SoFCSelection.h>
 #include <Gui/View3DInventorViewer.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
 #include <Mod/Points/App/PointsFeature.h>
 #include <Mod/Points/App/Properties.h>
 
@@ -344,23 +348,52 @@ void ViewProviderPoints::clipPointsCallback(void*, SoEventCallback* n)
     view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), clipPointsCallback);
     n->setHandled();
 
+    std::vector<ViewProviderPoints*> editedViews;
+    App::Document* document = nullptr;
+    for (auto* viewProvider : view->getViewProvidersOfType(ViewProviderPoints::getClassTypeId())) {
+        auto* pointsView = static_cast<ViewProviderPoints*>(viewProvider);
+        if (pointsView->getEditingMode() < 0) {
+            continue;
+        }
+
+        pointsView->finishEditing();
+        auto* candidate = pointsView->pcObject ? pointsView->pcObject->getDocument() : nullptr;
+        if (!document) {
+            document = candidate;
+        }
+        else if (candidate != document) {
+            Base::Console().error("The point-cloud cut cannot span multiple documents\n");
+            view->redraw();
+            return;
+        }
+        editedViews.push_back(pointsView);
+    }
+
     std::vector<SbVec2f> clPoly = view->getGLPolygon();
-    if (clPoly.size() < 3) {
+    if (editedViews.empty() || clPoly.size() < 3) {
+        view->redraw();
         return;
     }
     if (clPoly.front() != clPoly.back()) {
         clPoly.push_back(clPoly.front());
     }
 
-    std::vector<Gui::ViewProvider*> views = view->getViewProvidersOfType(
-        ViewProviderPoints::getClassTypeId()
-    );
-    for (auto it : views) {
-        ViewProviderPoints* that = static_cast<ViewProviderPoints*>(it);
-        if (that->getEditingMode() > -1) {
-            that->finishEditing();
-            that->cut(clPoly, *view);
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        view->redraw();
+        return;
+    }
+
+    try {
+        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Cut points"));
+        for (auto* pointsView : editedViews) {
+            pointsView->cut(clPoly, *view);
         }
+        if (!mutation.commit()) {
+            Base::Console().error("The point-cloud cut could not be committed\n");
+        }
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("The point-cloud cut failed: %s\n", error.what());
     }
 
     view->redraw();
@@ -482,11 +515,6 @@ void ViewProviderScattered::cut(const std::vector<SbVec2f>& picked, Gui::View3DI
         return;  // nothing needs to be done
     }
 
-    // Remove the points from the cloud and open a transaction object for the undo/redo stuff
-    Gui::Application::Instance->activeDocument()->openCommand(
-        QT_TRANSLATE_NOOP("Command", "Cut points")
-    );
-
     // sets the points outside the polygon to update the Inventor node
     fea->Points.removeIndices(removeIndices);
 
@@ -533,7 +561,6 @@ void ViewProviderScattered::cut(const std::vector<SbVec2f>& picked, Gui::View3DI
     }
 
     // unset the modified flag because we don't need the features' execute() to be called
-    Gui::Application::Instance->activeDocument()->commitCommand();
     fea->purgeTouched();
 }
 
@@ -650,16 +677,10 @@ void ViewProviderStructured::cut(const std::vector<SbVec2f>& picked, Gui::View3D
     }
 
     if (invalidatePoints) {
-        // Remove the points from the cloud and open a transaction object for the undo/redo stuff
-        Gui::Application::Instance->activeDocument()->openCommand(
-            QT_TRANSLATE_NOOP("Command", "Cut points")
-        );
-
         // sets the points outside the polygon to update the Inventor node
         fea->Points.setValue(newKernel);
 
         // unset the modified flag because we don't need the features' execute() to be called
-        Gui::Application::Instance->activeDocument()->commitCommand();
         fea->purgeTouched();
     }
 }

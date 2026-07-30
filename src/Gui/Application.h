@@ -247,6 +247,8 @@ public:
 
     /** @name workbench handling */
     //@{
+    /// Initialize a named workbench without activating its UI layout
+    bool initializeWorkbench(const char* name);
     /// Activate a named workbench
     bool activateWorkbench(const char* name);
     QPixmap workbenchIcon(const QString&) const;
@@ -271,8 +273,8 @@ public:
     //@{
     /// Get macro manager
     Gui::MacroManager* macroManager();
-    using DurableTaskResultPreparer =
-        std::function<void(const App::Document&, const std::vector<long>&)>;
+    using DurableTaskResultPreparer
+        = std::function<void(const App::Document&, const std::vector<long>&)>;
     enum class DurableTaskResultOwnership
     {
         Automatic,
@@ -282,27 +284,17 @@ public:
     struct DurableTaskResultIntent
     {
         long objectId {-1};
-        DurableTaskResultOwnership ownership {
-            DurableTaskResultOwnership::Automatic
-        };
+        DurableTaskResultOwnership ownership {DurableTaskResultOwnership::Automatic};
         long ownerObjectId {-1};
     };
-    using DurableTaskResultIntentPreparer = std::function<void(
-        const App::Document&,
-        const std::vector<long>&,
-        const std::vector<DurableTaskResultIntent>&
-    )>;
+    using DurableTaskResultIntentPreparer = std::function<
+        void(const App::Document&, const std::vector<long>&, const std::vector<DurableTaskResultIntent>&)>;
     /// Register the synchronous validator/adopter for native task results.
     void setDurableTaskResultPreparer(DurableTaskResultPreparer preparer);
     /// Register a preparer which can honor an explicit Body or document-root intent.
-    void setDurableTaskResultIntentPreparer(
-        DurableTaskResultIntentPreparer preparer
-    );
+    void setDurableTaskResultIntentPreparer(DurableTaskResultIntentPreparer preparer);
     /// Prepare results inside their still-open task transaction.
-    void prepareDurableTaskResults(
-        const App::Document& document,
-        const std::vector<long>& objectIds
-    );
+    void prepareDurableTaskResults(const App::Document& document, const std::vector<long>& objectIds);
     /// Prepare results with per-result ownership intent.
     void prepareDurableTaskResults(
         const App::Document& document,

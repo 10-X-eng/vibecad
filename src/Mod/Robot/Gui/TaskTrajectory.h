@@ -59,6 +59,8 @@ public:
         QWidget* parent = nullptr
     );
     ~TaskTrajectory() override;
+    void stopSimulation();
+    void restorePreview();
     /// Observer message from the Selection
     void OnChange(
         Gui::SelectionSingleton::SubjectType& rCaller,
@@ -93,8 +95,8 @@ protected:
     bool Run;
     bool block;
 
-    float timePos;
-    float duration;
+    double timePos;
+    double duration;
 
 private:
     QWidget* proxy;

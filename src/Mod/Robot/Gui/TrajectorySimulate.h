@@ -65,12 +65,14 @@ private Q_SLOTS:
 
 protected:
     void setTo();
+    void restorePreview();
 
     QTimer* timer;
 
     Robot::Simulation sim;
 
-    ViewProviderRobotObject* ViewProv;
+    ViewProviderRobotObject* ViewProv {nullptr};
+    Robot::RobotObject* robotObject {nullptr};
 
     bool Run;
     bool block;

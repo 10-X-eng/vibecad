@@ -131,6 +131,7 @@ public:
     void bindObject();
     void setPlacementAndBindObject(const App::DocumentObject* obj, const std::string& propertyName);
     void setIgnoreTransactions(bool value);
+    void setValueOnlyMode(bool enabled);
     Base::Vector3d getDirection() const;
     void setPlacement(const Base::Placement&);
     Base::Placement getPlacement() const;
@@ -179,6 +180,7 @@ private:
     Ui_Placement* ui;
     QSignalMapper* signalMapper;
     PlacementHandler handler;
+    bool valueOnlyMode {false};
 };
 
 class GuiExport DockablePlacement: public Placement

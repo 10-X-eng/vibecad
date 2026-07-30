@@ -22,6 +22,7 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
 
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -115,15 +116,20 @@ TaskTrajectory::TaskTrajectory(
     // clang-format on
 
     // get the view provider
-    ViewProv = freecad_cast<ViewProviderRobotObject*>(
-        Gui::Application::Instance->activeDocument()->getViewProvider(pcRobotObject)
-    );
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(pcRobotObject->getDocument())
+        : nullptr;
+    ViewProv = guiDocument
+        ? freecad_cast<ViewProviderRobotObject*>(guiDocument->getViewProvider(pcRobotObject))
+        : nullptr;
 
     setTo();
 }
 
 TaskTrajectory::~TaskTrajectory()
 {
+    stopSimulation();
+    restorePreview();
     delete ui;
 }
 
@@ -153,15 +159,17 @@ void TaskTrajectory::setTo()
     else {
         sim.setToTime(timePos);
     }
-    ViewProv->setAxisTo(
-        sim.Axis[0],
-        sim.Axis[1],
-        sim.Axis[2],
-        sim.Axis[3],
-        sim.Axis[4],
-        sim.Axis[5],
-        sim.Rob.getTcp()
-    );
+    if (ViewProv) {
+        ViewProv->setAxisTo(
+            sim.Axis[0],
+            sim.Axis[1],
+            sim.Axis[2],
+            sim.Axis[3],
+            sim.Axis[4],
+            sim.Axis[5],
+            sim.Rob.getTcp()
+        );
+    }
     Q_EMIT axisChanged(
         sim.Axis[0],
         sim.Axis[1],
@@ -176,9 +184,9 @@ void TaskTrajectory::setTo()
 
 void TaskTrajectory::start()
 {
-    timePos = 0.0f;
+    timePos = 0.0;
     ui->timeSpinBox->setValue(timePos);
-    ui->timeSlider->setValue(int((timePos / duration) * 1000));
+    ui->timeSlider->setValue(0);
     setTo();
 }
 void TaskTrajectory::stop()
@@ -199,16 +207,16 @@ void TaskTrajectory::end()
 {
     timePos = duration;
     ui->timeSpinBox->setValue(timePos);
-    ui->timeSlider->setValue(int((timePos / duration) * 1000));
+    ui->timeSlider->setValue(duration > 0.0 ? 1000 : 0);
     setTo();
 }
 
 void TaskTrajectory::timerDone()
 {
     if (timePos < duration) {
-        timePos += .1f;
+        timePos = std::min(duration, timePos + 0.1);
         ui->timeSpinBox->setValue(timePos);
-        ui->timeSlider->setValue(int((timePos / duration) * 1000));
+        ui->timeSlider->setValue(duration > 0.0 ? int((timePos / duration) * 1000.0) : 0);
         setTo();
         timer->start();
     }
@@ -220,7 +228,7 @@ void TaskTrajectory::timerDone()
 
 void TaskTrajectory::valueChanged(int value)
 {
-    if (!block) {
+    if (!block && duration > 0.0) {
         timePos = duration * (value / 1000.0);
         block = true;
         ui->timeSpinBox->setValue(timePos);
@@ -232,12 +240,36 @@ void TaskTrajectory::valueChanged(int value)
 void TaskTrajectory::valueChanged(double value)
 {
     if (!block) {
-        timePos = value;
+        timePos = std::clamp(value, 0.0, duration);
         block = true;
-        ui->timeSlider->setValue(int((timePos / duration) * 1000));
+        ui->timeSlider->setValue(duration > 0.0 ? int((timePos / duration) * 1000.0) : 0);
         block = false;
         setTo();
     }
+}
+
+void TaskTrajectory::stopSimulation()
+{
+    if (timer) {
+        timer->stop();
+    }
+    Run = false;
+}
+
+void TaskTrajectory::restorePreview()
+{
+    if (!pcRobot || !ViewProv) {
+        return;
+    }
+    ViewProv->setAxisTo(
+        pcRobot->Axis1.getValue(),
+        pcRobot->Axis2.getValue(),
+        pcRobot->Axis3.getValue(),
+        pcRobot->Axis4.getValue(),
+        pcRobot->Axis5.getValue(),
+        pcRobot->Axis6.getValue(),
+        pcRobot->Tcp.getValue()
+    );
 }
 
 

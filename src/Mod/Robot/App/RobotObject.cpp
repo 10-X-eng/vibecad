@@ -39,6 +39,8 @@ PROPERTY_SOURCE(Robot::RobotObject, App::GeoFeature)
 
 RobotObject::RobotObject()
 {
+    suppressibleExtension.initExtension(this);
+
     ADD_PROPERTY_TYPE(
         RobotVrmlFile,
         (nullptr),
@@ -94,11 +96,12 @@ RobotObject::RobotObject()
     // ADD_PROPERTY_TYPE(Position,(Base::Placement()),"Robot definition",Prop_None,"Position of the
     // robot in the simulation");
     ADD_PROPERTY_TYPE(Home, (0), "Robot kinematic", Prop_None, "Axis position for home");
+    ToolShape.setScope(App::LinkScope::Global);
 }
 
 short RobotObject::mustExecute() const
 {
-    return 0;
+    return suppressibleExtension.Suppressed.isTouched() ? 1 : 0;
 }
 
 PyObject* RobotObject::getPyObject()

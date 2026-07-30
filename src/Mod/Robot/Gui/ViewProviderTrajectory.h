@@ -26,6 +26,7 @@
 
 #include <Gui/Selection/SoFCSelection.h>
 #include <Gui/ViewProviderGeometryObject.h>
+#include <Gui/ViewProviderSuppressibleExtension.h>
 #include <Mod/Robot/RobotGlobal.h>
 
 
@@ -38,7 +39,8 @@ class SoLineSet;
 namespace RobotGui
 {
 
-class RobotGuiExport ViewProviderTrajectory: public Gui::ViewProviderGeometryObject
+class RobotGuiExport ViewProviderTrajectory: public Gui::ViewProviderGeometryObject,
+                                             public Gui::ViewProviderSuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(RobotGui::ViewProviderTrajectory);
 

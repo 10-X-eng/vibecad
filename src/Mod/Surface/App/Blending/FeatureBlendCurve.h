@@ -26,6 +26,7 @@
 
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
+#include <App/SuppressibleExtension.h>
 #include <App/PropertyUnits.h>
 #include <Mod/Part/App/FeaturePartSpline.h>
 #include <Mod/Surface/App/Blending/BlendPoint.h>
@@ -61,6 +62,8 @@ public:
     }
 
 private:
+    App::SuppressibleExtension suppressibleExtension;
+
     BlendPoint GetBlendPoint(
         App::PropertyLinkSub& link,
         App::PropertyFloatConstraint& param,

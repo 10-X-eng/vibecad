@@ -25,6 +25,7 @@
 
 #include <QApplication>
 #include <QMessageBox>
+#include <algorithm>
 #include <sstream>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -34,12 +35,27 @@
 
 #include "Mod/Part/App/PartFeature.h"
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/SelectionFilter.h>
 #include <Gui/Selection/SelectionObject.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
+
+
+namespace
+{
+
+bool canStartSurfaceOperation()
+{
+    auto* document = App::GetApplication().getActiveDocument();
+    return document && PartGui::canStartRetainedModelingTask(document)
+        && !Gui::Control().activeDialog(document);
+}
+
+}  // namespace
 
 
 //===========================================================================
@@ -124,16 +140,27 @@ CmdSurfaceFilling::CmdSurfaceFilling()
 void CmdSurfaceFilling::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    if (!canStartSurfaceOperation()) {
+        return;
+    }
+
+    App::Document* document = App::GetApplication().getActiveDocument();
+    const std::string documentName = document->getName();
     std::string FeatName = getUniqueObjectName("Surface");
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create surface"));
-    doCommand(Doc, "App.ActiveDocument.addObject(\"Surface::Filling\",\"%s\")", FeatName.c_str());
-    doCommand(Doc, "Gui.ActiveDocument.setEdit('%s',0)", FeatName.c_str());
+    openCommand(document, QT_TRANSLATE_NOOP("Command", "Create surface"));
+    doCommand(
+        Doc,
+        "App.getDocument('%s').addObject(\"Surface::Filling\",\"%s\")",
+        documentName.c_str(),
+        FeatName.c_str()
+    );
+    doCommand(Doc, "Gui.getDocument('%s').setEdit('%s',0)", documentName.c_str(), FeatName.c_str());
 }
 
 bool CmdSurfaceFilling::isActive()
 {
-    return hasActiveDocument();
+    return canStartSurfaceOperation();
 }
 
 //===========================================================================
@@ -155,17 +182,28 @@ CmdSurfaceGeomFillSurface::CmdSurfaceGeomFillSurface()
 
 bool CmdSurfaceGeomFillSurface::isActive()
 {
-    return hasActiveDocument();
+    return canStartSurfaceOperation();
 }
 
 void CmdSurfaceGeomFillSurface::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    if (!canStartSurfaceOperation()) {
+        return;
+    }
+
+    App::Document* document = App::GetApplication().getActiveDocument();
+    const std::string documentName = document->getName();
     std::string FeatName = getUniqueObjectName("Surface");
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create surface"));
-    doCommand(Doc, "App.ActiveDocument.addObject(\"Surface::GeomFillSurface\",\"%s\")", FeatName.c_str());
-    doCommand(Doc, "Gui.ActiveDocument.setEdit('%s',0)", FeatName.c_str());
+    openCommand(document, QT_TRANSLATE_NOOP("Command", "Create surface"));
+    doCommand(
+        Doc,
+        "App.getDocument('%s').addObject(\"Surface::GeomFillSurface\",\"%s\")",
+        documentName.c_str(),
+        FeatName.c_str()
+    );
+    doCommand(Doc, "Gui.getDocument('%s').setEdit('%s',0)", documentName.c_str(), FeatName.c_str());
 }
 
 
@@ -189,6 +227,10 @@ CmdSurfaceCurveOnMesh::CmdSurfaceCurveOnMesh()
 
 void CmdSurfaceCurveOnMesh::activated(int)
 {
+    if (!isActive()) {
+        return;
+    }
+
     doCommand(
         Doc,
         "import MeshPartGui, FreeCADGui\n"
@@ -198,7 +240,7 @@ void CmdSurfaceCurveOnMesh::activated(int)
 
 bool CmdSurfaceCurveOnMesh::isActive()
 {
-    if (Gui::Control().activeDialog()) {
+    if (!canStartSurfaceOperation()) {
         return false;
     }
 
@@ -221,39 +263,60 @@ CmdBlendCurve::CmdBlendCurve()
     sMenuText = QT_TR_NOOP("Blend Curve");
     sToolTipText = QT_TR_NOOP("Joins 2 edges with continuity");
     sStatusTip = sToolTipText;
-    sWhatsThis = "BlendCurve";
+    sWhatsThis = "Surface_BlendCurve";
     sPixmap = "Surface_BlendCurve";
 }
 
 void CmdBlendCurve::activated(int)
 {
-    std::string docName = App::GetApplication().getActiveDocument()->getName();
+    if (!canStartSurfaceOperation() || !isActive()) {
+        return;
+    }
+
+    App::Document* document = App::GetApplication().getActiveDocument();
+    if (!document) {
+        return;
+    }
+    std::string docName = document->getName();
     std::string objName[2];
     std::string edge[2];
     std::string featName = getUniqueObjectName("BlendCurve");
     std::vector<Gui::SelectionObject> sel
-        = getSelection().getSelectionEx(nullptr, Part::Feature::getClassTypeId());
+        = getSelection().getSelectionEx(docName.c_str(), Part::Feature::getClassTypeId());
+
+    if (sel.empty() || sel[0].getSubNames().empty()) {
+        return;
+    }
 
     objName[0] = sel[0].getFeatName();
     edge[0] = sel[0].getSubNames()[0];
 
     if (sel.size() == 1) {
+        if (sel[0].getSubNames().size() != 2) {
+            return;
+        }
         objName[1] = sel[0].getFeatName();
         edge[1] = sel[0].getSubNames()[1];
     }
     else {
+        if (sel.size() != 2 || sel[1].getSubNames().size() != 1) {
+            return;
+        }
         objName[1] = sel[1].getFeatName();
         edge[1] = sel[1].getSubNames()[0];
     }
-    openCommand(QT_TRANSLATE_NOOP("Command", "Blend Curve"));
+    openCommand(document, QT_TRANSLATE_NOOP("Command", "Blend Curve"));
     doCommand(
         Doc,
-        "App.ActiveDocument.addObject(\"Surface::FeatureBlendCurve\",\"%s\")",
+        "App.getDocument('%s').addObject(\"Surface::FeatureBlendCurve\",\"%s\")",
+        docName.c_str(),
         featName.c_str()
     );
     doCommand(
         Doc,
-        "App.ActiveDocument.%s.StartEdge = (App.getDocument('%s').getObject('%s'),['%s'])",
+        "App.getDocument('%s').getObject('%s').StartEdge = "
+        "(App.getDocument('%s').getObject('%s'),['%s'])",
+        docName.c_str(),
         featName.c_str(),
         docName.c_str(),
         objName[0].c_str(),
@@ -261,7 +324,9 @@ void CmdBlendCurve::activated(int)
     );
     doCommand(
         Doc,
-        "App.ActiveDocument.%s.EndEdge = (App.getDocument('%s').getObject('%s'),['%s'])",
+        "App.getDocument('%s').getObject('%s').EndEdge = "
+        "(App.getDocument('%s').getObject('%s'),['%s'])",
+        docName.c_str(),
         featName.c_str(),
         docName.c_str(),
         objName[1].c_str(),
@@ -274,7 +339,21 @@ void CmdBlendCurve::activated(int)
 bool CmdBlendCurve::isActive()
 {
     Gui::SelectionFilter edgeFilter("SELECT Part::Feature SUBELEMENT Edge COUNT 2");
-    return edgeFilter.match();
+    if (!canStartSurfaceOperation() || !edgeFilter.match()) {
+        return false;
+    }
+
+    App::Document* document = App::GetApplication().getActiveDocument();
+    const auto selected = getSelection().getSelectionEx(
+        document ? document->getName() : nullptr,
+        Part::Feature::getClassTypeId()
+    );
+    return document && !selected.empty()
+        && std::ranges::all_of(selected, [document](const Gui::SelectionObject& item) {
+               auto* object = item.getObject();
+               return object && object->getDocument() == document
+                   && App::DocumentTimeline::isObjectUsableAtCurrentPosition(object);
+           });
 }
 
 DEF_STD_CMD_A(CmdSurfaceExtendFace)
@@ -296,15 +375,37 @@ CmdSurfaceExtendFace::CmdSurfaceExtendFace()
 
 void CmdSurfaceExtendFace::activated(int)
 {
+    if (!canStartSurfaceOperation()) {
+        return;
+    }
+
     Gui::SelectionFilter faceFilter("SELECT Part::Feature SUBELEMENT Face COUNT 1");
     if (faceFilter.match()) {
         const std::vector<std::string>& sub = faceFilter.Result[0][0].getSubNames();
         if (sub.size() == 1) {
-            openCommand(QT_TRANSLATE_NOOP("Command", "Extend surface"));
+            App::Document* document = App::GetApplication().getActiveDocument();
+            auto* source = faceFilter.Result[0][0].getObject();
+            if (!document || !source || source->getDocument() != document
+                || !App::DocumentTimeline::isObjectUsableAtCurrentPosition(source)) {
+                return;
+            }
+            const std::string documentName = document->getName();
+            openCommand(document, QT_TRANSLATE_NOOP("Command", "Extend surface"));
             std::string FeatName = getUniqueObjectName("Surface");
             std::string supportString = faceFilter.Result[0][0].getAsPropertyLinkSubString();
-            doCommand(Doc, "App.ActiveDocument.addObject(\"Surface::Extend\",\"%s\")", FeatName.c_str());
-            doCommand(Doc, "App.ActiveDocument.%s.Face = %s", FeatName.c_str(), supportString.c_str());
+            doCommand(
+                Doc,
+                "App.getDocument('%s').addObject(\"Surface::Extend\",\"%s\")",
+                documentName.c_str(),
+                FeatName.c_str()
+            );
+            doCommand(
+                Doc,
+                "App.getDocument('%s').getObject('%s').Face = %s",
+                documentName.c_str(),
+                FeatName.c_str(),
+                supportString.c_str()
+            );
             updateActive();
             commitCommand();
         }
@@ -320,7 +421,16 @@ void CmdSurfaceExtendFace::activated(int)
 
 bool CmdSurfaceExtendFace::isActive()
 {
-    return Gui::Selection().countObjectsOfType<Part::Feature>() == 1;
+    Gui::SelectionFilter faceFilter("SELECT Part::Feature SUBELEMENT Face COUNT 1");
+    if (!canStartSurfaceOperation() || !faceFilter.match() || faceFilter.Result.empty()
+        || faceFilter.Result[0].empty()) {
+        return false;
+    }
+
+    App::Document* document = App::GetApplication().getActiveDocument();
+    auto* source = faceFilter.Result[0][0].getObject();
+    return document && source && source->getDocument() == document
+        && App::DocumentTimeline::isObjectUsableAtCurrentPosition(source);
 }
 
 DEF_STD_CMD_A(CmdSurfaceSections)
@@ -340,16 +450,27 @@ CmdSurfaceSections::CmdSurfaceSections()
 void CmdSurfaceSections::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    if (!canStartSurfaceOperation()) {
+        return;
+    }
+
+    App::Document* document = App::GetApplication().getActiveDocument();
+    const std::string documentName = document->getName();
     std::string FeatName = getUniqueObjectName("Surface");
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create surface"));
-    doCommand(Doc, "App.ActiveDocument.addObject(\"Surface::Sections\",\"%s\")", FeatName.c_str());
-    doCommand(Doc, "Gui.ActiveDocument.setEdit('%s',0)", FeatName.c_str());
+    openCommand(document, QT_TRANSLATE_NOOP("Command", "Create surface"));
+    doCommand(
+        Doc,
+        "App.getDocument('%s').addObject(\"Surface::Sections\",\"%s\")",
+        documentName.c_str(),
+        FeatName.c_str()
+    );
+    doCommand(Doc, "Gui.getDocument('%s').setEdit('%s',0)", documentName.c_str(), FeatName.c_str());
 }
 
 bool CmdSurfaceSections::isActive()
 {
-    return hasActiveDocument();
+    return canStartSurfaceOperation();
 }
 
 void CreateSurfaceCommands()

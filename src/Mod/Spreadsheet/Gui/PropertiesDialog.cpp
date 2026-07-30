@@ -23,13 +23,18 @@
  ***************************************************************************/
 
 
+#include <QMessageBox>
+
 #include <App/Document.h>
 #include <App/ExpressionParser.h>
 #include <App/Range.h>
+#include <Base/Exception.h>
 #include <Base/Tools.h>
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 
+#include "MutationSupport.h"
 #include "PropertiesDialog.h"
 #include "ui_PropertiesDialog.h"
 
@@ -58,16 +63,19 @@ PropertiesDialog::PropertiesDialog(Sheet* _sheet, const std::vector<Range>& _ran
     assert(ranges.size() > 0);
     Range range = ranges[0];
 
-    Cell* cell = sheet->getNewCell(*range);
-
-    assert(cell);
-
-    foregroundColorSet = cell->getForeground(foregroundColor);
-    backgroundColorSet = cell->getBackground(backgroundColor);
-    (void)cell->getAlignment(alignment);
-    (void)cell->getStyle(style);
-    (void)cell->getDisplayUnit(displayUnit);
-    (void)cell->getAlias(alias);
+    const Cell* cell = sheet->getCell(*range);
+    alignment = Cell::ALIGNMENT_HIMPLIED | Cell::ALIGNMENT_LEFT | Cell::ALIGNMENT_VIMPLIED
+        | Cell::ALIGNMENT_VCENTER;
+    foregroundColorSet = false;
+    backgroundColorSet = false;
+    if (cell) {
+        foregroundColorSet = cell->getForeground(foregroundColor);
+        backgroundColorSet = cell->getBackground(backgroundColor);
+        (void)cell->getAlignment(alignment);
+        (void)cell->getStyle(style);
+        (void)cell->getDisplayUnit(displayUnit);
+        (void)cell->getAlias(alias);
+    }
 
     orgForegroundColor = foregroundColor;
     orgForegroundColorSet = foregroundColorSet;
@@ -311,63 +319,73 @@ PropertiesDialog::~PropertiesDialog()
 
 void PropertiesDialog::apply()
 {
-    if (!ranges.empty()) {
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Set cell properties"));
-        std::vector<Range>::const_iterator i = ranges.begin();
-        bool changes = false;
+    if (ranges.empty() || !sheet || !sheet->getDocument()) {
+        return;
+    }
+    const bool aliasChanged = ranges.size() == 1 && ranges[0].size() == 1 && orgAlias != alias;
+    const bool changes = orgAlignment != alignment || orgStyle != style
+        || orgForegroundColorSet != foregroundColorSet
+        || (foregroundColorSet && orgForegroundColor != foregroundColor)
+        || orgBackgroundColorSet != backgroundColorSet
+        || (backgroundColorSet && orgBackgroundColor != backgroundColor)
+        || orgDisplayUnit != displayUnit || aliasChanged;
+    if (!changes) {
+        return;
+    }
 
-        for (; i != ranges.end(); ++i) {
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Set cell properties")
+        );
+        for (const auto& range : ranges) {
             if (orgAlignment != alignment) {
                 Gui::cmdAppObjectArgs(
                     sheet,
                     "setAlignment('%s', '%s')",
-                    i->rangeString().c_str(),
+                    range.rangeString().c_str(),
                     Cell::encodeAlignment(alignment).c_str()
                 );
-                changes = true;
             }
             if (orgStyle != style) {
                 Gui::cmdAppObjectArgs(
                     sheet,
                     "setStyle('%s', '%s')",
-                    i->rangeString().c_str(),
+                    range.rangeString().c_str(),
                     Cell::encodeStyle(style).c_str()
                 );
-                changes = true;
             }
             if (orgForegroundColorSet && !foregroundColorSet) {
-                Gui::cmdAppObjectArgs(sheet, "clearForeground('%s')", i->rangeString().c_str());
-                changes = true;
+                Gui::cmdAppObjectArgs(sheet, "clearForeground('%s')", range.rangeString().c_str());
             }
             if ((!orgForegroundColorSet && foregroundColorSet)
                 || (foregroundColorSet && orgForegroundColor != foregroundColor)) {
                 Gui::cmdAppObjectArgs(
                     sheet,
                     "setForeground('%s', (%f,%f,%f,%f))",
-                    i->rangeString().c_str(),
+                    range.rangeString().c_str(),
                     foregroundColor.r,
                     foregroundColor.g,
                     foregroundColor.b,
                     foregroundColor.a
                 );
-                changes = true;
             }
             if (orgBackgroundColorSet && !backgroundColorSet) {
-                Gui::cmdAppObjectArgs(sheet, "clearBackground('%s')", i->rangeString().c_str());
-                changes = true;
+                Gui::cmdAppObjectArgs(sheet, "clearBackground('%s')", range.rangeString().c_str());
             }
             if ((!orgBackgroundColorSet && backgroundColorSet)
                 || (backgroundColorSet && orgBackgroundColor != backgroundColor)) {
                 Gui::cmdAppObjectArgs(
                     sheet,
                     "setBackground('%s', (%f,%f,%f,%f))",
-                    i->rangeString().c_str(),
+                    range.rangeString().c_str(),
                     backgroundColor.r,
                     backgroundColor.g,
                     backgroundColor.b,
                     backgroundColor.a
                 );
-                changes = true;
             }
             if (orgDisplayUnit != displayUnit) {
                 std::string escapedstr = Base::Tools::escapedUnicodeFromUtf8(
@@ -377,23 +395,25 @@ void PropertiesDialog::apply()
                 Gui::cmdAppObjectArgs(
                     sheet,
                     "setDisplayUnit('%s', '%s')",
-                    i->rangeString().c_str(),
+                    range.rangeString().c_str(),
                     escapedstr.c_str()
                 );
-                changes = true;
             }
-            if (ranges.size() == 1 && ranges[0].size() == 1 && orgAlias != alias) {
-                Gui::cmdAppObjectArgs(sheet, "setAlias('%s', '%s')", i->address().c_str(), alias.c_str());
-                changes = true;
+            if (aliasChanged) {
+                Gui::cmdAppObjectArgs(
+                    sheet,
+                    "setAlias('%s', '%s')",
+                    range.address().c_str(),
+                    alias.c_str()
+                );
             }
         }
-        if (changes) {
-            sheet->getDocument()->commitTransaction();
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        }
-        else {
-            sheet->getDocument()->abortTransaction();
-        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Spreadsheet Properties"), QString::fromUtf8(error.what()));
     }
 }
 

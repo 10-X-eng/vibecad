@@ -8,11 +8,9 @@ import ast
 from pathlib import Path
 import re
 
-
 _REPOSITORY = Path(__file__).resolve().parents[4]
 _RIBBON_GATE = (
-    _REPOSITORY
-    / "src/Mod/VibeCAD/vibecad_tests/qt_ribbon_theme_integration.py"
+    _REPOSITORY / "src/Mod/VibeCAD/vibecad_tests/qt_ribbon_theme_integration.py"
 )
 
 _READ_ONLY_OR_VIEW_COMMANDS = frozenset(
@@ -138,8 +136,18 @@ _CPP_GUARDS = {
         "Std_MassProperties": "canStartRetainedModelingTask",
     },
     "src/Mod/Inspection/Gui/Command.cpp": {
-        "Inspection_VisualInspection":
-            "canStartRetainedModelingTask",
+        "Inspection_VisualInspection": "canStartRetainedModelingTask",
+    },
+    "src/Mod/Surface/Gui/Command.cpp": {
+        command: "canStartSurfaceOperation"
+        for command in (
+            "Surface_Filling",
+            "Surface_GeomFillSurface",
+            "Surface_Sections",
+            "Surface_ExtendFace",
+            "Surface_CurveOnMesh",
+            "Surface_BlendCurve",
+        )
     },
 }
 
@@ -266,9 +274,7 @@ def _python_function_section(source: str, signature: str) -> str:
     next_definition = source.find("\n\ndef ", start + len(signature))
     next_class = source.find("\n\nclass ", start + len(signature))
     boundaries = [
-        position
-        for position in (next_definition, next_class)
-        if position >= 0
+        position for position in (next_definition, next_class) if position >= 0
     ]
     end = min(boundaries) if boundaries else len(source)
     return source[start:end]
@@ -288,27 +294,23 @@ def _function_section(source: str, signature: str) -> str:
     raise AssertionError(f"Unterminated function {signature}")
 
 
-def test_every_shipped_model_command_has_an_explicit_transaction_classification() -> None:
+def test_every_shipped_model_command_has_an_explicit_transaction_classification() -> (
+    None
+):
     graph = _shipped_graph()
-    assert len(graph) == 92
-    assert len(set(graph)) == 92
+    assert len(graph) == 98
+    assert len(set(graph)) == 98
     assert _READ_ONLY_OR_VIEW_COMMANDS < set(graph)
 
     transaction_commands = set(graph) - _READ_ONLY_OR_VIEW_COMMANDS
-    assert len(transaction_commands) == 87
+    assert len(transaction_commands) == 93
     implementations = {
         _IMPLEMENTATION_ALIASES.get(command, command)
         for command in transaction_commands
     }
     declared = {
-        command
-        for commands in _CPP_GUARDS.values()
-        for command in commands
-    } | {
-        command
-        for commands in _PYTHON_GUARDS.values()
-        for command in commands
-    }
+        command for commands in _CPP_GUARDS.values() for command in commands
+    } | {command for commands in _PYTHON_GUARDS.values() for command in commands}
     assert implementations == declared
 
 
@@ -325,9 +327,7 @@ def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> N
             section = _python_class_section(source, anchor)
             assert guard in section, f"{command} lacks {guard}"
 
-    part_design = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(
-        encoding="utf-8"
-    )
+    part_design = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(encoding="utf-8")
     feature_body = _function_section(
         part_design,
         "bool featureCommandBody(",
@@ -341,17 +341,17 @@ def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> N
     ):
         assert "featureCommandBody" in _function_section(part_design, helper)
 
-    sketcher = (
-        _REPOSITORY / "src/Mod/Sketcher/Gui/Command.cpp"
-    ).read_text(encoding="utf-8")
+    sketcher = (_REPOSITORY / "src/Mod/Sketcher/Gui/Command.cpp").read_text(
+        encoding="utf-8"
+    )
     assert "canStartRetainedModelingTask" in _function_section(
         sketcher,
         "bool isSketchSetupAvailable(",
     )
 
-    fasteners = (
-        _REPOSITORY / "src/Mod/VibeCAD/VibeCADFastenersGui.py"
-    ).read_text(encoding="utf-8")
+    fasteners = (_REPOSITORY / "src/Mod/VibeCAD/VibeCADFastenersGui.py").read_text(
+        encoding="utf-8"
+    )
     helper = _python_function_section(
         fasteners,
         "def _can_start_modeling_transaction()",
@@ -373,9 +373,9 @@ def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> N
 
 
 def test_inspection_tasks_close_only_their_exact_locked_transactions() -> None:
-    measure = (
-        _REPOSITORY / "src/Mod/Measure/Gui/TaskMeasure.cpp"
-    ).read_text(encoding="utf-8")
+    measure = (_REPOSITORY / "src/Mod/Measure/Gui/TaskMeasure.cpp").read_text(
+        encoding="utf-8"
+    )
     assert "mPreviewTransactionId" in measure
     assert "Gui::ExactTransaction" in measure
     assert "mPreviewTransaction->commit()" in measure
@@ -385,37 +385,35 @@ def test_inspection_tasks_close_only_their_exact_locked_transactions() -> None:
     assert "mTargetDoc->commitCommand()" not in measure
     assert "mTargetDoc->abortCommand()" not in measure
 
-    mass = (
-        _REPOSITORY / "src/Mod/Measure/Gui/TaskMassProperties.cpp"
-    ).read_text(encoding="utf-8")
+    mass = (_REPOSITORY / "src/Mod/Measure/Gui/TaskMassProperties.cpp").read_text(
+        encoding="utf-8"
+    )
     assert "class OwnedMassPropertiesTransaction" in mass
     assert "ownsCurrentTransaction()" in mass
     assert "abortPreviewTransaction()" in mass
-    assert '\"Add Mass Properties\"' in mass
+    assert '"Add Mass Properties"' in mass
     assert "Gui::ExactTransaction transaction;" in mass
     assert "transaction.commit()" in mass
     assert "transaction.abort()" in mass
     assert "document->lockTransaction()" not in mass
 
-    visual = (
-        _REPOSITORY / "src/Mod/Inspection/Gui/VisualInspection.cpp"
-    ).read_text(encoding="utf-8")
+    visual = (_REPOSITORY / "src/Mod/Inspection/Gui/VisualInspection.cpp").read_text(
+        encoding="utf-8"
+    )
     assert "targetDocumentName" in visual
     assert "Gui::ExactTransaction" in visual
     assert "transaction->commit()" in visual
     assert "transaction->abort()" in visual
     assert "document->lockTransaction()" not in visual
-    assert visual.index("transaction->commit()") < visual.index(
-        "QDialog::accept()"
-    )
+    assert visual.index("transaction->commit()") < visual.index("QDialog::accept()")
     assert visual.index("transaction->commit()") < visual.rindex(
         "recordAcceptedVisualInspection("
     )
     assert "macroManager()" in visual
 
-    modeling = (
-        _REPOSITORY / "src/Mod/Part/Gui/ModelingSelection.cpp"
-    ).read_text(encoding="utf-8")
+    modeling = (_REPOSITORY / "src/Mod/Part/Gui/ModelingSelection.cpp").read_text(
+        encoding="utf-8"
+    )
     constructor = _function_section(
         modeling,
         "ModelingTaskAttempt::ModelingTaskAttempt(",

@@ -52,6 +52,20 @@
 
 using namespace SurfaceGui;
 
+namespace
+{
+void resetSurfaceEdit(App::Document* document)
+{
+    if (!document || !Gui::Application::Instance) {
+        return;
+    }
+    if (auto* guiDocument = Gui::Application::Instance->getDocument(document)) {
+        guiDocument->resetEdit();
+    }
+    Gui::Command::updateDocument(document);
+}
+}  // namespace
+
 PROPERTY_SOURCE(SurfaceGui::ViewProviderFilling, PartGui::ViewProviderSpline)
 
 namespace SurfaceGui
@@ -82,10 +96,10 @@ bool ViewProviderFilling::setEdit(int ModNum)
             if (tDlg) {
                 tDlg->setEditedObject(obj);
             }
-            Gui::Control().showDialog(dlg);
+            Gui::Control().showDialog(dlg, obj->getDocument());
         }
         else {
-            Gui::Control().showDialog(new TaskFilling(this, obj));
+            Gui::Control().showDialog(new TaskFilling(this, obj), obj->getDocument());
         }
         return true;
     }
@@ -960,6 +974,9 @@ void FillingPanel::exitSelectionMode()
 
 TaskFilling::TaskFilling(ViewProviderFilling* vp, Surface::Filling* obj)
 {
+    setDocumentName(obj->getDocument()->getName());
+    setAutoCloseOnDeletedDocument(true);
+
     // Set up button group
     buttonGroup = new Gui::ButtonGroup(this);
     buttonGroup->setExclusive(true);
@@ -1009,9 +1026,9 @@ bool TaskFilling::accept()
     if (ok) {
         widget2->reject();
         widget3->reject();
-        editedObj->getDocument()->commitTransaction();
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        Gui::Command::updateActive();
+        App::Document* document = editedObj->getDocument();
+        document->commitTransaction();
+        resetSurfaceEdit(document);
     }
 
     return ok;
@@ -1023,9 +1040,9 @@ bool TaskFilling::reject()
     if (ok) {
         widget2->reject();
         widget3->reject();
-        editedObj->getDocument()->abortTransaction();
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        Gui::Command::updateActive();
+        App::Document* document = editedObj->getDocument();
+        document->abortTransaction();
+        resetSurfaceEdit(document);
     }
 
     return ok;

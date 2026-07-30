@@ -13,7 +13,6 @@ import FreeCADGui as Gui
 import Part
 from PySide import QtCore, QtGui, QtWidgets
 
-
 _MODEL_COMPOSITES = {
     "PartDesign_CompSketches": (
         "PartDesign_NewSketch",
@@ -86,6 +85,106 @@ _FEM_COMPOSITES = {
         "FEM_PostCreateFunctionCylinder",
         "FEM_PostCreateFunctionBox",
     ),
+}
+
+_COMPOSED_GROUP_COMMANDS = {
+    "PartDesignWorkbench": {
+        "SURFACE": (
+            "Surface_Filling",
+            "Surface_GeomFillSurface",
+            "Surface_Sections",
+            "Surface_ExtendFace",
+            "Surface_CurveOnMesh",
+            "Surface_BlendCurve",
+        ),
+    },
+    "MeshWorkbench": {
+        "POINTS": (
+            "Points_Import",
+            "Points_Export",
+            "Points_Convert",
+            "Points_Structure",
+            "Points_Merge",
+            "Points_PolyCut",
+        ),
+        "REBUILD": (
+            "Reen_PoissonReconstruction",
+            "Reen_ViewTriangulation",
+        ),
+        "SEGMENT": (
+            "Reen_Segmentation",
+            "Reen_SegmentationManual",
+            "Reen_SegmentationFromComponents",
+            "Reen_MeshBoundary",
+        ),
+        "APPROXIMATE": (
+            "Reen_ApproxPlane",
+            "Reen_ApproxCylinder",
+            "Reen_ApproxSphere",
+            "Reen_ApproxPolynomial",
+            "Reen_ApproxSurface",
+            "Reen_ApproxCurve",
+        ),
+    },
+    "AssemblyWorkbench": {
+        "ROBOT": (
+            "Robot_Create",
+            "Robot_AddToolShape",
+            "Robot_SetDefaultOrientation",
+            "Robot_SetDefaultValues",
+        ),
+        "TRAJECTORY": (
+            "Robot_CreateTrajectory",
+            "Robot_InsertWaypoint",
+            "Robot_InsertWaypointPreselect",
+            "Robot_Edge2Trac",
+            "Robot_TrajectoryDressUp",
+            "Robot_TrajectoryCompound",
+        ),
+        "MOTION": (
+            "Robot_SetHomePos",
+            "Robot_RestoreHomePos",
+            "Robot_Simulate",
+        ),
+    },
+    "CAMWorkbench": {
+        "ROBOT": (
+            "Robot_Edge2Trac",
+            "Robot_TrajectoryDressUp",
+            "Robot_TrajectoryCompound",
+            "Robot_Simulate",
+        ),
+        "EXPORT": (
+            "Robot_ExportKukaCompact",
+            "Robot_ExportKukaFull",
+        ),
+    },
+    "SpreadsheetWorkbench": {
+        "SHEET": (
+            "Spreadsheet_CreateSheet",
+            "Spreadsheet_Import",
+            "Spreadsheet_Export",
+        ),
+        "CELLS": (
+            "Spreadsheet_MergeCells",
+            "Spreadsheet_SplitCell",
+            "Spreadsheet_CellProperties",
+            "Spreadsheet_SetAlias",
+        ),
+        "ALIGN": (
+            "Spreadsheet_AlignLeft",
+            "Spreadsheet_AlignCenter",
+            "Spreadsheet_AlignRight",
+            "Spreadsheet_AlignTop",
+            "Spreadsheet_AlignVCenter",
+            "Spreadsheet_AlignBottom",
+        ),
+        "STYLE": (
+            "Spreadsheet_StyleBold",
+            "Spreadsheet_StyleItalic",
+            "Spreadsheet_StyleUnderline",
+        ),
+    },
 }
 
 _MODEL_GROUP_COMMANDS = (
@@ -191,6 +290,17 @@ _MODEL_GROUP_COMMANDS = (
             "VibeCAD_AttachStandardFastener",
         ),
     ),
+    (
+        "SURFACE",
+        (
+            "Surface_Filling",
+            "Surface_GeomFillSurface",
+            "Surface_Sections",
+            "Surface_ExtendFace",
+            "Surface_CurveOnMesh",
+            "Surface_BlendCurve",
+        ),
+    ),
 )
 
 
@@ -223,9 +333,7 @@ def _menu_action_graph(menu):
             continue
         command_id = _assert_action_presentation(action)
         children = (
-            _menu_action_graph(action.menu())
-            if action.menu() is not None
-            else ()
+            _menu_action_graph(action.menu()) if action.menu() is not None else ()
         )
         graph.append((command_id, children))
     return tuple(graph)
@@ -248,9 +356,7 @@ def _primary_action_graph(group):
         assert str(button.accessibleName() or "").strip(), command_id
         assert str(button.toolTip() or "").strip(), command_id
         children = (
-            _menu_action_graph(button.menu())
-            if button.menu() is not None
-            else ()
+            _menu_action_graph(button.menu()) if button.menu() is not None else ()
         )
         graph.append((command_id, children))
     return tuple(graph)
@@ -260,8 +366,7 @@ def _ordered_page_groups(page):
     groups = [
         child
         for child in page.children()
-        if isinstance(child, QtWidgets.QFrame)
-        and child.property("ribbonGroup")
+        if isinstance(child, QtWidgets.QFrame) and child.property("ribbonGroup")
     ]
     return sorted(groups, key=lambda group: int(group.property("ribbonOrder")))
 
@@ -362,35 +467,28 @@ def _assert_synthetic_primitive_children(page):
                 for action in wrapper.menu().actions()
                 if not action.isSeparator()
             ]
-            assert tuple(
-                str(action.property("VibeCADCommandId") or "")
-                for action in children
-            ) == expected_children
+            assert (
+                tuple(
+                    str(action.property("VibeCADCommandId") or "")
+                    for action in children
+                )
+                == expected_children
+            )
             for index, (action, child_id) in enumerate(
                 zip(children, expected_children, strict=True)
             ):
-                assert bool(
-                    action.property("FreeCADCommandGroupSynthetic")
-                ), child_id
+                assert bool(action.property("FreeCADCommandGroupSynthetic")), child_id
                 assert (
                     str(action.property("FreeCADCommandGroupParentId") or "")
                     == parent_id
                 )
-                assert int(
-                    action.property("FreeCADCommandGroupChildIndex")
-                ) == index
+                assert int(action.property("FreeCADCommandGroupChildIndex")) == index
                 assert (
-                    str(action.property("FreeCADCommandGroupChildId") or "")
-                    == child_id
+                    str(action.property("FreeCADCommandGroupChildId") or "") == child_id
                 )
                 assert bool(action.property("VibeCADSyntheticCommand")), child_id
-                assert (
-                    str(action.property("VibeCADParentCommandId") or "")
-                    == parent_id
-                )
-                assert int(
-                    action.property("VibeCADCompositeChildIndex")
-                ) == index
+                assert str(action.property("VibeCADParentCommandId") or "") == parent_id
+                assert int(action.property("VibeCADCompositeChildIndex")) == index
                 assert not bool(action.property("VibeCADUnavailable")), child_id
 
 
@@ -404,35 +502,28 @@ def _assert_fem_composite_children(page):
                 for action in wrapper.menu().actions()
                 if not action.isSeparator()
             ]
-            assert tuple(
-                str(action.property("VibeCADCommandId") or "")
-                for action in children
-            ) == expected_children
+            assert (
+                tuple(
+                    str(action.property("VibeCADCommandId") or "")
+                    for action in children
+                )
+                == expected_children
+            )
             for index, (action, child_id) in enumerate(
                 zip(children, expected_children, strict=True)
             ):
-                assert bool(
-                    action.property("FreeCADCommandGroupSynthetic")
-                ), child_id
+                assert bool(action.property("FreeCADCommandGroupSynthetic")), child_id
                 assert (
                     str(action.property("FreeCADCommandGroupParentId") or "")
                     == parent_id
                 )
-                assert int(
-                    action.property("FreeCADCommandGroupChildIndex")
-                ) == index
+                assert int(action.property("FreeCADCommandGroupChildIndex")) == index
                 assert (
-                    str(action.property("FreeCADCommandGroupChildId") or "")
-                    == child_id
+                    str(action.property("FreeCADCommandGroupChildId") or "") == child_id
                 )
                 assert bool(action.property("VibeCADSyntheticCommand")), child_id
-                assert (
-                    str(action.property("VibeCADParentCommandId") or "")
-                    == parent_id
-                )
-                assert int(
-                    action.property("VibeCADCompositeChildIndex")
-                ) == index
+                assert str(action.property("VibeCADParentCommandId") or "") == parent_id
+                assert int(action.property("VibeCADCompositeChildIndex")) == index
                 assert not bool(action.property("VibeCADUnavailable")), child_id
 
 
@@ -479,6 +570,30 @@ def _assert_page_action_integrity(page):
     assert len(command_ids) == len(set(command_ids)), command_ids
 
 
+def _assert_composed_group_commands(page, workbench):
+    groups_by_label = {}
+    for group in _ordered_page_groups(page):
+        group_menu = group.findChild(
+            QtWidgets.QToolButton,
+            "VibeCADRibbonGroupMenu",
+        )
+        assert group_menu is not None and group_menu.menu() is not None
+        groups_by_label[group_menu.text()] = group
+
+    for label, expected_commands in _COMPOSED_GROUP_COMMANDS.get(
+        workbench,
+        {},
+    ).items():
+        assert label in groups_by_label, (workbench, label, groups_by_label)
+        actual_commands = _group_commands(groups_by_label[label])
+        assert set(expected_commands).issubset(actual_commands), (
+            workbench,
+            label,
+            actual_commands,
+            expected_commands,
+        )
+
+
 def _assert_model_group_graphs(page):
     groups = _ordered_page_groups(page)
     actual_labels = []
@@ -500,9 +615,24 @@ def _assert_model_group_graphs(page):
         assert collapsed is not None and collapsed.menu() is not None
         actual_labels.append(group_menu.text())
         expected_graph = _expected_action_graph(command_ids)
-        assert _menu_action_graph(group_menu.menu()) == expected_graph
-        assert _menu_action_graph(collapsed.menu()) == expected_graph
-        assert _primary_action_graph(group) == expected_graph[:4]
+        menu_graph = _menu_action_graph(group_menu.menu())
+        collapsed_graph = _menu_action_graph(collapsed.menu())
+        primary_graph = _primary_action_graph(group)
+        assert menu_graph == expected_graph, (
+            expected_label,
+            menu_graph,
+            expected_graph,
+        )
+        assert collapsed_graph == expected_graph, (
+            expected_label,
+            collapsed_graph,
+            expected_graph,
+        )
+        assert primary_graph == expected_graph[:4], (
+            expected_label,
+            primary_graph,
+            expected_graph[:4],
+        )
         all_command_ids.extend(command_ids)
     assert tuple(actual_labels) == tuple(
         label for label, _commands in _MODEL_GROUP_COMMANDS
@@ -805,9 +935,7 @@ def _assert_visible_inside(widget, ancestor):
 
 
 def _group_commands(group):
-    group_menu = group.findChild(
-        QtWidgets.QToolButton, "VibeCADRibbonGroupMenu"
-    )
+    group_menu = group.findChild(QtWidgets.QToolButton, "VibeCADRibbonGroupMenu")
     assert group_menu is not None and group_menu.menu() is not None
     return {
         str(action.property("VibeCADCommandId"))
@@ -821,9 +949,7 @@ def _page_group_labels(page):
     assert page.objectName() == "VibeCADRibbonPage"
     labels = []
     for widget in _ordered_page_groups(page):
-        group_menu = widget.findChild(
-            QtWidgets.QToolButton, "VibeCADRibbonGroupMenu"
-        )
+        group_menu = widget.findChild(QtWidgets.QToolButton, "VibeCADRibbonGroupMenu")
         assert group_menu is not None
         labels.append(group_menu.text())
     return labels
@@ -853,9 +979,7 @@ def _ribbon_page(main_window):
 
 def _select_ribbon_workbench(main_window, tabs, workbench):
     index = next(
-        index
-        for index in range(tabs.count())
-        if str(tabs.tabData(index)) == workbench
+        index for index in range(tabs.count()) if str(tabs.tabData(index)) == workbench
     )
     tabs.setCurrentIndex(index)
     _process_events()
@@ -885,22 +1009,12 @@ def _run():
         _process_events()
 
         if os.environ.get("VIBECAD_VERIFY_SAVED_COMBINED_BROWSER"):
+            assert main_window.findChild(QtWidgets.QDockWidget, "Std_TreeView") is None
             assert (
-                main_window.findChild(
-                    QtWidgets.QDockWidget, "Std_TreeView"
-                )
-                is None
+                main_window.findChild(QtWidgets.QDockWidget, "Std_PropertyView") is None
             )
             assert (
-                main_window.findChild(
-                    QtWidgets.QDockWidget, "Std_PropertyView"
-                )
-                is None
-            )
-            assert (
-                main_window.findChild(
-                    QtWidgets.QDockWidget, "Std_ComboView"
-                )
+                main_window.findChild(QtWidgets.QDockWidget, "Std_ComboView")
                 is not None
             )
             print(
@@ -910,17 +1024,11 @@ def _run():
             exit_code = 0
             return
 
-        ribbon = main_window.findChild(
-            QtWidgets.QToolBar, "VibeCADRibbonToolBar"
-        )
+        ribbon = main_window.findChild(QtWidgets.QToolBar, "VibeCADRibbonToolBar")
         root = main_window.findChild(QtWidgets.QWidget, "VibeCADRibbon")
         tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
-        document_tabs = main_window.findChild(
-            QtWidgets.QTabBar, "VibeCADDocumentTabs"
-        )
-        source_document_tabs = main_window.findChild(
-            QtWidgets.QTabBar, "mdiAreaTabBar"
-        )
+        document_tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADDocumentTabs")
+        source_document_tabs = main_window.findChild(QtWidgets.QTabBar, "mdiAreaTabBar")
         feature_timeline = main_window.findChild(
             QtWidgets.QWidget, "VibeCADFeatureTimeline"
         )
@@ -936,9 +1044,7 @@ def _run():
         new_document_button = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADRibbonNew"
         )
-        search = main_window.findChild(
-            QtWidgets.QLineEdit, "VibeCADCommandSearch"
-        )
+        search = main_window.findChild(QtWidgets.QLineEdit, "VibeCADCommandSearch")
         assistant_button = main_window.findChild(
             QtWidgets.QToolButton, "VibeCADRibbonAssistant"
         )
@@ -956,9 +1062,10 @@ def _run():
         assert feature_timeline is not None and feature_timeline.isVisible()
         assert feature_timeline.height() == 56
         assert timeline_items is not None and timeline_items.isVisible()
-        assert document_tabs.mapTo(root, QtCore.QPoint()).y() < tabs.mapTo(
-            root, QtCore.QPoint()
-        ).y()
+        assert (
+            document_tabs.mapTo(root, QtCore.QPoint()).y()
+            < tabs.mapTo(root, QtCore.QPoint()).y()
+        )
         assert document_tabs.tabsClosable()
         assert document_tabs.isMovable()
         assert theme_button is not None
@@ -970,14 +1077,8 @@ def _run():
         _assert_visible_inside(document_tabs, root)
         _assert_visible_inside(search_button, root)
         _assert_visible_inside(new_document_button, root)
-        assert (
-            assistant_button.toolButtonStyle()
-            == QtCore.Qt.ToolButtonIconOnly
-        )
-        assert (
-            settings_button.toolButtonStyle()
-            == QtCore.Qt.ToolButtonIconOnly
-        )
+        assert assistant_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
+        assert settings_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
         assert (
             assistant_button.defaultAction().property("VibeCADCommandId")
             == "VibeCAD_OpenAssistant"
@@ -998,10 +1099,9 @@ def _run():
             "Analyze",
             "Manufacture",
             "Drawing",
+            "Parameters",
         ]
-        assert [tabs.tabText(index) for index in range(tabs.count())] == (
-            expected_tabs
-        )
+        assert [tabs.tabText(index) for index in range(tabs.count())] == (expected_tabs)
         tabs.setCurrentIndex(0)
         _process_events()
         structure_group = main_window.findChild(
@@ -1011,8 +1111,7 @@ def _run():
         structure_commands = {
             str(button.defaultAction().property("VibeCADCommandId"))
             for button in structure_group.findChildren(QtWidgets.QToolButton)
-            if button.property("ribbonCommand")
-            and button.defaultAction() is not None
+            if button.property("ribbonCommand") and button.defaultAction() is not None
         }
         assert "PartDesign_CompSketches" in structure_commands
         sketch_tools = next(
@@ -1061,22 +1160,21 @@ def _run():
         _process_events()
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
         assert tabs.tabText(tabs.currentIndex()) == "Model"
-        assert [
-            tabs.tabText(index) for index in range(tabs.count())
-        ] == expected_tabs
+        assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
 
-        theme_selector = main_window.findChild(
-            QtWidgets.QWidget, "ThemeSelectorWidget"
-        )
+        theme_selector = main_window.findChild(QtWidgets.QWidget, "ThemeSelectorWidget")
         if theme_selector is not None:
             assert sorted(
                 button.text()
                 for button in theme_selector.findChildren(QtWidgets.QToolButton)
             ) == ["Dark", "Light"]
-            assert "more themes" not in " ".join(
-                label.text()
-                for label in theme_selector.findChildren(QtWidgets.QLabel)
-            ).lower()
+            assert (
+                "more themes"
+                not in " ".join(
+                    label.text()
+                    for label in theme_selector.findChildren(QtWidgets.QLabel)
+                ).lower()
+            )
 
         completion_model = search.completer().model()
         completion_values = [
@@ -1090,20 +1188,12 @@ def _run():
         assert any("Std_New" in value for value in completion_values)
         assert any("PartDesign_Body" in value for value in completion_values)
 
-        theme_parameters = App.ParamGet(
-            "User parameter:BaseApp/Preferences/MainWindow"
-        )
+        theme_parameters = App.ParamGet("User parameter:BaseApp/Preferences/MainWindow")
         initial_mode = theme_parameters.GetString("AppearanceMode", "Dark")
         sentinel.SetInt("UnrelatedPreference", 8472)
-        retired_theme_customization.SetUnsigned(
-            "ThemeAccentColor1", 0xFF00FFFF
-        )
-        retired_theme_customization.SetUnsigned(
-            "ThemeAccentColor2", 0x00FFFFFF
-        )
-        retired_theme_customization.SetUnsigned(
-            "ThemeAccentColor3", 0x0000FFFF
-        )
+        retired_theme_customization.SetUnsigned("ThemeAccentColor1", 0xFF00FFFF)
+        retired_theme_customization.SetUnsigned("ThemeAccentColor2", 0x00FFFFFF)
+        retired_theme_customization.SetUnsigned("ThemeAccentColor3", 0x0000FFFF)
         theme_button.click()
         _process_events()
         switched_mode = theme_parameters.GetString("AppearanceMode", "")
@@ -1111,9 +1201,7 @@ def _run():
         assert switched_mode != initial_mode
         assert theme_parameters.GetString("Theme", "") == switched_mode
         assert theme_parameters.GetString("StyleSheet", "") == (
-            "VibeLight.qss"
-            if switched_mode == "Light"
-            else "VibeDark.qss"
+            "VibeLight.qss" if switched_mode == "Light" else "VibeDark.qss"
         )
         if theme_selector is not None:
             assert [
@@ -1126,9 +1214,7 @@ def _run():
             name.startswith("ThemeAccentColor")
             for name in retired_theme_customization.GetUnsigneds()
         )
-        switched_screenshot = os.environ.get(
-            "VIBECAD_RIBBON_SWITCHED_SCREENSHOT"
-        )
+        switched_screenshot = os.environ.get("VIBECAD_RIBBON_SWITCHED_SCREENSHOT")
         if switched_screenshot:
             _save_window_screenshot(main_window, switched_screenshot)
         theme_button.click()
@@ -1172,9 +1258,7 @@ def _run():
                 for _ in range(3):
                     _process_events()
                 splitter_sizes = (
-                    tree_splitter.sizes()
-                    if tree_splitter is not None
-                    else []
+                    tree_splitter.sizes() if tree_splitter is not None else []
                 )
                 tree_state = {
                     "expected": expected_state,
@@ -1190,30 +1274,26 @@ def _run():
                     ),
                     "splitter_sizes": splitter_sizes,
                     "splitter_visible": (
-                        tree_splitter.isVisible()
-                        if tree_splitter is not None
-                        else None
+                        tree_splitter.isVisible() if tree_splitter is not None else None
                     ),
                 }
                 assert tree_toggle.isChecked() == expected_state, tree_state
-                assert tree_visibility_preferences.GetBool(
-                    "Std_TreeView",
-                    not expected_state,
-                ) == expected_state, tree_state
                 assert (
-                    separate_tree_dock.visibleRegion().isEmpty()
-                    != expected_state
+                    tree_visibility_preferences.GetBool(
+                        "Std_TreeView",
+                        not expected_state,
+                    )
+                    == expected_state
                 ), tree_state
                 assert (
-                    separate_tree_dock.isVisible() == expected_state
+                    separate_tree_dock.visibleRegion().isEmpty() != expected_state
                 ), tree_state
+                assert separate_tree_dock.isVisible() == expected_state, tree_state
                 if tree_splitter_index >= 0:
                     assert (
                         splitter_sizes[tree_splitter_index] > 0
                     ) == expected_state, tree_state
-                    assert (
-                        tree_splitter.isVisible() == expected_state
-                    ), tree_state
+                    assert tree_splitter.isVisible() == expected_state, tree_state
                 if expected_state:
                     dock_rect = QtCore.QRect(
                         separate_tree_dock.mapToGlobal(QtCore.QPoint()),
@@ -1253,16 +1333,22 @@ def _run():
                 )
                 theme_button.click()
                 assert_tree_rendered(expected_state)
-                assert theme_parameters.GetString(
-                    "AppearanceMode",
-                    "",
-                ) != starting_mode
+                assert (
+                    theme_parameters.GetString(
+                        "AppearanceMode",
+                        "",
+                    )
+                    != starting_mode
+                )
                 theme_button.click()
                 assert_tree_rendered(expected_state)
-                assert theme_parameters.GetString(
-                    "AppearanceMode",
-                    "",
-                ) == starting_mode
+                assert (
+                    theme_parameters.GetString(
+                        "AppearanceMode",
+                        "",
+                    )
+                    == starting_mode
+                )
 
             if not tree_toggle.isChecked():
                 tree_toggle.trigger()
@@ -1310,9 +1396,7 @@ def _run():
             _process_events()
             workbench = str(tabs.tabData(index))
             assert Gui.activeWorkbench().name() == workbench
-            assert main_window.findChildren(
-                QtWidgets.QFrame, "VibeCADRibbonGroup_View"
-            )
+            assert main_window.findChildren(QtWidgets.QFrame, "VibeCADRibbonGroup_View")
             inspect_group = main_window.findChild(
                 QtWidgets.QFrame, "VibeCADRibbonGroup_Inspect"
             )
@@ -1327,6 +1411,7 @@ def _run():
             }, inspect_commands
             page = _ribbon_page(main_window)
             _assert_page_action_integrity(page)
+            _assert_composed_group_commands(page, workbench)
             if workbench == "AssemblyWorkbench":
                 assert not _page_menu_action(
                     page,
@@ -1352,9 +1437,7 @@ def _run():
                 for group in page.findChildren(QtWidgets.QFrame)
                 if group.property("ribbonGroup")
             ]
-            visible_page_groups = [
-                group for group in page_groups if group.isVisible()
-            ]
+            visible_page_groups = [group for group in page_groups if group.isVisible()]
             hidden_page_groups = [
                 group for group in page_groups if not group.isVisible()
             ]
@@ -1378,8 +1461,11 @@ def _run():
                     "CUT",
                     "SEGMENT",
                     "ANALYZE",
+                    "POINTS",
+                    "REBUILD",
+                    "APPROXIMATE",
                     "INSPECT",
-                ]
+                ], mesh_group_labels
                 tools_group = main_window.findChild(
                     QtWidgets.QFrame, "VibeCADRibbonGroup_Tools"
                 )
@@ -1412,9 +1498,7 @@ def _run():
                     "MeshPart_CurveOnMesh",
                 ):
                     assert not conversion_actions[command_name].icon().isNull()
-                mesh_screenshot_path = os.environ.get(
-                    "VIBECAD_RIBBON_MESH_SCREENSHOT"
-                )
+                mesh_screenshot_path = os.environ.get("VIBECAD_RIBBON_MESH_SCREENSHOT")
                 if mesh_screenshot_path:
                     _save_window_screenshot(main_window, mesh_screenshot_path)
                 del (
@@ -1452,10 +1536,7 @@ def _run():
             page = _ribbon_page(main_window)
             _assert_visible_inside(page, root)
             _assert_model_width_reachability(page, requested_width)
-            if any(
-                not group.isVisible()
-                for group in _ordered_page_groups(page)
-            ):
+            if any(not group.isVisible() for group in _ordered_page_groups(page)):
                 _exercise_model_overflow_menu(page, requested_width)
             if width_screenshot_directory:
                 _save_window_screenshot(
@@ -1475,14 +1556,8 @@ def _run():
 
         main_window.resize(850, 760)
         _process_events()
-        assert (
-            assistant_button.toolButtonStyle()
-            == QtCore.Qt.ToolButtonIconOnly
-        )
-        assert (
-            settings_button.toolButtonStyle()
-            == QtCore.Qt.ToolButtonIconOnly
-        )
+        assert assistant_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
+        assert settings_button.toolButtonStyle() == QtCore.Qt.ToolButtonIconOnly
         assert not search.isVisible()
         _assert_visible_inside(search_button, root)
         _assert_visible_inside(document_tabs, root)
@@ -1504,23 +1579,17 @@ def _run():
             visible_groups = [group for group in groups if group.isVisible()]
             hidden_groups = [group for group in groups if not group.isVisible()]
             saw_collapsed_group = saw_collapsed_group or any(
-                bool(group.property("collapsed"))
-                for group in visible_groups
+                bool(group.property("collapsed")) for group in visible_groups
             )
             for group in visible_groups:
                 _assert_visible_inside(group, page)
-            overflow = page.findChild(
-                QtWidgets.QToolButton, "VibeCADRibbonPageMore"
-            )
+            overflow = page.findChild(QtWidgets.QToolButton, "VibeCADRibbonPageMore")
             assert overflow is not None
             assert overflow.isVisible() == bool(hidden_groups)
             if hidden_groups:
                 assert len(overflow.menu().actions()) == len(hidden_groups)
                 _assert_visible_inside(overflow, page)
-            if (
-                str(tabs.tabData(index)) == "PartDesignWorkbench"
-                and hidden_groups
-            ):
+            if str(tabs.tabData(index)) == "PartDesignWorkbench" and hidden_groups:
                 _assert_model_overflow_graph(page)
             del (
                 group,
@@ -1531,9 +1600,7 @@ def _run():
                 visible_groups,
             )
         assert saw_collapsed_group
-        extension = ribbon.findChild(
-            QtWidgets.QToolButton, "qt_toolbar_ext_button"
-        )
+        extension = ribbon.findChild(QtWidgets.QToolButton, "qt_toolbar_ext_button")
         assert extension is None or not extension.isVisible()
 
         main_window.resize(1440, 900)
@@ -1572,11 +1639,14 @@ def _run():
         )
         assert sketch_child_states == (True, False, False)
         for wrapper in sketch_wrappers[1:]:
-            assert tuple(
-                action.isEnabled()
-                for action in wrapper.menu().actions()
-                if not action.isSeparator()
-            ) == sketch_child_states
+            assert (
+                tuple(
+                    action.isEnabled()
+                    for action in wrapper.menu().actions()
+                    if not action.isSeparator()
+                )
+                == sketch_child_states
+            )
         del rebuilt_model_page, sketch_wrapper, sketch_wrappers
 
         assembly_page = _select_ribbon_workbench(
@@ -1640,12 +1710,8 @@ def _run():
         mdi_area = main_window.findChild(QtWidgets.QMdiArea)
         assert mdi_area is not None
         assert feature_timeline.parentWidget() is mdi_area.parentWidget()
-        mdi_top = mdi_area.mapTo(
-            main_window, QtCore.QPoint(0, 0)
-        ).y()
-        mdi_bottom = mdi_area.mapTo(
-            main_window, mdi_area.rect().bottomLeft()
-        ).y()
+        mdi_top = mdi_area.mapTo(main_window, QtCore.QPoint(0, 0)).y()
+        mdi_bottom = mdi_area.mapTo(main_window, mdi_area.rect().bottomLeft()).y()
         for object_name in (
             "OverlayLeft",
             "OverlayLeftProxy",
@@ -1654,12 +1720,8 @@ def _run():
         ):
             overlay = main_window.findChild(QtWidgets.QWidget, object_name)
             assert overlay is not None
-            overlay_top = overlay.mapTo(
-                main_window, QtCore.QPoint(0, 0)
-            ).y()
-            overlay_bottom = overlay.mapTo(
-                main_window, overlay.rect().bottomLeft()
-            ).y()
+            overlay_top = overlay.mapTo(main_window, QtCore.QPoint(0, 0)).y()
+            overlay_bottom = overlay.mapTo(main_window, overlay.rect().bottomLeft()).y()
             overlay_state = {
                 "name": object_name,
                 "overlay_top": overlay_top,
@@ -1678,8 +1740,7 @@ def _run():
         )
         assert source_document_tabs.height() == 0
         assert (
-            mdi_area.contentsRect().bottom()
-            - mdi_area.viewport().geometry().bottom()
+            mdi_area.contentsRect().bottom() - mdi_area.viewport().geometry().bottom()
             <= 1
         )
         secondary_document = App.newDocument("VibeCADRibbonSecond")
@@ -1767,9 +1828,7 @@ def _run():
         assert Gui.activeDocument().getInEdit() is None
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
         assert tabs.tabText(tabs.currentIndex()) == "Model"
-        assert [
-            tabs.tabText(index) for index in range(tabs.count())
-        ] == expected_tabs
+        assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
         assert all(tabs.isTabEnabled(index) for index in range(tabs.count()))
         print("VIBECAD_RIBBON_STAGE sketch-finish", flush=True)
 
@@ -1781,9 +1840,7 @@ def _run():
         assert Gui.activeDocument().getInEdit() is None
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
         assert tabs.tabText(tabs.currentIndex()) == "Model"
-        assert [
-            tabs.tabText(index) for index in range(tabs.count())
-        ] == expected_tabs
+        assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
         assert all(tabs.isTabEnabled(index) for index in range(tabs.count()))
         print("VIBECAD_RIBBON_STAGE sketch-cancel", flush=True)
 
@@ -1817,9 +1874,46 @@ def _run():
         tabs.setCurrentIndex(0)
         _process_events()
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
-        assert [
-            tabs.tabText(index) for index in range(tabs.count())
-        ] == expected_tabs
+        assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
+
+        draft_objects_before = tuple(document.Objects)
+        Gui.activateWorkbench("DraftWorkbench")
+        _process_events()
+        assert Gui.activeWorkbench().name() == "DraftWorkbench"
+        for command_name in (
+            "Draft_Line",
+            "Draft_Wire",
+            "Draft_Move",
+            "Draft_Snap_Endpoint",
+        ):
+            actions = Gui.Command.get(command_name).getAction()
+            assert actions and not actions[0].icon().isNull(), command_name
+        assert _ribbon_page(main_window) is not None
+        Gui.runCommand("Draft_Line")
+        _process_events()
+        assert Gui.Control.activeDialog()
+        Gui.draftToolBar.escape()
+        _process_events()
+        if Gui.Control.activeDialog():
+            Gui.Control.closeDialog(Gui.activeDocument())
+            _process_events()
+        assert not Gui.Control.activeDialog()
+        assert tuple(document.Objects) == draft_objects_before
+        assert (
+            main_window.findChild(
+                QtWidgets.QDockWidget,
+                "Std_TreeView",
+            )
+            is separate_tree_dock
+        )
+        assert _visible_main_window_toolbars(main_window) == [ribbon]
+
+        Gui.activateWorkbench("PartDesignWorkbench")
+        _process_events()
+        assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
+        assert tabs.tabText(tabs.currentIndex()) == "Model"
+        assert _visible_main_window_toolbars(main_window) == [ribbon]
+        print("VIBECAD_RIBBON_STAGE draft-compatibility", flush=True)
 
         _key_click(main_window, QtCore.Qt.Key_F10)
         _process_events()
@@ -1841,29 +1935,28 @@ def _run():
                         for candidate in application.topLevelWidgets()
                         if isinstance(candidate, QtWidgets.QDialog)
                         and candidate.isVisible()
-                        and candidate.findChild(
-                            QtWidgets.QComboBox, "themesCombobox"
-                        )
+                        and candidate.findChild(QtWidgets.QComboBox, "themesCombobox")
                         is not None
                     ),
                     None,
                 )
                 assert dialog is not None
-                theme_combo = dialog.findChild(
-                    QtWidgets.QComboBox, "themesCombobox"
-                )
+                theme_combo = dialog.findChild(QtWidgets.QComboBox, "themesCombobox")
                 assert [
-                    theme_combo.itemText(index)
-                    for index in range(theme_combo.count())
-                ] == ["Light", "Dark"]
-                tree_mode = dialog.findChild(
-                    QtWidgets.QComboBox, "treeMode"
-                )
+                    theme_combo.itemText(index) for index in range(theme_combo.count())
+                ] == [
+                    "Light",
+                    "Dark",
+                ]
+                tree_mode = dialog.findChild(QtWidgets.QComboBox, "treeMode")
                 assert tree_mode is not None
                 assert [
-                    tree_mode.itemText(index)
-                    for index in range(tree_mode.count())
-                ] == ["Combined", "Tree only", "Tree and property"]
+                    tree_mode.itemText(index) for index in range(tree_mode.count())
+                ] == [
+                    "Combined",
+                    "Tree only",
+                    "Tree and property",
+                ]
                 assert tree_mode.currentText() == "Tree only"
                 for removed_object in (
                     "ImportConfig",
@@ -1878,10 +1971,7 @@ def _run():
                     "OverlayStyleSheets",
                     "themeEditorButton",
                 ):
-                    assert (
-                        dialog.findChild(QtWidgets.QWidget, removed_object)
-                        is None
-                    )
+                    assert dialog.findChild(QtWidgets.QWidget, removed_object) is None
                 preferences_check["ok"] = True
             except Exception:
                 preferences_check["error"] = traceback.format_exc()
@@ -1906,8 +1996,7 @@ def _run():
             _save_window_screenshot(main_window, screenshot_path)
 
         print(
-            "VIBECAD_RIBBON_THEME_GUI_OK "
-            f"tabs={tabs.count()} mode={initial_mode}",
+            "VIBECAD_RIBBON_THEME_GUI_OK " f"tabs={tabs.count()} mode={initial_mode}",
             flush=True,
         )
         exit_code = 0
@@ -1927,12 +2016,8 @@ def _run():
         if tree_document is not None:
             App.closeDocument(tree_document.Name)
         if initial_mode in {"Light", "Dark"}:
-            current = main_window.findChild(
-                QtWidgets.QToolButton, "VibeCADThemeToggle"
-            )
-            parameters = App.ParamGet(
-                "User parameter:BaseApp/Preferences/MainWindow"
-            )
+            current = main_window.findChild(QtWidgets.QToolButton, "VibeCADThemeToggle")
+            parameters = App.ParamGet("User parameter:BaseApp/Preferences/MainWindow")
             if (
                 current is not None
                 and parameters.GetString("AppearanceMode", "") != initial_mode

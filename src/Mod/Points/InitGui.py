@@ -49,3 +49,5 @@ class PointsWorkbench(Workbench):
 
 
 Gui.addWorkbench(PointsWorkbench())
+
+FreeCAD.__unit_test__ += ["TestPointsGui"]

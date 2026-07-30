@@ -23,16 +23,20 @@
  ***************************************************************************/
 
 #include <QApplication>
+#include <QMessageBox>
 
 
+#include <App/Document.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
 
 #include <Gui/TaskView/TaskSelectLinkProperty.h>
 
 #include "TaskDlgEdge2Trac.h"
+#include "OperationSupport.h"
 
 
 using namespace RobotGui;
@@ -54,6 +58,10 @@ TaskDlgEdge2Trac::TaskDlgEdge2Trac(Robot::Edge2TracObject* obj)
 
     Content.push_back(param);
     Content.push_back(select);
+    if (obj && obj->getDocument()) {
+        setDocumentName(obj->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
 }
 
 //==== calls from the TaskView ===============================================================
@@ -61,6 +69,10 @@ TaskDlgEdge2Trac::TaskDlgEdge2Trac(Robot::Edge2TracObject* obj)
 
 void TaskDlgEdge2Trac::open()
 {
+    RobotGui::OperationSupport::ensureEditTransaction(
+        *Edge2TaskObject,
+        QT_TRANSLATE_NOOP("Command", "Edit edge trajectory")
+    );
     select->activate();
     Edge2TaskObject->execute();
     param->setEdgeAndClusterNbr(Edge2TaskObject->NbrOfEdges, Edge2TaskObject->NbrOfCluster);
@@ -84,6 +96,7 @@ void TaskDlgEdge2Trac::clicked(int button)
     }
     catch (const Base::Exception& e) {
         Base::Console().warning("TaskDlgEdge2Trac::clicked(): %s\n", e.what());
+        QMessageBox::warning(Gui::getMainWindow(), tr("Edge Trajectory"), QString::fromUtf8(e.what()));
     }
 }
 
@@ -92,10 +105,18 @@ bool TaskDlgEdge2Trac::accept()
     try {
         if (select->isSelectionValid()) {
             select->accept();
-            Edge2TaskObject->recomputeFeature();
-            Gui::Document* doc = Gui::Application::Instance->activeDocument();
-            if (doc) {
-                doc->resetEdit();
+            auto* source = Edge2TaskObject->Source.getValue();
+            if (!RobotGui::OperationSupport::isUsableObject(source)) {
+                throw Base::RuntimeError(
+                    "The selected edge source is suppressed or no longer available"
+                );
+            }
+            if (!Edge2TaskObject->recomputeFeature() || Edge2TaskObject->isError()
+                || Edge2TaskObject->Trajectory.getValue().getSize() == 0) {
+                throw Base::RuntimeError(Edge2TaskObject->getStatusString());
+            }
+            if (!RobotGui::OperationSupport::resetEdit(*Edge2TaskObject)) {
+                throw Base::RuntimeError("The edge trajectory task could not be finalized");
             }
             return true;
         }
@@ -105,6 +126,7 @@ bool TaskDlgEdge2Trac::accept()
     }
     catch (const Base::Exception& e) {
         Base::Console().warning("TaskDlgEdge2Trac::accept(): %s\n", e.what());
+        QMessageBox::warning(Gui::getMainWindow(), tr("Edge Trajectory"), QString::fromUtf8(e.what()));
     }
 
     return false;
@@ -113,8 +135,7 @@ bool TaskDlgEdge2Trac::accept()
 bool TaskDlgEdge2Trac::reject()
 {
     select->reject();
-    Edge2TaskObject->execute();
-    return true;
+    return RobotGui::OperationSupport::resetEdit(*Edge2TaskObject);
 }
 
 void TaskDlgEdge2Trac::helpRequested()

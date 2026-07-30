@@ -51,3 +51,5 @@ class ReverseEngineeringWorkbench(Workbench):
 
 
 Gui.addWorkbench(ReverseEngineeringWorkbench())
+
+FreeCAD.__unit_test__ += ["TestReverseEngineeringGui"]

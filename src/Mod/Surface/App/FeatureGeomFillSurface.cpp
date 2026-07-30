@@ -50,6 +50,7 @@
 
 
 #include "FeatureGeomFillSurface.h"
+#include "FeatureTimelineSupport.h"
 
 
 using namespace Surface;
@@ -132,6 +133,7 @@ const char* GeomFillSurface::FillTypeEnums[] = {"Stretched", "Coons", "Curved", 
 GeomFillSurface::GeomFillSurface()
     : Spline()
 {
+    suppressibleExtension.initExtension(this);
     ADD_PROPERTY(FillType, ((long)0));
     ADD_PROPERTY(BoundaryList, (nullptr, "Dummy"));
     ADD_PROPERTY(ReversedList, (false));
@@ -143,7 +145,8 @@ GeomFillSurface::GeomFillSurface()
 // Check if any components of the surface have been modified
 short GeomFillSurface::mustExecute() const
 {
-    if (BoundaryList.isTouched() || ReversedList.isTouched() || FillType.isTouched()) {
+    if (BoundaryList.isTouched() || ReversedList.isTouched() || FillType.isTouched()
+        || suppressibleExtension.Suppressed.isTouched()) {
         return 1;
     }
     return Spline::mustExecute();
@@ -164,6 +167,16 @@ void GeomFillSurface::onChanged(const App::Property* prop)
 
 App::DocumentObjectExecReturn* GeomFillSurface::execute()
 {
+    Shape.setValue(TopoDS_Shape());
+    if (TimelineSupport::isSuppressedOrInactive(*this, suppressibleExtension)) {
+        return App::DocumentObject::StdReturn;
+    }
+    if (!TimelineSupport::areUsableInputs(*this, BoundaryList)) {
+        return new App::DocumentObjectExecReturn(
+            "A boundary curve is not available at the current History position."
+        );
+    }
+
     try {
         TopoDS_Wire aWire;
 

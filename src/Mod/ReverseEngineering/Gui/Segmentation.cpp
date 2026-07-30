@@ -24,6 +24,8 @@
 
 #include <sstream>
 
+#include <QMessageBox>
+
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRep_Builder.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -34,18 +36,22 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
-#include <App/DocumentObjectGroup.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/WaitCursor.h>
 #include <Mod/Mesh/App/Core/Algorithm.h>
 #include <Mod/Mesh/App/Core/Approximation.h>
 #include <Mod/Mesh/App/Core/Curvature.h>
 #include <Mod/Mesh/App/Core/Segmentation.h>
 #include <Mod/Mesh/App/Core/Smoothing.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
 #include <Mod/Part/App/FaceMakerCheese.h>
 #include <Mod/Part/App/PartFeature.h>
 
+#include "OperationSupport.h"
 #include "Segmentation.h"
 #include "ui_Segmentation.h"
 
@@ -68,204 +74,233 @@ Segmentation::~Segmentation() = default;
 
 void Segmentation::accept()
 {
-    if (myMesh.expired()) {
-        return;
-    }
+    (void)tryAccept();
+}
 
-    Gui::WaitCursor wc;
-    bool createUnused = ui->createUnused->isChecked();
-    bool createCompound = ui->createCompound->isChecked();
-    BRep_Builder builder;
-    TopoDS_Compound compound;
-    builder.MakeCompound(compound);
+bool Segmentation::tryAccept()
+{
+    struct SegmentResult
+    {
+        std::vector<long> facets;
+        std::string label;
+    };
 
-    const Mesh::MeshObject* mesh = myMesh.get<Mesh::Feature>()->Mesh.getValuePtr();
-    // make a copy because we might smooth the mesh before
-    MeshCore::MeshKernel kernel = mesh->getKernel();
-    MeshCore::MeshAlgorithm algo(kernel);
-
-    if (ui->checkBoxSmooth->isChecked()) {
-        MeshCore::LaplaceSmoothing smoother(kernel);
-        smoother.Smooth(ui->smoothSteps->value());
-    }
-
-    MeshCore::MeshSegmentAlgorithm finder(kernel);
-    MeshCore::MeshCurvature meshCurv(kernel);
-    meshCurv.ComputePerVertex();
-
-    // First create segments by curavture to get the surface type
-    std::vector<MeshCore::MeshSurfaceSegmentPtr> segm;
-    if (ui->groupBoxPln->isChecked()) {
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshCurvaturePlanarSegment>(
-                meshCurv.GetCurvature(),
-                ui->numPln->value(),
-                ui->curvTolPln->value()
-            )
+    auto* source = myMesh.get<Mesh::Feature>();
+    auto* document = source ? source->getDocument() : nullptr;
+    if (!source || !document || App::GetApplication().getActiveDocument() != document
+        || !MeshGui::hasCleanNativeMutationBoundary(document)
+        || !ReverseEngineeringGui::OperationSupport::isUsableSource(source, document)
+        || source->Mesh.getValue().countFacets() == 0) {
+        QMessageBox::warning(
+            this,
+            tr("Mesh Segmentation"),
+            tr("The original mesh is no longer available.")
         );
+        return false;
     }
-    finder.FindSegments(segm);
 
-    std::vector<MeshCore::MeshSurfaceSegmentPtr> segmSurf;
-    for (const auto& it : segm) {
-        const std::vector<MeshCore::MeshSegment>& data = it->GetSegments();
+    try {
+        Gui::WaitCursor waitCursor;
+        const bool createUnused = ui->createUnused->isChecked();
+        const bool createCompound = ui->createCompound->isChecked();
+        const Mesh::MeshObject& sourceMesh = source->Mesh.getValue();
 
-        // For each planar segment compute a plane and use this then for a more accurate 2nd
-        // segmentation
-        if (strcmp(it->GetType(), "Plane") == 0) {
-            for (const auto& jt : data) {
-                std::vector<MeshCore::PointIndex> indexes = kernel.GetFacetPoints(jt);
+        MeshCore::MeshKernel kernel = sourceMesh.getKernel();
+        MeshCore::MeshAlgorithm algorithm(kernel);
+        if (ui->checkBoxSmooth->isChecked()) {
+            MeshCore::LaplaceSmoothing smoother(kernel);
+            smoother.Smooth(ui->smoothSteps->value());
+        }
+
+        MeshCore::MeshSegmentAlgorithm finder(kernel);
+        MeshCore::MeshCurvature curvature(kernel);
+        curvature.ComputePerVertex();
+
+        std::vector<MeshCore::MeshSurfaceSegmentPtr> preliminary;
+        if (ui->groupBoxPln->isChecked()) {
+            preliminary.emplace_back(
+                std::make_shared<MeshCore::MeshCurvaturePlanarSegment>(
+                    curvature.GetCurvature(),
+                    ui->numPln->value(),
+                    ui->curvTolPln->value()
+                )
+            );
+        }
+        finder.FindSegments(preliminary);
+
+        std::vector<MeshCore::MeshSurfaceSegmentPtr> fittedSurfaces;
+        for (const auto& candidate : preliminary) {
+            if (strcmp(candidate->GetType(), "Plane") != 0) {
+                continue;
+            }
+            for (const auto& segment : candidate->GetSegments()) {
+                const auto pointIndices = kernel.GetFacetPoints(segment);
                 MeshCore::PlaneFit fit;
-                fit.AddPoints(kernel.GetPoints(indexes));
-                if (fit.Fit() < std::numeric_limits<float>::max()) {
-                    Base::Vector3f base = fit.GetBase();
-                    Base::Vector3f axis = fit.GetNormal();
-                    MeshCore::AbstractSurfaceFit* fitter = new MeshCore::PlaneSurfaceFit(base, axis);
-                    segmSurf.emplace_back(
-                        std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
-                            fitter,
-                            kernel,
-                            ui->numPln->value(),
-                            ui->distToPln->value()
-                        )
+                fit.AddPoints(kernel.GetPoints(pointIndices));
+                if (fit.Fit() >= std::numeric_limits<float>::max()) {
+                    continue;
+                }
+                fittedSurfaces.emplace_back(
+                    std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
+                        new MeshCore::PlaneSurfaceFit(fit.GetBase(), fit.GetNormal()),
+                        kernel,
+                        ui->numPln->value(),
+                        ui->distToPln->value()
+                    )
+                );
+            }
+        }
+        finder.FindSegments(fittedSurfaces);
+
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        std::size_t compoundFaces = 0;
+        std::vector<SegmentResult> acceptedSegments;
+        algorithm.SetFacetFlag(MeshCore::MeshFacet::TMP0);
+
+        for (const auto& fitted : fittedSurfaces) {
+            auto planar = std::dynamic_pointer_cast<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
+                fitted
+            );
+            if (!planar) {
+                continue;
+            }
+            const bool isPlanar = strcmp(planar->GetType(), "Plane") == 0;
+            for (const auto& segment : planar->GetSegments()) {
+                if (segment.empty()) {
+                    continue;
+                }
+                algorithm.ResetFacetsFlag(segment, MeshCore::MeshFacet::TMP0);
+                acceptedSegments.push_back({
+                    {segment.begin(), segment.end()},
+                    std::string("Segment (") + planar->GetType() + ")",
+                });
+
+                if (!createCompound || !isPlanar) {
+                    continue;
+                }
+                std::list<std::vector<Base::Vector3f>> borders;
+                algorithm.GetFacetBorders(segment, borders);
+                const auto parameters = planar->Parameters();
+                if (parameters.size() < 6) {
+                    continue;
+                }
+                Handle(Geom_Plane) plane(new Geom_Plane(
+                    gp_Pnt(parameters[0], parameters[1], parameters[2]),
+                    gp_Dir(parameters[3], parameters[4], parameters[5])
+                ));
+
+                std::vector<TopoDS_Wire> wires;
+                for (const auto& border : borders) {
+                    BRepBuilderAPI_MakePolygon polygon;
+                    for (auto point = border.rbegin(); point != border.rend(); ++point) {
+                        const gp_Pnt original(point->x, point->y, point->z);
+                        polygon.Add(GeomAPI_ProjectPointOnSurf(original, plane).NearestPoint());
+                    }
+                    if (polygon.IsDone()) {
+                        wires.push_back(polygon.Wire());
+                    }
+                }
+                if (wires.empty()) {
+                    continue;
+                }
+                try {
+                    const TopoDS_Shape face = Part::FaceMakerCheese::makeFace(wires);
+                    if (!face.IsNull()) {
+                        builder.Add(compound, face);
+                        ++compoundFaces;
+                    }
+                }
+                catch (const Standard_Failure& error) {
+                    Base::Console().warning(
+                        "Could not create a face for one mesh segment: %s\n",
+                        error.GetMessageString()
                     );
                 }
             }
         }
-    }
-    finder.FindSegments(segmSurf);
 
-    App::Document* document = App::GetApplication().getActiveDocument();
-    document->openTransaction("Segmentation");
-
-    std::string internalname = "Segments_";
-    internalname += myMesh->getNameInDocument();
-
-    auto* group = document->addObject<App::DocumentObjectGroup>(internalname.c_str());
-    std::string labelname = "Segments ";
-    labelname += myMesh->Label.getValue();
-    group->Label.setValue(labelname);
-
-    std::vector<App::DocumentObject*> failures;
-    algo.SetFacetFlag(MeshCore::MeshFacet::TMP0);
-
-    for (const auto& it : segmSurf) {
-        const std::vector<MeshCore::MeshSegment>& data = it->GetSegments();
-        std::shared_ptr<MeshCore::MeshDistanceGenericSurfaceFitSegment> genSegm
-            = std::dynamic_pointer_cast<MeshCore::MeshDistanceGenericSurfaceFitSegment>(it);
-
-        bool isPlanar = (strcmp(genSegm->GetType(), "Plane") == 0);
-        for (const auto& jt : data) {
-            // reset flag for facets of segment
-            algo.ResetFacetsFlag(jt, MeshCore::MeshFacet::TMP0);
-
-            Mesh::MeshObject* segment = mesh->meshFromSegment(jt);
-            Mesh::Feature* feaSegm = static_cast<Mesh::Feature*>(
-                group->addObject("Mesh::Feature", "Segment")
-            );
-            Mesh::MeshObject* feaMesh = feaSegm->Mesh.startEditing();
-            feaMesh->swap(*segment);
-            feaSegm->Mesh.finishEditing();
-            delete segment;
-
-            std::stringstream label;
-            label << feaSegm->Label.getValue() << " (" << it->GetType() << ")";
-            feaSegm->Label.setValue(label.str());
-
-            if (createCompound) {
-                std::list<std::vector<Base::Vector3f>> bounds;
-                algo.GetFacetBorders(jt, bounds);
-
-                // Handle planar segments
-                if (isPlanar) {
-                    std::vector<float> par = genSegm->Parameters();
-                    gp_Pnt loc(par.at(0), par.at(1), par.at(2));
-                    gp_Dir dir(par.at(3), par.at(4), par.at(5));
-
-                    Handle(Geom_Plane) hPlane(new Geom_Plane(loc, dir));
-
-                    std::vector<TopoDS_Wire> wires;
-                    for (const auto& bound : bounds) {
-                        // project the points onto the surface
-                        std::vector<gp_Pnt> polygon;
-                        std::transform(
-                            bound.begin(),
-                            bound.end(),
-                            std::back_inserter(polygon),
-                            [&hPlane](const Base::Vector3f& v) {
-                                gp_Pnt p(v.x, v.y, v.z);
-                                return GeomAPI_ProjectPointOnSurf(p, hPlane).NearestPoint();
-                            }
-                        );
-
-                        BRepBuilderAPI_MakePolygon mkPoly;
-                        for (std::vector<gp_Pnt>::reverse_iterator it = polygon.rbegin();
-                             it != polygon.rend();
-                             ++it) {
-                            mkPoly.Add(*it);
-                        }
-                        if (mkPoly.IsDone()) {
-                            wires.push_back(mkPoly.Wire());
-                        }
-                    }
-
-                    try {
-                        TopoDS_Shape shape = Part::FaceMakerCheese::makeFace(wires);
-                        if (!shape.IsNull()) {
-                            builder.Add(compound, shape);
-                        }
-                        else {
-                            failures.push_back(feaSegm);
-                            Base::Console().warning(
-                                "Failed to create face from %s\n",
-                                feaSegm->Label.getValue()
-                            );
-                        }
-                    }
-                    catch (Standard_Failure&) {
-                        failures.push_back(feaSegm);
-                        Base::Console().error(
-                            "Fatal failure to create face from %s\n",
-                            feaSegm->Label.getValue()
-                        );
-                    }
-                }
+        if (createUnused) {
+            std::vector<MeshCore::FacetIndex> unused;
+            algorithm.GetFacetsFlag(unused, MeshCore::MeshFacet::TMP0);
+            if (!unused.empty()) {
+                acceptedSegments.push_back({
+                    {unused.begin(), unused.end()},
+                    "Unused Facets",
+                });
             }
         }
-    }
-
-    if (createUnused) {
-        // collect all facets that don't have set the flag TMP0
-        std::vector<MeshCore::FacetIndex> unusedFacets;
-        algo.GetFacetsFlag(unusedFacets, MeshCore::MeshFacet::TMP0);
-
-        if (!unusedFacets.empty()) {
-            std::unique_ptr<Mesh::MeshObject> segment(mesh->meshFromSegment(unusedFacets));
-            Mesh::Feature* feaSegm = static_cast<Mesh::Feature*>(
-                group->addObject("Mesh::Feature", "Unused")
+        if (acceptedSegments.empty() && compoundFaces == 0) {
+            QMessageBox::information(
+                this,
+                tr("Mesh Segmentation"),
+                tr("The current settings did not find any mesh segments.")
             );
-            Mesh::MeshObject* feaMesh = feaSegm->Mesh.startEditing();
-            feaMesh->swap(*segment);
-            feaSegm->Mesh.finishEditing();
+            return false;
         }
-    }
-    if (createCompound) {
-        Part::Feature* shapeFea = static_cast<Part::Feature*>(
-            group->addObject("Part::Feature", "Compound")
+
+        Gui::ExactTransaction mutation(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Segment mesh by surface")
         );
-        shapeFea->Shape.setValue(compound);
-
-        // create a sub-group where to move the problematic segments
-        if (!failures.empty()) {
-            App::DocumentObjectGroup* subgroup = static_cast<App::DocumentObjectGroup*>(
-                group->addObject("App::DocumentObjectGroup", "Failed")
-            );
-            failures = group->removeObjects(failures);
-            subgroup->Group.setValues(failures);
+        std::vector<App::DocumentObject*> outputs;
+        outputs.reserve(acceptedSegments.size() + (compoundFaces > 0 ? 1U : 0U));
+        for (const auto& accepted : acceptedSegments) {
+            auto* segment = document->addObject<Mesh::FacetSubset>("Segment");
+            segment->Label.setValue(accepted.label);
+            segment->Source.setValue(source);
+            segment->FacetIndices.setValues(accepted.facets);
+            segment->AcceptedTopology.setValue(sourceMesh);
+            segment->SelectionKind.setValue("Surface segment");
+            outputs.push_back(segment);
         }
-    }
+        if (compoundFaces > 0) {
+            auto* faces = document->addObject<Part::Feature>("SegmentFaces");
+            faces->Label.setValue("Segment Faces");
+            faces->Shape.setValue(compound);
+            ReverseEngineeringGui::OperationSupport::setSource(*faces, *source);
+            outputs.push_back(faces);
+        }
 
-    document->commitTransaction();
+        document->recompute();
+        for (auto* output : outputs) {
+            if (!output || output->isError()) {
+                throw Base::RuntimeError("Mesh segmentation produced an invalid result");
+            }
+            if (const auto* segment = freecad_cast<const Mesh::Feature*>(output);
+                segment && segment->Mesh.getValue().countFacets() == 0) {
+                throw Base::RuntimeError("Mesh segmentation produced an empty segment");
+            }
+            if (const auto* faces = freecad_cast<const Part::Feature*>(output);
+                faces && faces->Shape.getValue().IsNull()) {
+                throw Base::RuntimeError("Mesh segmentation produced an empty face result");
+            }
+        }
+
+        ReverseEngineeringGui::OperationSupport::publishOutputGroup(
+            *document,
+            {source},
+            outputs,
+            "Segments",
+            (std::string("Segments ") + source->Label.getValue()).c_str(),
+            "Segment mesh by surface",
+            true
+        );
+        document->recompute();
+        ReverseEngineeringGui::OperationSupport::commit(mutation);
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Mesh Segmentation"), QString::fromUtf8(error.what()));
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(this, tr("Mesh Segmentation"), QString::fromUtf8(error.what()));
+    }
+    catch (...) {
+        QMessageBox::warning(this, tr("Mesh Segmentation"), tr("Mesh segmentation failed unexpectedly."));
+    }
+    return false;
 }
 
 void Segmentation::changeEvent(QEvent* e)
@@ -282,14 +317,17 @@ void Segmentation::changeEvent(QEvent* e)
 
 TaskSegmentation::TaskSegmentation(Mesh::Feature* mesh)
 {
+    if (mesh && mesh->getDocument()) {
+        setDocumentName(mesh->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     widget = new Segmentation(mesh);
     addTaskBox(widget, false);
 }
 
 bool TaskSegmentation::accept()
 {
-    widget->accept();
-    return true;
+    return widget->tryAccept();
 }
 
 #include "moc_Segmentation.cpp"

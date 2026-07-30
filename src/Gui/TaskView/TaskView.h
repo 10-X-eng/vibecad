@@ -223,11 +223,8 @@ private:
     void slotActiveDocument(const App::Document&);
     void slotInEdit(const Gui::ViewProviderDocumentObject&);
     void slotResetEdit(const Gui::ViewProviderDocumentObject&);
-    void slotFinishEdit(
-        const Gui::Document&,
-        bool cancelled,
-        bool transactionFinished
-    );
+    void slotFinishEdit(const Gui::Document&, bool cancelled, bool transactionFinished);
+    void slotBeforeCloseDocument(const App::Document&);
     void slotDeletedDocument(const App::Document&);
     void slotViewClosed(const Gui::MDIView*);
     void slotUndoDocument(const App::Document&);
@@ -261,6 +258,7 @@ protected:
     bool showTaskWatcher = false;
 
     Connection connectApplicationActiveDocument;
+    Connection connectApplicationBeforeCloseDocument;
     Connection connectApplicationDeleteDocument;
     Connection connectApplicationClosedView;
     Connection connectApplicationUndoDocument;

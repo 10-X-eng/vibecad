@@ -32,6 +32,7 @@
 #include <gp_Pnt.hxx>
 
 #include "FeatureFilling.h"
+#include "FeatureTimelineSupport.h"
 
 
 using namespace Surface;
@@ -42,6 +43,8 @@ PROPERTY_SOURCE(Surface::Filling, Part::Spline)
 
 Filling::Filling()
 {
+    suppressibleExtension.initExtension(this);
+
     // clang-format off
     ADD_PROPERTY_TYPE(BoundaryEdges,(nullptr,""), "Filling", App::Prop_None,
                       "Boundary Edges (C0 is required for edges without a corresponding face)");
@@ -100,10 +103,11 @@ short Filling::mustExecute() const
         || InitialFace.isTouched() || Degree.isTouched() || PointsOnCurve.isTouched()
         || Iterations.isTouched() || Anisotropy.isTouched() || Tolerance2d.isTouched()
         || Tolerance3d.isTouched() || TolAngular.isTouched() || TolCurvature.isTouched()
-        || MaximumDegree.isTouched() || MaximumSegments.isTouched()) {
+        || MaximumDegree.isTouched() || MaximumSegments.isTouched()
+        || suppressibleExtension.Suppressed.isTouched()) {
         return 1;
     }
-    return 0;
+    return Part::Spline::mustExecute();
 }
 
 void Filling::addConstraints(
@@ -261,6 +265,20 @@ void Filling::addConstraints(BRepFill_Filling& builder, const App::PropertyLinkS
 
 App::DocumentObjectExecReturn* Filling::execute()
 {
+    Shape.setValue(TopoDS_Shape());
+    if (TimelineSupport::isSuppressedOrInactive(*this, suppressibleExtension)) {
+        return App::DocumentObject::StdReturn;
+    }
+    if (!TimelineSupport::areUsableInputs(*this, BoundaryEdges)
+        || !TimelineSupport::areUsableInputs(*this, UnboundEdges)
+        || !TimelineSupport::areUsableInputs(*this, FreeFaces)
+        || !TimelineSupport::areUsableInputs(*this, Points)
+        || !TimelineSupport::isUsableOptionalInput(*this, InitialFace)) {
+        return new App::DocumentObjectExecReturn(
+            "A filling input is not available at the current History position."
+        );
+    }
+
     // Assign Variables
     unsigned int degree = Degree.getValue();
     unsigned int ptsoncurve = PointsOnCurve.getValue();

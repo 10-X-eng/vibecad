@@ -22,13 +22,18 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <QFileInfo>
 #include <QMessageBox>
 
-
+#include <App/Document.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Control.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
+#include <Gui/FileDialog.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Selection/SelectionFilter.h>
@@ -36,40 +41,52 @@
 #include <Mod/Robot/App/TrajectoryObject.h>
 
 #include "TaskDlgSimulate.h"
-#include "TrajectorySimulate.h"
+#include "OperationSupport.h"
 
 
 using namespace std;
 using namespace RobotGui;
 
-#include <QFileDialog>
-
 namespace
 {
 
-std::string getWrl(const QString& hint_directory)
+QString getWrl(const QString& hintDirectory)
 {
-    QString fileName = QFileDialog::getOpenFileName(
+    const Gui::FileDialog::FilterList filters {
+        {QObject::tr("VRML files"), {"*.wrl", "*.vrml"}},
+        Gui::FileDialog::Filter::AllFiles(),
+    };
+    return Gui::FileDialog::getOpenFileName(
         Gui::getMainWindow(),
         QObject::tr("Select VRML file for Robot"),
-        hint_directory,
-        QObject::tr("VRML Files (*.wrl *.vrml)")
+        hintDirectory,
+        filters
     );
-
-    return fileName.toStdString();
 }
 
-std::string getCsv(const std::string& wrl_path)
+QString getCsv(const QString& wrlPath)
 {
-    QFileInfo wrlInfo(QString::fromStdString(wrl_path));
-    QString hintDir = wrlInfo.absolutePath();
-    QString fileName = QFileDialog::getOpenFileName(
+    const Gui::FileDialog::FilterList filters {
+        {QObject::tr("CSV files"), {"*.csv"}},
+        Gui::FileDialog::Filter::AllFiles(),
+    };
+    return Gui::FileDialog::getOpenFileName(
         Gui::getMainWindow(),
         QObject::tr("Select Kinematic CSV file for Robot"),
-        hintDir,
-        QObject::tr("CSV Files (*.csv)")
+        QFileInfo(wrlPath).absolutePath(),
+        filters
     );
-    return fileName.toStdString();
+}
+
+bool isReadableFile(const QString& path)
+{
+    const QFileInfo info(path);
+    return info.exists() && info.isFile() && info.isReadable();
+}
+
+void showRobotError(const QString& title, const Base::Exception& error)
+{
+    QMessageBox::warning(Gui::getMainWindow(), title, QString::fromUtf8(error.what()));
 }
 
 }  // namespace
@@ -91,48 +108,42 @@ CmdRobotSetHomePos::CmdRobotSetHomePos()
 
 void CmdRobotSetHomePos::activated(int)
 {
-    const char* SelFilter = "SELECT Robot::RobotObject COUNT 1 ";
-
-    Gui::SelectionFilter filter(SelFilter);
-    Robot::RobotObject* pcRobotObject;
-    if (filter.match()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(filter.Result[0][0].getObject());
-    }
-    else {
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            QObject::tr("Wrong selection"),
-            QObject::tr("Select one Robot to set home position")
-        );
+    auto* activeDocument = RobotGui::OperationSupport::cleanActiveDocument();
+    auto* robot = RobotGui::OperationSupport::selectedRobot();
+    if (!activeDocument || !robot) {
         return;
     }
-
-
-    std::string FeatName = pcRobotObject->getNameInDocument();
-
-    const char* n = FeatName.c_str();
-    openCommand("Set home");
-    doCommand(
-        Doc,
-        "App.activeDocument().%s.Home = "
-        "[App.activeDocument().%s.Axis1,App.activeDocument().%s.Axis2,App.activeDocument().%"
-        "s.Axis3,App.activeDocument().%s.Axis4,App.activeDocument().%s.Axis5,App."
-        "activeDocument().%s.Axis6]",
-        n,
-        n,
-        n,
-        n,
-        n,
-        n,
-        n
-    );
-    updateActive();
-    commitCommand();
+    try {
+        const auto documents = RobotGui::OperationSupport::mutationDocuments(*activeDocument, {robot});
+        RobotGui::OperationSupport::requireCleanDocuments(*activeDocument, documents);
+        Gui::ExactTransaction transaction(
+            *activeDocument,
+            documents,
+            QT_TRANSLATE_NOOP("Command", "Set robot home")
+        );
+        Gui::cmdAppObjectArgs(
+            robot,
+            "Home = [%.17g, %.17g, %.17g, %.17g, %.17g, %.17g]",
+            robot->Axis1.getValue(),
+            robot->Axis2.getValue(),
+            robot->Axis3.getValue(),
+            robot->Axis4.getValue(),
+            robot->Axis5.getValue(),
+            robot->Axis6.getValue()
+        );
+        RobotGui::OperationSupport::recompute(documents);
+        RobotGui::OperationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showRobotError(QObject::tr("Set Robot Home"), error);
+    }
 }
 
 bool CmdRobotSetHomePos::isActive()
 {
-    return hasActiveDocument();
+    return RobotGui::OperationSupport::cleanActiveDocument()
+        && RobotGui::OperationSupport::selectedRobot();
 }
 
 
@@ -154,40 +165,44 @@ CmdRobotRestoreHomePos::CmdRobotRestoreHomePos()
 
 void CmdRobotRestoreHomePos::activated(int)
 {
-    const char* SelFilter = "SELECT Robot::RobotObject COUNT 1 ";
-
-    Gui::SelectionFilter filter(SelFilter);
-    Robot::RobotObject* pcRobotObject;
-    if (filter.match()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(filter.Result[0][0].getObject());
+    auto* activeDocument = RobotGui::OperationSupport::cleanActiveDocument();
+    auto* robot = RobotGui::OperationSupport::selectedRobot();
+    if (!activeDocument || !robot) {
+        return;
     }
-    else {
+    if (robot->Home.getSize() != 6) {
         QMessageBox::warning(
             Gui::getMainWindow(),
-            QObject::tr("Wrong selection"),
-            QObject::tr("Select one Robot")
+            QObject::tr("Robot Home Is Not Set"),
+            QObject::tr("Set a six-axis home position for the selected robot first.")
         );
         return;
     }
-
-
-    std::string FeatName = pcRobotObject->getNameInDocument();
-
-    const char* n = FeatName.c_str();
-    openCommand("Move to home");
-    doCommand(Doc, "App.activeDocument().%s.Axis1 = App.activeDocument().%s.Home[0]", n, n);
-    doCommand(Doc, "App.activeDocument().%s.Axis2 = App.activeDocument().%s.Home[1]", n, n);
-    doCommand(Doc, "App.activeDocument().%s.Axis3 = App.activeDocument().%s.Home[2]", n, n);
-    doCommand(Doc, "App.activeDocument().%s.Axis4 = App.activeDocument().%s.Home[3]", n, n);
-    doCommand(Doc, "App.activeDocument().%s.Axis5 = App.activeDocument().%s.Home[4]", n, n);
-    doCommand(Doc, "App.activeDocument().%s.Axis6 = App.activeDocument().%s.Home[5]", n, n);
-    updateActive();
-    commitCommand();
+    try {
+        const auto documents = RobotGui::OperationSupport::mutationDocuments(*activeDocument, {robot});
+        RobotGui::OperationSupport::requireCleanDocuments(*activeDocument, documents);
+        Gui::ExactTransaction transaction(
+            *activeDocument,
+            documents,
+            QT_TRANSLATE_NOOP("Command", "Move robot home")
+        );
+        const auto& home = robot->Home.getValues();
+        for (int axis = 1; axis <= 6; ++axis) {
+            Gui::cmdAppObjectArgs(robot, "Axis%d = %.17g", axis, home[axis - 1]);
+        }
+        RobotGui::OperationSupport::recompute(documents);
+        RobotGui::OperationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showRobotError(QObject::tr("Move Robot Home"), error);
+    }
 }
 
 bool CmdRobotRestoreHomePos::isActive()
 {
-    return hasActiveDocument();
+    auto* robot = RobotGui::OperationSupport::selectedRobot();
+    return RobotGui::OperationSupport::cleanActiveDocument() && robot && robot->Home.getSize() == 6;
 }
 
 
@@ -210,26 +225,72 @@ CmdRobotConstraintAxle::CmdRobotConstraintAxle()
 
 void CmdRobotConstraintAxle::activated([[maybe_unused]] int msg)
 {
-    const std::string FeatName = getUniqueObjectName("Robot");
-    const std::string WrlPath = getWrl(QString());
-    const std::string KinematicPath = getCsv(WrlPath);
+    auto* document = RobotGui::OperationSupport::cleanActiveDocument();
+    if (!document) {
+        return;
+    }
+    const QString wrlPath = getWrl({});
+    if (wrlPath.isEmpty()) {
+        return;
+    }
+    const QString kinematicPath = getCsv(wrlPath);
+    if (kinematicPath.isEmpty()) {
+        return;
+    }
+    if (!isReadableFile(wrlPath) || !isReadableFile(kinematicPath)) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Robot Definition Is Unavailable"),
+            QObject::tr("Choose readable VRML and kinematic CSV files.")
+        );
+        return;
+    }
 
-    openCommand("Place robot");
-    doCommand(Doc, "App.activeDocument().addObject(\"Robot::RobotObject\",\"%s\")", FeatName.c_str());
-    doCommand(Doc, "App.activeDocument().%s.RobotVrmlFile = \"%s\"", FeatName.c_str(), WrlPath.c_str());
-    doCommand(
-        Doc,
-        "App.activeDocument().%s.RobotKinematicFile = \"%s\"",
-        FeatName.c_str(),
-        KinematicPath.c_str()
-    );
-    updateActive();
-    commitCommand();
+    try {
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Place robot"));
+        const std::string name = document->getUniqueObjectName("Robot");
+        const std::string documentLiteral = RobotGui::OperationSupport::pythonString(
+            document->getName()
+        );
+        const std::string nameLiteral = RobotGui::OperationSupport::pythonString(name);
+        const QByteArray expression = QByteArray::fromStdString(
+            "App.getDocument(" + documentLiteral + ").addObject('Robot::RobotObject'," + nameLiteral
+            + ")"
+        );
+        auto* robot = freecad_cast<Robot::RobotObject*>(Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            *document,
+            expression,
+            Robot::RobotObject::getClassTypeId()
+        ));
+        if (!robot) {
+            throw Base::RuntimeError("The robot object could not be created");
+        }
+        Gui::cmdAppObjectArgs(
+            robot,
+            "RobotVrmlFile = %s",
+            RobotGui::OperationSupport::pythonString(wrlPath.toStdString())
+        );
+        Gui::cmdAppObjectArgs(
+            robot,
+            "RobotKinematicFile = %s",
+            RobotGui::OperationSupport::pythonString(kinematicPath.toStdString())
+        );
+        RobotGui::OperationSupport::publishOperation(*robot);
+        RobotGui::OperationSupport::recompute({document});
+        RobotGui::OperationSupport::commit(transaction);
+        Gui::Selection().clearSelection();
+        Gui::Selection().addSelection(document->getName(), robot->getNameInDocument());
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        showRobotError(QObject::tr("Place Robot"), error);
+    }
 }
 
 bool CmdRobotConstraintAxle::isActive()
 {
-    return hasActiveDocument();
+    return RobotGui::OperationSupport::cleanActiveDocument() != nullptr;
 }
 
 
@@ -252,18 +313,8 @@ CmdRobotSimulate::CmdRobotSimulate()
 
 void CmdRobotSimulate::activated(int)
 {
-    const char* SelFilter = "SELECT Robot::RobotObject  \n"
-                            "SELECT Robot::TrajectoryObject  ";
-
-    Gui::SelectionFilter filter(SelFilter);
-    Robot::RobotObject* pcRobotObject;
-    Robot::TrajectoryObject* pcTrajectoryObject;
-
-    if (filter.match()) {
-        pcRobotObject = static_cast<Robot::RobotObject*>(filter.Result[0][0].getObject());
-        pcTrajectoryObject = static_cast<Robot::TrajectoryObject*>(filter.Result[1][0].getObject());
-    }
-    else {
+    const auto selection = RobotGui::OperationSupport::selectedRobotAndTrajectory();
+    if (!selection || !RobotGui::OperationSupport::cleanActiveDocument()) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Wrong selection"),
@@ -272,22 +323,28 @@ void CmdRobotSimulate::activated(int)
         return;
     }
 
-    if (pcTrajectoryObject->Trajectory.getValue().getSize() < 2) {
+    const auto& trajectory = selection.trajectory->Trajectory.getValue();
+    if (trajectory.getSize() < 2 || trajectory.getDuration() <= 0.0) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Trajectory not valid"),
-            QObject::tr("You need at least two waypoints in a trajectory to simulate.")
+            QObject::tr(
+                "Simulation requires at least two waypoints and a positive "
+                "trajectory duration."
+            )
         );
         return;
     }
 
-    Gui::TaskView::TaskDialog* dlg = new TaskDlgSimulate(pcRobotObject, pcTrajectoryObject);
-    Gui::Control().showDialog(dlg);
+    Gui::TaskView::TaskDialog* dlg
+        = new TaskDlgSimulate(selection.robot, selection.trajectory, selection.activeDocument);
+    Gui::Control().showDialog(dlg, selection.activeDocument);
 }
 
 bool CmdRobotSimulate::isActive()
 {
-    return (hasActiveDocument() && !Gui::Control().activeDialog());
+    return RobotGui::OperationSupport::cleanActiveDocument()
+        && RobotGui::OperationSupport::selectedRobotAndTrajectory();
 }
 
 

@@ -22,6 +22,7 @@ SHIPPED_RIBBON_DOMAINS = (
     ("Analyze", "FemWorkbench"),
     ("Manufacture", "CAMWorkbench"),
     ("Drawing", "TechDrawWorkbench"),
+    ("Parameters", "SpreadsheetWorkbench"),
 )
 
 INSPECTION_COMMANDS = (
@@ -242,8 +243,14 @@ class TestRibbonInspectView(unittest.TestCase):
         )
         self.assertIsNotNone(menu_button, title)
         self.assertIsNotNone(menu_button.menu(), title)
-        actions = [action for action in menu_button.menu().actions() if not action.isSeparator()]
-        by_command = {str(action.property("VibeCADCommandId")): action for action in actions}
+        actions = [
+            action
+            for action in menu_button.menu().actions()
+            if not action.isSeparator()
+        ]
+        by_command = {
+            str(action.property("VibeCADCommandId")): action for action in actions
+        }
         self.assertEqual(
             len(by_command),
             len(actions),
@@ -305,7 +312,9 @@ class TestRibbonInspectView(unittest.TestCase):
             QtGui.QDialogButtonBox.Cancel,
             QtGui.QDialogButtonBox.Close,
         )
-        self.assertIsNotNone(button, f"{command_name} has no usable close/cancel button")
+        self.assertIsNotNone(
+            button, f"{command_name} has no usable close/cancel button"
+        )
         button.click()
         self._process_events(100)
         self.assertFalse(Gui.Control.activeDialog(), command_name)
@@ -326,7 +335,9 @@ class TestRibbonInspectView(unittest.TestCase):
                 for tree in Gui.getMainWindow().findChildren(QtGui.QTreeView)
                 if tree.isVisible()
                 and tree.model() is not None
-                and tree.model().headerData(0, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole)
+                and tree.model().headerData(
+                    0, QtCore.Qt.Horizontal, QtCore.Qt.DisplayRole
+                )
                 == "Name"
                 and tree.model().rowCount() > 0
             ),
@@ -339,7 +350,9 @@ class TestRibbonInspectView(unittest.TestCase):
         event = coin.SoKeyboardEvent()
         event.setKey(coin.SoKeyboardEvent.ESCAPE)
         event.setState(coin.SoButtonEvent.DOWN)
-        Gui.activeDocument().activeView().getViewer().getSoEventManager().processEvent(event)
+        Gui.activeDocument().activeView().getViewer().getSoEventManager().processEvent(
+            event
+        )
         self._process_events(100)
 
     def _assert_saved_result_follows_document_history(self, result):
@@ -379,7 +392,9 @@ class TestRibbonInspectView(unittest.TestCase):
             self.skipTest("VibeCAD ribbon source is not present in this installation")
         source = source_path.read_text(encoding="utf-8")
 
-        domains_start = source.index("constexpr std::array<DomainDefinition, 6> domains")
+        domains_start = source.index(
+            "constexpr std::array<DomainDefinition, 7> domains"
+        )
         domains_end = source.index("}};", domains_start)
         actual_domains = tuple(
             re.findall(
@@ -418,7 +433,11 @@ class TestRibbonInspectView(unittest.TestCase):
         actual_edit_commands = tuple(re.findall(r'"(Sketcher_[^"]+)"', edit_source))
         self.assertEqual(
             actual_edit_commands,
-            tuple(command for commands in SKETCH_EDIT_GROUPS.values() for command in commands),
+            tuple(
+                command
+                for commands in SKETCH_EDIT_GROUPS.values()
+                for command in commands
+            ),
         )
 
         rebuild_source = _function_body(source, "void rebuildPage()")
@@ -628,7 +647,8 @@ class TestRibbonInspectView(unittest.TestCase):
                 action.trigger()
             self.assertTrue(
                 self._wait_until(
-                    lambda: bool(action.isChecked()) == visible and bool(dock.isHidden()) != visible
+                    lambda: bool(action.isChecked()) == visible
+                    and bool(dock.isHidden()) != visible
                 ),
                 (dock.objectName(), visible),
             )
@@ -736,7 +756,9 @@ class TestRibbonInspectView(unittest.TestCase):
             set_dock_visible(assistant, assistant_action, False)
             Gui.runCommand("VibeCAD_OpenAssistant")
             self.assertTrue(
-                self._wait_until(lambda: assistant_action.isChecked() and not assistant.isHidden())
+                self._wait_until(
+                    lambda: assistant_action.isChecked() and not assistant.isHidden()
+                )
             )
             assert_shell(True)
 
@@ -753,7 +775,9 @@ class TestRibbonInspectView(unittest.TestCase):
             set_dock_visible(assistant, assistant_action, False)
             Gui.runCommand("VibeCAD_OpenAssistant")
             self.assertTrue(
-                self._wait_until(lambda: assistant_action.isChecked() and not assistant.isHidden())
+                self._wait_until(
+                    lambda: assistant_action.isChecked() and not assistant.isHidden()
+                )
             )
             self.assertFalse(tree_action.isChecked())
             self.assertTrue(tree.isHidden())
@@ -878,7 +902,9 @@ class TestRibbonInspectView(unittest.TestCase):
         Gui.runCommand("Std_Measure")
         self._process_events(200)
         self.assertTrue(Gui.Control.activeDialog())
-        previews = [obj for obj in self.document.Objects if obj.TypeId.startswith("Measure::")]
+        previews = [
+            obj for obj in self.document.Objects if obj.TypeId.startswith("Measure::")
+        ]
         self.assertEqual(len(previews), 1)
         self.assertEqual(
             previews[0].Elements,
@@ -923,7 +949,8 @@ class TestRibbonInspectView(unittest.TestCase):
         measurements = [
             obj
             for obj in self.document.Objects
-            if obj.TypeId.startswith("Measure::") and obj.Name != "MassPropertiesPreview"
+            if obj.TypeId.startswith("Measure::")
+            and obj.Name != "MassPropertiesPreview"
         ]
         self.assertEqual(len(measurements), 1)
         self.assertEqual(self.document.UndoCount, before_undo + 1)
@@ -948,7 +975,9 @@ class TestRibbonInspectView(unittest.TestCase):
 
         Gui.runCommand("Std_Measure")
         self._process_events(200)
-        previews = [obj for obj in self.document.Objects if obj.TypeId.startswith("Measure::")]
+        previews = [
+            obj for obj in self.document.Objects if obj.TypeId.startswith("Measure::")
+        ]
         self.assertEqual(len(previews), 1)
         self.assertEqual(
             previews[0].Elements,
@@ -1240,7 +1269,9 @@ class TestRibbonInspectView(unittest.TestCase):
             self.document.openTransaction("Nested modal caller")
             caller_id = int(self.document.getBookedTransactionID())
             self.tip.Label = "Nested caller value"
-            ok = dialog.findChild(QtGui.QDialogButtonBox).button(QtGui.QDialogButtonBox.Ok)
+            ok = dialog.findChild(QtGui.QDialogButtonBox).button(
+                QtGui.QDialogButtonBox.Ok
+            )
             ok.click()
             self._process_events(50)
             observed["visible_after_refusal"] = dialog.isVisible()

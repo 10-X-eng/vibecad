@@ -24,6 +24,7 @@
  ***************************************************************************/
 
 
+#include <QMessageBox>
 #include <QToolBar>
 #include <qobject.h>
 
@@ -32,12 +33,16 @@
 #include "Mod/Spreadsheet/Gui/SpreadsheetView.h"
 #include <App/Document.h>
 #include <App/Range.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/MenuManager.h>
 #include <Gui/ToolBarManager.h>
 
+#include "MutationSupport.h"
 #include "Workbench.h"
 #include "qtcolorpicker.h"
 
@@ -134,163 +139,97 @@ void Workbench::activated()
             backgroundColor->setStatusTip(QObject::tr("Sets the background color of cells"));
             bar->addWidget(backgroundColor);
 
-            initialized = false;
+            initialized = true;
         }
     }
 }
 
+namespace
+{
+
+template<typename Action>
+void mutateSelectedColors(const char* transactionName, const QString& errorTitle, Action&& action)
+{
+    auto* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(Gui::getMainWindow()->activeWindow());
+    auto* sheet = sheetView ? sheetView->getSheet() : nullptr;
+    auto* document = sheet ? sheet->getDocument() : nullptr;
+    const std::vector<Range> ranges = sheetView ? sheetView->selectedRanges() : std::vector<Range>();
+    if (!sheet || !document || ranges.empty()) {
+        return;
+    }
+    try {
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, transactionName);
+        for (const auto& range : ranges) {
+            action(*sheet, range);
+        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+        Gui::Command::updateActive();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(Gui::getMainWindow(), errorTitle, QString::fromUtf8(error.what()));
+    }
+}
+
+}  // namespace
+
 void WorkbenchHelper::setForegroundColor(const QColor& color)
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-
-    if (!doc) {
-        return;
-    }
-
-    Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-    SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-    if (!sheetView) {
-        return;
-    }
-
-    Sheet* sheet = sheetView->getSheet();
-    std::vector<Range> ranges = sheetView->selectedRanges();
-
-    if (ranges.empty()) {
-        return;
-    }
-
-    std::vector<Range>::const_iterator i = ranges.begin();
-
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Set text color"));
-    for (; i != ranges.end(); ++i) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.setForeground('%s', (%f,%f,%f))",
-            sheet->getNameInDocument(),
-            i->rangeString().c_str(),
-            color.redF(),
-            color.greenF(),
-            color.blueF()
-        );
-    }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    mutateSelectedColors(
+        QT_TRANSLATE_NOOP("Command", "Set text color"),
+        tr("Text Color"),
+        [&color](Sheet& sheet, const Range& range) {
+            Gui::cmdAppObjectArgs(
+                &sheet,
+                "setForeground('%s', (%f,%f,%f))",
+                range.rangeString().c_str(),
+                color.redF(),
+                color.greenF(),
+                color.blueF()
+            );
+        }
+    );
 }
 
 void SpreadsheetGui::WorkbenchHelper::clearForegroundColor()
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-
-    if (!doc) {
-        return;
-    }
-
-    Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-    SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-    if (!sheetView) {
-        return;
-    }
-
-    Sheet* sheet = sheetView->getSheet();
-    std::vector<Range> ranges = sheetView->selectedRanges();
-
-    if (ranges.empty()) {
-        return;
-    }
-
-    std::vector<Range>::const_iterator i = ranges.begin();
-
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Clear text color"));
-    for (; i != ranges.end(); ++i) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.clearForeground('%s')",
-            sheet->getNameInDocument(),
-            i->rangeString().c_str()
-        );
-    }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    mutateSelectedColors(
+        QT_TRANSLATE_NOOP("Command", "Clear text color"),
+        tr("Text Color"),
+        [](Sheet& sheet, const Range& range) {
+            Gui::cmdAppObjectArgs(&sheet, "clearForeground('%s')", range.rangeString().c_str());
+        }
+    );
 }
 
 void WorkbenchHelper::setBackgroundColor(const QColor& color)
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-
-    if (!doc) {
-        return;
-    }
-
-    Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-    SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-    if (!sheetView) {
-        return;
-    }
-
-    Sheet* sheet = sheetView->getSheet();
-    std::vector<Range> ranges = sheetView->selectedRanges();
-
-    if (ranges.empty()) {
-        return;
-    }
-
-    std::vector<Range>::const_iterator i = ranges.begin();
-
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Set background color"));
-    for (; i != ranges.end(); ++i) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.setBackground('%s', (%f,%f,%f))",
-            sheet->getNameInDocument(),
-            i->rangeString().c_str(),
-            color.redF(),
-            color.greenF(),
-            color.blueF()
-        );
-    }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    mutateSelectedColors(
+        QT_TRANSLATE_NOOP("Command", "Set background color"),
+        tr("Background Color"),
+        [&color](Sheet& sheet, const Range& range) {
+            Gui::cmdAppObjectArgs(
+                &sheet,
+                "setBackground('%s', (%f,%f,%f))",
+                range.rangeString().c_str(),
+                color.redF(),
+                color.greenF(),
+                color.blueF()
+            );
+        }
+    );
 }
 
 void SpreadsheetGui::WorkbenchHelper::clearBackgroundColor()
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-
-    if (!doc) {
-        return;
-    }
-
-    Gui::MDIView* activeWindow = Gui::getMainWindow()->activeWindow();
-    SpreadsheetGui::SheetView* sheetView = freecad_cast<SpreadsheetGui::SheetView*>(activeWindow);
-
-    if (!sheetView) {
-        return;
-    }
-
-    Sheet* sheet = sheetView->getSheet();
-    std::vector<Range> ranges = sheetView->selectedRanges();
-
-    if (ranges.empty()) {
-        return;
-    }
-
-    std::vector<Range>::const_iterator i = ranges.begin();
-
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Clear background color"));
-    for (; i != ranges.end(); ++i) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.clearBackground('%s')",
-            sheet->getNameInDocument(),
-            i->rangeString().c_str()
-        );
-    }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    mutateSelectedColors(
+        QT_TRANSLATE_NOOP("Command", "Clear background color"),
+        tr("Background Color"),
+        [](Sheet& sheet, const Range& range) {
+            Gui::cmdAppObjectArgs(&sheet, "clearBackground('%s')", range.rangeString().c_str());
+        }
+    );
 }
 
 Gui::MenuItem* Workbench::setupMenuBar() const
@@ -325,6 +264,7 @@ Gui::MenuItem* Workbench::setupMenuBar() const
                  << "Separator"
                  << "Spreadsheet_MergeCells"
                  << "Spreadsheet_SplitCell"
+                 << "Spreadsheet_CellProperties"
                  << "Separator" << alignments << styles;
 
     return root;
@@ -342,6 +282,7 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
           << "Separator"
           << "Spreadsheet_MergeCells"
           << "Spreadsheet_SplitCell"
+          << "Spreadsheet_CellProperties"
           << "Separator"
           << "Spreadsheet_AlignLeft"
           << "Spreadsheet_AlignCenter"

@@ -37,7 +37,6 @@
 #include <QTextTableCell>
 
 #include <App/Application.h>
-#include <App/AutoTransaction.h>
 #include <App/Document.h>
 #include <App/Range.h>
 #include <Base/Reader.h>
@@ -45,12 +44,14 @@
 #include <Base/Writer.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Mod/Spreadsheet/App/Cell.h>
 #include <Mod/Spreadsheet/App/SheetParameter.h>
 
 #include "DlgBindSheet.h"
 #include "DlgSheetConf.h"
+#include "MutationSupport.h"
 #include "PropertiesDialog.h"
 #include "SheetTableView.h"
 #include "SheetModel.h"
@@ -223,16 +224,28 @@ SheetTableView::SheetTableView(QWidget* parent)
 
 void SheetTableView::onRecompute()
 {
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Recompute Cells"));
-    for (auto& range : selectedRanges()) {
-        Gui::cmdAppObjectArgs(
-            sheet,
-            "recomputeCells('%s', '%s')",
-            range.fromCellString(),
-            range.toCellString()
-        );
+    const std::vector<Range> ranges = selectedRanges();
+    if (ranges.empty()) {
+        return;
     }
-    sheet->getDocument()->commitTransaction();
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Recompute cells"));
+        for (const auto& range : ranges) {
+            Gui::cmdAppObjectArgs(
+                sheet,
+                "recomputeCells('%s', '%s')",
+                range.fromCellString(),
+                range.toCellString()
+            );
+        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Recompute Cells"), QString::fromUtf8(error.what()));
+    }
 }
 
 void SheetTableView::onBind()
@@ -256,7 +269,11 @@ void SheetTableView::onConfSetup()
 
 void SheetTableView::cellProperties()
 {
-    PropertiesDialog dialog {sheet, selectedRanges()};
+    const std::vector<Range> ranges = selectedRanges();
+    if (ranges.empty() || !MutationSupport::hasCleanBoundary(sheet->getDocument())) {
+        return;
+    }
+    PropertiesDialog dialog {sheet, ranges};
 
     if (dialog.exec() == QDialog::Accepted) {
         dialog.apply();
@@ -325,56 +342,94 @@ QModelIndexList SheetTableView::selectedIndexesRaw() const
 
 void SheetTableView::insertRows(bool after)
 {
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Insert Rows"));
-    for (const auto& [begin, end] : selectionRanges(selectionModel()->selectedRows(), Qt::Vertical)) {
-        if (!model()->insertRows(after ? end + 1 : begin, end - begin + 1)) {
-            sheet->getDocument()->abortTransaction();
-            return;
-        }
+    const auto rows = selectionRanges(selectionModel()->selectedRows(), Qt::Vertical);
+    if (rows.empty()) {
+        return;
     }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Insert rows"));
+        for (const auto& [begin, end] : rows) {
+            if (!model()->insertRows(after ? end + 1 : begin, end - begin + 1)) {
+                throw Base::RuntimeError("The selected spreadsheet rows could not be inserted");
+            }
+        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Insert Rows"), QString::fromUtf8(error.what()));
+    }
 }
 
 void SheetTableView::insertColumns(bool after)
 {
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Insert Columns"));
-    for (const auto& [begin, end] :
-         selectionRanges(selectionModel()->selectedColumns(), Qt::Horizontal)) {
-        if (!model()->insertColumns(after ? end + 1 : begin, end - begin + 1)) {
-            sheet->getDocument()->abortTransaction();
-            return;
-        }
+    const auto columns = selectionRanges(selectionModel()->selectedColumns(), Qt::Horizontal);
+    if (columns.empty()) {
+        return;
     }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Insert columns"));
+        for (const auto& [begin, end] : columns) {
+            if (!model()->insertColumns(after ? end + 1 : begin, end - begin + 1)) {
+                throw Base::RuntimeError("The selected spreadsheet columns could not be inserted");
+            }
+        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Insert Columns"), QString::fromUtf8(error.what()));
+    }
 }
 
 void SheetTableView::removeRows()
 {
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Remove Rows"));
-    for (const auto& [begin, end] : selectionRanges(selectionModel()->selectedRows(), Qt::Vertical)) {
-        if (!model()->removeRows(begin, end - begin + 1)) {
-            sheet->getDocument()->abortTransaction();
-            return;
-        }
+    const auto rows = selectionRanges(selectionModel()->selectedRows(), Qt::Vertical);
+    if (rows.empty()) {
+        return;
     }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Remove rows"));
+        for (const auto& [begin, end] : rows) {
+            if (!model()->removeRows(begin, end - begin + 1)) {
+                throw Base::RuntimeError("The selected spreadsheet rows could not be removed");
+            }
+        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Remove Rows"), QString::fromUtf8(error.what()));
+    }
 }
 
 void SheetTableView::removeColumns()
 {
-    sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Remove Columns"));
-    for (const auto& [begin, end] :
-         selectionRanges(selectionModel()->selectedColumns(), Qt::Horizontal)) {
-        if (!model()->removeColumns(begin, end - begin + 1)) {
-            sheet->getDocument()->abortTransaction();
-            return;
-        }
+    const auto columns = selectionRanges(selectionModel()->selectedColumns(), Qt::Horizontal);
+    if (columns.empty()) {
+        return;
     }
-    sheet->getDocument()->commitTransaction();
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Remove columns"));
+        for (const auto& [begin, end] : columns) {
+            if (!model()->removeColumns(begin, end - begin + 1)) {
+                throw Base::RuntimeError("The selected spreadsheet columns could not be removed");
+            }
+        }
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Remove Columns"), QString::fromUtf8(error.what()));
+    }
 }
 
 SheetTableView::~SheetTableView() = default;
@@ -577,23 +632,22 @@ bool SheetTableView::event(QEvent* event)
 
 void SheetTableView::deleteSelection()
 {
-    QModelIndexList selection = selectionModel()->selectedIndexes();
-
-    if (!selection.empty()) {
-        sheet->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Clear Cells"));
-        std::vector<Range> ranges = selectedRanges();
-        std::vector<Range>::const_iterator i = ranges.begin();
-
-        for (; i != ranges.end(); ++i) {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.clear('%s')",
-                sheet->getNameInDocument(),
-                i->rangeString().c_str()
-            );
+    const std::vector<Range> ranges = selectedRanges();
+    if (selectionModel()->selectedIndexes().empty() || ranges.empty()) {
+        return;
+    }
+    try {
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Clear cells"));
+        for (const auto& range : ranges) {
+            Gui::cmdAppObjectArgs(sheet, "clear('%s')", range.rangeString().c_str());
         }
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        sheet->getDocument()->commitTransaction();
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(this, tr("Clear Cells"), QString::fromUtf8(error.what()));
     }
 }
 
@@ -653,7 +707,11 @@ void SheetTableView::cutSelection()
 
 void SheetTableView::pasteClipboard()
 {
-    App::AutoTransaction committer(sheet->getDocument()->openTransaction("Paste Cell"));
+    std::vector<Range> destinationRanges = selectedRanges();
+    if (destinationRanges.empty()) {
+        return;
+    }
+
     try {
         bool copy = true;
         auto ranges = sheet->getCopyOrCutRange(copy);
@@ -671,6 +729,10 @@ void SheetTableView::pasteClipboard()
             return;
         }
 
+        auto* document = sheet->getDocument();
+        MutationSupport::requireCleanBoundary(*document);
+        Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Paste cells"));
+
         if (!copy) {
             for (auto& range : ranges) {
                 do {
@@ -679,12 +741,7 @@ void SheetTableView::pasteClipboard()
             }
         }
 
-        ranges = selectedRanges();
-        if (ranges.empty()) {
-            return;
-        }
-
-        Range range = ranges.back();
+        Range range = destinationRanges.back();
         if (!mimeData->hasFormat(_SheetMime)) {
             CellAddress current = range.from();
             QString text = mimeData->text();
@@ -694,8 +751,10 @@ void SheetTableView::pasteClipboard()
                 QStringList cols = it.split(QLatin1Char('\t'));
                 int j = 0;
                 for (const auto& jt : cols) {
-                    QModelIndex index = model()->index(current.row() + i, current.col() + j);
-                    model()->setData(index, jt);
+                    sheet->setContent(
+                        CellAddress(current.row() + i, current.col() + j),
+                        jt.toUtf8().constData()
+                    );
                     j++;
                 }
                 i++;
@@ -711,10 +770,10 @@ void SheetTableView::pasteClipboard()
             sheet->getCells()->pasteCells(reader, range);
         }
 
-        GetApplication().getActiveDocument()->recompute();
+        MutationSupport::recompute(*document);
+        MutationSupport::commit(transaction);
     }
-    catch (Base::Exception& e) {
-        committer.close(App::TransactionCloseMode::Abort);
+    catch (const Base::Exception& e) {
         e.reportException();
         QMessageBox::critical(
             Gui::getMainWindow(),

@@ -41,6 +41,7 @@ public:
     std::vector<App::DocumentObject*> claimChildren() const override;
 
 protected:
+    bool doubleClicked() override;
     bool setEdit(int ModNum) override;
     void unsetEdit(int ModNum) override;
 };

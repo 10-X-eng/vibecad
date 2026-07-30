@@ -35,6 +35,7 @@
 
 
 #include "FeatureSections.h"
+#include "FeatureTimelineSupport.h"
 
 
 using namespace Surface;
@@ -43,12 +44,31 @@ PROPERTY_SOURCE(Surface::Sections, Part::Spline)
 
 Sections::Sections()
 {
+    suppressibleExtension.initExtension(this);
     ADD_PROPERTY_TYPE(NSections, (nullptr), "Sections", App::Prop_None, "Section curves");
     NSections.setScope(App::LinkScope::Global);
 }
 
+short Sections::mustExecute() const
+{
+    if (NSections.isTouched() || suppressibleExtension.Suppressed.isTouched()) {
+        return 1;
+    }
+    return Part::Spline::mustExecute();
+}
+
 App::DocumentObjectExecReturn* Sections::execute()
 {
+    Shape.setValue(TopoDS_Shape());
+    if (TimelineSupport::isSuppressedOrInactive(*this, suppressibleExtension)) {
+        return App::DocumentObject::StdReturn;
+    }
+    if (!TimelineSupport::areUsableInputs(*this, NSections)) {
+        return new App::DocumentObjectExecReturn(
+            "A section curve is not available at the current History position."
+        );
+    }
+
     TColGeom_SequenceOfCurve curveSeq;
     auto edge_obj = NSections.getValues();
     auto edge_sub = NSections.getSubValues();

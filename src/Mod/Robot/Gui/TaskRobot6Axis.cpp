@@ -26,11 +26,14 @@
 #include <qpalette.h>
 
 
+#include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
+#include <Gui/Document.h>
 #include <Gui/Placement.h>
 #include <Gui/Selection/Selection.h>
 
 #include "TaskRobot6Axis.h"
+#include "ViewProviderRobotObject.h"
 #include "ui_TaskRobot6Axis.h"
 
 
@@ -38,9 +41,14 @@ using namespace RobotGui;
 using namespace Gui;
 
 TaskRobot6Axis::TaskRobot6Axis(Robot::RobotObject* pcRobotObject, QWidget* parent)
+    : TaskRobot6Axis(pcRobotObject, parent, false)
+{}
+
+TaskRobot6Axis::TaskRobot6Axis(Robot::RobotObject* pcRobotObject, QWidget* parent, bool preview)
     : TaskBox(Gui::BitmapFactory().pixmap("Robot_CreateRobot"), tr("TaskRobot6Axis"), true, parent)
     , pcRobot(pcRobotObject)
     , Rob()
+    , previewOnly(preview)
 {
     // we need a separate container widget to add all controls to
     proxy = new QWidget(this);
@@ -70,22 +78,37 @@ TaskRobot6Axis::TaskRobot6Axis(Robot::RobotObject* pcRobotObject, QWidget* paren
     if (pcRobotObject) {
         setRobot(pcRobotObject);
     }
+    if (previewOnly) {
+        ui->pushButtonChooseTool->setEnabled(false);
+        ui->pushButtonChooseTool->setToolTip(tr("Tool placement is read-only during simulation"));
+    }
 }
 
 TaskRobot6Axis::~TaskRobot6Axis()
 {
+    restorePreview();
+    delete Rob;
     delete ui;
 }
 
 void TaskRobot6Axis::setRobot(Robot::RobotObject* pcRobotObject)
 {
+    restorePreview();
+    delete Rob;
+    Rob = nullptr;
     pcRobot = pcRobotObject;
     if (!pcRobotObject) {
-        delete Rob;
+        viewProvider = nullptr;
         return;
     }
 
     Rob = new Robot::Robot6Axis(pcRobot->getRobot());
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(pcRobotObject->getDocument())
+        : nullptr;
+    viewProvider = guiDocument
+        ? freecad_cast<ViewProviderRobotObject*>(guiDocument->getViewProvider(pcRobotObject))
+        : nullptr;
     ui->horizontalSlider_Axis1->setMaximum((int)Rob->getMaxAngle(0));
     ui->horizontalSlider_Axis1->setMinimum((int)Rob->getMinAngle(0));
 
@@ -118,6 +141,9 @@ void TaskRobot6Axis::setRobot(Robot::RobotObject* pcRobotObject)
 
 void TaskRobot6Axis::createPlacementDlg()
 {
+    if (previewOnly || !pcRobot) {
+        return;
+    }
     Gui::Dialog::Placement plc;
     plc.setSelection(Gui::Selection().getSelectionEx());
     plc.setPlacement(pcRobot->Tool.getValue());
@@ -162,50 +188,97 @@ void TaskRobot6Axis::viewTool(const Base::Placement& pos)
 
 void TaskRobot6Axis::changeSliderA1(int value)
 {
-    pcRobot->Axis1.setValue(float(value));
-    viewTcp(pcRobot->Tcp.getValue());
-    ui->lineEdit_Axis1->setText(QString::fromUtf8("%1\xc2\xb0").arg((float)value, 0, 'f', 1));
-    setColor(0, float(value), *(ui->lineEdit_Axis1));
+    changeAxis(0, float(value), *ui->lineEdit_Axis1);
 }
 
 void TaskRobot6Axis::changeSliderA2(int value)
 {
-    pcRobot->Axis2.setValue(float(value));
-    viewTcp(pcRobot->Tcp.getValue());
-    ui->lineEdit_Axis2->setText(QString::fromUtf8("%1\xc2\xb0").arg((float)value, 0, 'f', 1));
-    setColor(1, float(value), *(ui->lineEdit_Axis2));
+    changeAxis(1, float(value), *ui->lineEdit_Axis2);
 }
 
 void TaskRobot6Axis::changeSliderA3(int value)
 {
-    pcRobot->Axis3.setValue(float(value));
-    viewTcp(pcRobot->Tcp.getValue());
-    ui->lineEdit_Axis3->setText(QString::fromUtf8("%1\xc2\xb0").arg((float)value, 0, 'f', 1));
-    setColor(2, float(value), *(ui->lineEdit_Axis3));
+    changeAxis(2, float(value), *ui->lineEdit_Axis3);
 }
 
 void TaskRobot6Axis::changeSliderA4(int value)
 {
-    pcRobot->Axis4.setValue(float(value));
-    viewTcp(pcRobot->Tcp.getValue());
-    ui->lineEdit_Axis4->setText(QStringLiteral("%1°").arg((float)value, 0, 'f', 1));
-    setColor(3, float(value), *(ui->lineEdit_Axis4));
+    changeAxis(3, float(value), *ui->lineEdit_Axis4);
 }
 
 void TaskRobot6Axis::changeSliderA5(int value)
 {
-    pcRobot->Axis5.setValue(float(value));
-    viewTcp(pcRobot->Tcp.getValue());
-    ui->lineEdit_Axis5->setText(QStringLiteral("%1°").arg((float)value, 0, 'f', 1));
-    setColor(4, float(value), *(ui->lineEdit_Axis5));
+    changeAxis(4, float(value), *ui->lineEdit_Axis5);
 }
 
 void TaskRobot6Axis::changeSliderA6(int value)
 {
-    pcRobot->Axis6.setValue(float(value));
-    viewTcp(pcRobot->Tcp.getValue());
-    ui->lineEdit_Axis6->setText(QStringLiteral("%1°").arg((float)value, 0, 'f', 1));
-    setColor(5, float(value), *(ui->lineEdit_Axis6));
+    changeAxis(5, float(value), *ui->lineEdit_Axis6);
+}
+
+void TaskRobot6Axis::changeAxis(int axis, float value, QLineEdit& lineEdit)
+{
+    if (!pcRobot || !Rob || axis < 0 || axis >= 6) {
+        return;
+    }
+    Base::Placement tcp;
+    if (previewOnly) {
+        Rob->setAxis(axis, value);
+        tcp = Rob->getTcp();
+        if (viewProvider) {
+            viewProvider->setAxisTo(
+                Rob->getAxis(0),
+                Rob->getAxis(1),
+                Rob->getAxis(2),
+                Rob->getAxis(3),
+                Rob->getAxis(4),
+                Rob->getAxis(5),
+                tcp
+            );
+        }
+    }
+    else {
+        switch (axis) {
+            case 0:
+                pcRobot->Axis1.setValue(value);
+                break;
+            case 1:
+                pcRobot->Axis2.setValue(value);
+                break;
+            case 2:
+                pcRobot->Axis3.setValue(value);
+                break;
+            case 3:
+                pcRobot->Axis4.setValue(value);
+                break;
+            case 4:
+                pcRobot->Axis5.setValue(value);
+                break;
+            case 5:
+                pcRobot->Axis6.setValue(value);
+                break;
+        }
+        tcp = pcRobot->Tcp.getValue();
+    }
+    viewTcp(tcp);
+    lineEdit.setText(QStringLiteral("%1°").arg(value, 0, 'f', 1));
+    setColor(axis, value, lineEdit);
+}
+
+void TaskRobot6Axis::restorePreview()
+{
+    if (!previewOnly || !pcRobot || !viewProvider) {
+        return;
+    }
+    viewProvider->setAxisTo(
+        pcRobot->Axis1.getValue(),
+        pcRobot->Axis2.getValue(),
+        pcRobot->Axis3.getValue(),
+        pcRobot->Axis4.getValue(),
+        pcRobot->Axis5.getValue(),
+        pcRobot->Axis6.getValue(),
+        pcRobot->Tcp.getValue()
+    );
 }
 void TaskRobot6Axis::setColor(int i, float angle, QLineEdit& lineEdit)
 {
