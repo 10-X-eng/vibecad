@@ -151,24 +151,12 @@ void TaskFemConstraintTemperature::updateUI()
 
 void TaskFemConstraintTemperature::onTempChanged(double)
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.Temperature = \"%s\"",
-        name.c_str(),
-        get_temperature().c_str()
-    );
+    runConstraintCommand("Temperature = \"%s\"", get_temperature().c_str());
 }
 
 void TaskFemConstraintTemperature::onCFluxChanged(double)
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.ConcentratedHeatFlux = \"%s\"",
-        name.c_str(),
-        get_cflux().c_str()
-    );
+    runConstraintCommand("ConcentratedHeatFlux = \"%s\"", get_cflux().c_str());
 }
 
 void TaskFemConstraintTemperature::onConstrTypeChanged(int item)
@@ -372,32 +360,25 @@ TaskDlgFemConstraintTemperature::TaskDlgFemConstraintTemperature(
 
 bool TaskDlgFemConstraintTemperature::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintTemperature* parameterTemperature
         = static_cast<const TaskFemConstraintTemperature*>(parameter);
 
     auto type = parameterTemperature->get_constraint_type();
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ConstraintType = \"%s\"",
-            name.c_str(),
+        runConstraintCommand(
+            "ConstraintType = \"%s\"",
             parameterTemperature->get_constraint_type().c_str()
         );
         if (type == "Temperature") {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Temperature = \"%s\"",
-                name.c_str(),
+            runConstraintCommand(
+                "Temperature = \"%s\"",
                 parameterTemperature->get_temperature().c_str()
             );
         }
         else if (type == "Flux") {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.ConcentratedHeatFlux = \"%s\"",
-                name.c_str(),
+            runConstraintCommand(
+                "ConcentratedHeatFlux = \"%s\"",
                 parameterTemperature->get_cflux().c_str()
             );
         }

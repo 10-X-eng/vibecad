@@ -119,6 +119,13 @@ class SMESH_EXPORT SMESH_Mesh
    */
   int UNVToMesh(const char* theFileName);
 
+  /*!
+   * Load a UNV mesh without compacting its node and element identifiers.
+   * This is required when identifiers are part of a persisted document
+   * contract, such as FEM element selections and groups.
+   */
+  int UNVToMeshPreservingIds(const char* theFileName);
+
   int MEDToMesh(const char* theFileName, const char* theMeshName);
   
   int STLToMesh(const char* theFileName);
@@ -345,6 +352,7 @@ class SMESH_EXPORT SMESH_Mesh
   
 private:
 
+  int readUNV(const char* theFileName, bool compactAfterRead);
   void fillAncestorsMap(const TopoDS_Shape& theShape);
   void getAncestorsSubMeshes(const TopoDS_Shape&            theSubShape,
                              std::vector< SMESH_subMesh* >& theSubMeshes) const;

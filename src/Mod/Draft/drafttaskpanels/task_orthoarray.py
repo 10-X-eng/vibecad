@@ -40,6 +40,8 @@ import DraftVecUtils
 from FreeCAD import Units as U
 from draftutils import params
 from draftutils.messages import _err, _log, _msg
+from draftutils.transaction import object_is_usable_at_current_position
+from draftutils.transaction import reset_document_edit
 from draftutils.translate import translate
 
 # The module is used to prevent complaints from code checkers (flake8)
@@ -179,7 +181,12 @@ class TaskPanelOrthoArray:
 
     def accept(self):
         """Execute when clicking the OK button or Enter key."""
-        self.selection = Gui.Selection.getSelection()
+        document = self.source_command.doc
+        self.selection = [
+            obj
+            for obj in Gui.Selection.getSelection(document.Name)
+            if object_is_usable_at_current_position(obj, document)
+        ]
 
         self.v_x, self.v_y, self.v_z = self.get_intervals()
 
@@ -301,20 +308,28 @@ class TaskPanelOrthoArray:
         _cmd += "n_x=" + str(self.n_x) + ", "
         _cmd += "n_y=" + str(self.n_y) + ", "
         _cmd += "n_z=" + str(self.n_z) + ", "
-        _cmd += "use_link=" + str(self.use_link)
+        _cmd += "use_link=" + str(self.use_link) + ", "
+        _cmd += "hide_base=False"
         _cmd += ")"
 
         Gui.addModule("Draft")
+        Gui.addModule("draftutils.timeline")
 
         _cmd_list = [
             "_obj_ = " + _cmd,
             "_obj_.Fuse = " + str(self.fuse),
             "Draft.autogroup(_obj_)",
+            "draftutils.timeline.accept_derived_output(_obj_, "
+            "[App.ActiveDocument." + sel_obj.Name + "])",
             "App.ActiveDocument.recompute()",
         ]
 
         # We commit the command list through the parent command
-        self.source_command.commit(translate("draft", "Create Orthogonal Array"), _cmd_list)
+        self.source_command.commit(
+            translate("draft", "Create Orthogonal Array"),
+            _cmd_list,
+            inputs=(sel_obj,),
+        )
 
     def get_numbers(self):
         """Get the number of elements from the widgets."""
@@ -598,8 +613,7 @@ class TaskPanelOrthoArray:
         the delayed functions, and perform cleanup.
         """
         # App.ActiveDocument.commitTransaction()
-        if Gui.ActiveDocument is not None:
-            Gui.ActiveDocument.resetEdit()
+        reset_document_edit(self.source_command.doc)
         # Runs the parent command to complete the call
         self.source_command.completed()
 

@@ -54,6 +54,12 @@ from draftguitools.gui_field_locks import InputFieldLockGroup
 from draftutils import params
 from draftutils import utils
 from draftutils.todo import todo
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import DocumentReference
+from draftutils.transaction import object_is_usable_at_current_position
+from draftutils.transaction import ObjectReference
+from draftutils.transaction import reset_document_edit
+from draftutils.transaction import run_document_mutation
 from draftutils.translate import translate
 from draftutils.units import display_external
 
@@ -118,6 +124,7 @@ class DraftLineEdit(QtWidgets.QLineEdit):
 
 class DraftTaskPanel:
     def __init__(self, widget, extra=None):
+        self.document_reference = None
         if extra:
             if isinstance(extra, list):
                 self.form = [widget] + extra
@@ -132,21 +139,25 @@ class DraftTaskPanel:
     def accept(self):
         if hasattr(FreeCADGui, "draftToolBar"):
             return FreeCADGui.draftToolBar.validatePoint()
-        else:
-            if FreeCADGui.ActiveDocument:
-                FreeCADGui.ActiveDocument.resetEdit()
-            return True
+        if self.document_reference is not None:
+            reset_document_edit(self.document_reference)
+        return True
 
     def reject(self):
         # https://github.com/FreeCAD/FreeCAD/issues/17027
         # Function can be called multiple times if Esc is pressed during mouse
         # move. We need to prevent multiple calls to draftToolBar.escape():
-        if not FreeCADGui.draftToolBar.isTaskOn:
+        toolbar = getattr(FreeCADGui, "draftToolBar", None)
+        if toolbar is None:
+            if self.document_reference is not None:
+                reset_document_edit(self.document_reference)
+            return True
+        if not toolbar.isTaskOn:
             return
-        FreeCADGui.draftToolBar.isTaskOn = False
-        FreeCADGui.draftToolBar.escape()
-        if FreeCADGui.ActiveDocument:
-            FreeCADGui.ActiveDocument.resetEdit()
+        toolbar.isTaskOn = False
+        toolbar.escape()
+        if self.document_reference is not None:
+            reset_document_edit(self.document_reference)
         return True
 
     def isAllowedAlterDocument(self):
@@ -849,17 +860,43 @@ class DraftToolBar:
     # Interface modes
     # ---------------------------------------------------------------------------
 
-    def _show_dialog(self, panel):
-        task = FreeCADGui.Control.showDialog(panel)
-        task.setDocumentName(FreeCADGui.ActiveDocument.Document.Name)
+    def _show_dialog(self, request):
+        panel, document_reference = request
+        document = document_reference.resolve()
+        if document is None:
+            return
+        gui_document = FreeCADGui.getDocument(document.Name)
+        if (
+            gui_document is None
+            or gui_document.Document is not document
+        ):
+            return
+        task = FreeCADGui.Control.showDialog(panel, gui_document)
+        task.setDocumentName(document.Name)
         task.setAutoCloseOnDeletedDocument(True)
 
-    def taskUi(self, title="Draft", extra=None, icon="Draft_Draft"):
+    def taskUi(
+        self,
+        title="Draft",
+        extra=None,
+        icon="Draft_Draft",
+        document=None,
+    ):
+        if document is None:
+            active_command = getattr(FreeCAD, "activeDraftCommand", None)
+            document = getattr(active_command, "doc", None)
+        if document is None:
+            document = FreeCAD.activeDocument()
+        if document is None:
+            self.offUi()
+            return
+        document_reference = DocumentReference.capture(document)
+
         self._locks.dispose()
         # reset InputField values
         self.reset_ui_values()
         self.isTaskOn = True
-        todo.delay(FreeCADGui.Control.closeDialog, None)
+        todo.delay(close_task_dialog, document_reference)
         self.baseWidget = DraftBaseWidget()
         self.layout = QtWidgets.QVBoxLayout(self.baseWidget)
         self.setupToolBar(task=True)
@@ -867,7 +904,11 @@ class DraftToolBar:
             FreeCADGui.Snapper.setPointConstraintProvider(self)
         self.retranslateUi(self.baseWidget)
         self.panel = DraftTaskPanel(self.baseWidget, extra)
-        todo.delay(self._show_dialog, self.panel)
+        self.panel.document_reference = document_reference
+        todo.delay(
+            self._show_dialog,
+            (self.panel, document_reference),
+        )
         self.setTitle(title, icon)
 
     def redraw(self):
@@ -1096,11 +1137,21 @@ class DraftToolBar:
         self.radiusValue.setText(FreeCAD.Units.Quantity(0, FreeCAD.Units.Length).UserString)
         todo.delay(self.setFocus, "radius")
 
-    def offUi(self):
+    def offUi(self, document=None):
+        if document is None:
+            active_command = getattr(FreeCAD, "activeDraftCommand", None)
+            document = getattr(active_command, "doc", None)
+        document_reference = None
+        if document is not None:
+            try:
+                document_reference = DocumentReference.capture(document)
+            except (NameError, ReferenceError, RuntimeError, ValueError):
+                pass
         self._locks.dispose()
         if hasattr(FreeCADGui, "Snapper"):
             FreeCADGui.Snapper.clearPointConstraintProvider(self)
-        todo.delay(FreeCADGui.Control.closeDialog, None)
+        if document_reference is not None:
+            todo.delay(close_task_dialog, document_reference)
         self.cancel = None
         self.sourceCmd = None
         self.pointcallback = None
@@ -1411,7 +1462,10 @@ class DraftToolBar:
             elif self.textValue.isVisible():
                 return False
             else:
-                FreeCADGui.ActiveDocument.resetEdit()
+                active_command = getattr(FreeCAD, "activeDraftCommand", None)
+                document = getattr(active_command, "doc", None)
+                if document is not None:
+                    reset_document_edit(document)
         return True
 
     def finish(self, cont=None):
@@ -1423,8 +1477,10 @@ class DraftToolBar:
         if self.cancel:
             self.cancel()
             self.cancel = None
-        if FreeCADGui.ActiveDocument:
-            FreeCADGui.ActiveDocument.resetEdit()
+        panel = getattr(self, "panel", None)
+        panel_reference = getattr(panel, "document_reference", None)
+        if panel_reference is not None:
+            reset_document_edit(panel_reference)
 
     def escape(self):
         """escapes the current command"""
@@ -1433,7 +1489,10 @@ class DraftToolBar:
     def closeLine(self):
         """close button action"""
         self.sourceCmd.finish(cont=self.continueMode, closed=True)
-        FreeCADGui.ActiveDocument.resetEdit()
+        panel = getattr(self, "panel", None)
+        panel_reference = getattr(panel, "document_reference", None)
+        if panel_reference is not None:
+            reset_document_edit(panel_reference)
 
     def wipeLine(self):
         """wipes existing segments of a line"""
@@ -2119,6 +2178,9 @@ class FacebinderTaskPanel:
     def __init__(self):
 
         self.obj = None
+        self._object_reference = None
+        self._original_faces = None
+        self._staged_faces = None
         self.form = QtWidgets.QWidget()
         self.form.setObjectName("FacebinderTaskPanel")
         self.grid = QtWidgets.QGridLayout(self.form)
@@ -2147,6 +2209,32 @@ class FacebinderTaskPanel:
         self.delButton.clicked.connect(self.removeElement)
         self.update()
 
+    @staticmethod
+    def _flatten_faces(faces):
+        flattened = []
+        for obj, subelements in faces:
+            if isinstance(subelements, (list, tuple)):
+                flattened.extend((obj, subelement) for subelement in subelements)
+            else:
+                flattened.append((obj, subelements))
+        return flattened
+
+    def _resolve_object(self):
+        if self._object_reference is None:
+            if self.obj is None:
+                return None
+            self._object_reference = ObjectReference.capture(self.obj)
+        return self._object_reference.resolve()
+
+    def _ensure_state(self):
+        obj = self._resolve_object()
+        if obj is None:
+            return None
+        if self._staged_faces is None:
+            self._original_faces = self._flatten_faces(obj.Faces)
+            self._staged_faces = list(self._original_faces)
+        return obj
+
     def isAllowedAlterSelection(self):
         return True
 
@@ -2154,75 +2242,78 @@ class FacebinderTaskPanel:
         return True
 
     def getStandardButtons(self):
-        return QtWidgets.QDialogButtonBox.Ok
+        return (
+            QtWidgets.QDialogButtonBox.Ok
+            | QtWidgets.QDialogButtonBox.Cancel
+        )
 
     def update(self):
         """fills the treewidget"""
         self.tree.clear()
-        if self.obj:
-            for f in self.obj.Faces:
-                if isinstance(f[1], tuple):
-                    for subf in f[1]:
-                        item = QtWidgets.QTreeWidgetItem(self.tree)
-                        item.setText(0, f[0].Name)
-                        item.setIcon(0, QtGui.QIcon(":/icons/Part_3D_object.svg"))
-                        item.setText(1, subf)
-                else:
-                    item = QtWidgets.QTreeWidgetItem(self.tree)
-                    item.setText(0, f[0].Name)
-                    item.setIcon(0, QtGui.QIcon(":/icons/Part_3D_object.svg"))
-                    item.setText(1, f[1])
+        if self._ensure_state() is not None:
+            for source, subelement in self._staged_faces:
+                item = QtWidgets.QTreeWidgetItem(self.tree)
+                item.setText(0, source.Name)
+                item.setIcon(0, QtGui.QIcon(":/icons/Part_3D_object.svg"))
+                item.setText(1, subelement)
         self.retranslateUi(self.form)
 
     def addElement(self):
-        if self.obj:
+        obj = self._ensure_state()
+        if obj is not None:
+            document = obj.Document
             for sel in FreeCADGui.Selection.getSelectionEx("", 0):
+                source = sel.Object
+                if not object_is_usable_at_current_position(source, document):
+                    continue
                 if sel.HasSubObjects:
-                    obj = sel.Object
-                    for elt in sel.SubElementNames:
-                        if "Face" in elt:
-                            flist = self.obj.Faces
-                            found = False
-                            for face in flist:
-                                if face[0] == obj.Name:
-                                    if isinstance(face[1], tuple):
-                                        for subf in face[1]:
-                                            if subf == elt:
-                                                found = True
-                                    else:
-                                        if face[1] == elt:
-                                            found = True
-                            if not found:
-                                flist.append((obj, elt))
-                                self.obj.Faces = flist
-                                FreeCAD.ActiveDocument.recompute()
+                    for subelement in sel.SubElementNames:
+                        candidate = (source, subelement)
+                        if (
+                            "Face" in subelement
+                            and candidate not in self._staged_faces
+                        ):
+                            self._staged_faces.append(candidate)
             self.update()
 
     def removeElement(self):
-        if self.obj:
+        if self._ensure_state() is not None:
             it = self.tree.currentItem()
             if it:
-                obj = FreeCAD.ActiveDocument.getObject(str(it.text(0)))
-                elt = str(it.text(1))
-                flist = []
-                for face in self.obj.Faces:
-                    if face[0].Name != obj.Name:
-                        flist.append(face)
-                    else:
-                        if isinstance(face[1], tuple):
-                            for subf in face[1]:
-                                if subf != elt:
-                                    flist.append((obj, subf))
-                        else:
-                            if face[1] != elt:
-                                flist.append(face)
-                self.obj.Faces = flist
-                FreeCAD.ActiveDocument.recompute()
+                source_name = str(it.text(0))
+                subelement = str(it.text(1))
+                self._staged_faces = [
+                    face
+                    for face in self._staged_faces
+                    if not (
+                        face[0].Name == source_name
+                        and face[1] == subelement
+                    )
+                ]
             self.update()
 
     def accept(self):
-        FreeCAD.ActiveDocument.recompute()
-        FreeCADGui.ActiveDocument.resetEdit()
+        obj = self._ensure_state()
+        if obj is None:
+            return False
+        staged_faces = list(self._staged_faces)
+        if staged_faces != self._original_faces:
+            sources = []
+            for source, _subelement in staged_faces:
+                if source not in sources:
+                    sources.append(source)
+            run_document_mutation(
+                obj.Document,
+                translate("draft", "Edit Facebinder Faces"),
+                lambda: setattr(obj, "Faces", staged_faces),
+                objects=(obj, *sources),
+            )
+        reset_document_edit(self._object_reference.document)
+        return True
+
+    def reject(self):
+        if self._object_reference is not None:
+            reset_document_edit(self._object_reference.document)
         return True
 
     def retranslateUi(self, TaskPanel):

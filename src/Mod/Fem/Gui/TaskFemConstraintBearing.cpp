@@ -345,48 +345,24 @@ TaskDlgFemConstraintBearing::TaskDlgFemConstraintBearing(
 
 bool TaskDlgFemConstraintBearing::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintBearing* parameterBearing = static_cast<const TaskFemConstraintBearing*>(
         parameter
     );
 
     try {
-        // Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "FEM force constraint changed"));
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Dist = %f",
-            name.c_str(),
-            parameterBearing->getDistance()
-        );
+        runConstraintCommand("Dist = %f", parameterBearing->getDistance());
 
         std::string locname = parameterBearing->getLocationName().data();
         std::string locobj = parameterBearing->getLocationObject().data();
 
         if (!locname.empty()) {
-            QString buf = QStringLiteral("(App.ActiveDocument.%1,[\"%2\"])");
-            buf = buf.arg(QString::fromStdString(locname));
-            buf = buf.arg(QString::fromStdString(locobj));
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Location = %s",
-                name.c_str(),
-                buf.toStdString().c_str()
-            );
+            runConstraintCommand("Location = %s", constraintReference(locname, locobj));
         }
         else {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Location = None",
-                name.c_str()
-            );
+            runConstraintCommand("Location = None");
         }
 
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.AxialFree = %s",
-            name.c_str(),
-            parameterBearing->getAxial() ? "True" : "False"
-        );
+        runConstraintCommand("AxialFree = %s", parameterBearing->getAxial() ? "True" : "False");
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));

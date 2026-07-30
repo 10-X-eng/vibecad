@@ -34,6 +34,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/Document.h>
@@ -43,11 +44,14 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/Core/MeshKernel.h>
 #include <Mod/Mesh/App/Core/Iterator.h>
 #include <Mod/Mesh/App/Core/TopoAlgorithm.h>
 
 #include "MeshSelection.h"
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ViewProvider.h"
 
 
@@ -104,17 +108,59 @@ void MeshSelection::setCallback(SoEventCallbackCB* cb)
 
 void MeshSelection::setObjects(const std::vector<Gui::SelectionObject>& obj)
 {
-    meshObjects = obj;
+    meshObjects.clear();
+    objectsBound = true;
+
+    App::Document* targetDocument = nullptr;
+    if (!obj.empty()) {
+        meshObjects.reserve(obj.size());
+        for (const auto& selection : obj) {
+            const auto* selected = freecad_cast<const Mesh::Feature*>(selection.getObject());
+            if (!selected || !MeshGui::isNativeMeshInputActive(selected)) {
+                continue;
+            }
+            auto* object = const_cast<Mesh::Feature*>(selected);
+            if (!targetDocument) {
+                targetDocument = object->getDocument();
+            }
+            else if (object->getDocument() != targetDocument) {
+                meshObjects.clear();
+                return;
+            }
+            meshObjects.emplace_back(object);
+        }
+    }
+    else {
+        targetDocument = App::GetApplication().getActiveDocument();
+        if (targetDocument) {
+            auto objects = targetDocument->getObjectsOfType(Mesh::Feature::getClassTypeId());
+            meshObjects.reserve(objects.size());
+            for (auto* object : objects) {
+                if (MeshGui::isNativeMeshInputActive(object)) {
+                    meshObjects.emplace_back(object);
+                }
+            }
+        }
+    }
+
+    if (!viewerBound && targetDocument) {
+        auto* guiDocument = Gui::Application::Instance->getDocument(targetDocument);
+        auto* view = guiDocument ? guiDocument->getActiveView() : nullptr;
+        auto* view3d = dynamic_cast<Gui::View3DInventor*>(view);
+        ivViewer = view3d ? view3d->getViewer() : nullptr;
+        viewerBound = true;
+    }
 }
 
 std::vector<App::DocumentObject*> MeshSelection::getObjects() const
 {
     std::vector<App::DocumentObject*> objs;
-    if (!meshObjects.empty()) {
-        for (auto& it : meshObjects) {
-            App::DocumentObject* obj = it.getObject();
-            if (obj) {
-                objs.push_back(obj);
+    if (objectsBound) {
+        objs.reserve(meshObjects.size());
+        for (const auto& target : meshObjects) {
+            auto* object = target.get<Mesh::Feature>();
+            if (MeshGui::isNativeMeshInputActive(object)) {
+                objs.push_back(object);
             }
         }
     }
@@ -123,6 +169,9 @@ std::vector<App::DocumentObject*> MeshSelection::getObjects() const
         App::Document* doc = App::GetApplication().getActiveDocument();
         if (doc) {
             objs = doc->getObjectsOfType(Mesh::Feature::getClassTypeId());
+            std::erase_if(objs, [](const App::DocumentObject* object) {
+                return !MeshGui::isNativeMeshInputActive(object);
+            });
         }
     }
 
@@ -136,8 +185,9 @@ std::list<ViewProviderMesh*> MeshSelection::getViewProviders() const
     for (auto obj : objs) {
         if (obj->isDerivedFrom<Mesh::Feature>()) {
             Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(obj);
-            if (vp->isVisible()) {
-                vps.push_back(static_cast<ViewProviderMesh*>(vp));
+            auto* meshView = dynamic_cast<ViewProviderMesh*>(vp);
+            if (meshView && meshView->isVisible()) {
+                vps.push_back(meshView);
             }
         }
     }
@@ -148,12 +198,14 @@ std::list<ViewProviderMesh*> MeshSelection::getViewProviders() const
 void MeshSelection::setViewer(Gui::View3DInventorViewer* v)
 {
     ivViewer = v;
+    viewerBound = true;
 }
 
 Gui::View3DInventorViewer* MeshSelection::getViewer() const
 {
-    // if a special viewer was set from outside then use this
-    if (ivViewer) {
+    // Once a tool is bound to a viewer, never fall through to an unrelated
+    // active document if that viewer is later destroyed.
+    if (viewerBound) {
         return ivViewer;
     }
 
@@ -268,27 +320,84 @@ void MeshSelection::clearSelection()
 
 bool MeshSelection::deleteSelection()
 {
-    // delete all selected faces
-    bool selected = false;
+    struct Deletion
+    {
+        Deletion(ViewProviderMesh* view, Mesh::Feature* feature, std::vector<Mesh::FacetIndex> facets)
+            : view(view)
+            , feature(feature)
+            , facets(std::move(facets))
+        {}
+
+        ViewProviderMesh* view;
+        App::DocumentObjectWeakPtrT feature;
+        std::vector<Mesh::FacetIndex> facets;
+    };
+    std::vector<Deletion> deletions;
     std::list<ViewProviderMesh*> views = getViewProviders();
-    for (auto view : views) {
-        Mesh::Feature* mf = view->getObject<Mesh::Feature>();
-        unsigned long ct = MeshCore::MeshAlgorithm(mf->Mesh.getValue().getKernel())
-                               .CountFacetFlag(MeshCore::MeshFacet::SELECTED);
-        if (ct > 0) {
-            selected = true;
-            break;
+    for (auto* view : views) {
+        auto* feature = view ? view->getObject<Mesh::Feature>() : nullptr;
+        if (!feature) {
+            continue;
+        }
+        std::vector<Mesh::FacetIndex> facets;
+        feature->Mesh.getValue().getFacetsFromSelection(facets);
+        if (!facets.empty()) {
+            deletions.emplace_back(view, feature, std::move(facets));
         }
     }
-    if (!selected) {
+    if (deletions.empty()) {
         return false;  // nothing todo
     }
 
-    for (auto view : views) {
-        view->deleteSelection();
+    App::Document* document = deletions.front().feature.get<Mesh::Feature>()->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        return false;
     }
 
-    return true;
+    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    operations.reserve(deletions.size());
+    for (auto& deletion : deletions) {
+        auto* feature = deletion.feature.get<Mesh::Feature>();
+        if (!feature || feature->getDocument() != document
+            || !MeshGui::isNativeMeshInputActive(feature)) {
+            return false;
+        }
+        std::vector<long> facets(deletion.facets.begin(), deletion.facets.end());
+        if (deletion.view) {
+            deletion.view->clearSelection();
+        }
+        operations.push_back(
+            MeshGui::ParametricMeshFilterTarget {
+                feature,
+                [feature, facets = std::move(facets)](App::DocumentObject& object) {
+                    auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                    edit.Action.setValue("Remove Facets");
+                    edit.Indices.setValues(facets);
+                    edit.AcceptedSource.setValue(feature->Mesh.getValue());
+                },
+            }
+        );
+    }
+
+    try {
+        MeshGui::createParametricMeshFilters(
+            *document,
+            operations,
+            MeshGui::ParametricMeshFilterSpec {
+                "Mesh::FacetEdit",
+                "RemoveFacets",
+                "Remove Mesh Facets",
+                "Delete selection",
+                true,
+                false,
+            }
+        );
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh facet removal failed: %s\n", error.what());
+        return false;
+    }
 }
 
 bool MeshSelection::deleteSelectionBorder()
@@ -337,11 +446,10 @@ bool MeshSelection::deleteSelectionBorder()
             remove.erase(std::unique(remove.begin(), remove.end()), remove.end());
 
             view->setSelection(remove);
-            view->deleteSelection();
         }
     }
 
-    return deletion;
+    return deletion && deleteSelection();
 }
 
 void MeshSelection::invertSelection()

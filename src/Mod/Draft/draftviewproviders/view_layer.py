@@ -43,6 +43,7 @@ from draftobjects.layer import get_layer
 from draftutils import params
 from draftutils import utils
 from draftutils.translate import translate
+from draftutils.transaction import run_document_mutation
 
 
 class ViewProviderLayer:
@@ -386,7 +387,7 @@ class ViewProviderLayer:
         """Remove the object that was dragged from the layer."""
         obj = vobj.Object
         obj.Proxy.removeObject(obj, child)
-        App.ActiveDocument.recompute()
+        obj.Document.recompute()
 
     def canDropObject(self, obj):
         """Return true to allow dropping one object.
@@ -413,7 +414,7 @@ class ViewProviderLayer:
         """
         obj = vobj.Object
         obj.Proxy.addObject(obj, child)
-        App.ActiveDocument.recompute()
+        obj.Document.recompute()
 
     def update_groups_after_drag_drop(self):
         """Workaround function to improve the drag and drop behavior of Layer
@@ -476,7 +477,7 @@ class ViewProviderLayer:
         if parents_to_update:
             for old_parent, old_parent_group in parents_to_update:
                 old_parent.Group = old_parent_group
-            App.ActiveDocument.recompute()
+            self.Object.Document.recompute()
 
         self.old_parent_data = {}
 
@@ -517,6 +518,15 @@ class ViewProviderLayer:
         Gui.runCommand("Draft_AutoGroup")
 
     def reassign_props(self):
+        layer = self.Object
+        run_document_mutation(
+            layer.Document,
+            translate("draft", "Reassign Properties of Layer"),
+            self._reassign_props_impl,
+            objects=(layer, *layer.Group),
+        )
+
+    def _reassign_props_impl(self):
         for prop in ("LineColor", "ShapeAppearance", "LineWidth", "DrawStyle", "Visibility"):
             self.onChanged(self.Object.ViewObject, prop)
 
@@ -571,54 +581,77 @@ class ViewProviderLayerContainer:
         Gui.runCommand("Draft_Layer")
 
     def reassign_props(self):
-        for obj in self.Object.Group:
-            if utils.get_type(obj) == "Layer":
-                obj.ViewObject.Proxy.reassign_props()
+        container = self.Object
+        layers = [
+            obj
+            for obj in container.Group
+            if utils.get_type(obj) == "Layer"
+        ]
+        inputs = [container, *layers]
+        inputs.extend(
+            child
+            for layer in layers
+            for child in layer.Group
+        )
+
+        def reassign_all():
+            for layer in layers:
+                layer.ViewObject.Proxy._reassign_props_impl()
+
+        run_document_mutation(
+            container.Document,
+            translate("draft", "Reassign Properties of All Layers"),
+            reassign_all,
+            objects=inputs,
+        )
 
     def merge_by_name(self):
         """Merge the layers that have the same base label."""
-        doc = App.ActiveDocument
-        doc.openTransaction(translate("draft", "Merge Layer Duplicates"))
-
         layer_container = self.Object
+        doc = layer_container.Document
         layers = []
         for obj in layer_container.Group:
             if utils.get_type(obj) == "Layer":
                 layers.append(obj)
 
-        to_delete = []
-        for layer in layers:
-            # Remove trailing digits (usually 3 but there might be more) and
-            # trailing spaces from Label before comparing:
-            base_label = layer.Label.rstrip("0123456789 ")
+        def merge():
+            to_delete = []
+            for layer in layers:
+                # Remove trailing digits (usually 3 but there might be more)
+                # and trailing spaces from Label before comparing.
+                base_label = layer.Label.rstrip("0123456789 ")
 
-            # Try to find the `'base'` layer:
-            base = None
-            for other_layer in layers:
-                if (
-                    (not other_layer in to_delete)  # Required if there are duplicate labels.
-                    and other_layer != layer
-                    and other_layer.Label.upper() == base_label.upper()
-                ):
-                    base = other_layer
-                    break
+                # Try to find the `'base'` layer.
+                base = None
+                for other_layer in layers:
+                    if (
+                        other_layer not in to_delete
+                        and other_layer != layer
+                        and other_layer.Label.upper() == base_label.upper()
+                    ):
+                        base = other_layer
+                        break
 
-            if base:
-                if layer.Group:
-                    base_group = base.Group
-                    for obj in layer.Group:
-                        if not obj in base_group:
-                            base_group.append(obj)
-                    base.Group = base_group
-                to_delete.append(layer)
-            elif layer.Label != base_label:
-                layer.Label = base_label
+                if base:
+                    if layer.Group:
+                        base_group = base.Group
+                        for obj in layer.Group:
+                            if obj not in base_group:
+                                base_group.append(obj)
+                        base.Group = base_group
+                    to_delete.append(layer)
+                elif layer.Label != base_label:
+                    layer.Label = base_label
 
-        for layer in to_delete:
-            doc.removeObject(layer.Name)
+            for layer in to_delete:
+                doc.removeObject(layer.Name)
 
-        doc.recompute()
-        doc.commitTransaction()
+        run_document_mutation(
+            doc,
+            translate("draft", "Merge Layer Duplicates"),
+            merge,
+            objects=(layer_container, *layers),
+        )
 
     def dumps(self):
         """Return a tuple of objects to save or None."""

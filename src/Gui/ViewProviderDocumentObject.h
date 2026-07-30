@@ -199,11 +199,10 @@ public:
     void setShowable(bool enable);
     bool isShowable() const;
 
-    /** Gate rendering inherited from a presentation parent.
+    /** Compatibility no-op for the retired presentation visibility gate.
      *
-     * Unlike Visibility, this does not alter persistent user intent. Closing
-     * the gate removes the object from the scene; reopening it renders the
-     * object again only when its own Visibility remains enabled.
+     * Rendering is now owned by each native view provider. These methods
+     * remain exported so existing source and binary callers keep loading.
      */
     void setVisibilityGate(bool enable);
     bool isVisibilityGateOpen() const;

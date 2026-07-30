@@ -39,6 +39,7 @@ public:
     ~ViewProviderFemMeshShapeNetgen() override;
 
     void updateData(const App::Property*) override;
+    bool supportsDocumentTimelineEdit() const noexcept override;
 
 protected:
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;

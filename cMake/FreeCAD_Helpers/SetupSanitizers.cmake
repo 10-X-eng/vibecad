@@ -103,7 +103,14 @@ macro(SetupSanitizers)
             )
 
             add_compile_options(-fno-omit-frame-pointer ${_sanitizer_flags})
-            add_link_options(${_sanitizer_flags})
+            set(_sanitizer_link_flags ${_sanitizer_flags})
+            if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                # The project links shared libraries with --no-undefined.
+                # Clang otherwise leaves sanitizer runtime symbols unresolved
+                # in those libraries and only supplies the runtime to executables.
+                list(APPEND _sanitizer_link_flags -shared-libsan)
+            endif()
+            add_link_options(${_sanitizer_link_flags})
         endif()
     endif()
 endmacro()

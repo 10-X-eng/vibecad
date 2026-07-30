@@ -131,6 +131,13 @@ enum class DistanceType
 class AssemblyObject;
 class JointGroup;
 
+/**
+ * Return whether an Assembly object participates at the document's current
+ * history boundary.  Visibility is deliberately not part of this decision:
+ * hiding a component must not remove it from the mechanism.
+ */
+AssemblyExport bool isTimelineOperationActive(const App::DocumentObject* object);
+
 AssemblyExport void swapJCS(const App::DocumentObject* joint);
 
 AssemblyExport bool isEdgeType(
@@ -150,6 +157,9 @@ AssemblyExport DistanceType getDistanceType(App::DocumentObject* joint);
 AssemblyExport JointGroup* getJointGroup(const App::Part* part);
 
 AssemblyExport std::vector<App::DocumentObject*> getAssemblyComponents(const AssemblyObject* assembly);
+AssemblyExport std::vector<App::DocumentObject*> getAssemblyComponentsIncludingInactive(
+    const AssemblyObject* assembly
+);
 
 // getters to get from properties
 AssemblyExport void setJointActivated(const App::DocumentObject* joint, bool val);

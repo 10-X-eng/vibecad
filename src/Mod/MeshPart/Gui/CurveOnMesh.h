@@ -25,9 +25,9 @@
 #pragma once
 
 #include <GeomAbs_Shape.hxx>
-#include <Geom_BSplineCurve.hxx>
 #include <QObject>
 #include <memory>
+#include <vector>
 
 #include <Gui/ViewProviderDocumentObject.h>
 
@@ -35,8 +35,6 @@
 class SbVec3f;
 class SoCoordinate3;
 class SoDrawStyle;
-class TopoDS_Edge;
-class TopoDS_Wire;
 
 namespace Gui
 {
@@ -81,11 +79,6 @@ public:
     void recomputeDocument();
 
 private:
-    Handle(Geom_BSplineCurve) approximateSpline(const std::vector<SbVec3f>& points);
-    void approximateEdge(const TopoDS_Edge&, double tolerance);
-    void displaySpline(const Handle(Geom_BSplineCurve) &);
-    bool makePolyline(const std::vector<SbVec3f>& points, TopoDS_Wire& wire);
-    void displayPolyline(const TopoDS_Wire& wire);
     std::vector<SbVec3f> getPoints() const;
     std::vector<SbVec3f> getVertexes() const;
     void closeWire();

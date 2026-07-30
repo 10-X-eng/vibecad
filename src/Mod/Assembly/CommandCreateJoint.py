@@ -34,6 +34,7 @@ import JointObject
 from JointObject import TaskAssemblyCreateJoint
 import UtilsAssembly
 import Assembly_rc
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 # translate = App.Qt.translate
 
@@ -43,7 +44,25 @@ __url__ = "https://www.freecad.org"
 
 
 def noOtherTaskActive():
-    return UtilsAssembly.isAssemblyCommandActive() or JointObject.activeTask is not None
+    # Joint type buttons intentionally remain available while the joint task
+    # itself is open so the user can switch the joint type in place.
+    if JointObject.activeTask is not None:
+        return True
+
+    if UtilsAssembly.isAssemblyCommandActive():
+        return True
+
+    # Fixed joints are also supported while an App::Part is active. That path
+    # must obey the same task/transaction boundary as an active assembly.
+    active_part = UtilsAssembly.activePart()
+    if active_part is None or Gui.Control.activeDialog():
+        return False
+    document = active_part.Document
+    return (
+        document is not None
+        and document.getBookedTransactionID() == 0
+        and not document.HasPendingTransaction
+    )
 
 
 def isCreateJointActive():
@@ -52,16 +71,47 @@ def isCreateJointActive():
 
 def activateJoint(index):
     if JointObject.activeTask:
-        JointObject.activeTask.reject()
+        dialog = Gui.Control.activeTaskDialog(
+            JointObject.activeTask.gui_doc,
+        )
+        if dialog is None:
+            return
+        dialog.reject()
+        if JointObject.activeTask is not None:
+            return
+    elif (
+        index == 0
+        and UtilsAssembly.activePart() is not None
+        and (
+            not UtilsAssembly.assembly_has_at_least_n_parts(2)
+            or not noOtherTaskActive()
+        )
+    ):
+        return
+    elif not isCreateJointActive():
+        return
+
+    container = (
+        UtilsAssembly.activeAssembly()
+        or UtilsAssembly.activePart()
+    )
+    if container is None:
+        return
 
     Gui.addModule("JointObject")  # NOLINT
-    Gui.doCommand(f"panel = JointObject.TaskAssemblyCreateJoint({index})")
-    Gui.doCommandGui("dialog = Gui.Control.showDialog(panel)")
+    Gui.doCommand(
+        f"panel = JointObject.TaskAssemblyCreateJoint("
+        f"{index}, "
+        f"document_name={str(container.Document.Name)!r}, "
+        f"container_name={str(container.Name)!r})"
+    )
+    Gui.doCommandGui("dialog = Gui.Control.showDialog(panel, panel.gui_doc)")
+    panel = Gui.doCommandEval("panel")
     dialog = Gui.doCommandEval("dialog")
     if dialog is not None:
         dialog.setAutoCloseOnTransactionChange(True)
         dialog.setAutoCloseOnDeletedDocument(True)
-        dialog.setDocumentName(App.ActiveDocument.Name)
+        dialog.setDocumentName(panel.doc.Name)
 
 
 class CommandCreateJointFixed:
@@ -86,7 +136,10 @@ class CommandCreateJointFixed:
 
     def IsActive(self):
         if UtilsAssembly.activePart() is not None:
-            return UtilsAssembly.assembly_has_at_least_n_parts(2)
+            return (
+                UtilsAssembly.assembly_has_at_least_n_parts(2)
+                and noOtherTaskActive()
+            )
 
         return isCreateJointActive()
 
@@ -401,24 +454,164 @@ class CommandGroupGearBelt:
         return isCreateJointActive()
 
 
-def createGroundedJoint(obj):
-    if not UtilsAssembly.activeAssembly():
+def _assemblyOwnsGroundingComponent(assembly, component):
+    if (
+        assembly is None
+        or component is None
+        or component.Document is not assembly.Document
+        or not UtilsAssembly.isTimelineOperationActive(assembly)
+        or not UtilsAssembly.isTimelineOperationActive(component)
+    ):
+        return False
+    if assembly.hasObject(component, True):
+        return True
+    if component.TypeId != "App::LinkElement":
+        return False
+    link_group = UtilsAssembly.getLinkGroup(component)
+    return (
+        link_group is not None
+        and link_group.Document is assembly.Document
+        and assembly.hasObject(link_group, True)
+        and UtilsAssembly.isTimelineOperationActive(link_group)
+    )
+
+
+def createGroundedJoint(obj, assembly=None, record=True):
+    if assembly is None:
+        assembly = UtilsAssembly.activeAssembly()
+    if (
+        assembly is None
+        or obj is None
+        or obj.Document is not assembly.Document
+        or assembly.Document.getObject(obj.Name) is not obj
+        or assembly.Document.getObject(assembly.Name) is not assembly
+        or not _assemblyOwnsGroundingComponent(assembly, obj)
+    ):
         return
 
-    Gui.addModule("UtilsAssembly")
-    Gui.addModule("JointObject")
-    commands = (
-        f'obj = App.ActiveDocument.getObject("{obj.Name}")\n'
-        "assembly = UtilsAssembly.activeAssembly()\n"
-        "joint_group = UtilsAssembly.getJointGroup(assembly)\n"
-        'ground = joint_group.newObject("App::FeaturePython", "GroundedJoint")\n'
-        "JointObject.GroundedJoint(ground, obj)"
-    )
-    Gui.doCommand(commands)
-    Gui.doCommandGui("JointObject.ViewProviderGroundedJoint(ground.ViewObject)")
+    document = assembly.Document
+    if record:
+        Gui.addModule("CommandCreateJoint")
+        Gui.addModule("JointObject")
+        document_expression = (
+            f"App.getDocument({str(document.Name)!r})"
+        )
+        ground = Gui.runDocumentObjectCommand(
+            document,
+            "CommandCreateJoint.createGroundedJointFeature("
+            f"{document_expression}.getObject({str(obj.Name)!r}), "
+            f"{document_expression}.getObject({str(assembly.Name)!r}))",
+            "App::FeaturePython",
+        )
+        Gui.doCommandGui(
+            "JointObject.ViewProviderGroundedJoint("
+            f"Gui.getDocument({str(document.Name)!r}).getObject("
+            f"{str(ground.Name)!r}))"
+        )
+    else:
+        # Insert Component creates provisional links directly and records their
+        # durable replay trace only on Accept. Ground its provisional first
+        # component the same way, otherwise the accepted trace contains both
+        # this live creation and a second reconstructed GroundedJoint.
+        ground = createGroundedJointFeature(obj, assembly)
+        JointObject.ViewProviderGroundedJoint(ground.ViewObject)
 
-    Gui.doCommand("UtilsAssembly.activeAssembly().Document.recompute()")
-    return Gui.doCommandEval("ground")
+    document.recompute()
+    return ground
+
+
+def createGroundedJointFeature(obj, assembly):
+    """Create and return the exact grounded-joint model object."""
+    if (
+        obj is None
+        or assembly is None
+        or obj.Document is not assembly.Document
+        or assembly.Document.getObject(obj.Name) is not obj
+        or assembly.Document.getObject(assembly.Name) is not assembly
+        or not _assemblyOwnsGroundingComponent(assembly, obj)
+    ):
+        raise RuntimeError(
+            "Grounded-joint inputs must be exact live objects in one document"
+        )
+    joint_group = UtilsAssembly.getJointGroup(assembly)
+    if joint_group is None or joint_group.Document is not assembly.Document:
+        raise RuntimeError("The assembly has no live joint group")
+    ground = joint_group.newObject(
+        "App::FeaturePython",
+        "GroundedJoint",
+    )
+    JointObject.GroundedJoint(ground, obj)
+    return ground
+
+
+def _selectedGroundingComponents(assembly):
+    components = []
+    seen = set()
+    for selection in Gui.Selection.getSelectionEx("*", 0):
+        try:
+            selected = selection.Object
+            if selected is None:
+                continue
+
+            candidates = list(selection.SubElementNames)
+            if not candidates:
+                if hasattr(selected, "ObjectToGround"):
+                    component = selected.ObjectToGround
+                    if (
+                        selected.Document is assembly.Document
+                        and UtilsAssembly.findOwningAssembly(
+                            selected,
+                            include_inactive=True,
+                        )
+                        is assembly
+                        and UtilsAssembly.isTimelineOperationActive(selected)
+                        and UtilsAssembly.isTimelineOperationActive(component)
+                        and _assemblyOwnsGroundingComponent(
+                            assembly,
+                            component,
+                        )
+                        and component.Name not in seen
+                    ):
+                        seen.add(component.Name)
+                        components.append(component)
+                    continue
+                if (
+                    selected in assembly.Group
+                    and selected.isDerivedFrom("App::Link")
+                    and UtilsAssembly.isTimelineOperationActive(selected)
+                ):
+                    if selected.Name not in seen:
+                        seen.add(selected.Name)
+                        components.append(selected)
+                    continue
+
+            for sub_name in candidates:
+                resolved = selected.resolveSubElement(sub_name)
+                if resolved and hasattr(resolved[0], "ObjectToGround"):
+                    component = resolved[0].ObjectToGround
+                else:
+                    component, _new_sub = UtilsAssembly.getComponentReference(
+                        assembly,
+                        selected,
+                        sub_name,
+                    )
+                if (
+                    component is None
+                    or not _assemblyOwnsGroundingComponent(
+                        assembly,
+                        component,
+                    )
+                    or component.Name in seen
+                ):
+                    continue
+                seen.add(component.Name)
+                components.append(component)
+        except (AttributeError, RuntimeError, TypeError):
+            # Tree and 3D selections can become stale while the document
+            # updates. A stale entry is not a valid grounding target, and
+            # command activation itself must remain safe.
+            continue
+    return components
 
 
 class CommandToggleGrounded:
@@ -439,68 +632,74 @@ class CommandToggleGrounded:
         }
 
     def IsActive(self):
-        return (
-            UtilsAssembly.isAssemblyCommandActive()
-            and UtilsAssembly.assembly_has_at_least_n_parts(1)
+        if (
+            not UtilsAssembly.isAssemblyCommandActive()
+            or not UtilsAssembly.assembly_has_at_least_n_parts(1)
+        ):
+            return False
+        return bool(
+            _selectedGroundingComponents(
+                UtilsAssembly.activeAssembly(),
+            )
         )
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         assembly = UtilsAssembly.activeAssembly()
         if not assembly:
             return
 
         joint_group = UtilsAssembly.getJointGroup(assembly)
-
-        selection = Gui.Selection.getSelectionEx("*", 0)
-        if not selection:
+        components = _selectedGroundingComponents(assembly)
+        if joint_group is None or not components:
             return
 
-        App.ActiveDocument.openTransaction("Toggle grounded")
-        for sel in selection:
-            # If you select 2 solids (bodies for example) within an assembly.
-            # There'll be a single sel but 2 SubElementNames.
-            for sub in sel.SubElementNames:
-                # First check if selection is a grounded object
-                resolved = sel.Object.resolveSubElement(sub)
-                if resolved:
-                    obj = resolved[0]
-                    if hasattr(obj, "ObjectToGround"):
-                        commands = (
-                            "doc = App.ActiveDocument\n"
-                            f'doc.removeObject("{obj.Name}")\n'
-                            "doc.recompute()\n"
-                        )
-                        Gui.doCommand(commands)
-                        continue
-
-                moving_part, new_sub = UtilsAssembly.getComponentReference(
-                    assembly, sel.Object, sub
+        document = assembly.Document
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Toggle grounded",
+        )
+        try:
+            for component in components:
+                grounded_joint = next(
+                    (
+                        joint
+                        for joint in joint_group.Group
+                        if hasattr(joint, "ObjectToGround")
+                        and UtilsAssembly.isTimelineOperationActive(joint)
+                        and joint.ObjectToGround == component
+                    ),
+                    None,
                 )
-                if not moving_part:
-                    continue
+                if grounded_joint is not None:
+                    Gui.doCommand(
+                        f"document = App.getDocument({str(document.Name)!r})\n"
+                        f"document.removeObject({str(grounded_joint.Name)!r})\n"
+                        "document.recompute()\n"
+                    )
+                elif createGroundedJoint(component, assembly) is None:
+                    raise RuntimeError(
+                        f"Could not ground component {component.Label}"
+                    )
 
-                # Only objects within the assembly.
-                if moving_part is None:
-                    continue
-
-                # Check if part is grounded and if so delete the joint.
-                ungrounded = False
-                for joint in joint_group.Group:
-                    if hasattr(joint, "ObjectToGround") and joint.ObjectToGround == moving_part:
-                        commands = (
-                            "doc = App.ActiveDocument\n"
-                            f'doc.removeObject("{joint.Name}")\n'
-                            "doc.recompute()\n"
-                        )
-                        Gui.doCommand(commands)
-                        ungrounded = True
-                        break
-                if ungrounded:
-                    continue
-
-                # Create groundedJoint.
-                createGroundedJoint(moving_part)
-        App.ActiveDocument.commitTransaction()
+            document.recompute()
+            if not assembly.isValid() or not joint_group.isValid():
+                raise RuntimeError("Grounding produced an invalid assembly")
+            if any(
+                hasattr(joint, "ObjectToGround")
+                and (
+                    joint.ObjectToGround is None
+                    or joint.ObjectToGround.Document is not document
+                )
+                for joint in joint_group.Group
+            ):
+                raise RuntimeError("Grounding produced an invalid component link")
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
 
 
 if App.GuiUp:

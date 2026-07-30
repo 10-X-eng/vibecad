@@ -24,21 +24,28 @@
 
 #pragma once
 
+#include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <QDialogButtonBox>
 #include <QPointer>
+#include <QVariant>
 #include <FCGlobal.h>
+#include <Gui/Selection/SelectionObject.h>
 
 
 namespace App
 {
+class Document;
 class DocumentObject;
 }
 
 namespace Gui
 {
+class Document;
 class MDIView;
 namespace TaskView
 {
@@ -62,6 +69,74 @@ public:
 
     TaskDialog();
     ~TaskDialog() override;
+
+    /**
+     * Capture the human interaction state at the start of a command invocation.
+     *
+     * A task dialog shown synchronously by that command adopts the checkpoint
+     * when it is installed.  The checkpoint stores name-resolved selection
+     * records, including sub-elements and pick positions, so transaction
+     * rollback can delete and recreate objects without leaving dangling GUI
+     * pointers behind.
+     */
+    static void beginCommandInvocation();
+    static void endCommandInvocation();
+    static void endCommandInvocation(bool commandSucceeded);
+    /**
+     * Return whether the outermost GUI command owns the current transaction.
+     *
+     * A nested child may use an enclosing command's transaction only when
+     * that outermost invocation began without a booked transaction and opened
+     * the current one itself. A transaction present before the outermost
+     * command remains externally owned.
+     */
+    static bool hasOwnedEnclosingTransaction(
+        const App::Document* document
+    );
+    /// Return the exact transaction created by the outer GUI command.
+    static int ownedEnclosingTransactionId(
+        const App::Document* document
+    );
+    /**
+     * Return whether this dialog owns finalization of an exact transaction.
+     *
+     * Python task implementations use this after the dialog is installed to
+     * distinguish a transaction adopted by the common TaskView lifecycle from
+     * one that the Python task must close itself.
+     */
+    bool ownsCommandTransaction(int transactionId) const;
+    /// Record that an edit session adopted that exact transaction.
+    static void markOwnedEnclosingTransactionAdopted(
+        const App::Document* document,
+        int transactionId
+    );
+    /**
+     * Record a successful exact close performed inside this command.
+     *
+     * A close callback may synchronously open a successor transaction before
+     * the exact close call returns. This completion record prevents command
+     * teardown from inferring that successor as its own transaction.
+     */
+    static void recordCommandTransactionCompletion(
+        const App::Document* document,
+        int transactionId
+    );
+    /// Preserve command checkpoint/macro state for an editor without a panel.
+    static void adoptOwnedEditCommandInteraction(
+        Gui::Document* document,
+        int transactionId
+    );
+    /// Finalize a no-panel editor's preserved command interaction.
+    static void finishOwnedEditCommandInteraction(
+        Gui::Document* document,
+        int transactionId,
+        bool cancelled,
+        bool transactionFinished
+    );
+    /// Discard retained no-panel editor state before its GUI document dies.
+    static void discardOwnedEditCommandInteraction(
+        Gui::Document* document
+    );
 
     QWidget* addTaskBox(QWidget* widget, bool expandable = true, QWidget* parent = nullptr);
     QWidget* addTaskBox(
@@ -153,6 +228,25 @@ public:
     {
         return autoCloseClosedView;
     }
+
+    /**
+     * Control whether a successful Accept closes this panel.
+     *
+     * Some creation panels intentionally remain open so the user can create
+     * several independent results. Their Accept still means the current
+     * result was accepted and must be committed, recorded, and validated.
+     */
+    void setAcceptClosesDialog(bool closes)
+    {
+        setProperty("taskview_accept_closes_dialog", closes);
+    }
+    bool acceptClosesDialog() const
+    {
+        const QVariant setting =
+            property("taskview_accept_closes_dialog");
+        return !setting.isValid() || setting.toBool();
+    }
+
     void associateToObject3dView(App::DocumentObject* obj);
 
     const Gui::MDIView* getAssociatedView() const
@@ -239,12 +333,101 @@ Q_SIGNALS:
     void aboutToBeDestroyed();
 
 protected:
+    /**
+     * Mark a successfully created/applied result as durable while this panel remains open.
+     *
+     * A later Close/Cancel must not restore the interaction checkpoint captured before the
+     * command over a result the user already accepted. Call this only after the durable operation
+     * succeeds, never for previews or other provisional task-panel changes.
+     */
+    void markCommandInteractionStateDurable(
+        const std::vector<App::DocumentObject*>& acceptedResults = {}
+    );
+
     QPointer<QDialogButtonBox> buttonBox;
     /// List of TaskBoxes of that dialog
     std::vector<QWidget*> Content;
     ButtonPosition pos;
 
 private:
+    struct MacroCapture;
+
+    struct InteractionState
+    {
+        struct ObjectIdentity
+        {
+            std::string name;
+            long id {-1};
+        };
+
+        struct VisibilityState
+        {
+            std::string documentName;
+            std::string objectName;
+            bool visible {false};
+        };
+
+        App::Document* commandDocument {nullptr};
+        std::string commandDocumentName;
+        std::string commandActiveObjectName;
+        bool commandDocumentModified {false};
+        bool commandUndoEnabled {true};
+        bool temporaryRollbackJournal {false};
+        bool taskAdopted {false};
+        bool commandTransactionCompleted {false};
+        bool editWasActiveAtInvocationStart {false};
+        bool standaloneTransactionLocked {false};
+        int initialTransactionId {0};
+        int commandTransactionId {0};
+        std::shared_ptr<MacroCapture> macroCapture;
+        std::vector<ObjectIdentity> commandObjects;
+        std::vector<Gui::SelectionObject> selection;
+        std::string activeBodyDocumentName;
+        bool hadActiveBody {false};
+        std::string activeBodyRootName;
+        std::string activeBodySubname;
+        std::vector<VisibilityState> visibility;
+    };
+
+    struct DialogState;
+    struct PendingInteractionRollback;
+
+    static std::vector<InteractionState>& commandInvocationStack();
+    static std::map<TaskDialog*, DialogState>& dialogStates();
+    static std::map<Gui::Document*, InteractionState>&
+    ownedEditInteractionStates();
+    static std::map<
+        std::pair<const App::Document*, int>,
+        std::shared_ptr<PendingInteractionRollback>
+    >& pendingInteractionRollbacks();
+    static std::optional<InteractionState>
+    takeCommandInteractionState(TaskDialog* dialog);
+    static void appendAcceptedMacroLines(
+        TaskDialog* dialog,
+        const std::vector<std::pair<int, std::string>>& lines
+    ) noexcept;
+    static void clearPendingDurableResults(TaskDialog* dialog);
+    static void pauseCommandMacroCapture(TaskDialog* dialog);
+    static void resumeCommandMacroCapture(TaskDialog* dialog);
+    static void discardCommandMacroCapture(TaskDialog* dialog);
+    void adoptCommandInteractionState(App::Document* document);
+    static bool restoreCommandInteractionState(
+        const std::optional<InteractionState>& state
+    );
+    static void retainPendingInteractionRollback(
+        const InteractionState& state
+    );
+    static void retryPendingInteractionRollback(
+        const App::Document* document,
+        int transactionId
+    );
+    static bool finishCommandTransaction(
+        const InteractionState& state,
+        bool commit
+    );
+    static void restoreOriginalUndoMode(const InteractionState& state);
+    static void removeUnacceptedObjects(const InteractionState& state);
+
     std::string documentName;
     const Gui::MDIView* associatedView;
     bool escapeButton;
@@ -254,6 +437,7 @@ private:
     bool autoCloseClosedView;
 
     friend class TaskDialogAttorney;
+    friend class TaskView;
 };
 
 class TaskDialogAttorney

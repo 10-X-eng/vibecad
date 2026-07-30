@@ -26,6 +26,8 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QTimer>
+#include <unordered_map>
+#include <unordered_set>
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <Inventor/details/SoDetail.h>
@@ -68,6 +70,31 @@ FC_LOG_LEVEL_INIT("ViewProvider", true, true)
 using namespace std;
 using namespace Gui;
 
+namespace
+{
+
+std::unordered_set<const Gui::ViewProvider*>& documentTimelineNavigationProviders()
+{
+    // Keep this additive capability outside the exported ViewProvider object
+    // layout and virtual table.  External view-provider modules can therefore
+    // continue to use the existing ABI while persistent workspace editors
+    // explicitly opt in.
+    static auto* providers = new std::unordered_set<const Gui::ViewProvider*>;
+    return *providers;
+}
+
+using DependentDeletionPlanner = std::function<std::vector<App::DocumentObject*>(App::DocumentObject*)>;
+
+std::unordered_map<const Gui::ViewProvider*, DependentDeletionPlanner>& dependentDeletionPlanners()
+{
+    // Like the timeline edit capability above, keep this outside the exported
+    // ViewProvider layout and virtual table so out-of-tree providers retain
+    // binary compatibility.
+    static auto* planners = new std::unordered_map<const Gui::ViewProvider*, DependentDeletionPlanner>;
+    return *planners;
+}
+
+}  // namespace
 
 namespace Gui
 {
@@ -130,6 +157,9 @@ ViewProvider::ViewProvider()
 
 ViewProvider::~ViewProvider()
 {
+    documentTimelineNavigationProviders().erase(this);
+    dependentDeletionPlanners().erase(this);
+
     if (pyViewObject) {
         Base::PyGILStateLocker lock;
         pyViewObject->setInvalid();
@@ -141,6 +171,22 @@ ViewProvider::~ViewProvider()
     pcModeSwitch->unref();
     if (pcAnnotation) {
         pcAnnotation->unref();
+    }
+}
+
+bool ViewProvider::allowsDocumentTimelineNavigationInEdit() const
+{
+    return documentTimelineNavigationProviders().contains(this);
+}
+
+void ViewProvider::setAllowsDocumentTimelineNavigationInEdit(bool allowed)
+{
+    auto& providers = documentTimelineNavigationProviders();
+    if (allowed) {
+        providers.insert(this);
+    }
+    else {
+        providers.erase(this);
     }
 }
 
@@ -515,6 +561,11 @@ bool ViewProvider::isShow() const
     return pcModeSwitch->whichChild.getValue() != -1;
 }
 
+void ViewProvider::setTemporaryVisibility(bool visible)
+{
+    visible ? ViewProvider::show() : ViewProvider::hide();
+}
+
 void ViewProvider::setVisible(bool s)
 {
     s ? show() : hide();
@@ -753,9 +804,35 @@ bool ViewProvider::onDelete(const vector<string>& subNames)
     return del;
 }
 
+bool ViewProvider::onDeleteOwnedTimelineResource(App::DocumentObject* semanticOwner)
+{
+    (void)semanticOwner;
+    return onDelete({});
+}
+
 bool ViewProvider::canDelete(App::DocumentObject*) const
 {
     return false;
+}
+
+std::vector<App::DocumentObject*> ViewProvider::getObjectsToDeleteWith(App::DocumentObject* obj) const
+{
+    const auto& planners = dependentDeletionPlanners();
+    const auto planner = planners.find(this);
+    return planner == planners.end() ? std::vector<App::DocumentObject*> {} : planner->second(obj);
+}
+
+void ViewProvider::setDependentDeletionPlanner(
+    std::function<std::vector<App::DocumentObject*>(App::DocumentObject*)> planner
+)
+{
+    auto& planners = dependentDeletionPlanners();
+    if (planner) {
+        planners.insert_or_assign(this, std::move(planner));
+    }
+    else {
+        planners.erase(this);
+    }
 }
 
 bool ViewProvider::canDragObject(App::DocumentObject* obj) const

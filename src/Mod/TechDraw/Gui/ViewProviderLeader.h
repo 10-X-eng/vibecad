@@ -58,6 +58,10 @@ public:
     void onChanged(const App::Property* p) override;
     bool setEdit(int ModNum) override;
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     bool onDelete(const std::vector<std::string> &parameters) override;
     bool canDelete(App::DocumentObject* obj) const override;
 

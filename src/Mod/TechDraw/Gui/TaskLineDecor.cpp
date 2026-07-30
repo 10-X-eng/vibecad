@@ -49,9 +49,27 @@ TaskLineDecor::TaskLineDecor(TechDraw::DrawViewPart* partFeat,
                              std::vector<std::string> edgeNames) :
     ui(new Ui_TaskLineDecor),
     m_partFeat(partFeat),
+    m_partIdentity(partFeat),
     m_edges(edgeNames),
     m_apply(true)
 {
+    if (!partFeat
+        || partFeat->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The line appearance editor requires a live drawing "
+            "transaction"
+        );
+    }
+    // Line formats are mutable values stored behind pointer properties.
+    // Capture all three pre-preview lists before the panel creates or edits
+    // an entry, so TaskView Cancel can restore the exact prior state.
+    partFeat->GeomFormats.setValues(partFeat->GeomFormats.getValues());
+    partFeat->CosmeticEdges.setValues(
+        partFeat->CosmeticEdges.getValues()
+    );
+    partFeat->CenterLines.setValues(partFeat->CenterLines.getValues());
+
     initializeRejectArrays();
     m_lineGenerator = new TechDraw::LineGenerator;
 
@@ -211,51 +229,43 @@ void TaskLineDecor::applyDecorations()
             lf->setLineNumber(m_lineNumber);
         }
     }
+    m_partFeat->GeomFormats.setValues(m_partFeat->GeomFormats.getValues());
+    m_partFeat->CosmeticEdges.setValues(
+        m_partFeat->CosmeticEdges.getValues()
+    );
+    m_partFeat->CenterLines.setValues(m_partFeat->CenterLines.getValues());
 }
 
 bool TaskLineDecor::accept()
 {
-//    Base::Console().message("TLD::accept()\n");
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_partFeat->getDocument());
-    if (!doc)
+    auto* partFeature = m_partIdentity.resolve();
+    if (!partFeature) {
         return false;
+    }
 
     if (apply()) {
         applyDecorations();
     }
 
-    m_partFeat->requestPaint();
-
-    //Gui::Command::updateActive();     //no chain of updates here
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    partFeature->requestPaint();
+    TaskInternal::updateExactDocument(partFeature->getDocument());
+    TaskInternal::resetExactEdit(partFeature->getDocument());
 
     return true;
 }
 
 bool TaskLineDecor::reject()
 {
-//    Base::Console().message("TLD::reject()\n");
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_partFeat->getDocument());
-    if (!doc)
+    auto* partFeature = m_partIdentity.resolve();
+    if (!partFeature) {
         return false;
-
-    for (size_t i = 0; i < m_originalFormats.size(); ++i) {
-        std::string &formatTag = m_createdFormatTags[i];
-        if (formatTag.empty()) {
-            LineFormat *lf = getFormatAccessPtr(m_edges[i]);
-            if (lf) {
-                *lf = m_originalFormats[i];
-            }
-        }
-        else {
-            m_partFeat->removeGeomFormat(formatTag);
-        }
     }
 
-    m_partFeat->requestPaint();
-
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    return false;
+    // TaskView owns the transaction opened by the ribbon command.  Its
+    // rollback removes provisional GeomFormats and restores all nested line
+    // values from the deep property snapshots.
+    TaskInternal::resetExactEdit(partFeature->getDocument());
+    return true;
 }
 
 void TaskLineDecor::changeEvent(QEvent *e)
@@ -455,6 +465,7 @@ TaskDlgLineDecor::TaskDlgLineDecor(TechDraw::DrawViewPart* partFeat,
         restoreBox->groupLayout()->addWidget(restore);
         Content.push_back(restoreBox);
     }
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgLineDecor::~TaskDlgLineDecor()
@@ -474,16 +485,12 @@ void TaskDlgLineDecor::clicked(int i)
 
 bool TaskDlgLineDecor::accept()
 {
-//    Base::Console().message("TDLD::accept()\n");
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgLineDecor::reject()
 {
-//    Base::Console().message("TDLD::reject()\n");
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskLineDecor.cpp>

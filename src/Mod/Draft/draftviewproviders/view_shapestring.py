@@ -51,7 +51,7 @@ class ViewProviderShapeString(ViewProviderDraft):
             self.wb_before_edit = Gui.activeWorkbench()
             Gui.activateWorkbench("DraftWorkbench")
         self.task = ShapeStringTaskPanelEdit(vobj)
-        Gui.Control.showDialog(self.task)
+        Gui.Control.showDialog(self.task, vobj.Document)
         return True
 
     def unsetEdit(self, vobj, mode):

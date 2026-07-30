@@ -24,6 +24,7 @@
 #include <QMessageBox>
 
 
+#include <App/Application.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/Application.h>
@@ -64,10 +65,20 @@ TaskDlgMeshShapeNetgen::~TaskDlgMeshShapeNetgen() = default;
 
 void TaskDlgMeshShapeNetgen::open()
 {
-    // a transaction is already open at creation time of the mesh
-    if (!ViewProviderFemMeshShapeNetgen->getDocument()->hasPendingCommand()) {
+    // Creation and normal context-menu editing already arrive with an exact
+    // transaction. Programmatic setEdit() callers may not; establish and
+    // explicitly transfer one instead of leaving an unowned late transaction.
+    Gui::Document* guiDocument = ViewProviderFemMeshShapeNetgen->getDocument();
+    if (!guiDocument->hasPendingCommand()) {
         QString msg = tr("Edit FEM mesh");
-        FemMeshShapeNetgenObject->getDocument()->openTransaction((const char*)msg.toUtf8());
+        const int transactionId = guiDocument->openCommand(msg.toUtf8());
+        if (transactionId == App::NullTransaction
+            || !guiDocument->adoptOwnedEditTransaction(transactionId)) {
+            if (transactionId != App::NullTransaction) {
+                App::GetApplication().abortTransaction(transactionId);
+            }
+            throw Base::RuntimeError("Could not establish ownership of the FEM mesh edit");
+        }
     }
 }
 
@@ -102,7 +113,7 @@ bool TaskDlgMeshShapeNetgen::accept()
                     tr("Meshing failure"),
                     QString::fromStdString(FemMeshShapeNetgenObject->getStatusString())
                 );
-                return true;
+                return false;
             }
         }
 
@@ -112,16 +123,15 @@ bool TaskDlgMeshShapeNetgen::accept()
             Gui::Application::Instance->hideViewProvider(obj);
         }
 
-        // FemSetNodesObject->Label.setValue(name->name);
-        doc->commitTransaction();
-
         Gui::cmdAppDocument(doc, "recompute()");
         Gui::cmdGuiDocument(doc, "resetEdit()");
 
         return true;
     }
     catch (const Base::Exception& e) {
-        doc->abortTransaction();
+        // A failed Accept is correctable. Preserve the panel and its exact
+        // transaction; only an explicit Cancel rolls the provisional edit
+        // back.
         Base::Console().warning("TaskDlgMeshShapeNetgen::accept(): %s\n", e.what());
     }
 
@@ -130,13 +140,10 @@ bool TaskDlgMeshShapeNetgen::accept()
 
 bool TaskDlgMeshShapeNetgen::reject()
 {
-    // FemSetNodesObject->execute();
-    //     //Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    //     //if(doc)
-    //     //    doc->resetEdit();
-    // param->MeshViewProvider->resetHighlightNodes();
     App::Document* doc = FemMeshShapeNetgenObject->getDocument();
-    doc->abortTransaction();
+    // TaskView has marked the exact edit transaction for rollback. Teardown
+    // the captured editor first so no panel or ViewProvider can observe
+    // objects while rollback removes or restores them.
     Gui::cmdGuiDocument(doc, "resetEdit()");
     Gui::cmdAppDocument(doc, "recompute()");
 

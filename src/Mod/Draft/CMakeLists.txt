@@ -71,6 +71,8 @@ SET(Draft_tests
     drafttests/test_oca.py
     drafttests/test_pivy.py
     drafttests/test_svg.py
+    drafttests/test_timeline_gui.py
+    drafttests/test_tracking_source.py
     drafttests/README.md
     drafttests/Issue24314.dxf
 )
@@ -84,7 +86,9 @@ SET(Draft_utilities
     draftutils/init_tools.py
     draftutils/messages.py
     draftutils/params.py
+    draftutils/timeline.py
     draftutils/todo.py
+    draftutils/transaction.py
     draftutils/translate.py
     draftutils/units.py
     draftutils/utils.py

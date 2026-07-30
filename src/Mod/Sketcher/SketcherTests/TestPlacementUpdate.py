@@ -30,7 +30,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
         """
         super().setUp()
 
-        self.doc = FreeCAD.newDocument("TestPlacementUpdate")
+        self.doc = self.new_document("TestPlacementUpdate")
 
         # create a body (typical partdesign workflow)
         self.body = self.doc.addObject("PartDesign::Body", "Body")

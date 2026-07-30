@@ -25,6 +25,8 @@
 #pragma once
 
 #include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
+#include <App/SuppressibleExtension.h>
 
 #include "MeshFeature.h"
 
@@ -59,6 +61,48 @@ public:
 
     /// returns the type name of the ViewProvider
     //  virtual const char* getViewProviderName(void) const {return "MeshGui::ViewProviderDefects";}
+
+protected:
+    App::DocumentObjectExecReturn* loadSourceMesh(MeshObject& mesh) const;
+    bool isSuppressed() const;
+
+private:
+    App::SuppressibleExtension suppressibleExt;
+};
+
+/**
+ * One durable, replayable mesh-repair operation.
+ *
+ * The enabled passes run in a fixed order against a fresh copy of Source on
+ * every recompute. This lets the GUI and automation expose one semantic
+ * repair step instead of mutating the source or creating a chain of
+ * implementation-only filters.
+ */
+class MeshExport Repair: public Mesh::FixDefects
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(Mesh::Repair);
+
+public:
+    Repair();
+
+    App::PropertyBool HarmonizeNormals;
+    App::PropertyBool RemoveDuplicates;
+    App::PropertyBool RemoveNonManifolds;
+    App::PropertyBool RemoveNonManifoldPoints;
+    App::PropertyBool FixIndices;
+    App::PropertyBool FixDegenerations;
+    App::PropertyBool FixSelfIntersections;
+    App::PropertyBool RemoveFolds;
+    App::PropertyIntegerConstraint FillHolesMaxEdges;
+    App::PropertyBool Repeat;
+    App::PropertyIntegerConstraint MaxIterations;
+
+    App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
+
+private:
+    static const App::PropertyIntegerConstraint::Constraints nonNegativeInteger;
+    static const App::PropertyIntegerConstraint::Constraints iterationRange;
 };
 
 /**
@@ -110,11 +154,13 @@ class MeshExport FixNonManifolds: public Mesh::FixDefects
 public:
     /// Constructor
     FixNonManifolds();
+    App::PropertyBool RemoveNonManifoldPoints;
 
     /** @name methods override Feature */
     //@{
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
     //@}
 };
 
@@ -195,6 +241,7 @@ public:
     //@{
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
     //@}
 };
 
@@ -230,12 +277,17 @@ public:
     FillHoles();
     App::PropertyInteger FillupHolesOfLength;
     App::PropertyFloat MaxArea;
+    App::PropertyEnumeration Method;
 
     /** @name methods override Feature */
     //@{
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
     //@}
+
+private:
+    static const char* MethodEnums[];
 };
 
 /**
@@ -256,6 +308,7 @@ public:
     //@{
     /// recalculate the Feature
     App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
     //@}
 };
 

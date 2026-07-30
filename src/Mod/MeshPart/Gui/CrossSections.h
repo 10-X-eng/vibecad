@@ -26,6 +26,7 @@
 
 #include <QDialog>
 #include <QPointer>
+#include <memory>
 
 #include <Base/BoundBox.h>
 #include <Gui/TaskView/TaskDialog.h>
@@ -68,6 +69,7 @@ protected:
     void keyPressEvent(QKeyEvent*) override;
 
 private:
+    bool applyAndReport();
     void setupConnections();
     void xyPlaneClicked();
     void xzPlaneClicked();
@@ -86,10 +88,12 @@ private:
     Plane plane() const;
 
 private:
+    class SelectionState;
     Ui_CrossSections* ui;
     Base::BoundBox3d bbox;
     ViewProviderCrossSections* vp;
     QPointer<Gui::View3DInventor> view;
+    std::unique_ptr<SelectionState> selectionState;
 };
 
 class TaskCrossSections: public Gui::TaskView::TaskDialog

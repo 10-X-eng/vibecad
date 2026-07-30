@@ -66,18 +66,24 @@ class CommandCreateView:
         )
 
     def Activated(self):
+        if not self.IsActive():
+            return
         assembly = UtilsAssembly.activeAssembly()
         if not assembly:
             return
 
         Gui.addModule("CommandCreateView")  # NOLINT
-        Gui.doCommand("panel = CommandCreateView.TaskAssemblyCreateView()")
+        Gui.doCommand(
+            "panel = CommandCreateView.TaskAssemblyCreateView("
+            f"document_name={str(assembly.Document.Name)!r}, "
+            f"assembly_name={str(assembly.Name)!r})"
+        )
         self.panel = Gui.doCommandEval("panel")
-        Gui.doCommandGui("dialog = Gui.Control.showDialog(panel)")
+        Gui.doCommandGui("dialog = Gui.Control.showDialog(panel, panel.gui_doc)")
         dialog = Gui.doCommandEval("dialog")
         if dialog is not None:
             dialog.setAutoCloseOnDeletedDocument(True)
-            dialog.setDocumentName(App.ActiveDocument.Name)
+            dialog.setDocumentName(assembly.Document.Name)
 
 
 ######### Exploded View Object ###########
@@ -87,9 +93,23 @@ class ExplodedView:
         expView.addExtension("App::GroupExtensionPython")
 
         self.stepsChangedCallback = None
+        self.initialPlcs = None
+        self._last_applied_placements = []
+        UtilsAssembly.markTimelineOperationEditor(
+            expView,
+            "Assembly_EditHistoryOperation",
+        )
 
     def onDocumentRestored(self, expView):
+        self.initialPlcs = None
+        self._last_applied_placements = []
         self.migrationScript(expView)
+        UtilsAssembly.markTimelineOperationEditor(
+            expView,
+            "Assembly_EditHistoryOperation",
+        )
+        for move in expView.Group:
+            UtilsAssembly.markTimelineResource(move, expView)
 
     def migrationScript(self, expView):
         if hasattr(expView, "Moves"):
@@ -104,9 +124,15 @@ class ExplodedView:
         return None
 
     def onChanged(self, viewObj, prop):
-        if prop == "Group" and hasattr(self, "stepsChangedCallback"):
-            if self.stepsChangedCallback is not None:
-                self.stepsChangedCallback()
+        if prop != "Group":
+            return
+        for move in viewObj.Group:
+            UtilsAssembly.markTimelineResource(move, viewObj)
+        if (
+            hasattr(self, "stepsChangedCallback")
+            and self.stepsChangedCallback is not None
+        ):
+            self.stepsChangedCallback()
 
     def setMovesChangedCallback(self, callback):
         self.stepsChangedCallback = callback
@@ -116,26 +142,99 @@ class ExplodedView:
         # App.Console.PrintMessage("Recompute Python Box feature\n")
         pass
 
+    def _prepareApplicationBaseline(self, assembly):
+        """Undo only this proxy's exact previous temporary application.
+
+        Exploded moves are transforms relative to the assembled placement.
+        Applying the same view twice must therefore replace its previous
+        temporary result rather than compound another transform. If another
+        operation changed a part after our previous application, its current
+        placement is retained as the new baseline.
+        """
+
+        for (
+            part,
+            object_name,
+            object_id,
+            baseline,
+            applied,
+        ) in self._last_applied_placements:
+            document = getattr(part, "Document", None)
+            if (
+                UtilsAssembly._document_is_open(document)
+                and document.getObject(object_name) is part
+                and int(part.ID) == object_id
+                and part.Placement == applied
+            ):
+                part.Placement = App.Placement(baseline)
+                part.purgeTouched()
+
+        self._last_applied_placements = []
+        return [
+            (part, App.Placement(part.Placement))
+            for part in UtilsAssembly.getMovablePartsWithin(assembly)
+            if hasattr(part, "Placement")
+        ]
+
+    def _rememberAppliedPlacements(self, baselines):
+        for part, baseline in baselines:
+            document = getattr(part, "Document", None)
+            if (
+                not UtilsAssembly._document_is_open(document)
+                or document.getObject(part.Name) is not part
+            ):
+                continue
+            applied = App.Placement(part.Placement)
+            if applied == baseline:
+                continue
+            self._last_applied_placements.append(
+                (
+                    part,
+                    str(part.Name),
+                    int(part.ID),
+                    baseline,
+                    applied,
+                )
+            )
+
     def applyMoves(self, viewObj, com=None, size=None):
         positions = []  # [[p1start, p1end], [p2start, p2end], ...]
+        assembly = self.getAssembly(viewObj)
+        if assembly is None:
+            return positions
+        baselines = self._prepareApplicationBaseline(assembly)
+        if not UtilsAssembly.isTimelineOperationActive(viewObj):
+            return positions
         if com is None:
-            com, size = UtilsAssembly.getComAndSize(self.getAssembly(viewObj))
-        for move in viewObj.Group:
-            positions = positions + move.Proxy.applyStep(move, com, size)
-
+            com, size = UtilsAssembly.getComAndSize(assembly)
+        try:
+            for move in viewObj.Group:
+                if not UtilsAssembly.isTimelineOperationActive(move):
+                    continue
+                positions = positions + move.Proxy.applyStep(
+                    move,
+                    com,
+                    size,
+                )
+        finally:
+            # Preserve enough exact transient state to undo even a partially
+            # applied view if a later move raises.
+            self._rememberAppliedPlacements(baselines)
         return positions
 
     def explodeTemporarily(self, viewObj):
-        self.initialPlcs = UtilsAssembly.saveAssemblyPartsPlacements(self.getAssembly(viewObj))
+        self.initialPlcs = (
+            UtilsAssembly._saveExactAssemblyPartPlacements(
+                self.getAssembly(viewObj)
+            )
+        )
         self.applyMoves(viewObj)
         for move in viewObj.Group:
-            move.Visibility = True
+            if UtilsAssembly.isTimelineOperationActive(move):
+                move.Visibility = True
 
     def getAssembly(self, viewObj):
-        for obj in viewObj.InList:
-            if obj.isDerivedFrom("Assembly::AssemblyObject"):
-                return obj
-        return None
+        return UtilsAssembly.findOwningAssembly(viewObj)
 
     def _createSafeLine(self, start, end):
         """Creates a LineSegment shape only if points are not coincident."""
@@ -146,7 +245,11 @@ class ExplodedView:
         return None
 
     def saveAssemblyAndExplode(self, viewObj):
-        self.initialPlcs = UtilsAssembly.saveAssemblyPartsPlacements(self.getAssembly(viewObj))
+        self.initialPlcs = (
+            UtilsAssembly._saveExactAssemblyPartPlacements(
+                self.getAssembly(viewObj)
+            )
+        )
 
         self.positions = self.applyMoves(viewObj)
 
@@ -165,7 +268,11 @@ class ExplodedView:
         if self.initialPlcs is None:
             return
 
-        UtilsAssembly.restoreAssemblyPartsPlacements(self.getAssembly(viewObj), self.initialPlcs)
+        UtilsAssembly._restoreExactAssemblyPartPlacements(
+            self.getAssembly(viewObj),
+            self.initialPlcs,
+            require_complete=False,
+        )
 
         for move in viewObj.Group:
             move.Visibility = False
@@ -189,6 +296,8 @@ class ExplodedView:
         com, size = UtilsAssembly.getComAndSize(assembly)
 
         for move in viewObj.Group:
+            if not UtilsAssembly.isTimelineOperationActive(move):
+                continue
             if not UtilsAssembly.isRefValid(move.References, 1):
                 continue
 
@@ -320,23 +429,39 @@ class ViewProviderExplodedView:
         return self.app_obj.Group
 
     def doubleClicked(self, vobj):
+        operation = vobj.Object
+        if not UtilsAssembly.isTimelineOperationActive(operation):
+            return False
+        assembly = operation.Proxy.getAssembly(operation)
+        if (
+            assembly is None
+            or not UtilsAssembly.isTimelineOperationActive(assembly)
+        ):
+            return False
+
         task = Gui.Control.activeTaskDialog()
         if task:
             task.reject()
-
-        assembly = vobj.Object.Proxy.getAssembly(vobj.Object)
-
-        if assembly is None:
-            return False
+            if Gui.Control.activeTaskDialog() is not None:
+                return False
 
         if UtilsAssembly.activeAssembly() != assembly:
-            Gui.ActiveDocument.setEdit(assembly)
+            gui_document = Gui.getDocument(assembly.Document.Name)
+            if gui_document is None:
+                return False
+            gui_document.setEdit(assembly)
+            if UtilsAssembly.activeAssembly() is not assembly:
+                return False
 
-        panel = TaskAssemblyCreateView(vobj.Object)
-        dialog = Gui.Control.showDialog(panel)
+        panel = TaskAssemblyCreateView(
+            operation,
+            document_name=assembly.Document.Name,
+            existing_transaction_id=assembly.Document.getBookedTransactionID(),
+        )
+        dialog = Gui.Control.showDialog(panel, panel.gui_doc)
         if dialog is not None:
             dialog.setAutoCloseOnDeletedDocument(True)
-            dialog.setDocumentName(App.ActiveDocument.Name)
+            dialog.setDocumentName(assembly.Document.Name)
 
         return True
 
@@ -364,6 +489,9 @@ class ExplodedViewStep:
 
     def onDocumentRestored(self, evStep):
         self.createProperties(evStep)
+        exploded_view = self.getExplodedView(evStep)
+        if exploded_view is not None:
+            UtilsAssembly.markTimelineResource(evStep, exploded_view)
 
     def createProperties(self, evStep):
         self.migrationScript(evStep)
@@ -443,9 +571,41 @@ class ExplodedViewStep:
         # App.Console.PrintMessage("Recompute Python Box feature\n")
         pass
 
+    @staticmethod
+    def getExplodedView(evStep):
+        for obj in evStep.InList:
+            proxy = getattr(obj, "Proxy", None)
+            if proxy is not None and hasattr(proxy, "setMovesChangedCallback"):
+                return obj
+        return None
+
     def applyStep(self, move, com=App.Vector(), size=100):
-        if not UtilsAssembly.isRefValid(move.References, 1):
-            return
+        exploded_view = self.getExplodedView(move)
+        assembly = (
+            exploded_view.Proxy.getAssembly(exploded_view)
+            if exploded_view is not None
+            else None
+        )
+        if (
+            not UtilsAssembly.isTimelineOperationActive(move)
+            or exploded_view is None
+            or not UtilsAssembly.isTimelineOperationActive(
+                exploded_view
+            )
+            or assembly is None
+            or not UtilsAssembly.isRefValid(move.References, 1)
+        ):
+            return []
+        root_object = move.References[0]
+        if (
+            root_object.Document is not assembly.Document
+            or assembly.Document.getObject(root_object.Name)
+            is not root_object
+            or not UtilsAssembly.isTimelineOperationActive(
+                root_object
+            )
+        ):
+            return []
 
         positions = []
         if move.MoveType == "Radial":
@@ -455,8 +615,26 @@ class ExplodedViewStep:
         subs = move.References[1]
         for sub in subs:
             ref = [move.References[0], [sub]]
+            component, _relative_sub = (
+                UtilsAssembly.getComponentReference(
+                    assembly,
+                    root_object,
+                    sub,
+                )
+            )
             obj = UtilsAssembly.getObject(ref)
-            if not obj:
+            if (
+                component is None
+                or not UtilsAssembly.isTimelineOperationActive(
+                    component
+                )
+                or obj is None
+                or not UtilsAssembly.isTimelineOperationActive(obj)
+            ):
+                continue
+            if obj.Document is not assembly.Document:
+                obj = component
+            if not hasattr(obj, "Placement"):
                 continue
 
             if move.ViewObject:
@@ -474,8 +652,10 @@ class ExplodedViewStep:
                 positions.append([startPos, endPos])
             obj.purgeTouched()
 
-        if move.ViewObject:
-            move.ViewObject.Proxy.redrawLines(move, positions)
+        view_provider = move.ViewObject
+        view_proxy = view_provider.Proxy if view_provider else None
+        if view_proxy and hasattr(view_proxy, "redrawLines"):
+            view_proxy.redrawLines(move, positions)
 
         return positions
 
@@ -565,18 +745,85 @@ class ViewProviderExplodedViewStep:
         return None
 
 
+def createExplodedViewFeature(document, assembly):
+    """Create and return one exact exploded-view operation."""
+    if (
+        document is None
+        or assembly is None
+        or assembly.Document is not document
+        or document.getObject(assembly.Name) is not assembly
+        or not UtilsAssembly.isTimelineOperationActive(assembly)
+    ):
+        raise RuntimeError(
+            "The exploded-view assembly is not live in its document"
+        )
+    view_group = UtilsAssembly.getViewGroup(assembly)
+    if view_group is None or view_group.Document is not document:
+        raise RuntimeError("The assembly has no live exploded-view group")
+    view_object = view_group.newObject(
+        "App::FeaturePython",
+        "Exploded View",
+    )
+    ExplodedView(view_object)
+    return view_object
+
+
+def createExplodedViewStepFeature(document, assembly, move_type_index):
+    """Create and return one exact exploded-view movement resource."""
+    if (
+        document is None
+        or assembly is None
+        or assembly.Document is not document
+        or document.getObject(assembly.Name) is not assembly
+        or not UtilsAssembly.isTimelineOperationActive(assembly)
+    ):
+        raise RuntimeError(
+            "The exploded-view step assembly is not live in its document"
+        )
+    step = assembly.newObject("App::FeaturePython", "Move")
+    ExplodedViewStep(step, int(move_type_index))
+    return step
+
+
 class ExplodedViewSelGate:
     def __init__(self, assembly, viewObj):
         self.assembly = assembly
         self.viewObj = viewObj
 
     def allow(self, doc, obj, sub):
+        try:
+            exact_context = (
+                obj is not None
+                and obj.Document is self.assembly.Document
+                and obj.Document.getObject(obj.Name) is obj
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.assembly
+                )
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.viewObj
+                )
+                and UtilsAssembly.findOwningAssembly(
+                    self.viewObj,
+                    include_inactive=True,
+                )
+                is self.assembly
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            exact_context = False
+        if not exact_context:
+            return False
         comp, new_sub = UtilsAssembly.getComponentReference(self.assembly, obj, sub)
-        if comp:
+        if UtilsAssembly.isMovableAssemblyComponent(
+            self.assembly,
+            comp,
+        ):
             # Objects within the assembly.
             return True
 
-        if obj in self.viewObj.Group:
+        if (
+            obj in self.viewObj.Group
+            and UtilsAssembly.isTimelineOperationActive(obj)
+        ):
             # Enable selection of steps object
             return True
 
@@ -588,27 +835,102 @@ _TaskAssemblyCreateViewBase = QtCore.QObject if App.GuiUp else object
 
 
 class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
-    def __init__(self, viewObj=None):
+    def __init__(
+        self,
+        viewObj=None,
+        document_name=None,
+        existing_transaction_id=0,
+        assembly_name=None,
+    ):
         super().__init__()
+
+        if viewObj is not None:
+            operation_document = getattr(viewObj, "Document", None)
+            if (
+                not UtilsAssembly._document_is_open(operation_document)
+                or operation_document.getObject(viewObj.Name) is not viewObj
+                or not UtilsAssembly.isTimelineOperationActive(viewObj)
+            ):
+                raise RuntimeError(
+                    "The exploded-view operation is not active and live"
+                )
+            self.assembly = viewObj.Proxy.getAssembly(viewObj)
+        elif document_name is not None and assembly_name is not None:
+            try:
+                task_document = App.getDocument(document_name)
+            except (NameError, RuntimeError):
+                task_document = None
+            self.assembly = (
+                task_document.getObject(assembly_name)
+                if task_document is not None
+                else None
+            )
+            if (
+                self.assembly is None
+                or not self.assembly.isDerivedFrom(
+                    "Assembly::AssemblyObject"
+                )
+                or UtilsAssembly.activeAssembly() is not self.assembly
+            ):
+                raise RuntimeError(
+                    "The exploded-view task lost its exact active assembly"
+                )
+        else:
+            self.assembly = UtilsAssembly.activeAssembly()
+        if self.assembly is None:
+            raise RuntimeError("An active assembly is required for an exploded view")
+        if not UtilsAssembly.isTimelineOperationActive(self.assembly):
+            raise RuntimeError(
+                "The exploded-view assembly is not active in History"
+            )
+
+        self.doc = self.assembly.Document
+        if document_name is not None and self.doc.Name != document_name:
+            raise RuntimeError("The exploded-view task document changed before launch")
+        if viewObj is not None and viewObj.Document is not self.doc:
+            raise RuntimeError("The exploded view does not belong to the assembly")
+        self.document_uid = str(
+            getattr(self.doc, "Uid", "") or ""
+        )
+        self.assembly_identity = (
+            str(self.assembly.Name),
+            int(self.assembly.ID),
+            self.assembly,
+        )
+
+        self.gui_doc = Gui.getDocument(self.doc.Name)
+        if self.gui_doc is None:
+            raise RuntimeError("The exploded-view task has no GUI document")
+        self.view = self.gui_doc.activeView()
+        if self.view is None:
+            raise RuntimeError("The exploded-view task has no active 3D view")
+
+        self.transaction = UtilsAssembly._TaskTransactionOwner(
+            self.doc,
+            "Edit Exploded View" if viewObj else "Create Exploded View",
+            existing_transaction_id,
+        )
 
         self.form = Gui.PySideUic.loadUi(":/panels/TaskAssemblyCreateView.ui")
         self.form.stepList.installEventFilter(self)
         self.form.stepList.itemClicked.connect(self.onItemClicked)
 
-        view = Gui.activeDocument().activeView()
-
-        self.assembly = UtilsAssembly.activeAssembly()
-        self.assembly.ViewObject.EnableMovement = False
+        self.enable_movement_before_task = bool(
+            self.assembly.ViewObject.EnableMovement
+        )
+        self.dragger_visibility_before_task = bool(
+            self.assembly.ViewObject.DraggerVisibility
+        )
         self.com, self.size = UtilsAssembly.getComAndSize(self.assembly)
         self.asmDragger = self.assembly.ViewObject.getDragger()
-        self.cbFin = view.addDraggerCallback(
+        self.cbFin = self.view.addDraggerCallback(
             self.asmDragger, "addFinishCallback", self.draggerFinished
         )
-        self.cbMov = view.addDraggerCallback(
+        self.cbMov = self.view.addDraggerCallback(
             self.asmDragger, "addMotionCallback", self.draggerMoved
         )
 
-        Gui.Selection.clearSelection()
+        Gui.Selection.clearSelection(self.doc.Name)
 
         self.form.btnAlignDragger.setMenu(QMenu(self.form.btnAlignDragger))
         actionAlignTo = self.form.btnAlignDragger.menu().addAction("Align to...")
@@ -627,19 +949,32 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
         pref = Preferences.preferences()
         self.form.CheckBox_PartsAsSingleSolid.setChecked(pref.GetBool("PartsAsSingleSolid", True))
 
-        self.initialPlcs = UtilsAssembly.saveAssemblyPartsPlacements(self.assembly)
+        self.initialPlcs = (
+            UtilsAssembly._saveExactAssemblyPartPlacements(
+                self.assembly
+            )
+        )
 
+        self.creating_timeline_operation = viewObj is None
         if viewObj:
-            Gui.ActiveDocument.openCommand("Edit Exploded View")
-
             self.viewObj = viewObj
+            self.timeline_resource_edit = (
+                UtilsAssembly.stageTimelineResourceGroupEdit(
+                    self.viewObj
+                )
+            )
             for move in self.viewObj.Group:
                 move.Visibility = True
             self.onMovesChanged()
 
         else:
-            Gui.ActiveDocument.openCommand("Create Exploded View")
+            self.timeline_resource_edit = None
             self.createExplodedViewObject()
+        self.view_identity = (
+            str(self.viewObj.Name),
+            int(self.viewObj.ID),
+            self.viewObj,
+        )
 
         Gui.Selection.addSelectionGate(
             ExplodedViewSelGate(self.assembly, self.viewObj), Gui.Selection.ResolveMode.NoResolve
@@ -647,9 +982,9 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
         Gui.Selection.addObserver(self, Gui.Selection.ResolveMode.NoResolve)
 
         self.viewObj.Proxy.setMovesChangedCallback(self.onMovesChanged)
-        self.callbackMove = view.addEventCallback("SoLocation2Event", self.moveMouse)
-        self.callbackClick = view.addEventCallback("SoMouseButtonEvent", self.clickMouse)
-        self.callbackKey = view.addEventCallback("SoKeyboardEvent", self.KeyboardEvent)
+        self.callbackMove = self.view.addEventCallback("SoLocation2Event", self.moveMouse)
+        self.callbackClick = self.view.addEventCallback("SoMouseButtonEvent", self.clickMouse)
+        self.callbackKey = self.view.addEventCallback("SoKeyboardEvent", self.KeyboardEvent)
 
         self.selectingFeature = False
         self.form.LabelAlignDragger.setVisible(False)
@@ -661,65 +996,188 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
         self.radialExplosion = False
 
         self.viewObj.purgeTouched()
+        # Change transient movement behavior only after construction has
+        # completed, so a failed panel launch cannot strand the assembly.
+        self.assembly.ViewObject.EnableMovement = False
+
+    def _ownsLiveTaskContext(self):
+        assembly_name, assembly_id, exact_assembly = (
+            self.assembly_identity
+        )
+        view_name, view_id, exact_view = self.view_identity
+        try:
+            return (
+                self.transaction.owns_current()
+                and UtilsAssembly._document_is_open(self.doc)
+                and str(getattr(self.doc, "Uid", "") or "")
+                == self.document_uid
+                and self.assembly is exact_assembly
+                and self.doc.getObject(assembly_name)
+                is self.assembly
+                and int(self.assembly.ID) == assembly_id
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.assembly
+                )
+                and self.viewObj is exact_view
+                and self.doc.getObject(view_name) is self.viewObj
+                and int(self.viewObj.ID) == view_id
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.viewObj
+                )
+                and UtilsAssembly.findOwningAssembly(
+                    self.viewObj,
+                    include_inactive=True,
+                )
+                is self.assembly
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            return False
 
     def accept(self):
+        if not self._ownsLiveTaskContext():
+            App.Console.PrintError(
+                "Could not finalize the exploded view: "
+                "the task no longer owns its exact Assembly objects and "
+                "document transaction\n"
+            )
+            return False
+        try:
+            UtilsAssembly._restoreExactAssemblyPartPlacements(
+                self.assembly,
+                self.initialPlcs,
+            )
+            for move in self.viewObj.Group:
+                move.Visibility = False
+            commands = ""
+            for move in self.viewObj.Group:
+                more = UtilsAssembly.generatePropertySettings(move)
+                commands = commands + more
+            if commands:
+                Gui.doCommand(commands[:-1])  # Don't use the last \n
+            self.viewObj.purgeTouched()
+            if self.creating_timeline_operation:
+                self.doc.finalizeProvisionalTimelineOperationBlock(
+                    self.viewObj,
+                    [*self.viewObj.Group, self.viewObj],
+                )
+            else:
+                UtilsAssembly.finalizeTimelineResourceGroupEdit(
+                    self.viewObj,
+                    self.timeline_resource_edit,
+                    list(self.viewObj.Group),
+                )
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not finalize the exploded view: "
+                f"{error}\n"
+            )
+            return False
+
         self.deactivate()
-        UtilsAssembly.restoreAssemblyPartsPlacements(self.assembly, self.initialPlcs)
-        for move in self.viewObj.Group:
-            move.Visibility = False
-        commands = ""
-        for move in self.viewObj.Group:
-            more = UtilsAssembly.generatePropertySettings(move)
-            commands = commands + more
-        Gui.doCommand(commands[:-1])  # Don't use the last \n
-        Gui.ActiveDocument.commitCommand()
-
-        self.viewObj.purgeTouched()
-
         return True
 
     def reject(self):
         self.deactivate()
-        Gui.ActiveDocument.abortCommand()
-        App.activeDocument().recompute()
         return True
+
+    def autoClosedOnDeletedDocument(self):
+        self._deactivate_deleted_document()
+        self.transaction.document_deleted()
+
+    def _deactivate_deleted_document(self):
+        Gui.Selection.removeSelectionGate()
+        Gui.Selection.removeObserver(self)
+        Gui.Selection.clearSelection(self.doc.Name)
 
     def deactivate(self):
         pref = Preferences.preferences()
         pref.SetBool("PartsAsSingleSolid", self.form.CheckBox_PartsAsSingleSolid.isChecked())
 
-        view = Gui.activeDocument().activeView()
-        view.removeDraggerCallback(self.asmDragger, "addFinishCallback", self.cbFin)
-        view.removeDraggerCallback(self.asmDragger, "addMotionCallback", self.cbMov)
+        gui_context_live = (
+            UtilsAssembly._document_is_open(self.doc)
+            and str(getattr(self.doc, "Uid", "") or "")
+            == self.document_uid
+            and Gui.getDocument(self.doc.Name) is self.gui_doc
+        )
+        if gui_context_live:
+            self.view.removeDraggerCallback(
+                self.asmDragger,
+                "addFinishCallback",
+                self.cbFin,
+            )
+            self.view.removeDraggerCallback(
+                self.asmDragger,
+                "addMotionCallback",
+                self.cbMov,
+            )
 
-        self.assembly.ViewObject.DraggerVisibility = False
-        self.assembly.ViewObject.EnableMovement = True
+        assembly_name, assembly_id, exact_assembly = (
+            self.assembly_identity
+        )
+        assembly_live = (
+            gui_context_live
+            and self.doc.getObject(assembly_name) is exact_assembly
+            and int(exact_assembly.ID) == assembly_id
+        )
+        if assembly_live:
+            exact_assembly.ViewObject.DraggerVisibility = (
+                self.dragger_visibility_before_task
+            )
+            exact_assembly.ViewObject.EnableMovement = (
+                self.enable_movement_before_task
+            )
 
         Gui.Selection.removeSelectionGate()
         Gui.Selection.removeObserver(self)
-        Gui.Selection.clearSelection()
+        Gui.Selection.clearSelection(self.doc.Name)
 
-        self.viewObj.Proxy.setMovesChangedCallback(None)
-        view.removeEventCallback("SoLocation2Event", self.callbackMove)
-        view.removeEventCallback("SoMouseButtonEvent", self.callbackClick)
-        view.removeEventCallback("SoKeyboardEvent", self.callbackKey)
-
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        view_name, view_id, exact_view = self.view_identity
+        if (
+            gui_context_live
+            and self.doc.getObject(view_name) is exact_view
+            and int(exact_view.ID) == view_id
+        ):
+            exact_view.Proxy.setMovesChangedCallback(None)
+        if gui_context_live:
+            self.view.removeEventCallback(
+                "SoLocation2Event",
+                self.callbackMove,
+            )
+            self.view.removeEventCallback(
+                "SoMouseButtonEvent",
+                self.callbackClick,
+            )
+            self.view.removeEventCallback(
+                "SoKeyboardEvent",
+                self.callbackKey,
+            )
 
     def setDragger(self):
         if self.blockSetDragger:
+            return
+
+        if not self._ownsLiveTaskContext():
+            self.enableDragger(False)
             return
 
         self.dismissCurrentStep()
         self.selectedRefs = []
         self.selectedObjs = []
         self.selectedObjsInitPlc = []
+        self.selectedObjIdentities = []
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
             self.enableDragger(False)
             return
         for sel in selection:
+            if (
+                sel.Object is None
+                or sel.Object.Document is not self.doc
+                or not UtilsAssembly.isTimelineOperationActive(
+                    sel.Object
+                )
+            ):
+                continue
             # If you select 2 solids (bodies for example) within an assembly.
             # There'll be a single sel but 2 SubElementNames.
 
@@ -732,7 +1190,10 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
                 moving_part, new_sub = UtilsAssembly.getComponentReference(
                     self.assembly, sel.Object, sub_name
                 )
-                if not moving_part:
+                if not UtilsAssembly.isMovableAssemblyComponent(
+                    self.assembly,
+                    moving_part,
+                ):
                     continue
 
                 ref = [moving_part, [new_sub]]
@@ -745,11 +1206,18 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
                     continue
 
                 partAsSolid = self.form.CheckBox_PartsAsSingleSolid.isChecked()
-                if partAsSolid:
+                move_occurrence = (
+                    partAsSolid
+                    or UtilsAssembly.isLink(moving_part)
+                    or moving_part.isDerivedFrom(
+                        "Assembly::AssemblyLink"
+                    )
+                )
+                if move_occurrence:
                     obj = moving_part
 
                 # truncate the sub name at obj.Name
-                if partAsSolid:
+                if move_occurrence:
                     # We handle both cases separately because with external files there
                     # can be several times the same name. For containing part we are sure it's
                     # the first instance, for the object we are sure it's the last.
@@ -762,6 +1230,19 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
                     self.selectedRefs.append(ref)
                     self.selectedObjs.append(obj)
                     self.selectedObjsInitPlc.append(App.Placement(obj.Placement))
+                    object_document = obj.Document
+                    self.selectedObjIdentities.append(
+                        (
+                            object_document,
+                            str(
+                                getattr(object_document, "Uid", "")
+                                or ""
+                            ),
+                            str(obj.Name),
+                            int(obj.ID),
+                            obj,
+                        )
+                    )
 
         if len(self.selectedObjs) != 0:
             self.enableDragger(True)
@@ -769,6 +1250,43 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
 
         else:
             self.enableDragger(False)
+
+    def _selectedObjectsRemainLive(self):
+        if (
+            len(self.selectedObjs)
+            != len(self.selectedObjsInitPlc)
+            or len(self.selectedObjs)
+            != len(self.selectedObjIdentities)
+        ):
+            return False
+        try:
+            return all(
+                UtilsAssembly._document_is_open(document)
+                and str(getattr(document, "Uid", "") or "")
+                == document_uid
+                and document.getObject(name) is exact_object
+                and int(exact_object.ID) == object_id
+                and exact_object is selected_object
+                and UtilsAssembly.isTimelineOperationActive(
+                    exact_object
+                )
+                and UtilsAssembly.isMovableAssemblyComponent(
+                    self.assembly,
+                    exact_object,
+                )
+                for selected_object, (
+                    document,
+                    document_uid,
+                    name,
+                    object_id,
+                    exact_object,
+                ) in zip(
+                    self.selectedObjs,
+                    self.selectedObjIdentities,
+                )
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            return False
 
     def enableDragger(self, val):
         self.assembly.ViewObject.DraggerVisibility = val
@@ -779,18 +1297,49 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
             self.form.btnAlignDragger.setText("Select a part")
 
     def onMovesChanged(self):
+        if (
+            hasattr(self, "view_identity")
+            and not self._ownsLiveTaskContext()
+        ):
+            return
         # First reset positions
-        UtilsAssembly.restoreAssemblyPartsPlacements(self.assembly, self.initialPlcs)
+        UtilsAssembly._restoreExactAssemblyPartPlacements(
+            self.assembly,
+            self.initialPlcs,
+        )
 
         self.viewObj.Proxy.applyMoves(self.viewObj, self.com, self.size)
 
         self.form.stepList.clear()
         for move in self.viewObj.Group:
-            self.form.stepList.addItem(move.Name)
+            if UtilsAssembly.isTimelineOperationActive(move):
+                item = QtWidgets.QListWidgetItem(move.Name)
+                item.setData(
+                    QtCore.Qt.UserRole,
+                    (str(move.Name), int(move.ID)),
+                )
+                self.form.stepList.addItem(item)
 
     def onItemClicked(self, item):
-        Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(self.viewObj.Document.Name, item.text(), "")
+        if not self._ownsLiveTaskContext():
+            return
+        identity = item.data(QtCore.Qt.UserRole)
+        if (
+            not isinstance(identity, tuple)
+            or len(identity) != 2
+        ):
+            return
+        move = self.doc.getObject(identity[0])
+        if (
+            move is None
+            or int(move.ID) != int(identity[1])
+            or move not in self.viewObj.Group
+            or not UtilsAssembly.isTimelineOperationActive(move)
+        ):
+            self.onMovesChanged()
+            return
+        Gui.Selection.clearSelection(self.doc.Name)
+        Gui.Selection.addSelection(self.doc.Name, move.Name, "")
         # we give back the focus to the item as addSelection gave the focus to the 3dview
         self.form.stepList.setCurrentItem(item)
 
@@ -854,31 +1403,49 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
 
     def createExplodedViewObject(self):
 
-        Gui.addModule("UtilsAssembly")
-        commands = (
-            f'assembly = App.ActiveDocument.getObject("{self.assembly.Name}")\n'
-            "view_group = UtilsAssembly.getViewGroup(assembly)\n"
-            'viewObj = view_group.newObject("App::FeaturePython", "Exploded View")\n'
-            "CommandCreateView.ExplodedView(viewObj)"
+        Gui.addModule("CommandCreateView")
+        document_expression = (
+            f"App.getDocument({str(self.doc.Name)!r})"
         )
-        Gui.doCommand(commands)
-        self.viewObj = Gui.doCommandEval("viewObj")
-        Gui.doCommandGui("CommandCreateView.ViewProviderExplodedView(viewObj.ViewObject)")
+        self.viewObj = Gui.runDocumentObjectCommand(
+            self.doc,
+            "CommandCreateView.createExplodedViewFeature("
+            f"{document_expression}, "
+            f"{document_expression}.getObject({str(self.assembly.Name)!r}))",
+            "App::FeaturePython",
+        )
+        Gui.doCommandGui(
+            "CommandCreateView.ViewProviderExplodedView("
+            f"Gui.getDocument({str(self.doc.Name)!r}).getObject("
+            f"{str(self.viewObj.Name)!r}))"
+        )
 
     def createExplodedStepObject(self):
+        if not self._ownsLiveTaskContext():
+            raise RuntimeError(
+                "The exploded-view task lost its exact Assembly context"
+            )
         moveType_index = 0
         if self.radialExplosion:
             self.radialExplosion = False
             moveType_index = 1  # 1 = type_index of "Radial"
 
-        commands = (
-            f'assembly = App.ActiveDocument.getObject("{self.assembly.Name}")\n'
-            'currentStep = assembly.newObject("App::FeaturePython", "Move")\n'
-            f"CommandCreateView.ExplodedViewStep(currentStep, {moveType_index})"
+        document_expression = (
+            f"App.getDocument({str(self.doc.Name)!r})"
         )
-        Gui.doCommand(commands)
-        self.currentStep = Gui.doCommandEval("currentStep")
-        Gui.doCommandGui("CommandCreateView.ViewProviderExplodedViewStep(currentStep.ViewObject)")
+        self.currentStep = Gui.runDocumentObjectCommand(
+            self.doc,
+            "CommandCreateView.createExplodedViewStepFeature("
+            f"{document_expression}, "
+            f"{document_expression}.getObject({str(self.assembly.Name)!r}), "
+            f"{moveType_index})",
+            "App::FeaturePython",
+        )
+        Gui.doCommandGui(
+            "CommandCreateView.ViewProviderExplodedViewStep("
+            f"Gui.getDocument({str(self.doc.Name)!r}).getObject("
+            f"{str(self.currentStep.Name)!r}))"
+        )
 
         self.currentStep.MovementTransform = App.Placement()
 
@@ -893,21 +1460,38 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
         listOfMoves = self.viewObj.Group
         listOfMoves.append(self.currentStep)
         self.viewObj.Group = listOfMoves
+        UtilsAssembly.markTimelineResource(self.currentStep, self.viewObj)
 
     def dismissCurrentStep(self):
         if self.currentStep is None:
             return
 
-        for obj, init_plc in zip(self.selectedObjs, self.selectedObjsInitPlc):
-            obj.Placement = init_plc
+        if self._selectedObjectsRemainLive():
+            for obj, init_plc in zip(
+                self.selectedObjs,
+                self.selectedObjsInitPlc,
+            ):
+                obj.Placement = init_plc
 
-        Gui.doCommand(f'App.ActiveDocument.removeObject("{self.currentStep.Name}")')
+        if (
+            self._ownsLiveTaskContext()
+            and self.doc.getObject(self.currentStep.Name)
+            is self.currentStep
+        ):
+            Gui.doCommand(
+                f"App.getDocument({str(self.doc.Name)!r}).removeObject("
+                f"{str(self.currentStep.Name)!r})"
+            )
         self.currentStep = None
 
-        Gui.Selection.clearSelection()
+        Gui.Selection.clearSelection(self.doc.Name)
 
     def draggerMoved(self, event):
-        if self.blockDraggerMove:
+        if (
+            self.blockDraggerMove
+            or not self._ownsLiveTaskContext()
+            or not self._selectedObjectsRemainLive()
+        ):
             return
 
         if self.currentStep is None:
@@ -925,11 +1509,16 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
         self.currentStep.Proxy.applyStep(self.currentStep, self.com, self.size)
 
     def draggerFinished(self, event):
+        if (
+            self.currentStep is None
+            or not self._selectedObjectsRemainLive()
+        ):
+            return
         isRadial = self.currentStep.MoveType == "Radial"
         self.currentStep = None
 
         if isRadial:
-            Gui.Selection.clearSelection()
+            Gui.Selection.clearSelection(self.doc.Name)
             return
 
         # Reset the initial placements
@@ -942,8 +1531,7 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
         if not self.selectingFeature:
             return
 
-        view = Gui.activeDocument().activeView()
-        cursor_info = view.getObjectInfo(view.getCursorPos())
+        cursor_info = self.view.getObjectInfo(self.view.getCursorPos())
 
         if not cursor_info or not self.presel_ref:
             self.assembly.ViewObject.DraggerVisibility = False
@@ -978,7 +1566,9 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
     def KeyboardEvent(self, info):
         if info["State"] == "UP" and info["Key"] == "ESCAPE":
             if self.currentStep is None:
-                self.reject()
+                dialog = Gui.Control.activeTaskDialog(self.gui_doc)
+                if dialog:
+                    dialog.reject()
             else:
                 if self.selectingFeature:
                     self.endSelectionMode()
@@ -999,13 +1589,30 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
                     selected_indexes = self.form.stepList.selectedIndexes()
                     sorted_indexes = sorted(selected_indexes, key=lambda x: x.row(), reverse=True)
                     for index in sorted_indexes:
-                        row = index.row()
-                        if row < len(self.viewObj.Group):
-                            move = self.viewObj.Group[row]
-                            # First remove the link from the viewObj
-                            self.viewObj.Group.remove(move)
-                            # Delete the object
-                            move.Document.removeObject(move.Name)
+                        if not self._ownsLiveTaskContext():
+                            return True
+                        item = self.form.stepList.item(index.row())
+                        identity = item.data(QtCore.Qt.UserRole)
+                        if (
+                            not isinstance(identity, tuple)
+                            or len(identity) != 2
+                        ):
+                            continue
+                        move = self.doc.getObject(identity[0])
+                        if (
+                            move is None
+                            or int(move.ID) != int(identity[1])
+                            or move not in self.viewObj.Group
+                            or not UtilsAssembly.isTimelineOperationActive(
+                                move
+                            )
+                        ):
+                            continue
+                        # First remove the link from the viewObj.
+                        group = list(self.viewObj.Group)
+                        group.remove(move)
+                        self.viewObj.Group = group
+                        self.doc.removeObject(move.Name)
 
                     return True  # Consume the event
 
@@ -1018,17 +1625,42 @@ class TaskAssemblyCreateView(_TaskAssemblyCreateViewBase):
             return
 
         else:
-            rootObj = App.getDocument(doc_name).getObject(obj_name)
+            if (
+                not self._ownsLiveTaskContext()
+                or doc_name != self.doc.Name
+            ):
+                return
+            rootObj = self.doc.getObject(obj_name)
+            if (
+                rootObj is None
+                or not UtilsAssembly.isTimelineOperationActive(
+                    rootObj
+                )
+            ):
+                return
             moving_part, new_sub = UtilsAssembly.getComponentReference(
                 self.assembly, rootObj, sub_name
             )
             ref = [moving_part, [new_sub]]
             obj = UtilsAssembly.getObject(ref)
 
-            if obj is None or moving_part is None:
+            if (
+                obj is None
+                or not UtilsAssembly.isMovableAssemblyComponent(
+                    self.assembly,
+                    moving_part,
+                )
+                or not UtilsAssembly.isTimelineOperationActive(obj)
+            ):
                 return
 
-            if self.form.CheckBox_PartsAsSingleSolid.isChecked():
+            if (
+                self.form.CheckBox_PartsAsSingleSolid.isChecked()
+                or UtilsAssembly.isLink(moving_part)
+                or moving_part.isDerivedFrom(
+                    "Assembly::AssemblyLink"
+                )
+            ):
                 part = moving_part
             else:
                 part = obj

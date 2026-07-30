@@ -24,16 +24,21 @@
 
 
 #include <QApplication>
+#include <QByteArray>
 #include <QMessageBox>
+#include <sstream>
 
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <Base/Exception.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
 #include <Gui/MainWindow.h>
+#include <Mod/Part/App/PartFeature.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/PartDesign/App/FeaturePrimitive.h>
 
@@ -69,6 +74,113 @@ static const char* primitiveIntToName(int id)
     };
 }
 
+static bool hasUsableSolidTip(PartDesign::Body* body)
+{
+    auto* tip = body ? freecad_cast<Part::Feature*>(body->Tip.getValue()) : nullptr;
+    if (!tip || !tip->isValid()) {
+        return false;
+    }
+    const auto& shape = tip->Shape.getShape();
+    return !shape.isNull() && shape.countSubShapes(TopAbs_SOLID) > 0;
+}
+
+struct ExactBodyIdentity
+{
+    App::Document* document {};
+    std::string documentName;
+    std::string documentUid;
+    long objectId {-1};
+    std::string objectName;
+};
+
+static ExactBodyIdentity exactBodyIdentity(const PartDesign::Body* body)
+{
+    return body && body->isAttachedToDocument()
+        ? ExactBodyIdentity {
+              .document = body->getDocument(),
+              .documentName = body->getDocument()->getName(),
+              .documentUid = body->getDocument()->Uid.getValueStr(),
+              .objectId = body->getID(),
+              .objectName = body->getNameInDocument(),
+          }
+        : ExactBodyIdentity {};
+}
+
+static PartDesign::Body* resolveExactBody(const ExactBodyIdentity& identity) noexcept
+{
+    if (!identity.document || identity.documentName.empty() || identity.documentUid.empty()
+        || identity.objectId <= 0 || identity.objectName.empty()) {
+        return nullptr;
+    }
+    App::Document* document = nullptr;
+    try {
+        document = App::GetApplication().getDocument(identity.documentName.c_str());
+    }
+    catch (...) {
+    }
+    auto* body = document == identity.document
+            && document->Uid.getValueStr() == identity.documentUid
+        ? freecad_cast<PartDesign::Body*>(document->getObjectByID(identity.objectId))
+        : nullptr;
+    return body && body->getNameInDocument()
+            && identity.objectName == body->getNameInDocument()
+        ? body
+        : nullptr;
+}
+
+static PartDesign::FeaturePrimitive* resolveExactPrimitive(
+    const ExactBodyIdentity& bodyIdentity,
+    const long objectId,
+    const std::string& objectName
+) noexcept
+{
+    auto* body = resolveExactBody(bodyIdentity);
+    if (!body || objectId <= 0 || objectName.empty()) {
+        return nullptr;
+    }
+    auto* primitive = freecad_cast<PartDesign::FeaturePrimitive*>(
+        body->getDocument()->getObjectByID(objectId)
+    );
+    return primitive && primitive->getNameInDocument()
+            && objectName == primitive->getNameInDocument()
+        ? primitive
+        : nullptr;
+}
+
+static PartDesign::FeaturePrimitive* createPrimitiveExact(
+    PartDesign::Body* body,
+    const std::string& typeName,
+    const std::string& featureName,
+    const char* factoryMethod,
+    const bool documentFactory
+)
+{
+    if (!body || !body->isAttachedToDocument() || typeName.empty() || featureName.empty()
+        || !factoryMethod) {
+        throw Base::ValueError("Creating a Part Design primitive requires one exact Body and type");
+    }
+    auto* document = body->getDocument();
+    std::ostringstream expression;
+    if (documentFactory) {
+        expression << "App.getDocument('" << document->getName() << "').";
+    }
+    else {
+        expression << Gui::Command::getObjectCmd(body) << '.';
+    }
+    expression << factoryMethod << "('" << typeName << "','" << featureName << "')";
+    auto* result = Gui::Command::runDocumentObjectCommand(
+        Gui::Command::Doc,
+        *document,
+        QByteArray(expression.str().c_str()),
+        PartDesign::FeaturePrimitive::getClassTypeId()
+    );
+    auto* primitive = freecad_cast<PartDesign::FeaturePrimitive*>(result);
+    if (!primitive) {
+        throw Base::RuntimeError("The Part Design primitive factory returned an incompatible object");
+    }
+    return primitive;
+}
+
 CmdPrimtiveCompAdditive::CmdPrimtiveCompAdditive()
     : Command("PartDesign_CompPrimitiveAdditive")
 {
@@ -84,6 +196,10 @@ CmdPrimtiveCompAdditive::CmdPrimtiveCompAdditive()
 void CmdPrimtiveCompAdditive::activated(int iMsg)
 {
     App::Document* doc = getDocument();
+    const char* primitiveName = primitiveIntToName(iMsg);
+    if (!doc || !primitiveName) {
+        return;
+    }
 
     // We need either an active Body, or for there to be no Body objects
     // (in which case, just make one) to make a new additive shape.
@@ -107,9 +223,11 @@ void CmdPrimtiveCompAdditive::activated(int iMsg)
     }
 
     Gui::ActionGroup* pcAction = qobject_cast<Gui::ActionGroup*>(_pcAction);
-    pcAction->setIcon(pcAction->actions().at(iMsg)->icon());
+    if (pcAction && iMsg >= 0 && iMsg < pcAction->actions().size()) {
+        pcAction->setIcon(pcAction->actions().at(iMsg)->icon());
+    }
 
-    std::string shapeType(primitiveIntToName(iMsg));
+    std::string shapeType(primitiveName);
 
     openCommand("Make additive " + shapeType);
     if (shouldMakeBody) {
@@ -117,24 +235,48 @@ void CmdPrimtiveCompAdditive::activated(int iMsg)
     }
 
     if (!pcActiveBody) {
+        abortCommand();
         return;
     }
 
+    const ExactBodyIdentity bodyIdentity = exactBodyIdentity(pcActiveBody);
     auto FeatName(getUniqueObjectName(shapeType.c_str(), pcActiveBody));
-
-    FCMD_OBJ_DOC_CMD(
+    auto* prm = createPrimitiveExact(
         pcActiveBody,
-        "addObject('PartDesign::Additive" << shapeType << "','" << FeatName << "')"
+        "PartDesign::Additive" + shapeType,
+        FeatName,
+        "addObject",
+        true
     );
-
-    auto* prm = static_cast<PartDesign::FeaturePrimitive*>(
-        pcActiveBody->getDocument()->getObject(FeatName.c_str())
+    const long primitiveId = prm->getID();
+    const std::string exactPrimitiveName = prm->getNameInDocument();
+    pcActiveBody = resolveExactBody(bodyIdentity);
+    prm = resolveExactPrimitive(
+        bodyIdentity,
+        primitiveId,
+        exactPrimitiveName
     );
-
-    if (!prm) {
+    if (!pcActiveBody || !prm) {
+        abortCommand();
+        return;
+    }
+    auto* primitiveBody = PartDesign::Body::findBodyOf(prm);
+    if (primitiveBody && primitiveBody != pcActiveBody) {
+        abortCommand();
         return;
     }
     FCMD_OBJ_CMD(pcActiveBody, "addObject(" << getObjectCmd(prm) << ")");
+    pcActiveBody = resolveExactBody(bodyIdentity);
+    prm = resolveExactPrimitive(
+        bodyIdentity,
+        primitiveId,
+        exactPrimitiveName
+    );
+    if (!pcActiveBody || !prm
+        || PartDesign::Body::findBodyOf(prm) != pcActiveBody) {
+        abortCommand();
+        return;
+    }
     Gui::Command::updateActive();
 
     auto base = prm->BaseFeature.getValue();
@@ -149,7 +291,9 @@ void CmdPrimtiveCompAdditive::activated(int iMsg)
     copyVisual(prm, "Transparency", base);
     copyVisual(prm, "DisplayMode", base);
 
-    PartDesignGui::setEdit(prm, pcActiveBody);
+    if (!PartDesignGui::setEdit(prm, pcActiveBody)) {
+        abortCommand();
+    }
 }
 
 Gui::Action* CmdPrimtiveCompAdditive::createAction()
@@ -272,7 +416,7 @@ void CmdPrimtiveCompAdditive::languageChange()
 
 bool CmdPrimtiveCompAdditive::isActive()
 {
-    return (hasActiveDocument() && !Gui::Control().activeDialog());
+    return PartDesignGui::canStartModelingCommand();
 }
 
 DEF_STD_CMD_ACL(CmdPrimtiveCompSubtractive)
@@ -292,37 +436,57 @@ CmdPrimtiveCompSubtractive::CmdPrimtiveCompSubtractive()
 void CmdPrimtiveCompSubtractive::activated(int iMsg)
 {
     PartDesign::Body* pcActiveBody = PartDesignGui::getBody(true);
+    const char* shapeType = primitiveIntToName(iMsg);
 
-    if (!pcActiveBody) {
+    if (!pcActiveBody || !shapeType) {
         return;
     }
 
     Gui::ActionGroup* pcAction = qobject_cast<Gui::ActionGroup*>(_pcAction);
-    pcAction->setIcon(pcAction->actions().at(iMsg)->icon());
+    if (pcAction && iMsg >= 0 && iMsg < pcAction->actions().size()) {
+        pcAction->setIcon(pcAction->actions().at(iMsg)->icon());
+    }
 
     // check if we already have a feature as subtractive ones work only if we have
     // something to subtract from.
     App::DocumentObject* prevSolid = pcActiveBody->Tip.getValue();
-    if (!prevSolid) {
+    if (!hasUsableSolidTip(pcActiveBody)) {
         QMessageBox::warning(
             Gui::getMainWindow(),
-            QObject::tr("No previous feature found"),
-            QObject::tr("It is not possible to create a subtractive feature without a base feature available")
+            QObject::tr("No solid body result"),
+            QObject::tr(
+                "A subtractive primitive requires the active Body to end in a valid solid result."
+            )
         );
         return;
     }
 
-    auto shapeType(primitiveIntToName(iMsg));
     auto FeatName(getUniqueObjectName(shapeType, pcActiveBody));
 
     openCommand(std::string("Make subtractive ") + shapeType);
-    FCMD_OBJ_CMD(
+    const ExactBodyIdentity bodyIdentity = exactBodyIdentity(pcActiveBody);
+    auto* Feat = createPrimitiveExact(
         pcActiveBody,
-        "newObject('PartDesign::Subtractive" << shapeType << "','" << FeatName << "')"
+        std::string("PartDesign::Subtractive") + shapeType,
+        FeatName,
+        "newObject",
+        false
     );
+    const long primitiveId = Feat->getID();
+    const std::string exactPrimitiveName = Feat->getNameInDocument();
+    pcActiveBody = resolveExactBody(bodyIdentity);
+    Feat = resolveExactPrimitive(
+        bodyIdentity,
+        primitiveId,
+        exactPrimitiveName
+    );
+    if (!pcActiveBody || !Feat
+        || PartDesign::Body::findBodyOf(Feat) != pcActiveBody) {
+        abortCommand();
+        return;
+    }
     Gui::Command::updateActive();
 
-    auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());
     copyVisual(Feat, "ShapeAppearance", prevSolid);
     copyVisual(Feat, "LineColor", prevSolid);
     copyVisual(Feat, "PointColor", prevSolid);
@@ -334,7 +498,9 @@ void CmdPrimtiveCompSubtractive::activated(int iMsg)
         FCMD_OBJ_HIDE(prevSolid);
     }
 
-    PartDesignGui::setEdit(Feat, pcActiveBody);
+    if (!PartDesignGui::setEdit(Feat, pcActiveBody)) {
+        abortCommand();
+    }
 }
 
 Gui::Action* CmdPrimtiveCompSubtractive::createAction()
@@ -457,7 +623,10 @@ void CmdPrimtiveCompSubtractive::languageChange()
 
 bool CmdPrimtiveCompSubtractive::isActive()
 {
-    return (hasActiveDocument() && !Gui::Control().activeDialog());
+    if (!PartDesignGui::canStartModelingCommand()) {
+        return false;
+    }
+    return hasUsableSolidTip(PartDesignGui::getBody(false));
 }
 
 //===========================================================================

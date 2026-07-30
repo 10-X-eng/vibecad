@@ -27,6 +27,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace TechDraw
 {
@@ -82,10 +83,10 @@ private:
     std::unique_ptr<Ui_TaskCosmeticCircle> ui;
 
     TechDraw::DrawViewPart* m_partFeat;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_partIdentity;
 
     std::string m_circleName;
     TechDraw::CosmeticEdge* m_ce;
-    TechDraw::CosmeticEdge* m_saveCE;
     Base::Vector3d m_center;
     bool m_createMode;
     std::string m_tag;

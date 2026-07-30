@@ -947,14 +947,12 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": accepted["working_revision"],
-                "replacements": [
-                    {"old": "label='Converted Mesh'", "new": "label='Edited Mesh'"},
-                    {
-                        "old": "label='Recovered Solid'",
-                        "new": "label='Edited Solid'",
-                    },
-                    {"old": "label='Face Boundary'", "new": "label='Edited Boundary'"},
-                ],
+                "source": (
+                    _source()
+                    .replace("label='Converted Mesh'", "label='Edited Mesh'")
+                    .replace("label='Recovered Solid'", "label='Edited Solid'")
+                    .replace("label='Face Boundary'", "label='Edited Boundary'")
+                ),
             },
         )
         _, _, edit_validated, edit_publication, accepted = _run_candidate(

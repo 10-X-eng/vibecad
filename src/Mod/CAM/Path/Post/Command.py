@@ -27,6 +27,12 @@ Processor entries in PathJob"""
 import FreeCAD
 import FreeCADGui
 import Path
+from Path.CommandBoundary import (
+    ExactDocumentObjectIdentity,
+    can_start_document_command,
+    is_job,
+    is_timeline_input_usable,
+)
 from PathScripts import PathUtils
 from Path.Post.Utils import FilenameGenerator, GCodeEditorDialog
 import os
@@ -115,13 +121,21 @@ class CommandPathPost:
         }
 
     def IsActive(self):
+        if not can_start_document_command():
+            return False
         selection = FreeCADGui.Selection.getSelection()
         if not selection:
             return False
 
         self.candidate = PathUtils.findParentJob(selection[0])
 
-        return self.candidate is not None
+        return (
+            is_timeline_input_usable(
+                selection[0],
+                FreeCAD.ActiveDocument,
+            )
+            and is_job(self.candidate)
+        )
 
     def _write_file(self, filename, gcode, policy):
         #
@@ -202,6 +216,34 @@ class CommandPathPost:
         Handles the activation of post processing, initiating the process based
         on user selection and document context.
         """
+        if not self.IsActive():
+            return
+
+        document = FreeCAD.ActiveDocument
+        selected = FreeCADGui.Selection.getSelection()[0]
+        selected_identity = ExactDocumentObjectIdentity(
+            selected,
+            document,
+        )
+        job_identity = ExactDocumentObjectIdentity(
+            self.candidate,
+            document,
+        )
+
+        def resolve_context():
+            live_selected = selected_identity.resolve(
+                require_timeline=True,
+            )
+            live_job = job_identity.resolve(
+                require_timeline=True,
+            )
+            if PathUtils.findParentJob(live_selected) is not live_job:
+                raise RuntimeError(
+                    "The selected post-processing Job changed"
+                )
+            return live_job
+
+        self.candidate = resolve_context()
         Path.Log.debug(self.candidate.Name)
 
         # Determine if we use new flow (machine-based) or old flow (legacy)
@@ -216,12 +258,10 @@ class CommandPathPost:
             dlg = PostProcessDialog(self.candidate)
             if dlg.exec_() != QtGui.QDialog.DialogCode.Accepted:
                 return
-            # Files were written by the dialog's Save button; record the transaction and return.
-            FreeCAD.ActiveDocument.openTransaction("Post Process the Selected Job")
-            FreeCAD.ActiveDocument.commitTransaction()
+            self.candidate = resolve_context()
+            # Files were written by the dialog's Save button. Export is not a
+            # document mutation and must not create an empty undo record.
             return
-
-        FreeCAD.ActiveDocument.openTransaction("Post Process the Selected Job")
 
         if use_new_flow:
             Path.Log.debug("Using new flow (machine-based)")
@@ -234,12 +274,10 @@ class CommandPathPost:
                     FreeCAD.Console.PrintError(
                         f"Machine '{machine.name}' does not specify a postprocessor\n"
                     )
-                    FreeCAD.ActiveDocument.abortTransaction()
                     return
 
             except FileNotFoundError as e:
                 FreeCAD.Console.PrintError(f"Machine configuration error: {e}\n")
-                FreeCAD.ActiveDocument.abortTransaction()
                 return
         else:
             Path.Log.debug("Using old flow (legacy)")
@@ -248,13 +286,12 @@ class CommandPathPost:
                 postprocessor_name = _resolve_post_processor_name(self.candidate)
             except ValueError as e:
                 FreeCAD.Console.PrintError(f"{e}\n")
-                FreeCAD.ActiveDocument.abortTransaction()
                 return
+            self.candidate = resolve_context()
 
         Path.Log.debug(f"Post Processor: {postprocessor_name}")
 
         if not postprocessor_name:
-            FreeCAD.ActiveDocument.abortTransaction()
             return
 
         # Get postprocessor (same factory for both flows)
@@ -273,7 +310,6 @@ class CommandPathPost:
         # None is returned if there was an error during argument processing
         # otherwise the "usual" post_data data structure is returned.
         if not post_data:
-            FreeCAD.ActiveDocument.abortTransaction()
             return
 
         policy = Path.Preferences.defaultOutputPolicy()
@@ -332,10 +368,8 @@ class CommandPathPost:
                             continue
 
                 # write the results to the file
+                self.candidate = resolve_context()
                 self._write_file(fname, final_gcode, policy)
-
-        FreeCAD.ActiveDocument.commitTransaction()
-        # FreeCAD.ActiveDocument.recompute()
 
 
 class CommandPathPostSelected(CommandPathPost):
@@ -348,18 +382,33 @@ class CommandPathPostSelected(CommandPathPost):
         }
 
     def IsActive(self):
+        if not can_start_document_command():
+            return False
         selection = FreeCADGui.Selection.getSelection()
         if not selection:
             return False
 
-        return all(hasattr(op, "Path") and not op.Name.startswith("Job") for op in selection)
+        jobs = [PathUtils.findParentJob(op) for op in selection]
+        return (
+            all(hasattr(op, "Path") for op in selection)
+            and all(
+                is_timeline_input_usable(
+                    op,
+                    FreeCAD.ActiveDocument,
+                )
+                for op in selection
+            )
+            and all(is_job(job) for job in jobs)
+            and len({job.Name for job in jobs}) == 1
+        )
 
     def Activated(self):
         """
         Handles the activation of post processing, initiating the process based
         on user selection and document context.
         """
-        FreeCAD.ActiveDocument.openTransaction("Post Process the Selected operations")
+        if not self.IsActive():
+            return
 
         selection = FreeCADGui.Selection.getSelection()
         job = PathUtils.findParentJob(selection[0])
@@ -373,8 +422,38 @@ class CommandPathPostSelected(CommandPathPost):
             baseOp = FreeCAD.ActiveDocument.getObject(selection[0].Base[0])
             job = PathUtils.findParentJob(baseOp)
 
-        opCandidates = [op for op in selection if hasattr(op, "Path") and "Job" not in op.Name]
+        document = FreeCAD.ActiveDocument
+        source_identities = [
+            ExactDocumentObjectIdentity(operation, document)
+            for operation in selection
+        ]
+        job_identity = ExactDocumentObjectIdentity(job, document)
+
+        def resolve_context():
+            live_sources = [
+                identity.resolve(require_timeline=True)
+                for identity in source_identities
+            ]
+            live_job = job_identity.resolve(
+                require_timeline=True,
+            )
+            if any(
+                PathUtils.findParentJob(operation) is not live_job
+                for operation in live_sources
+            ):
+                raise RuntimeError(
+                    "The selected post-processing operations changed"
+                )
+            return live_sources, live_job
+
+        selection, job = resolve_context()
+        opCandidates = [
+            op
+            for op in selection
+            if hasattr(op, "Path") and "Job" not in op.Name
+        ]
         operations = []
+        selected_only = False
         if opCandidates and job.Operations.Group != opCandidates:
             msgBox = QtGui.QMessageBox()
             msgBox.setWindowTitle("Post Process")
@@ -389,16 +468,29 @@ class CommandPathPostSelected(CommandPathPost):
             msgBox.exec()
 
             if msgBox.clickedButton() == btn1:
+                selected_only = True
                 print(
                     f"Post process only selected operations: {', '.join([op.Name for op in opCandidates])}"
                 )
-                operations = opCandidates
+        selection, job = resolve_context()
+        if selected_only:
+            operations = [
+                op
+                for op in selection
+                if hasattr(op, "Path") and "Job" not in op.Name
+            ]
 
         postprocessor_name = _resolve_post_processor_name(job)
+        selection, job = resolve_context()
+        if selected_only:
+            operations = [
+                op
+                for op in selection
+                if hasattr(op, "Path") and "Job" not in op.Name
+            ]
         Path.Log.debug(f"Post Processor: {postprocessor_name}")
 
         if not postprocessor_name:
-            FreeCAD.ActiveDocument.abortTransaction()
             return
 
         # get a postprocessor
@@ -410,7 +502,6 @@ class CommandPathPostSelected(CommandPathPost):
         # None is returned if there was an error during argument processing
         # otherwise the "usual" post_data data structure is returned.
         if not post_data:
-            FreeCAD.ActiveDocument.abortTransaction()
             return
 
         policy = Path.Preferences.defaultOutputPolicy()
@@ -447,10 +538,8 @@ class CommandPathPostSelected(CommandPathPost):
                             continue
 
                 # write the results to the file
+                resolve_context()
                 self._write_file(fname, final_gcode, policy)
-
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCAD.ActiveDocument.recompute()
 
 
 if FreeCAD.GuiUp:

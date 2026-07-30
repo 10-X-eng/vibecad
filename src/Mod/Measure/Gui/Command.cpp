@@ -23,8 +23,14 @@
 
 #include <QApplication>
 
+#include <exception>
+#include <memory>
+
 #include <App/Application.h>
+#include <App/Datums.h>
 #include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
@@ -32,9 +38,78 @@
 #include <Gui/MDIView.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
+#include <Mod/Part/App/PartFeature.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
+#include <TopoDS_Shape.hxx>
 
 #include "TaskMeasure.h"
 #include "TaskMassProperties.h"
+#include "TimelineSelection.h"
+
+namespace
+{
+bool hasMeasurableObject(App::Document* document)
+{
+    if (!document) {
+        return false;
+    }
+    try {
+        for (auto* rawObject : document->getObjects()) {
+            if (!MeasureGui::isTimelineSelectionActive(rawObject)) {
+                continue;
+            }
+            auto* object = PartGui::resolveModelingObject(rawObject);
+            if (!object
+                || !MeasureGui::isTimelineSelectionActive(object)) {
+                continue;
+            }
+
+            // A Body's built-in origin axes, planes and point are reference
+            // geometry, not user-created model content. Their non-null Shapes
+            // must not make an otherwise empty document appear measurable.
+            if (auto* datum = freecad_cast<App::DatumElement*>(object);
+                datum && datum->isOriginFeature()) {
+                continue;
+            }
+            if (!object->isDerivedFrom<App::GeoFeature>()) {
+                continue;
+            }
+
+            TopoDS_Shape shape = Part::Feature::getShape(
+                object,
+                Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
+            );
+            if (!shape.IsNull()) {
+                return true;
+            }
+
+            std::string module = Base::Type::getModuleName(object->getTypeId().getName());
+            if (App::MeasureManager::hasMeasureHandler(module.c_str())) {
+                return true;
+            }
+        }
+    }
+    catch (...) {
+        // Command-state queries run while documents are being recomputed,
+        // restored, and closed. A transiently invalid link must disable the
+        // action for this update instead of escaping through Qt.
+        return false;
+    }
+    return false;
+}
+
+template<typename Task>
+void showExactMeasureTask(App::Document& document)
+{
+    auto task = std::make_unique<Task>();
+    auto* taskPointer = task.get();
+    taskPointer->setDocumentName(document.getName());
+    Gui::Control().showDialog(taskPointer, &document);
+    if (Gui::Control().activeDialog(&document) == taskPointer) {
+        task.release();
+    }
+}
+}  // namespace
 
 //===========================================================================
 // Std_Measure
@@ -59,15 +134,32 @@ void StdCmdMeasure::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    MeasureGui::TaskMeasure* task = new MeasureGui::TaskMeasure();
-    task->setDocumentName(this->getDocument()->getName());
-    Gui::Control().showDialog(task);
+    auto* document = App::GetApplication().getActiveDocument();
+    if (!isActive() || !document) {
+        return;
+    }
+    try {
+        showExactMeasureTask<MeasureGui::TaskMeasure>(*document);
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not start measurement: %s\n",
+            error.what()
+        );
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Could not start measurement: %s\n",
+            error.what()
+        );
+    }
 }
 
 bool StdCmdMeasure::isActive()
 {
     App::Document* doc = App::GetApplication().getActiveDocument();
-    if (!doc || doc->countObjectsOfType<App::GeoFeature>() == 0) {
+    if (!doc || !PartGui::canStartRetainedModelingTask(doc)
+        || !hasMeasurableObject(doc) || Gui::Control().activeDialog()) {
         return false;
     }
 
@@ -105,18 +197,72 @@ void StdCmdMassProperties::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
 
-    MassPropertiesGui::TaskMassProperties* task = new MassPropertiesGui::TaskMassProperties();
-    task->setDocumentName(this->getDocument()->getName());
-    Gui::Control().showDialog(task);
+    auto* document = App::GetApplication().getActiveDocument();
+    if (!isActive() || !document) {
+        return;
+    }
+    try {
+        showExactMeasureTask<
+            MassPropertiesGui::TaskMassProperties>(*document);
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not start mass properties: %s\n",
+            error.what()
+        );
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Could not start mass properties: %s\n",
+            error.what()
+        );
+    }
 }
 
 bool StdCmdMassProperties::isActive()
 {
     App::Document* doc = App::GetApplication().getActiveDocument();
-    if (!doc) {
+    if (!doc || !PartGui::canStartRetainedModelingTask(doc)
+        || Gui::Control().activeDialog()) {
         return false;
     }
-    return Gui::Control().activeDialog() == nullptr;
+
+    try {
+        for (auto* rawObject : doc->getObjects()) {
+            if (!MeasureGui::isTimelineSelectionActive(rawObject)) {
+                continue;
+            }
+            auto* object = PartGui::resolveModelingObject(rawObject);
+            if (!object
+                || !MeasureGui::isTimelineSelectionActive(object)
+                || object->isDerivedFrom<App::DatumElement>()) {
+                continue;
+            }
+
+            TopoDS_Shape shape = Part::Feature::getShape(
+                object,
+                Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
+            );
+            if (shape.IsNull()) {
+                continue;
+            }
+
+            switch (shape.ShapeType()) {
+                case TopAbs_SOLID:
+                case TopAbs_COMPSOLID:
+                case TopAbs_SHELL:
+                case TopAbs_FACE:
+                case TopAbs_COMPOUND:
+                    return true;
+                default:
+                    break;
+            }
+        }
+    }
+    catch (...) {
+        return false;
+    }
+    return false;
 }
 
 void CreateMassPropertiesCommands()

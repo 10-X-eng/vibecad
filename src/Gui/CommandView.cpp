@@ -59,6 +59,7 @@
 #include <App/Part.h>
 #include <App/Link.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Parameter.h>
 
 #include "Base/Tools2D.h"
@@ -171,9 +172,19 @@ bool StdOrthographicCamera::isActive()
         return false;
     }
 
-    const std::string& camera = view->getCamera();
-    const bool mode = camera.find("OrthographicCamera") != std::string_view::npos;
-    _pcAction->setChecked(mode);
+    try {
+        const std::string& camera = view->getCamera();
+        const bool mode =
+            camera.find("OrthographicCamera") != std::string_view::npos;
+        _pcAction->setChecked(mode);
+    }
+    catch (const Base::Exception&) {
+        // A newly created 3D view can become the active MDI window one event
+        // turn before its Coin camera is installed. Command-state polling
+        // must remain non-throwing during that normal initialization window.
+        _pcAction->setChecked(false);
+        return false;
+    }
 
     return true;
 }
@@ -218,9 +229,18 @@ bool StdPerspectiveCamera::isActive()
         return false;
     }
 
-    const std::string& camera = view->getCamera();
-    const bool mode = camera.find("PerspectiveCamera") != std::string_view::npos;
-    _pcAction->setChecked(mode);
+    try {
+        const std::string& camera = view->getCamera();
+        const bool mode =
+            camera.find("PerspectiveCamera") != std::string_view::npos;
+        _pcAction->setChecked(mode);
+    }
+    catch (const Base::Exception&) {
+        // See StdOrthographicCamera::isActive(): the view exists before its
+        // renderer necessarily has a camera during startup event processing.
+        _pcAction->setChecked(false);
+        return false;
+    }
 
     return true;
 }
@@ -2510,6 +2530,7 @@ VibeCADCmdToggleGrid::VibeCADCmdToggleGrid()
     sStatusTip = sToolTipText;
     sWhatsThis = "VibeCAD_ToggleGrid";
     sPixmap = "Draft_Grid";
+    eType = Alter3DView;
 }
 
 void VibeCADCmdToggleGrid::activated(int iMsg)
@@ -3984,7 +4005,7 @@ void StdCmdToggleBottomPanels::activated(int iMsg)
         // No visible bottom panels: restore the previously hidden ones. The default covers a fresh
         // install with no saved state.
         const auto savedNames = QString::fromStdString(
-            hGrp->GetASCII("HiddenBottomWidgets", "Python console;;Report view")
+            hGrp->GetASCII("HiddenBottomWidgets", "Std_PythonView;;Std_ReportView")
         );
         QStringList panelNamesToRestore = savedNames.split(QStringLiteral(";;"));
 
@@ -3992,13 +4013,20 @@ void StdCmdToggleBottomPanels::activated(int iMsg)
             if (panelName.isEmpty()) {
                 continue;
             }
-            auto* panel = mainWindow->findChild<QWidget*>(panelName);
+            auto* panel = mainWindow->findChild<QDockWidget*>(panelName);
+            if (!panel) {
+                // Older builds saved the embedded content widget's name.
+                // Resolve that widget to its owning dock so showing it also
+                // restores the panel container.
+                if (auto* content = mainWindow->findChild<QWidget*>(panelName)) {
+                    panel = qobject_cast<QDockWidget*>(content->parentWidget());
+                }
+            }
             if (panel) {
                 panel->show();
+                panelsNowVisible = true;
             }
         }
-
-        panelsNowVisible = true;
     }
     else {
         // Hide all visible bottom panels and save their names so they can be restored when the

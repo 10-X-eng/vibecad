@@ -45,6 +45,11 @@ public:
     /// destructor
     ~ViewProviderSketchBased() override;
 
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
+
     /// grouping handling
     std::vector<App::DocumentObject*> claimChildren() const override;
 

@@ -38,5 +38,8 @@ class VPMeshBoundaryLayer(view_base_femmeshelement.VPBaseFemMeshElement):
     A View Provider for the MeshBoundaryLayer object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return super().setEdit(vobj, mode, task_mesh_boundarylayer._TaskPanel)

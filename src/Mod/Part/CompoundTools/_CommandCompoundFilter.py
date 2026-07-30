@@ -31,6 +31,7 @@ import FreeCAD
 
 if FreeCAD.GuiUp:
     import FreeCADGui
+    import PartGui
     from PySide import QtGui
     from PySide import QtCore
 
@@ -48,6 +49,68 @@ if FreeCAD.GuiUp:
 
 
 # command class
+def _is_shape_object(obj):
+    shape = getattr(obj, "Shape", None)
+    return shape is not None and not shape.isNull()
+
+
+def _selected_modeling_objects():
+    objects = []
+    for raw in FreeCADGui.Selection.getSelection():
+        if not PartGui.isModelingObjectActive(raw):
+            continue
+        obj = PartGui.resolveModelingObject(raw)
+        if obj is not None and obj not in objects:
+            objects.append(obj)
+    return objects
+
+
+def _has_filter_operands():
+    selection = _selected_modeling_objects()
+    return (
+        len(selection) in (1, 2)
+        and _is_shape_object(selection[0])
+        and selection[0].Shape.ShapeType in ("Compound", "CompSolid")
+        and (len(selection) == 1 or _is_shape_object(selection[1]))
+    )
+
+
+def _visible_presentations(operands):
+    presentations = []
+    for operand in operands:
+        presentation = PartGui.resolveModelingPresentationObject(
+            operand
+        )
+        if (
+            presentation is not None
+            and presentation not in presentations
+            and bool(presentation.Visibility)
+        ):
+            presentations.append(presentation)
+    return presentations
+
+
+def _replace_visible_presentations(result, presentations):
+    if (
+        presentations
+        and PartGui.setModelingReplacedInputs(
+            result,
+            presentations,
+        )
+    ):
+        for presentation in presentations:
+            presentation.Visibility = False
+
+
+def _object_expression(obj):
+    """Return a recorded command expression for one exact document object."""
+
+    return (
+        f"App.getDocument({obj.Document.Name!r})"
+        f".getObject({obj.Name!r})"
+    )
+
+
 class _CommandCompoundFilter:
     "Command to create CompoundFilter feature"
 
@@ -68,10 +131,7 @@ class _CommandCompoundFilter:
         }
 
     def Activated(self):
-        if (
-            len(FreeCADGui.Selection.getSelection()) == 1
-            or len(FreeCADGui.Selection.getSelection()) == 2
-        ):
+        if _has_filter_operands():
             cmdCreateCompoundFilter(name="CompoundFilter")
         else:
             mb = QtGui.QMessageBox()
@@ -89,10 +149,11 @@ class _CommandCompoundFilter:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and _has_filter_operands()
+        )
 
 
 if FreeCAD.GuiUp:
@@ -101,28 +162,38 @@ if FreeCAD.GuiUp:
 
 # helper
 def cmdCreateCompoundFilter(name):
-    sel = FreeCADGui.Selection.getSelection()
-    FreeCAD.ActiveDocument.openTransaction("Create CompoundFilter")
+    document = FreeCAD.ActiveDocument
+    sel = _selected_modeling_objects()
+    presentations = _visible_presentations(sel)
+    document.openTransaction("Create CompoundFilter")
     FreeCADGui.addModule("CompoundTools.CompoundFilter")
-    FreeCADGui.doCommand(
-        "f = CompoundTools.CompoundFilter.makeCompoundFilter(name = '" + name + "')"
+    result = FreeCADGui.runDocumentObjectCommand(
+        document,
+        f"CompoundTools.CompoundFilter.makeCompoundFilter(name={name!r})",
+        "Part::Feature",
     )
-    FreeCADGui.doCommand("f.Base = App.ActiveDocument." + sel[0].Name)
+    result_expression = _object_expression(result)
+    FreeCADGui.doCommand(
+        f"{result_expression}.Base = {_object_expression(sel[0])}"
+    )
     if len(sel) == 2:
-        FreeCADGui.doCommand("f.Stencil = App.ActiveDocument." + sel[1].Name)
-        FreeCADGui.doCommand("f.Stencil.ViewObject.hide()")
-        FreeCADGui.doCommand("f.FilterType = 'collision-pass'")
+        FreeCADGui.doCommand(
+            f"{result_expression}.Stencil = {_object_expression(sel[1])}"
+        )
+        FreeCADGui.doCommand(
+            f"{result_expression}.FilterType = 'collision-pass'"
+        )
     else:
-        FreeCADGui.doCommand("f.FilterType = 'window-volume'")
+        FreeCADGui.doCommand(
+            f"{result_expression}.FilterType = 'window-volume'"
+        )
 
     try:
-        FreeCADGui.doCommand("f.Proxy.execute(f)")
-        FreeCADGui.doCommand("f.purgeTouched()")
+        FreeCADGui.doCommand(
+            f"{result_expression}.Proxy.execute({result_expression})"
+        )
+        FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
     except Exception as err:
-        if hasattr(err, "message"):
-            error_string = err.message
-        else:
-            error_string = err
         mb = QtGui.QMessageBox()
         mb.setIcon(mb.Icon.Warning)
         error_text1 = translate("Part_CompoundFilter", "Computing the result failed with an error:")
@@ -142,10 +213,20 @@ def cmdCreateCompoundFilter(name):
         mb.exec_()
 
         if mb.clickedButton() is btnAbort:
-            FreeCAD.ActiveDocument.abortTransaction()
+            document.abortTransaction()
             return
 
-    FreeCADGui.doCommand("f.Base.ViewObject.hide()")
-    FreeCADGui.doCommand("f = None")
+    presentation_expression = ", ".join(
+        _object_expression(presentation)
+        for presentation in presentations
+    )
+    FreeCADGui.addModule(
+        "CompoundTools._CommandCompoundFilter"
+    )
+    FreeCADGui.doCommand(
+        "CompoundTools._CommandCompoundFilter."
+        "_replace_visible_presentations("
+        f"{result_expression}, [{presentation_expression}])"
+    )
 
-    FreeCAD.ActiveDocument.commitTransaction()
+    document.commitTransaction()

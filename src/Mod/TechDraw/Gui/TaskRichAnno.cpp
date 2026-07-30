@@ -24,14 +24,17 @@
 #include <QDialog>
 #include <QTextEdit>
 #include <QGraphicsView>
+#include <QMessageBox>
 #include <QScrollBar>
 #include <QAbstractScrollArea>
 
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/Control.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/ViewProvider.h>
@@ -76,17 +79,13 @@ TaskRichAnno::TaskRichAnno(TechDrawGui::ViewProviderRichAnno* annoVP) :
     m_view(nullptr),
     m_toolbar(nullptr)
 {
-    //existence of annoVP is guaranteed by caller being ViewProviderRichAnno.setEdit
-
-    m_annoFeat = m_annoVP->getFeature();
-
-    m_basePage = m_annoFeat->findParentPage();
-    if (!m_basePage) {
-        Base::Console().error("TaskRichAnno - bad parameters (2).  Cannot proceed.\n");
-        m_inProgressLock = false;
-        return;
+    m_annoFeat = m_annoVP ? m_annoVP->getFeature() : nullptr;
+    if (!m_annoVP || !m_annoFeat) {
+        throw Base::TypeError(
+            "The annotation editor requires a live annotation"
+        );
     }
-
+    m_basePage = m_annoFeat->findParentPage();
     //m_baseFeat can be null
     App::DocumentObject* obj = m_annoFeat->AnnoParent.getValue();
     if (obj) {
@@ -95,9 +94,43 @@ TaskRichAnno::TaskRichAnno(TechDrawGui::ViewProviderRichAnno* annoVP) :
         }
     }
 
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    auto* document = m_annoFeat->getDocument();
+    if (!m_basePage || m_basePage->getDocument() != document
+        || (m_baseFeat
+            && (m_baseFeat->getDocument() != document
+                || m_baseFeat->findParentPage() != m_basePage))
+        || document->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The annotation editor requires an annotation on a live page "
+            "and its owning transaction"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(document);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(
+            m_basePage
+        );
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawView>(
+            m_baseFeat
+        );
+    m_annotationIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawRichAnno>(
+            m_annoFeat
+        );
+    Gui::Document* activeGui =
+        m_documentIdentity.guiDocument();
+    Gui::ViewProvider* vp =
+        activeGui ? activeGui->getViewProvider(m_basePage) : nullptr;
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp || !m_vpp->getQGVPage()
+        || !m_vpp->getQGSPage()) {
+        throw Base::RuntimeError(
+            "The annotation editor could not find the drawing page"
+        );
+    }
     m_view = m_vpp->getMDIViewPage();
 
     m_qgParent = nullptr;
@@ -109,7 +142,7 @@ TaskRichAnno::TaskRichAnno(TechDrawGui::ViewProviderRichAnno* annoVP) :
     graphicsView = m_vpp->getQGVPage();
     m_toolbar = new MRichTextEdit(graphicsView->viewport());
 
-    m_tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Edit Annotation"));
+    m_tid = document->getBookedTransactionID();
 
 
     ui->setupUi(this);
@@ -139,10 +172,41 @@ TaskRichAnno::TaskRichAnno(TechDraw::DrawView* baseFeat,
     m_view(nullptr),
     m_toolbar(nullptr)
 {
-    //existence of baseFeat and page guaranteed by CmdTechDrawRichTextAnnotation (CommandAnnotate.cpp)
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    if (!m_basePage || !m_basePage->getDocument()
+        || (m_baseFeat
+            && (m_baseFeat->getDocument()
+                    != m_basePage->getDocument()
+                || m_baseFeat->findParentPage()
+                    != m_basePage))
+        || m_basePage->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "A new annotation requires a live drawing page and its owning "
+            "transaction"
+        );
+    }
+    auto* document = m_basePage->getDocument();
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(document);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(
+            m_basePage
+        );
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawView>(
+            m_baseFeat
+        );
+    Gui::Document* activeGui =
+        m_documentIdentity.guiDocument();
+    Gui::ViewProvider* vp =
+        activeGui ? activeGui->getViewProvider(m_basePage) : nullptr;
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp || !m_vpp->getQGVPage()
+        || !m_vpp->getQGSPage()) {
+        throw Base::RuntimeError(
+            "The annotation task could not find the drawing page"
+        );
+    }
     m_view = m_vpp->getMDIViewPage();
 
     m_qgParent = nullptr;
@@ -150,7 +214,7 @@ TaskRichAnno::TaskRichAnno(TechDraw::DrawView* baseFeat,
         m_qgParent = m_vpp->getQGSPage()->findQViewForDocObj(baseFeat);
     }
 
-    m_tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Annotation"));
+    m_tid = document->getBookedTransactionID();
 
     ui->setupUi(this);
     m_title = QObject::tr("Rich Text Creator");
@@ -183,23 +247,76 @@ TaskRichAnno::~TaskRichAnno()
     }
 }
 
+bool TaskRichAnno::resolveTargets()
+{
+    auto* document = m_documentIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!document || !page
+        || page->getDocument() != document) {
+        return false;
+    }
+    TechDraw::DrawView* base = nullptr;
+    if (m_baseIdentity.id() >= 0) {
+        base = m_baseIdentity.resolve();
+        if (!base || base->findParentPage() != page) {
+            return false;
+        }
+    }
+    TechDraw::DrawRichAnno* annotation = nullptr;
+    if (m_annotationIdentity.id() >= 0) {
+        annotation = m_annotationIdentity.resolve();
+        if (!annotation
+            || annotation->findParentPage() != page) {
+            return false;
+        }
+    }
+    auto* guiDocument = m_documentIdentity.guiDocument();
+    auto* pageProvider = guiDocument
+        ? dynamic_cast<ViewProviderPage*>(
+              guiDocument->getViewProvider(page)
+          )
+        : nullptr;
+    if (!pageProvider || !pageProvider->getQGVPage()
+        || !pageProvider->getQGSPage()) {
+        return false;
+    }
+    ViewProviderRichAnno* annotationProvider = nullptr;
+    if (annotation) {
+        annotationProvider =
+            dynamic_cast<ViewProviderRichAnno*>(
+                guiDocument->getViewProvider(annotation)
+            );
+        if (!annotationProvider) {
+            return false;
+        }
+    }
+
+    m_basePage = page;
+    m_baseFeat = base;
+    m_annoFeat = annotation;
+    m_annoVP = annotationProvider;
+    m_vpp = pageProvider;
+    m_view = pageProvider->getMDIViewPage();
+    return m_view != nullptr;
+}
+
 void TaskRichAnno::finishSetup()
 {
     m_inProgressLock = true;  // Lock during setup
 
     // --- Step 1: Get pointer to the QGIRichAnno object ---
     if (!m_annoVP || !m_view) {
-        Base::Console().error(
-            "TaskRichAnno::finishSetup - Critical m_annoVP are missing. Aborting setup.\n");
-        return;
+        throw Base::RuntimeError(
+            "The annotation editor has no live view provider"
+        );
     }
     m_qgiAnno = static_cast<QGIRichAnno*>(m_annoVP->getQView());
     QGVPage* graphicsView = m_view->getViewProviderPage()->getQGVPage();
 
     if (!m_qgiAnno || !graphicsView) {
-        Base::Console().error(
-            "TaskRichAnno::finishSetup - Critical m_qgiAnno is missing. Aborting setup.\n");
-        return;
+        throw Base::RuntimeError(
+            "The annotation editor could not create its drawing item"
+        );
     }
 
     m_toolbar->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::X11BypassWindowManagerHint);
@@ -632,16 +749,40 @@ void TaskRichAnno::createAndSetupAnnotation(const QPointF* scenePos)
     QGVPage* graphicsView = m_vpp->getQGVPage();
     m_toolbar = new MRichTextEdit(graphicsView->viewport());
 
-    createAnnoFeature(scenePos);  // Create the feature at the specified position
+    try {
+        createAnnoFeature(scenePos);
+    }
+    catch (const Base::Exception& error) {
+        m_inProgressLock = false;
+        QMessageBox::critical(
+            this,
+            tr("Annotation Creation Failed"),
+            QString::fromUtf8(error.what())
+        );
+        Gui::Control().reject(m_documentIdentity.resolve());
+        return;
+    }
 
     if (!m_annoFeat) {  // Safety check if creation failed
         Base::Console().error("TaskRichAnno - Failed to create annotation feature.\n");
         m_inProgressLock = false;
-        reject();  // Abort the task
+        Gui::Control().reject(m_documentIdentity.resolve());
         return;
     }
 
-    finishSetup();  // This will connect all signals and show the toolbar
+    try {
+        finishSetup();
+    }
+    catch (const Base::Exception& error) {
+        m_inProgressLock = false;
+        QMessageBox::critical(
+            this,
+            tr("Annotation Editor Failed"),
+            QString::fromUtf8(error.what())
+        );
+        Gui::Control().reject(m_documentIdentity.resolve());
+        return;
+    }
 
     // Re-enable the UI
     ui->gbFrame->setEnabled(true);
@@ -657,46 +798,88 @@ void TaskRichAnno::createAndSetupAnnotation(const QPointF* scenePos)
 
 void TaskRichAnno::createAnnoFeature(const QPointF* scenePos)
 {
-//    Base::Console().message("TRA::createAnnoFeature()");
+    if (!resolveTargets()
+        || m_documentIdentity.resolve()->getBookedTransactionID()
+            != m_tid) {
+        throw Base::RuntimeError(
+            "The annotation target or transaction is no longer available"
+        );
+    }
+    auto* document = m_documentIdentity.resolve();
     const std::string objectName{QT_TR_NOOP("RichTextAnnotation")};
-    std::string annoName = m_basePage->getDocument()->getUniqueObjectName(objectName.c_str());
-    std::string generatedSuffix {annoName.substr(objectName.length())};
+    std::string annoName =
+        document->getUniqueObjectName(objectName.c_str());
     std::string annoType = "TechDraw::DrawRichAnno";
-
-    std::string PageName = m_basePage->getNameInDocument();
-
-    Command::doCommand(Command::Doc, "App.activeDocument().addObject('%s', '%s')",
-                       annoType.c_str(), annoName.c_str());
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)",
-                       PageName.c_str(), annoName.c_str());
+    const std::string documentName =
+        Base::InterpreterSingleton::strToPython(
+            document->getName()
+        );
+    const QString annotationFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject('%2', '%3')"
+        )
+            .arg(
+                QString::fromStdString(documentName),
+                QString::fromStdString(annoType),
+                QString::fromStdString(annoName)
+            );
+    auto* object = Gui::Command::runDocumentObjectCommand(
+        Command::Doc,
+        *document,
+        annotationFactory.toUtf8(),
+        TechDraw::DrawRichAnno::getClassTypeId()
+    );
+    m_annoFeat =
+        dynamic_cast<TechDraw::DrawRichAnno*>(object);
+    if (!m_annoFeat) {
+        throw Base::RuntimeError(
+            "The annotation object could not be created"
+        );
+    }
+    annoName = m_annoFeat->getNameInDocument();
+    const std::string generatedSuffix =
+        annoName.rfind(objectName, 0) == 0
+        ? annoName.substr(objectName.length())
+        : annoName;
+    m_annotationIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawRichAnno>(
+            m_annoFeat
+        );
+    const std::string pageCommand =
+        Gui::Command::getObjectCmd(m_basePage);
+    const std::string annotationCommand =
+        Gui::Command::getObjectCmd(m_annoFeat);
+    Command::doCommand(
+        Command::Doc,
+        "%s.addView(%s)",
+        pageCommand.c_str(),
+        annotationCommand.c_str()
+    );
 
     if (m_baseFeat) {
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.AnnoParent = App.activeDocument().%s",
-                               annoName.c_str(), m_baseFeat->getNameInDocument());
+        const std::string baseCommand =
+            Gui::Command::getObjectCmd(m_baseFeat);
+        Command::doCommand(
+            Command::Doc,
+            "%s.AnnoParent = %s",
+            annotationCommand.c_str(),
+            baseCommand.c_str()
+        );
     }
-    App::DocumentObject* obj = m_basePage->getDocument()->getObject(annoName.c_str());
-    if (!obj) {
-        Gui::Command::abortCommand(m_tid);
-        throw Base::RuntimeError("TaskRichAnno - new RichAnno object not found");
+    commonFeatureUpdate();
+    if (scenePos) {
+        m_annoFeat->X.setValue(Rez::appX(scenePos->x()));
+        m_annoFeat->Y.setValue(-Rez::appX(scenePos->y()));
     }
-    if (obj->isDerivedFrom<TechDraw::DrawRichAnno>()) {
-        m_annoFeat = static_cast<TechDraw::DrawRichAnno*>(obj);
-        commonFeatureUpdate(); // Set text, MaxWidth, ShowFrame from UI
-        if (scenePos) {
-            // New: Use the clicked position
-            m_annoFeat->X.setValue(Rez::appX(scenePos->x()));
-            m_annoFeat->Y.setValue(-Rez::appX(scenePos->y()));
-        }
-        else if (m_baseFeat) {
-            QPointF qTemp = calcTextStartPos(m_annoFeat->getScale());
-            Base::Vector3d vTemp(qTemp.x(), qTemp.y());
-            m_annoFeat->X.setValue(Rez::appX(vTemp.x));
-            m_annoFeat->Y.setValue(Rez::appX(vTemp.y));
-        } else {
-            //if we don't have a base feature, we can't calculate start position, so just put it mid-page
-            m_annoFeat->X.setValue(m_basePage->getPageWidth()/2.0);
-            m_annoFeat->Y.setValue(m_basePage->getPageHeight()/2.0);
-        }
+    else if (m_baseFeat) {
+        QPointF qTemp = calcTextStartPos(m_annoFeat->getScale());
+        Base::Vector3d vTemp(qTemp.x(), qTemp.y());
+        m_annoFeat->X.setValue(Rez::appX(vTemp.x));
+        m_annoFeat->Y.setValue(Rez::appX(vTemp.y));
+    }
+    else {
+        m_annoFeat->X.setValue(m_basePage->getPageWidth() / 2.0);
+        m_annoFeat->Y.setValue(m_basePage->getPageHeight() / 2.0);
     }
 
     if (m_annoFeat) {
@@ -718,7 +901,9 @@ void TaskRichAnno::createAnnoFeature(const QPointF* scenePos)
     }
 
     std::string translatedObjectName{tr(objectName.c_str()).toStdString()};
-    obj->Label.setValue(translatedObjectName + generatedSuffix);
+    m_annoFeat->Label.setValue(
+        translatedObjectName + generatedSuffix
+    );
 
     //trigger claimChildren in tree
     if (m_baseFeat) {
@@ -728,6 +913,12 @@ void TaskRichAnno::createAnnoFeature(const QPointF* scenePos)
     m_basePage->touch();
 
     if (m_annoFeat) {
+        m_annoFeat->recomputeFeature();
+        if (m_annoFeat->isError()) {
+            throw Base::RuntimeError(
+                "The annotation could not produce a valid result"
+            );
+        }
         m_annoFeat->requestPaint();
     }
 }
@@ -824,20 +1015,40 @@ void TaskRichAnno::enableTaskButtons(bool enable)
 
 bool TaskRichAnno::accept()
 {
-    if (m_inProgressLock || !m_annoFeat) {  // Should not happen if UI is responsive
+    if (m_inProgressLock || !resolveTargets()
+        || !m_annoFeat
+        || m_documentIdentity.resolve()
+                ->getBookedTransactionID()
+            != m_tid) {
         return false;
     }
 
     removeViewFilter();
 
-    if (m_qgiAnno) {
-        m_qgiAnno->setEditMode(false);
+    if (m_annoVP) {
+        if (auto* annotationItem =
+                dynamic_cast<QGIRichAnno*>(
+                    m_annoVP->getQView()
+                )) {
+            annotationItem->setEditMode(false);
+        }
     }
-
-    Gui::Command::commitCommand(m_tid);
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-
-    m_annoFeat->getDocument()->recompute();
+    commonFeatureUpdate();
+    m_annoFeat->recomputeFeature();
+    if (m_annoFeat->isError()) {
+        QMessageBox::warning(
+            this,
+            tr("Invalid Annotation"),
+            tr("The annotation could not produce a valid result.")
+        );
+        return false;
+    }
+    TaskInternal::updateExactDocument(
+        m_documentIdentity.resolve()
+    );
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
 
     return true;
 }
@@ -848,18 +1059,21 @@ bool TaskRichAnno::reject()
         return false;
     }
 
-    if (m_qgiAnno) {
-        m_qgiAnno->setEditMode(false);
+    if (resolveTargets() && m_annoVP) {
+        if (auto* annotationItem =
+                dynamic_cast<QGIRichAnno*>(
+                    m_annoVP->getQView()
+                )) {
+            annotationItem->setEditMode(false);
+        }
     }
     
     removeViewFilter();
-
-    Gui::Command::abortCommand(m_tid);
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-
-    if (!m_createMode) {  // Feature gone and m_annoFeat dangling if we are creating!
-        m_annoFeat->getDocument()->recompute();
-    }
+    // TaskView aborts the exact retained transaction after the editor is
+    // torn down.  This removes a provisional annotation or restores an edit.
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
 
     return true;
 }

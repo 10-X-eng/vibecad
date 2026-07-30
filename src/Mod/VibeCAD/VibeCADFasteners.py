@@ -2141,6 +2141,12 @@ def update_fastener_feature(
             "object has no VibeCAD standard-fastener parametric proxy."
         )
     delegate = proxy._restore_delegate(obj)
+    # The upstream generator caches its last-seen property values on the
+    # Python proxy, but those Python fields are not part of FreeCAD's undo
+    # journal. Rebase that cache from the exact live feature before applying
+    # this controlled edit; otherwise an edit after Undo can compare against
+    # future values and incorrectly enter its custom-length path.
+    delegate.BackupObject(obj)
     if str(obj.Type) != str(identity["standard"]):
         obj.Type = compatible
         obj.Type = str(identity["standard"])

@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <QFuture>
 #include <QFutureWatcher>
 
@@ -145,6 +147,7 @@ public:
     App::PropertyBoolList PrecomputedEdgeVisibility;
     App::PropertyIntegerList PrecomputedSourceIndices;
     App::PropertyVector PrecomputedProjectionCentroid;
+    App::PropertyString PrecomputedProjectionSourceState;
 
     void setPrecomputedProjection(const TopoDS_Shape& edges,
                                   const std::vector<long>& edgeClasses,
@@ -169,6 +172,12 @@ public:
     std::vector<TechDraw::DrawViewBalloon*> getBalloons() const;
     virtual std::vector<DrawViewSection*> getSectionRefs() const;
     virtual std::vector<DrawViewDetail*> getDetailRefs() const;
+    std::vector<TechDraw::DrawHatch*> getActiveHatches() const;
+    std::vector<TechDraw::DrawGeomHatch*> getActiveGeomHatches() const;
+    std::vector<TechDraw::DrawViewDimension*> getActiveDimensions() const;
+    std::vector<TechDraw::DrawViewBalloon*> getActiveBalloons() const;
+    std::vector<DrawViewSection*> getActiveSectionRefs() const;
+    std::vector<DrawViewDetail*> getActiveDetailRefs() const;
 
     const std::vector<TechDraw::VertexPtr> getVertexGeometry() const;
     const BaseGeomPtrVector getEdgeGeometry() const;
@@ -233,6 +242,8 @@ public:
     virtual TopoDS_Shape getSourceShape(bool fuse = false, bool allow2d = true) const;
     virtual TopoDS_Shape getShapeForDetail() const;
     std::vector<App::DocumentObject*> getAllSources() const;
+    /// Source objects which are active at the current document timeline marker.
+    std::vector<App::DocumentObject*> getActiveSources() const;
 
     // debug routines
     void dumpVerts(const std::string text);
@@ -269,6 +280,9 @@ public Q_SLOTS:
     void onFacesFinished(void);
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+
     bool checkXDirection() const;
 
     TechDraw::GeometryObjectPtr geometryObject;
@@ -285,6 +299,11 @@ protected:
     void partExec(TopoDS_Shape& shape);
     bool restorePrecomputedProjection();
     virtual void addPoints(void);
+    std::string sourceStateSignature(
+        const std::vector<App::DocumentObject*>& sources) const;
+    virtual std::string geometrySourceStateSignature() const;
+    bool geometryMatchesActiveSources() const;
+    void recomputeForCurrentTimelineState();
 
     void extractFaces();
     void findFacesNew(const std::vector<TechDraw::BaseGeomPtr>& goEdges);
@@ -303,6 +322,8 @@ private:
     bool nowUnsetting;
     bool m_waitingForFaces;
     bool m_waitingForHlr;
+    std::string m_geometrySourceState;
+    std::string m_pendingSourceState;
 
     QMetaObject::Connection connectHlrWatcher;
     QFutureWatcher<void> m_hlrWatcher;

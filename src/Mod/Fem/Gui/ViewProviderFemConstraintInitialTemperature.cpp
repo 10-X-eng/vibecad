@@ -46,10 +46,13 @@ ViewProviderFemConstraintInitialTemperature::~ViewProviderFemConstraintInitialTe
 bool ViewProviderFemConstraintInitialTemperature::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
         // clear the selection (convenience)
         Gui::Selection().clearSelection();
-        Gui::Control().showDialog(new TaskDlgFemConstraintInitialTemperature(this));
+        Gui::Control().showDialog(
+            new TaskDlgFemConstraintInitialTemperature(this),
+            getObject()->getDocument()
+        );
 
         return true;
     }

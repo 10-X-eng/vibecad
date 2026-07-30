@@ -21,13 +21,20 @@
 # *                                                                         *
 # ***************************************************************************
 
-import Draft
 import FreeCAD
 import FreeCADGui
 import Part
 import Path
+import Path.Base.Util as PathUtil
 import Path.Op.Base as OpBase
 import PathScripts.PathUtils as PathUtils
+from Path.CommandBoundary import (
+    ExactDocumentObjectIdentity,
+    active_jobs,
+    can_start_document_command,
+    is_timeline_input_usable,
+)
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
@@ -46,6 +53,38 @@ else:
 
 
 translate = FreeCAD.Qt.translate
+
+
+def _makeDocumentClone(document, source):
+    """Create Draft's linked clone in the captured CAM document."""
+
+    from draftobjects.clone import Clone
+    from draftutils import utils as DraftUtils
+
+    if (
+        source.isDerivedFrom("Part::Part2DObject")
+        and DraftUtils.get_type(source)
+        not in {"BezCurve", "BSpline", "Wire"}
+    ):
+        clone = document.addObject(
+            "Part::Part2DObjectPython",
+            "Clone2D",
+        )
+    else:
+        clone = document.addObject("Part::FeaturePython", "Clone")
+        clone.addExtension("Part::AttachExtensionPython")
+
+    Clone(clone)
+    clone.Objects = [source]
+    if hasattr(source, "Placement"):
+        clone.Placement = source.Placement
+    if hasattr(clone, "LongName") and hasattr(source, "LongName"):
+        clone.LongName = source.LongName
+    if FreeCAD.GuiUp:
+        from draftviewproviders.view_clone import ViewProviderClone
+
+        ViewProviderClone(clone.ViewObject)
+    return clone
 
 
 # Add base set of operation properties
@@ -100,13 +139,45 @@ def _addToolController(obj):
         QT_TRANSLATE_NOOP("App::Property", "Holds the diameter of the tool"),
     )
     obj.setEditorMode("OpToolDiameter", 1)  # Set property read-only
-    obj.ToolController = PathUtils.findToolController(obj, None)
-    if not obj.ToolController:
+    document = obj.Document
+    controllers = [
+        controller
+        for controller in _getToolControllers(obj)
+        if (
+            getattr(controller, "Document", None) is document
+            and document.getObject(controller.Name) is controller
+            and controller.isValid()
+            and getattr(controller, "Tool", None) is not None
+            and controller.Tool.Document is document
+            and document.getObject(controller.Tool.Name) is controller.Tool
+            and controller.Tool.isValid()
+            and hasattr(controller.Tool, "Diameter")
+        )
+    ]
+    if not controllers:
         raise OpBase.PathNoTCException()
+    controller = (
+        PathUtils.UserInput.selectedToolController()
+        if PathUtils.UserInput
+        else None
+    )
+    if controller not in controllers:
+        if len(controllers) == 1:
+            controller = controllers[0]
+        elif PathUtils.UserInput:
+            controller = PathUtils.UserInput.chooseToolController(
+                controllers
+            )
+        else:
+            controller = controllers[0]
+    if controller is None:
+        return False
+    obj.ToolController = controller
     obj.OpToolDiameter = obj.ToolController.Tool.Diameter
 
     obj.FeedRate = obj.ToolController.HorizFeed.Value
     obj.FeedRateVertical = obj.ToolController.VertFeed.Value
+    return True
 
 
 # Get list of tool controllers
@@ -187,51 +258,117 @@ class CommandPathShapeTC:
         }
 
     def IsActive(self):
-        isJob = False
-        if FreeCAD.ActiveDocument is not None:
-            for o in FreeCAD.ActiveDocument.Objects:
-                if o.Name.startswith("Job"):
-                    isJob = True
-                    break
-        if isJob:
-            selection = FreeCADGui.Selection.getSelectionEx()
-            if selection:
-                base = selection[0].Object
-                subBase = selection[0].SubElementNames
-                if subBase and [edge for edge in subBase if "Edge" in edge]:
-                    return True
-                elif base.Shape.ShapeType in ["Wire", "Edge"]:
-                    return True
-        return False
+        if (
+            not can_start_document_command()
+            or not active_jobs(require_tool=True)
+        ):
+            return False
+        selection = FreeCADGui.Selection.getSelectionEx()
+        if len(selection) != 1:
+            return False
+        base = selection[0].Object
+        document = FreeCAD.ActiveDocument
+        if (
+            base is None
+            or base.Document is not document
+            or document.getObject(base.Name) is not base
+            or not base.isValid()
+            or not is_timeline_input_usable(base, document)
+            or not hasattr(base, "Shape")
+            or base.Shape.isNull()
+        ):
+            return False
+
+        selected_edges = [
+            name
+            for name in selection[0].SubElementNames
+            if name.startswith("Edge")
+        ]
+        return bool(
+            selected_edges
+            or base.Shape.ShapeType in {"Wire", "Edge"}
+        )
 
     def Activated(self):
-        print("Create PathShape object with Tool Controller")
+        if not self.IsActive():
+            return
+
         doc = FreeCAD.ActiveDocument
         selection = FreeCADGui.Selection.getSelectionEx()
-        shapeObj = None
-        if selection:
-            base = selection[0].Object
-            subBase = selection[0].SubElementNames
-            if subBase:
-                subEdges = [edge for edge in subBase if "Edge" in edge]
+        base = selection[0].Object
+        subEdges = [
+            name
+            for name in selection[0].SubElementNames
+            if name.startswith("Edge")
+        ]
+        jobs = active_jobs(require_tool=True)
+        job = PathUtils.UserInput.chooseJob(jobs)
+        if (
+            job is None
+            or job.Document is not doc
+            or FreeCAD.ActiveDocument is not doc
+        ):
+            return
+        base_identity = ExactDocumentObjectIdentity(base, doc)
+        job_identity = ExactDocumentObjectIdentity(job, doc)
+
+        transaction = _OwnedDocumentTransaction(
+            doc,
+            "Create path from shape",
+        )
+        try:
+            base = base_identity.resolve(require_timeline=True)
+            job = job_identity.resolve(require_timeline=True)
+            if subEdges:
                 shapeObj = doc.addObject("Part::FeaturePython", "PartShape")
                 shapeObj.ViewObject.Proxy = 0
                 shapeObj.Visibility = False
                 shapeObj.Proxy = ObjectPartShape(shapeObj, [(base, subEdges)])
-            elif base.Shape.ShapeType in ["Wire", "Edge"]:
-                shapeObj = Draft.make_clone(base)
+            else:
+                shapeObj = _makeDocumentClone(doc, base)
+            if (
+                shapeObj is None
+                or shapeObj.Document is not doc
+                or doc.getObject(shapeObj.Name) is not shapeObj
+            ):
+                raise RuntimeError(
+                    "The selected shape could not be copied for CAM"
+                )
+            shapeObj.ViewObject.Visibility = False
 
-        pathObj = doc.addObject("Path::FeatureShape", "PathShape")
-        pathObj.Sources = [shapeObj]
+            pathObj = doc.addObject(
+                "Path::FeatureShape",
+                "PathShape",
+            )
+            pathObj.Sources = [shapeObj]
+            PathUtil.markTimelineOperation(pathObj)
 
-        # Overwrite getToolControllers() function with modified version
-        PathUtils.getToolControllers = _getToolControllers
-
-        PathUtils.addToJob(pathObj)
-        _addBaseProperties(pathObj)
-        _addToolController(pathObj)
-        _setSafetyZ(pathObj)
-        doc.recompute()
+            job.Proxy.addOperation(pathObj)
+            _addBaseProperties(pathObj)
+            if not _addToolController(pathObj):
+                transaction.abort()
+                return None
+            _setSafetyZ(pathObj)
+            doc.recompute()
+            base = base_identity.resolve(require_timeline=True)
+            job = job_identity.resolve(require_timeline=True)
+            if (
+                not pathObj.isValid()
+                or list(pathObj.Sources) != [shapeObj]
+                or pathObj not in job.Operations.Group
+            ):
+                raise RuntimeError(
+                    "The path-from-shape operation is invalid"
+                )
+            doc.publishProvisionalTimelineOperationBlock(
+                pathObj,
+                [shapeObj],
+            )
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
+        return pathObj
 
 
 if FreeCAD.GuiUp:

@@ -48,6 +48,7 @@ def make_circular_array(
     axis=None,
     center=App.Vector(0, 0, 0),
     use_link=True,
+    hide_base=True,
 ):
     """Create a circular array from the given object.
 
@@ -115,6 +116,10 @@ def make_circular_array(
         In this case the `Fuse` property is able to fuse
         all copies into a single object, if they touch each other.
 
+    hide_base: bool, optional
+        If it is `True`, hide `base_object` after creating the array.
+        It defaults to `True`.
+
     Returns
     -------
     Part::FeaturePython
@@ -176,6 +181,7 @@ def make_circular_array(
         arg5=number,
         arg6=symmetry,
         use_link=use_link,
+        hide_base=hide_base,
     )
     return new_obj
 

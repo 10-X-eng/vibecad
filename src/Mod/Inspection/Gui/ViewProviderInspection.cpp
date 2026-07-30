@@ -22,7 +22,6 @@
  *                                                                         *
  ***************************************************************************/
 
-
 #include <QApplication>
 #include <QMenu>
 #include <QMessageBox>
@@ -55,13 +54,38 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/Widgets.h>
 #include <Mod/Inspection/App/InspectionFeature.h>
+#include <Mod/Inspection/App/InspectionSource.h>
 #include <Mod/Points/App/Properties.h>
 
 #include "ViewProviderInspection.h"
 
-
 using namespace InspectionGui;
 
+namespace
+{
+void transformPoints(std::vector<Base::Vector3d>& points, const Base::Matrix4D& transform)
+{
+    for (auto& point : points) {
+        point = transform * point;
+    }
+}
+
+void transformNormals(std::vector<Base::Vector3f>& normals, const Base::Matrix4D& transform)
+{
+    Base::Matrix4D normalTransform(transform);
+    normalTransform.setCol(3, Base::Vector3d());
+    normalTransform.inverseGauss();
+    normalTransform.transpose();
+
+    for (auto& normal : normals) {
+        Base::Vector3d transformed = normalTransform * Base::Vector3d(normal.x, normal.y, normal.z);
+        if (transformed.Sqr() > 0.0) {
+            transformed.Normalize();
+        }
+        normal = Base::toVector<float>(transformed);
+    }
+}
+}  // namespace
 
 bool ViewProviderInspection::addflag = false;
 App::PropertyFloatConstraint::Constraints ViewProviderInspection::floatRange = {1.0, 64.0, 1.0};
@@ -70,6 +94,8 @@ PROPERTY_SOURCE(InspectionGui::ViewProviderInspection, Gui::ViewProviderDocument
 
 ViewProviderInspection::ViewProviderInspection()
 {
+    Gui::ViewProviderSuppressibleExtension::initExtension(this);
+
     ADD_PROPERTY_TYPE(
         OutsideGrayed,
         (false),
@@ -215,25 +241,26 @@ void ViewProviderInspection::attach(App::DocumentObject* pcFeat)
     pcColorRoot->addChild(pcColorBar);
 }
 
-bool ViewProviderInspection::setupFaces(const Data::ComplexGeoData* data)
+bool ViewProviderInspection::setupFaces(const Data::ComplexGeoData* data, const Base::Matrix4D& transform)
 {
     std::vector<Base::Vector3d> points;
     std::vector<Data::ComplexGeoData::Facet> faces;
 
-    // set the Distance property to the correct size to sync size of material node with number
-    // of vertices/points of the referenced geometry
+    // set the Distance property to the correct size to sync size of material node
+    // with number of vertices/points of the referenced geometry
     double accuracy = data->getAccuracy();
     data->getFaces(points, faces, accuracy);
     if (faces.empty()) {
         return false;
     }
 
+    transformPoints(points, transform);
     setupCoords(points);
     setupFaceIndexes(faces);
     return true;
 }
 
-bool ViewProviderInspection::setupLines(const Data::ComplexGeoData* data)
+bool ViewProviderInspection::setupLines(const Data::ComplexGeoData* data, const Base::Matrix4D& transform)
 {
     std::vector<Base::Vector3d> points;
     std::vector<Data::ComplexGeoData::Line> lines;
@@ -244,6 +271,7 @@ bool ViewProviderInspection::setupLines(const Data::ComplexGeoData* data)
         return false;
     }
 
+    transformPoints(points, transform);
     setupCoords(points);
     setupLineIndexes(lines);
     return true;
@@ -251,7 +279,8 @@ bool ViewProviderInspection::setupLines(const Data::ComplexGeoData* data)
 
 bool ViewProviderInspection::setupPoints(
     const Data::ComplexGeoData* data,
-    App::PropertyContainer* container
+    App::PropertyContainer* container,
+    const Base::Matrix4D& transform
 )
 {
     std::vector<Base::Vector3d> points;
@@ -262,6 +291,7 @@ bool ViewProviderInspection::setupPoints(
     if (points.empty()) {
         return false;
     }
+    transformPoints(points, transform);
 
     normals.reserve(normals_d.size());
     std::transform(
@@ -277,6 +307,9 @@ bool ViewProviderInspection::setupPoints(
         if (propN && propN->isDerivedFrom<Points::PropertyNormalList>()) {
             normals = static_cast<Points::PropertyNormalList*>(propN)->getValues();
         }
+    }
+    if (!normals.empty()) {
+        transformNormals(normals, transform);
     }
 
     setupCoords(points);
@@ -354,19 +387,34 @@ void ViewProviderInspection::updateData(const App::Property* prop)
 {
     // set to the expected size
     if (prop->isDerivedFrom<App::PropertyLink>()) {
-        App::GeoFeature* object
-            = static_cast<const App::PropertyLink*>(prop)->getValue<App::GeoFeature*>();
-        const App::PropertyComplexGeoData* propData = object ? object->getPropertyOfGeometry()
-                                                             : nullptr;
-        if (propData) {
-            Gui::coinRemoveAllChildren(this->pcLinkRoot);
+        Gui::coinRemoveAllChildren(this->pcLinkRoot);
+        auto* occurrence = static_cast<const App::PropertyLink*>(prop)->getValue();
+        Inspection::ResolvedSource source;
+        if (!this->pcObject
+            || !Inspection::resolveSource(occurrence, this->pcObject->getDocument(), source)) {
+            return;
+        }
 
+        auto* object = freecad_cast<App::GeoFeature*>(source.geometry);
+        const auto* propData = object ? object->getPropertyOfGeometry() : nullptr;
+        if (!propData) {
+            return;
+        }
+
+        try {
             const Data::ComplexGeoData* data = propData->getComplexData();
-            if (!setupFaces(data)) {
-                if (!setupLines(data)) {
-                    setupPoints(data, object);
+            Base::Matrix4D inverseDataTransform = data->getTransform();
+            inverseDataTransform.inverseGauss();
+            const Base::Matrix4D displayTransform = source.transform * inverseDataTransform;
+
+            if (!setupFaces(data, displayTransform)) {
+                if (!setupLines(data, displayTransform)) {
+                    setupPoints(data, object, displayTransform);
                 }
             }
+        }
+        catch (...) {
+            Gui::coinRemoveAllChildren(this->pcLinkRoot);
         }
     }
     else if (prop->is<Inspection::PropertyDistanceList>()) {
@@ -408,7 +456,8 @@ void ViewProviderInspection::setDistances()
     if (!pDistances->is<Inspection::PropertyDistanceList>()) {
         SoDebugError::post(
             "ViewProviderInspection::setDistances",
-            "Property 'Distances' has type %s (Inspection::PropertyDistanceList was expected)",
+            "Property 'Distances' has type %s "
+            "(Inspection::PropertyDistanceList was expected)",
             pDistances->getTypeId().getName()
         );
         return;
@@ -554,12 +603,32 @@ private:
 void ViewProviderInspection::inspectCallback(void* ud, SoEventCallback* n)
 {
     Gui::View3DInventorViewer* view = static_cast<Gui::View3DInventorViewer*>(n->getUserData());
+    auto leaveInspectionMode = [view, ud]() {
+        // Clear every viewer mode changed by Inspection_InspectElement. Leaving
+        // only event redirection disabled still strands the view in editing
+        // mode with normal selection unavailable.
+        QApplication::postEvent(
+            new InspectionGui::ViewProviderProxyObject(view->getGLWidget()),
+            new QEvent(QEvent::User)
+        );
+        view->setEditing(false);
+        view->getWidget()->setCursor(QCursor(Qt::ArrowCursor));
+        view->setRedirectToSceneGraph(false);
+        view->setRedirectToSceneGraphEnabled(false);
+        view->setSelectionEnabled(true);
+        view->removeEventCallback(
+            SoButtonEvent::getClassTypeId(),
+            ViewProviderInspection::inspectCallback,
+            ud
+        );
+    };
+
     const SoEvent* ev = n->getEvent();
     if (ev->getTypeId() == SoMouseButtonEvent::getClassTypeId()) {
         const SoMouseButtonEvent* mbe = static_cast<const SoMouseButtonEvent*>(ev);
 
-        // Mark all incoming mouse button events as handled, especially, to deactivate the selection
-        // node
+        // Mark all incoming mouse button events as handled, especially, to
+        // deactivate the selection node
         n->getAction()->setHandled();
         n->setHandled();
         if (mbe->getButton() == SoMouseButtonEvent::BUTTON2 && mbe->getState() == SoButtonEvent::UP) {
@@ -567,9 +636,11 @@ void ViewProviderInspection::inspectCallback(void* ud, SoEventCallback* n)
             // context-menu
             QMenu menu;
             QAction* fl = menu.addAction(QObject::tr("Annotation"));
+            fl->setObjectName(QStringLiteral("InspectionContextAnnotation"));
             fl->setCheckable(true);
             fl->setChecked(addflag);
             QAction* cl = menu.addAction(QObject::tr("Leave Info Mode"));
+            cl->setObjectName(QStringLiteral("InspectionContextLeaveInfoMode"));
             QAction* id = menu.exec(QCursor::pos());
             if (fl == id) {
                 addflag = fl->isChecked();
@@ -577,21 +648,11 @@ void ViewProviderInspection::inspectCallback(void* ud, SoEventCallback* n)
             else if (cl == id) {
                 // post an event to a proxy object to make sure to avoid problems
                 // when opening a modal dialog
-                QApplication::postEvent(
-                    new ViewProviderProxyObject(view->getGLWidget()),
-                    new QEvent(QEvent::User)
-                );
-                view->setEditing(false);
-                view->getWidget()->setCursor(QCursor(Qt::ArrowCursor));
-                view->setRedirectToSceneGraph(false);
-                view->setRedirectToSceneGraphEnabled(false);
-                view->setSelectionEnabled(true);
-                view->removeEventCallback(SoButtonEvent::getClassTypeId(), inspectCallback, ud);
+                leaveInspectionMode();
             }
         }
-        else if (
-            mbe->getButton() == SoMouseButtonEvent::BUTTON1 && mbe->getState() == SoButtonEvent::UP
-        ) {
+        else if (mbe->getButton() == SoMouseButtonEvent::BUTTON1
+                 && mbe->getState() == SoButtonEvent::UP) {
             const SoPickedPoint* point = n->getPickedPoint();
             if (!point) {
                 Base::Console().message("No point picked.\n");
@@ -600,7 +661,8 @@ void ViewProviderInspection::inspectCallback(void* ud, SoEventCallback* n)
 
             n->setHandled();
 
-            // check if we have picked one a node of the view provider we are insterested in
+            // check if we have picked one a node of the view provider we are
+            // insterested in
             Gui::ViewProvider* vp = view->getViewProviderByPathFromTail(point->getPath());
             if (vp && vp->isDerivedFrom<ViewProviderInspection>()) {
                 ViewProviderInspection* that = static_cast<ViewProviderInspection*>(vp);
@@ -644,8 +706,7 @@ void ViewProviderInspection::inspectCallback(void* ud, SoEventCallback* n)
     else if (ev->getTypeId().isDerivedFrom(SoKeyboardEvent::getClassTypeId())) {
         const SoKeyboardEvent* const ke = static_cast<const SoKeyboardEvent*>(ev);
         if (ke->getState() == SoButtonEvent::DOWN && ke->getKey() == SoKeyboardEvent::ESCAPE) {
-            SbBool toggle = view->isRedirectedToSceneGraph();
-            view->setRedirectToSceneGraph(!toggle);
+            leaveInspectionMode();
             n->setHandled();
         }
     }
@@ -742,8 +803,7 @@ QString ViewProviderInspection::inspectDistance(const SoPickedPoint* pp) const
         int index = pointdetail->getCoordinateIndex();
         App::Property* prop = this->pcObject->getPropertyByName("Distances");
         if (prop && prop->is<Inspection::PropertyDistanceList>()) {
-            Inspection::PropertyDistanceList* dist = static_cast<Inspection::PropertyDistanceList*>(
-                prop
+            Inspection::PropertyDistanceList* dist = static_cast<Inspection::PropertyDistanceList*>(prop
             );
             float fVal = (*dist)[index];
             info = QObject::tr("Distance: %1").arg(fVal);
@@ -757,11 +817,13 @@ QString ViewProviderInspection::inspectDistance(const SoPickedPoint* pp) const
 
 PROPERTY_SOURCE(InspectionGui::ViewProviderInspectionGroup, Gui::ViewProviderDocumentObjectGroup)
 
-
 /**
  * Creates the view provider for an object group.
  */
-ViewProviderInspectionGroup::ViewProviderInspectionGroup() = default;
+ViewProviderInspectionGroup::ViewProviderInspectionGroup()
+{
+    Gui::ViewProviderSuppressibleExtension::initExtension(this);
+}
 
 ViewProviderInspectionGroup::~ViewProviderInspectionGroup() = default;
 

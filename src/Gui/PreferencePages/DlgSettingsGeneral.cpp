@@ -450,12 +450,15 @@ void DlgSettingsGeneral::saveDockWindowVisibility()
     auto hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/DockWindows"
     );
-    bool treeView = hGrp->GetGroup("TreeView")->GetBool("Enabled", false);
+    bool treeView = hGrp->GetGroup("TreeView")->GetBool("Enabled", true);
     bool propertyView = hGrp->GetGroup("PropertyView")->GetBool("Enabled", false);
-    bool comboView = hGrp->GetGroup("ComboView")->GetBool("Enabled", true);
+    bool comboView = hGrp->GetGroup("ComboView")->GetBool("Enabled", false);
 
     int index = -1;
-    if (propertyView || treeView) {
+    if (treeView && propertyView) {
+        index = 2;
+    }
+    else if (treeView || propertyView) {
         index = 1;
     }
     else if (comboView) {
@@ -472,8 +475,12 @@ void DlgSettingsGeneral::saveDockWindowVisibility()
             treeView = propertyView = false;
             break;
         case 1:
-            treeView = propertyView = true;
+            comboView = propertyView = false;
+            treeView = true;
+            break;
+        case 2:
             comboView = false;
+            treeView = propertyView = true;
             break;
     }
 
@@ -486,16 +493,20 @@ void DlgSettingsGeneral::loadDockWindowVisibility()
 {
     ui->treeMode->clear();
     ui->treeMode->addItem(tr("Combined"));
-    ui->treeMode->addItem(tr("Independent"));
+    ui->treeMode->addItem(tr("Tree only"));
+    ui->treeMode->addItem(tr("Tree and property"));
 
     auto hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/DockWindows"
     );
     bool propertyView = hGrp->GetGroup("PropertyView")->GetBool("Enabled", false);
-    bool treeView = hGrp->GetGroup("TreeView")->GetBool("Enabled", false);
-    bool comboView = hGrp->GetGroup("ComboView")->GetBool("Enabled", true);
+    bool treeView = hGrp->GetGroup("TreeView")->GetBool("Enabled", true);
+    bool comboView = hGrp->GetGroup("ComboView")->GetBool("Enabled", false);
     int index = -1;
-    if (propertyView || treeView) {
+    if (treeView && propertyView) {
+        index = 2;
+    }
+    else if (treeView || propertyView) {
         index = 1;
     }
     else if (comboView) {

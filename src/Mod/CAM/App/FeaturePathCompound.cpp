@@ -26,6 +26,8 @@
 #include "Command.h"
 #include "FeaturePathCompoundPy.h"
 
+#include <App/SuppressibleExtension.h>
+
 
 using namespace Path;
 using namespace App;
@@ -50,10 +52,23 @@ FeatureCompound::~FeatureCompound()
 
 App::DocumentObjectExecReturn* FeatureCompound::execute()
 {
+    if (Suppressed.getValue()) {
+        Path.setValue(Path::Toolpath());
+        return App::DocumentObject::StdReturn;
+    }
+
     const std::vector<DocumentObject*>& Paths = Group.getValues();
     Path::Toolpath result;
 
     for (std::vector<DocumentObject*>::const_iterator it = Paths.begin(); it != Paths.end(); ++it) {
+        if (!*it || !(*it)->isValid()) {
+            Path.setValue(Path::Toolpath());
+            return new App::DocumentObjectExecReturn("A linked path source is invalid");
+        }
+        const auto* suppressible = (*it)->getExtensionByType<App::SuppressibleExtension>(true);
+        if (suppressible && suppressible->Suppressed.getValue()) {
+            continue;
+        }
         if ((*it)->isDerivedFrom<Path::Feature>()) {
             const std::vector<Command*>& cmds
                 = static_cast<Path::Feature*>(*it)->Path.getValue().getCommands();
@@ -126,8 +141,7 @@ namespace App
 {
 /// @cond DOXERR
 PROPERTY_SOURCE_TEMPLATE(Path::FeatureCompoundPython, Path::FeatureCompound)
-template<>
-const char* Path::FeatureCompoundPython::getViewProviderName() const
+template<> const char* Path::FeatureCompoundPython::getViewProviderName() const
 {
     return "PathGui::ViewProviderPathCompoundPython";
 }

@@ -33,6 +33,8 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD as App
 import FreeCADGui as Gui
 from draftutils import gui_utils
+from draftutils import timeline
+from draftutils.transaction import run_document_mutation
 
 __title__ = "FreeCAD Draft Workbench GUI Tools - Working plane-related tools"
 __author__ = "Yorik van Havre, Werner Mayer, Martin Burbaum, Ken Cline, " "Dmitry Chigrin"
@@ -59,13 +61,30 @@ class Draft_WorkingPlaneProxy:
 
     def Activated(self):
         """Execute when the command is called."""
-        App.ActiveDocument.openTransaction("Create Working Plane Proxy")
-        Gui.addModule("Draft")
-        Gui.addModule("WorkingPlane")
-        Gui.doCommand("pl = WorkingPlane.get_working_plane().get_placement()")
-        Gui.doCommand("Draft.make_workingplaneproxy(pl)")
-        App.ActiveDocument.commitTransaction()
-        App.ActiveDocument.recompute()
+        import Draft
+        import WorkingPlane
+
+        document = App.ActiveDocument
+        if document is None:
+            return
+        placement = WorkingPlane.get_working_plane().get_placement()
+
+        def create_proxy():
+            proxy = Draft.make_workingplaneproxy(placement)
+            if proxy is None:
+                raise RuntimeError(
+                    "Draft could not create the working-plane proxy"
+                )
+            timeline.accept_outputs((proxy,))
+
+        run_document_mutation(
+            document,
+            QT_TRANSLATE_NOOP(
+                "Draft",
+                "Create Working Plane Proxy",
+            ),
+            create_proxy,
+        )
 
 
 Gui.addCommand("Draft_WorkingPlaneProxy", Draft_WorkingPlaneProxy())

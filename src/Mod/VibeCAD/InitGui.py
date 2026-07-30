@@ -11,28 +11,28 @@ def _warn(message: str) -> None:
     App.Console.PrintWarning(f"{message}\n")
 
 
-def _check_bundled_fasteners() -> bool:
+def _check_bundled_fasteners(warn=_warn) -> bool:
     try:
         from VibeCADFasteners import require_available
 
         require_available()
         return True
     except Exception as exc:
-        _warn(
+        warn(
             "VibeCAD bundled Fasteners catalog failed to load; standard-component "
             f"commands are disabled: {exc}"
         )
         return False
 
 
-def _load_ribbon_extension_commands() -> None:
+def _load_ribbon_extension_commands(warn=_warn) -> None:
     """Register native commands used outside their legacy workbench page."""
 
     for module_name in ("InspectionGui", "MeshPartGui", "PartGui"):
         try:
             __import__(module_name)
         except Exception as exc:
-            _warn(f"VibeCAD ribbon extension {module_name} failed to load: {exc}")
+            warn(f"VibeCAD ribbon extension {module_name} failed to load: {exc}")
 
 
 def _restore_vibecad_disabled_workbenches() -> bool:
@@ -156,12 +156,46 @@ def _migrate_consolidated_part_workbench(
     return changed
 
 
+def _migrate_removed_openscad_workbench(
+    replace_list_token=_replace_list_token,
+    remove_list_token=_remove_list_token,
+) -> bool:
+    """Point saved OpenSCAD workbench selections at the native Mesh tools."""
+
+    migration = App.ParamGet("User parameter:BaseApp/Preferences/Migration")
+    migration_key = "VibeCADRemovedOpenSCADWorkbench2026"
+    if migration.GetBool(migration_key, False):
+        return False
+
+    retired = "OpenSCADWorkbench"
+    fallback = "MeshWorkbench"
+    changed = False
+    workbenches = App.ParamGet("User parameter:BaseApp/Preferences/Workbenches")
+    general = App.ParamGet("User parameter:BaseApp/Preferences/General")
+    changed = (
+        replace_list_token(workbenches, "Ordered", retired, fallback) or changed
+    )
+    changed = remove_list_token(workbenches, "Disabled", retired) or changed
+    changed = (
+        replace_list_token(general, "BackgroundAutoloadModules", retired, fallback)
+        or changed
+    )
+    for key in ("AutoloadModule", "LastModule"):
+        if general.GetString(key, "") == retired:
+            general.SetString(key, fallback)
+            changed = True
+    migration.SetBool(migration_key, True)
+    return changed
+
+
 try:
     _restore_vibecad_disabled_workbenches()
     if _migrate_removed_architecture_workbench():
         _warn("Removed saved references to the retired architecture workbench")
     if _migrate_consolidated_part_workbench():
         _warn("Migrated saved Part workbench references to Part Design")
+    if _migrate_removed_openscad_workbench():
+        _warn("Migrated saved OpenSCAD workbench references to Mesh")
 except Exception as exc:
     _warn(f"VibeCAD workbench preference migration failed: {exc}")
 

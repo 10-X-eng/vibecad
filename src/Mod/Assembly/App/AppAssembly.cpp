@@ -69,6 +69,7 @@ PyMOD_INIT_FUNC(AssemblyApp)
     Assembly::JointGroup ::init();
     Assembly::ViewGroup ::init();
     Assembly::SimulationGroup ::init();
+    Assembly::AssemblyLink::installTransactionSynchronization();
 
     PyMOD_Return(mod);
 }

@@ -73,6 +73,7 @@ class DressupPathBoundary(object):
             ),
         )
         obj.Stock = PathStock.CreateFromBase(job)
+        PathUtil.markTimelineResource(obj.Stock, obj)
         self.promoteStockToBoundary(obj.Stock)
         obj.addProperty(
             "App::PropertyBool",
@@ -171,10 +172,20 @@ class DressupPathBoundary(object):
 
     def onDelete(self, obj, args):
         if obj.Base:
-            job = PathUtils.findParentJob(obj)
+            job = (
+                PathUtils.findParentJob(obj)
+                or PathUtil.timelineParentJob(obj)
+                or PathUtil.timelineParentJob(obj.Base)
+            )
             if job:
                 job.Proxy.addOperation(obj.Base, obj)
-            if obj.Base.ViewObject:
+            if (
+                obj.Base.ViewObject
+                and PathUtil.shouldRestoreTimelineReplacedInput(
+                    obj,
+                    obj.Base,
+                )
+            ):
                 obj.Base.ViewObject.Visibility = True
             obj.Base = None
         if hasattr(obj, "Stock") and obj.Stock:
@@ -183,6 +194,9 @@ class DressupPathBoundary(object):
         return True
 
     def execute(self, obj):
+        if not PathUtil.activeForOp(obj):
+            obj.Path = Path.Path()
+            return
         if not hasattr(obj, "Stock") or obj.Stock is None:
             Path.Log.error("BoundaryStock (Stock) missing; cannot execute dressup.")
             obj.Path = Path.Path()
@@ -248,6 +262,8 @@ class PathBoundary:
         return cmds
 
     def execute(self):
+        if not PathUtil.activeForOp(self.baseOp):
+            return Path.Path()
         if (
             not self.baseOp
             or not self.baseOp.isDerivedFrom("Path::Feature")
@@ -393,7 +409,7 @@ def Create(base, name="DressupPathBoundary"):
         )
         return None
 
-    obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = base.Document.addObject("Path::FeaturePython", name)
     job = PathUtils.findParentJob(base)
     obj.Proxy = DressupPathBoundary(obj, base, job)
     job.Proxy.addOperation(obj, base, True)

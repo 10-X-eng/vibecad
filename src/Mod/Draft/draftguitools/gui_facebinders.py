@@ -41,11 +41,14 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import Draft
 import Draft_rc
 import draftguitools.gui_base_original as gui_base_original
 import draftguitools.gui_tool_utils as gui_tool_utils
 
 from draftutils.messages import _msg
+from draftutils import timeline
+from draftutils.transaction import run_document_mutation
 from draftutils.translate import translate
 
 # The module is used to prevent complaints from code checkers (flake8)
@@ -83,15 +86,25 @@ class Facebinder(gui_base_original.Creator):
         """Proceed when a valid selection has been made."""
         if self.call is not None:
             self.end_callbacks(self.call)
-        if Gui.Selection.getSelection():
-            App.ActiveDocument.openTransaction("Create Facebinder")
-            Gui.addModule("Draft")
-            Gui.doCommand("sels = FreeCADGui.Selection.getSelectionEx('', 0)")
-            Gui.doCommand("facebinder = Draft.make_facebinder(sels)")
-            Gui.doCommand("Draft.autogroup(facebinder)")
-            Gui.doCommand("FreeCAD.ActiveDocument.recompute()")
-            App.ActiveDocument.commitTransaction()
-            App.ActiveDocument.recompute()
+        selection = tuple(Gui.Selection.getSelectionEx("", 0))
+        if selection:
+            sources = tuple(selected.Object for selected in selection)
+
+            def create_facebinder():
+                facebinder = Draft.make_facebinder(selection)
+                if facebinder is None:
+                    raise RuntimeError(
+                        "Draft could not create the facebinder"
+                    )
+                Draft.autogroup(facebinder)
+                timeline.accept_derived_output(facebinder, sources)
+
+            run_document_mutation(
+                self.doc,
+                translate("draft", "Create Facebinder"),
+                create_facebinder,
+                objects=sources,
+            )
         self.finish()
 
 

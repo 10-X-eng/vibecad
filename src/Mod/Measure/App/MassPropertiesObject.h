@@ -37,6 +37,9 @@ public:
     Result() = default;
     ~Result() override = default;
 
+    short mustExecute() const override;
+    App::DocumentObjectExecReturn* execute() override;
+
     const char* getViewProviderName() const override
     {
         return "MassPropertiesGui::ViewProviderMassPropertiesResult";

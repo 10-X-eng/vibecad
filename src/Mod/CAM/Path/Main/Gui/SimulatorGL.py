@@ -29,6 +29,7 @@ import os
 import FreeCAD
 import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
+from Path.CommandBoundary import active_jobs, can_start_document_command
 from PathScripts import PathUtils
 import CAMSimulator
 
@@ -160,10 +161,12 @@ class CAMSimulation:
         """Get the edge profile of a tool solid. Basically locating the
         side edge that OCC creates on any revolved object
         """
-        originalPlacement = tool.Placement
-        tool.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(0, 0, 1), 0), Vector(0, 0, 0))
-        shape = tool.Shape
-        tool.Placement = originalPlacement
+        shape = tool.Shape.copy()
+        shape.Placement = Placement(
+            Vector(0, 0, 0),
+            Rotation(Vector(0, 0, 1), 0),
+            Vector(0, 0, 0),
+        )
         sideEdgeList = []
         for _i, edge in enumerate(shape.Edges):
             if not edge.isClosed():
@@ -238,14 +241,14 @@ class CAMSimulation:
     def _populateJobSelection(self, form):
         """Make Job selection combobox"""
         # Get list of Job objects in active document
-        jobList = FreeCAD.ActiveDocument.findObjects("Path::FeaturePython", "Job.*")
+        jobList = active_jobs()
 
         # Get name of selected Job
         jobName = ""
         selection = FreeCADGui.Selection.getSelection()
         if selection:  #  Identify job selected by user
             job = PathUtils.findParentJob(selection[0])
-            if job:
+            if job in jobList:
                 jobName = job.Name
 
         # Prepare combobox
@@ -277,7 +280,7 @@ class CAMSimulation:
                 self.activeOps.append(self.operations[i])
                 self.numCommands += len(self.operations[i].Path.Commands)
 
-        self.stock = self.job.Stock.Shape
+        self.stock = self.job.Stock.Shape.copy()
         self.busy = False
 
     def onJobChange(self):
@@ -303,7 +306,7 @@ class CAMSimulation:
                 self.operations.append(op)
                 form.listOperations.addItem(listItem)
         if len(j.Model.OutList) > 0:
-            self.baseShape = Part.makeCompound([o.Shape for o in j.Model.OutList])
+            self.baseShape = Part.makeCompound([o.Shape.copy() for o in j.Model.OutList])
         else:
             self.baseShape = None
 
@@ -370,14 +373,13 @@ class CommandCAMSimulate:
 
     def IsActive(self):
         """Command is active if at least one CAM job exists"""
-        if FreeCAD.ActiveDocument is not None:
-            for o in FreeCAD.ActiveDocument.Objects:
-                if o.Name[:3] == "Job":
-                    return True
-        return False
+        return can_start_document_command() and bool(active_jobs())
 
     def Activated(self):
         """Activate the simulation"""
+        if not self.IsActive():
+            return
+
         CamSimulation = CAMSimulation()
         CamSimulation.Activate()
 

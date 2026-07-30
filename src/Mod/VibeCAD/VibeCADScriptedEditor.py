@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Human source editor and live-preview controller for scripted PartDesign models."""
+"""Human editor for document-embedded VibeScript programs."""
 
 from __future__ import annotations
 
@@ -19,16 +19,10 @@ from VibeCADModelingSurface import resolve_modeling_surface
 
 
 DOCK_NAME = "VibeCADScriptedModelPanel"
-PREVIEW_MARKER = "VibeCADTransientScriptedPreview"
-PREVIEW_MODEL_ID = "VibeCADPreviewModelId"
-PREVIEW_REVISION = "VibeCADPreviewRevision"
 EDITOR_PREFERENCES = "User parameter:BaseApp/Preferences/VibeCAD/ModelCodeEditor"
 
 _controller: Any | None = None
 _registered_widget: Any | None = None
-_preview_containers: dict[tuple[str, str], str] = {}
-_hidden_accepted: dict[tuple[str, str], list[str]] = {}
-_save_preview_restore: dict[str, tuple[str, str, str]] = {}
 _refresh_retry_pending = False
 
 
@@ -112,10 +106,6 @@ def _document_restore_active(doc: Any | None) -> bool:
     return doc is not None and bool(getattr(doc, "Restoring", False))
 
 
-def _document_key(doc: Any) -> str:
-    return str(getattr(doc, "Uid", "") or getattr(doc, "Name", "") or "")
-
-
 def _find_dock() -> Any | None:
     from PySide import QtWidgets
 
@@ -123,7 +113,7 @@ def _find_dock() -> Any | None:
     return main.findChild(QtWidgets.QDockWidget, DOCK_NAME) if main is not None else None
 
 
-SCRIPTED_ENGINES = {"build123d", "openscad", "vibescript"}
+SCRIPTED_ENGINES = {"vibescript"}
 _DOMAIN_EDITOR_NEW_TYPES = {
     "assembly": "assembly",
     "cam": "job",
@@ -177,27 +167,6 @@ def _new_domain_program_template(domain: str, label: str) -> tuple[str, str] | N
     return source, output_type
 
 
-def _engine_api(engine: str):
-    if engine == "build123d":
-        import VibeCADBuild123d as api
-
-        return api
-    if engine == "openscad":
-        import VibeCADOpenSCAD as api
-
-        return api
-    raise RuntimeError("The selected scripted engine has no direct editor runtime.")
-
-
-def _model_source_path(engine: str, model: dict[str, Any]) -> Path | None:
-    if engine == "vibescript":
-        return None
-    directory = str(model.get("artifact_directory") or "").strip()
-    if not directory:
-        return None
-    return Path(directory) / ("model.scad" if engine == "openscad" else "model.py")
-
-
 def _schema_requires_document_references(value: Any) -> bool:
     if isinstance(value, dict):
         if value.get("x-vibecad-reference") is True:
@@ -206,215 +175,6 @@ def _schema_requires_document_references(value: Any) -> bool:
     if isinstance(value, list):
         return any(_schema_requires_document_references(item) for item in value)
     return False
-
-
-def _add_string_property(obj: Any, name: str) -> None:
-    if name not in list(getattr(obj, "PropertiesList", []) or []):
-        obj.addProperty("App::PropertyString", name, "VibeCAD Preview")
-
-
-def _set_shaded_display(obj: Any) -> None:
-    view = getattr(obj, "ViewObject", None)
-    if view is None:
-        # Headless sessions have no view providers; skip display styling.
-        return
-    modes = list(view.listDisplayModes())
-    if "Shaded" not in modes:
-        raise RuntimeError(
-            f"Preview object {obj.Name} cannot use Shaded display mode. Available modes: {modes}"
-        )
-    view.DisplayMode = "Shaded"
-
-
-def _accepted_objects(doc: Any, engine: str, model_id: str) -> list[Any]:
-    property_name = {
-        "build123d": "VibeCADBuild123dModelId",
-        "openscad": "VibeCADOpenSCADModelId",
-    }[engine]
-    return [
-        obj
-        for obj in list(getattr(doc, "Objects", []) or [])
-        if property_name in list(getattr(obj, "PropertiesList", []) or [])
-        and str(getattr(obj, property_name, "") or "") == model_id
-    ]
-
-
-def _accepted_output_features(doc: Any, model: dict[str, Any]) -> list[Any]:
-    """Resolve only manifest-owned output features, never their duplicate Bodies."""
-    features: list[Any] = []
-    seen: set[str] = set()
-    outputs = model.get("outputs")
-    if not isinstance(outputs, dict):
-        return features
-    for item in outputs.values():
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("feature") or item.get("object") or "").strip()
-        if not name or name in seen:
-            continue
-        obj = doc.getObject(name)
-        shape = getattr(obj, "Shape", None) if obj is not None else None
-        if shape is None or shape.isNull():
-            continue
-        seen.add(name)
-        features.append(obj)
-    return features
-
-
-def _json_merge_patch(before: Any, after: Any) -> Any:
-    """Return an RFC 7396-style patch that transforms before into after."""
-    if not isinstance(before, dict) or not isinstance(after, dict):
-        return after
-    patch: dict[str, Any] = {}
-    for key in before.keys() - after.keys():
-        patch[key] = None
-    for key, value in after.items():
-        if key not in before:
-            patch[key] = value
-            continue
-        old_value = before[key]
-        if isinstance(old_value, dict) and isinstance(value, dict):
-            nested = _json_merge_patch(old_value, value)
-            if nested:
-                patch[key] = nested
-        elif old_value != value:
-            patch[key] = value
-    return patch
-
-
-def _restore_accepted_visibility(doc: Any, model_id: str) -> None:
-    key = (_document_key(doc), model_id)
-    names = _hidden_accepted.pop(key, [])
-    for name in names:
-        obj = doc.getObject(name)
-        if obj is not None:
-            try:
-                obj.ViewObject.Visibility = True
-            except Exception as exc:
-                _warn(f"Could not restore visibility for {name}: {exc}")
-
-
-def _remove_preview_container(doc: Any, container_name: str) -> None:
-    container = doc.getObject(container_name)
-    if container is None:
-        return
-    child_names = [str(child.Name) for child in list(getattr(container, "Group", []) or [])]
-    for child_name in child_names:
-        if doc.getObject(child_name) is not None:
-            doc.removeObject(child_name)
-    if doc.getObject(container_name) is not None:
-        doc.removeObject(container_name)
-
-
-def remove_preview(doc: Any, model_id: str, *, restore_accepted: bool = True) -> None:
-    key = (_document_key(doc), model_id)
-    object_name = _preview_containers.pop(key, "")
-    container = doc.getObject(object_name) if object_name else None
-    if container is not None:
-        _remove_preview_container(doc, object_name)
-    if restore_accepted:
-        _restore_accepted_visibility(doc, model_id)
-
-
-def remove_all_previews(doc: Any | None = None) -> list[dict[str, str]]:
-    targets = (
-        [doc] if doc is not None else list(getattr(App, "listDocuments", lambda: {})().values())
-    )
-    removed: list[dict[str, str]] = []
-    for current in targets:
-        if current is None:
-            continue
-        previews: list[tuple[str, str]] = []
-        for obj in list(getattr(current, "Objects", []) or []):
-            if PREVIEW_MARKER not in list(getattr(obj, "PropertiesList", []) or []):
-                continue
-            previews.append(
-                (
-                    str(obj.Name),
-                    str(getattr(obj, PREVIEW_MODEL_ID, "") or ""),
-                )
-            )
-        for object_name, model_id in previews:
-            removed.append({"document": current.Name, "model_id": model_id})
-            _remove_preview_container(current, object_name)
-            _preview_containers.pop((_document_key(current), model_id), None)
-            _restore_accepted_visibility(current, model_id)
-    return removed
-
-
-def _show_preview(
-    engine: str,
-    prepared: dict[str, Any],
-    imported: list[dict[str, Any]],
-    *,
-    frame: bool = True,
-) -> None:
-    doc = App.ActiveDocument
-    if doc is None or doc.Name != prepared["document_name"]:
-        return
-    model_id = prepared["model_id"]
-    remove_preview(doc, model_id, restore_accepted=True)
-    hidden: list[str] = []
-    for obj in _accepted_objects(doc, engine, model_id):
-        try:
-            if obj.ViewObject.Visibility:
-                hidden.append(obj.Name)
-                obj.ViewObject.Visibility = False
-        except Exception as exc:
-            _warn(f"Could not hide accepted object {obj.Name}: {exc}")
-    _hidden_accepted[(_document_key(doc), model_id)] = hidden
-    container = doc.addObject("App::Part", f"VibeCADPreview_{model_id[:8]}")
-    container.Label = f"Preview - {prepared['model_name']}"
-    for prop in (PREVIEW_MARKER, PREVIEW_MODEL_ID, PREVIEW_REVISION):
-        _add_string_property(container, prop)
-    setattr(container, PREVIEW_MARKER, "true")
-    setattr(container, PREVIEW_MODEL_ID, model_id)
-    setattr(container, PREVIEW_REVISION, prepared["revision"])
-    for index, item in enumerate(imported, start=1):
-        feature = doc.addObject("Part::Feature", f"VibeCADPreviewShape_{model_id[:8]}_{index:03d}")
-        feature.Label = f"Preview - {item.get('key') or index}"
-        feature.Shape = item["shape"]
-        container.addObject(feature)
-        try:
-            _set_shaded_display(feature)
-            feature.ViewObject.ShapeColor = (0.18, 0.68, 0.86)
-            feature.ViewObject.LineColor = (0.75, 0.92, 1.0)
-            feature.ViewObject.Transparency = 18
-        except Exception as exc:
-            _warn(f"Could not style preview object {feature.Name}: {exc}")
-    _preview_containers[(_document_key(doc), model_id)] = container.Name
-    if frame:
-        try:
-            Gui.activeDocument().activeView().fitAll()
-        except Exception as exc:
-            _warn(f"Could not frame scripted preview: {exc}")
-
-
-def _read_scad_project(entry: Path) -> dict[str, str]:
-    """Read the main source and project-local include/use graph."""
-    root = entry.parent.resolve()
-    queue = [entry.resolve()]
-    copied: set[Path] = set()
-    source_files: dict[str, str] = {}
-    include_pattern = re.compile(r"\b(?:include|use)\s*<([^>]+)>")
-    while queue:
-        source_path = queue.pop(0)
-        if source_path in copied:
-            continue
-        copied.add(source_path)
-        try:
-            relative = source_path.relative_to(root)
-        except ValueError:
-            continue
-        text = source_path.read_text(encoding="utf-8")
-        project_name = "model.scad" if source_path == entry.resolve() else relative.as_posix()
-        source_files[project_name] = text
-        for match in include_pattern.finditer(text):
-            include_path = (source_path.parent / match.group(1)).resolve()
-            if root == include_path or root in include_path.parents:
-                if include_path.is_file():
-                    queue.append(include_path)
-    return dict(sorted(source_files.items()))
 
 
 def _build_widget():
@@ -621,7 +381,19 @@ def _build_widget():
                     object_name = str(reference.get("object_name") or "")
                     if text != object_name:
                         text = f"{text} — {object_name}"
-                    widget.addItem(text, dict(reference))
+                    document_label = str(reference.get("document_label") or "")
+                    if document_label:
+                        text = f"{document_label}: {text}"
+                    value_reference = {
+                        key: str(reference[key])
+                        for key in (
+                            "document_uid",
+                            "object_name",
+                            "document_path",
+                        )
+                        if reference.get(key)
+                    }
+                    widget.addItem(text, value_reference)
                 if isinstance(value, dict):
                     target = (
                         str(value.get("document_uid") or ""),
@@ -764,22 +536,7 @@ def _build_widget():
             number_color = QtGui.QColor("#f0b86e")
             comment_color = QtGui.QColor("#7f8b96")
             self.rules = []
-            if engine == "openscad":
-                keywords = [
-                    "module",
-                    "function",
-                    "include",
-                    "use",
-                    "for",
-                    "if",
-                    "else",
-                    "let",
-                    "each",
-                    "true",
-                    "false",
-                    "undef",
-                ]
-            elif engine == "json":
+            if engine == "json":
                 keywords = ["true", "false", "null"]
             else:
                 keywords = [
@@ -810,9 +567,7 @@ def _build_widget():
                 (r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', string_color),
             ]
             if engine != "json":
-                patterns.append(
-                    (r"//[^\n]*" if engine == "openscad" else r"#[^\n]*", comment_color)
-                )
+                patterns.append((r"#[^\n]*", comment_color))
             for pattern, color in patterns:
                 fmt = QtGui.QTextCharFormat()
                 fmt.setForeground(color)
@@ -861,12 +616,6 @@ def _build_widget():
     model_selector.setObjectName("VibeScriptedModelSelector")
     model_selector.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
     selector_layout.addWidget(model_selector, 1)
-    fidelity_selector = QtWidgets.QComboBox(selector_row)
-    fidelity_selector.setObjectName("VibeScriptedFidelitySelector")
-    fidelity_selector.setToolTip("OpenSCAD geometry fidelity")
-    fidelity_selector.addItem("Exact BREP", "exact_brep")
-    fidelity_selector.addItem("Faceted BREP", "faceted_brep")
-    selector_layout.addWidget(fidelity_selector)
     toolbar_layout.addWidget(selector_row)
 
     actions_layout = QtWidgets.QGridLayout()
@@ -881,14 +630,6 @@ def _build_widget():
             "Save the current source and inputs in this FreeCAD document",
         ),
         ("Build", "VibeScriptedRender", "Build and validate the current working source"),
-        ("Apply", "VibeScriptedAccept", "Publish the current validated candidate"),
-        (
-            "Revert",
-            "VibeScriptedRevert",
-            "Restore the last accepted source and geometry",
-        ),
-        ("Import", "VibeScriptedImport", "Import an OpenSCAD source project"),
-        ("Export", "VibeScriptedExport", "Export accepted scripted geometry"),
     )
     for index, (text, name, tooltip) in enumerate(actions):
         button = QtWidgets.QPushButton(text, toolbar)
@@ -936,10 +677,6 @@ def _build_widget():
     source_layout = QtWidgets.QVBoxLayout(source_panel)
     source_layout.setContentsMargins(0, 0, 0, 0)
     source_layout.setSpacing(4)
-    file_selector = QtWidgets.QComboBox(source_panel)
-    file_selector.setObjectName("VibeScriptedFileSelector")
-    file_selector.setToolTip("OpenSCAD project source file")
-    source_layout.addWidget(file_selector)
     find_bar = QtWidgets.QWidget(source_panel)
     find_bar.setObjectName("VibeScriptedFindBar")
     find_layout = QtWidgets.QGridLayout(find_bar)
@@ -1028,8 +765,6 @@ def _build_widget():
     status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
     layout.addWidget(status)
 
-    watcher = QtCore.QFileSystemWatcher(root)
-    watcher.setObjectName("VibeScriptedSourceWatcher")
     bridge = Bridge(root)
     root._vibecad_source_highlighter = None
     root._vibecad_source_highlighter_engine = ""
@@ -1081,7 +816,7 @@ class ScriptedEditorController:
         self.QtWidgets = QtWidgets
         self.dock = dock
         self.root = dock.widget()
-        self.engine = "native"
+        self.engine = "vibescript"
         self.domain = ""
         self.document_name = ""
         self.document_uid = ""
@@ -1089,16 +824,10 @@ class ScriptedEditorController:
         self.working_revision = ""
         self.accepted_revision = ""
         self.model: dict[str, Any] = {}
-        self.source_path: Path | None = None
         self.source_files: dict[str, str] = {}
-        self.current_source_file = "model.scad"
+        self.current_source_file = "model.py"
         self.loading = False
         self.generation = 0
-        self.active_prepared: dict[str, Any] | None = None
-        self.active_execution: dict[str, Any] | None = None
-        self.active_imported: list[dict[str, Any]] | None = None
-        self.active_engine = ""
-        self.preview_revision = ""
         self.active_vibescript_candidate: dict[str, Any] | None = None
         self.dirty = False
         self.busy = False
@@ -1108,7 +837,6 @@ class ScriptedEditorController:
         self.point_artifact_busy = False
         self.point_artifact_project_root = ""
         self.point_artifact_loaded_root = ""
-        self.external_source_generation = 0
         self.jobs = _LatestEditorJobRunner(self.root._vibecad_bridge.completed)
         self.point_jobs = _LatestEditorJobRunner(self.root._vibecad_bridge.completed)
         self._connect()
@@ -1141,14 +869,6 @@ class ScriptedEditorController:
         return self.child(self.QtWidgets.QComboBox, "VibeScriptedModelSelector")
 
     @property
-    def fidelity_selector(self):
-        return self.child(self.QtWidgets.QComboBox, "VibeScriptedFidelitySelector")
-
-    @property
-    def file_selector(self):
-        return self.child(self.QtWidgets.QComboBox, "VibeScriptedFileSelector")
-
-    @property
     def status(self):
         return self.child(self.QtWidgets.QLabel, "VibeScriptedStatus")
 
@@ -1164,10 +884,6 @@ class ScriptedEditorController:
     def diagnostics(self):
         return self.child(self.QtWidgets.QTreeWidget, "VibeScriptedDiagnostics")
 
-    @property
-    def watcher(self):
-        return self.root.findChild(self.QtCore.QFileSystemWatcher, "VibeScriptedSourceWatcher")
-
     def button(self, name: str):
         return self.child(self.QtWidgets.QPushButton, name)
 
@@ -1176,20 +892,13 @@ class ScriptedEditorController:
         self.dock.destroyed.connect(lambda _obj=None: self.jobs.close())
         self.dock.destroyed.connect(lambda _obj=None: self.point_jobs.close())
         self.selector.currentIndexChanged.connect(self._select_model)
-        self.fidelity_selector.currentIndexChanged.connect(self._fidelity_changed)
-        self.file_selector.currentIndexChanged.connect(self._select_source_file)
         self.source.textChanged.connect(self._source_changed)
         self.parameters.textChanged.connect(self._parameters_changed)
         self.inputs.changed.connect(self._schema_inputs_changed)
-        self.watcher.fileChanged.connect(self._external_file_changed)
         self.root._vibecad_bridge.completed.connect(self._preview_completed)
         self.button("VibeScriptedNew").clicked.connect(self.new_model)
-        self.button("VibeScriptedImport").clicked.connect(self.import_model)
         self.button("VibeScriptedSave").clicked.connect(self.save)
         self.button("VibeScriptedRender").clicked.connect(self.render)
-        self.button("VibeScriptedAccept").clicked.connect(self.accept)
-        self.button("VibeScriptedRevert").clicked.connect(self.revert)
-        self.button("VibeScriptedExport").clicked.connect(self.export)
         self.button("VibeScriptedPointArtifactAdd").clicked.connect(self.add_point_artifact)
         self.button("VibeScriptedPointArtifactRemove").clicked.connect(self.remove_point_artifact)
         self.point_artifact_selector.currentIndexChanged.connect(
@@ -1216,7 +925,6 @@ class ScriptedEditorController:
         self.point_jobs.cancel_pending()
         self.busy = False
         self.point_artifact_busy = False
-        self._clear_source_watch()
 
     def automated_update_started(self, engine: str, document_name: str, model_id: str):
         if (
@@ -1226,7 +934,6 @@ class ScriptedEditorController:
             or document_name != str(getattr(App.ActiveDocument, "Name", "") or "")
         ):
             return
-        self._clear_source_watch()
         self._cancel_preview(restore_accepted=True)
         self.status.setText(f"AI is updating {self.model.get('label') or model_id}...")
         self._update_actions()
@@ -1247,18 +954,13 @@ class ScriptedEditorController:
         self._cancel_preview(restore_accepted=True)
         self.refresh(model_id)
 
-    def _clear_source_watch(self):
-        for path in list(self.watcher.files()):
-            self.watcher.removePath(path)
-
     def _clear_model_fields(self):
         self.model_id = ""
         self.working_revision = ""
         self.accepted_revision = ""
         self.model = {}
-        self.source_path = None
         self.source_files = {}
-        self.current_source_file = "model.scad"
+        self.current_source_file = "model.py"
         self.active_vibescript_candidate = None
         self.reference_options = []
         self._set_dirty(False)
@@ -1268,7 +970,6 @@ class ScriptedEditorController:
         self.source.clear()
         self.parameters.clear()
         self.inputs.set_contract({}, {}, [])
-        self.file_selector.clear()
         self.loading = False
 
     def _set_dirty(self, dirty: bool) -> None:
@@ -1283,6 +984,19 @@ class ScriptedEditorController:
     def _capture_reference_options(self, doc: Any | None) -> list[dict[str, str]]:
         if doc is None:
             return []
+        if self.domain == "assembly":
+            from VibeCADComponentCatalog import open_component_candidates
+
+            return [
+                {
+                    **dict(candidate["reference"]),
+                    "label": str(candidate.get("label") or ""),
+                    "document_label": str(
+                        candidate.get("document_label") or ""
+                    ),
+                }
+                for candidate in open_component_candidates(doc)
+            ]
         document_uid = str(getattr(doc, "Uid", "") or "")
         return [
             {
@@ -1489,7 +1203,6 @@ class ScriptedEditorController:
 
     def _deselect_model(self, *, update_selector: bool):
         self._cancel_preview(restore_accepted=True)
-        self._clear_source_watch()
         self._clear_model_fields()
         self._clear_editors()
         if update_selector and self.selector.count():
@@ -1523,7 +1236,7 @@ class ScriptedEditorController:
                 f"Unsaved {self.engine} edits retained — return to their document and domain"
             )
             self.status.setText(
-                "The active document, workbench, or modeling engine changed. "
+                "The active document or workbench changed. "
                 "The editor retained your unbuilt changes and will not replace them."
             )
             self._update_actions()
@@ -1536,7 +1249,6 @@ class ScriptedEditorController:
             self.point_artifact_project_root = ""
             self.point_artifact_loaded_root = ""
             self._cancel_preview(restore_accepted=True)
-            self._clear_source_watch()
             self._clear_model_fields()
         self.engine = next_engine
         self.domain = next_domain
@@ -1546,12 +1258,12 @@ class ScriptedEditorController:
         self.root.setEnabled(scripted)
         self.context_label.setText(
             (
-                f"{self.engine} · {self.domain} · {next_document_name or 'no document'}"
+                f"{self.domain} · {next_document_name or 'no document'}"
                 if scripted
                 else "No active scripted domain"
             )
         )
-        points_active = bool(scripted and self.engine == "vibescript" and self.domain == "points")
+        points_active = bool(scripted and self.domain == "points")
         self.point_artifact_row.setVisible(points_active)
         if points_active and not self.point_artifact_busy:
             self._start_point_artifact_refresh()
@@ -1561,23 +1273,10 @@ class ScriptedEditorController:
             self.point_artifact_project_root = ""
             self.point_artifact_loaded_root = ""
             self._set_point_artifact_items([], "Point data is available in Points.")
-        self.button("VibeScriptedImport").setVisible(self.engine == "openscad")
-        self.button("VibeScriptedExport").setVisible(self.engine != "vibescript")
-        self.button("VibeScriptedSave").setVisible(self.engine == "vibescript")
-        self.button("VibeScriptedAccept").setVisible(self.engine != "vibescript")
-        self.button("VibeScriptedRevert").setVisible(self.engine != "vibescript")
         self.button("VibeScriptedRender").setToolTip(
-            (
-                "Validate the current source and inputs, then update the model"
-                if self.engine == "vibescript"
-                else "Build and validate the current working source"
-            )
+            "Validate the current source and inputs, then update the model"
         )
-        self.button("VibeScriptedRevert").setText("Revert")
-        self.file_selector.setVisible(self.engine == "openscad")
-        self.fidelity_selector.setVisible(self.engine == "openscad")
         if not scripted:
-            self._clear_source_watch()
             self._clear_model_fields()
             self.loading = True
             self.selector.clear()
@@ -1585,19 +1284,14 @@ class ScriptedEditorController:
             self.source.clear()
             self.parameters.clear()
             self.inputs.set_contract({}, {}, [])
-            self.file_selector.clear()
             self.source_files = {}
             self.loading = False
             self.status.setText(
                 resolution.unavailable_reason
-                or "Select a scripted global modeling engine for this workbench."
+                or "The active workbench has no VibeScript authoring domain."
             )
             return
-        if self.engine == "vibescript":
-            self._start_vibescript_model_refresh(preferred_model_id)
-            return
-        root = str(service.project_scope_snapshot().get("root") or "").strip()
-        self._start_direct_model_refresh(doc, root, preferred_model_id)
+        self._start_vibescript_model_refresh(preferred_model_id)
 
     def _set_point_artifact_items(
         self,
@@ -1929,53 +1623,6 @@ class ScriptedEditorController:
 
         self.jobs.submit("program index", work)
 
-    def _start_direct_model_refresh(
-        self,
-        doc: Any | None,
-        project_root: str,
-        preferred_model_id: str = "",
-    ) -> None:
-        """Load direct-engine artifacts without filesystem I/O on the GUI thread."""
-
-        api = _engine_api(self.engine)
-        snapshot = (
-            api.editor_model_index_snapshot(doc)
-            if doc is not None
-            else {"native_models": []}
-        )
-        self.generation += 1
-        generation = self.generation
-        engine = self.engine
-        self.status.setText(f"Loading {engine} models...")
-        self.busy = True
-        self._update_actions()
-
-        def work(cancelled):
-            try:
-                models = (
-                    api.complete_editor_model_index(snapshot, project_root)
-                    if project_root
-                    else []
-                )
-                result = {"ok": True, "models": models}
-            except Exception as exc:
-                result = {
-                    "ok": False,
-                    "error": str(exc),
-                    "exception_type": type(exc).__name__,
-                }
-            if cancelled():
-                return None
-            return {
-                "event_kind": "direct_model_list",
-                "engine": engine,
-                "generation": generation,
-                "preferred_model_id": preferred_model_id,
-                "result": result,
-            }
-
-        self.jobs.submit(f"{engine} model index", work)
-
     def _select_model(self, index: int):
         if self.loading or index < 0:
             return
@@ -2005,44 +1652,7 @@ class ScriptedEditorController:
             return
         if self.model_id and model_id != self.model_id:
             self._cancel_preview(restore_accepted=True)
-        if self.engine == "vibescript":
-            self._start_vibescript_model_inspection(model_id)
-            return
-        self._start_direct_model_inspection(model_id)
-
-    def _start_direct_model_inspection(self, model_id: str) -> None:
-        api = _engine_api(self.engine)
-        snapshot = api.editor_model_inspection_snapshot(get_service(), model_id)
-        if snapshot.get("ok") is not True:
-            self._show_failure(snapshot)
-            return
-        self.generation += 1
-        generation = self.generation
-        engine = self.engine
-        self.status.setText(f"Loading {engine} source and model metadata...")
-        self.busy = True
-        self._update_actions()
-
-        def work(cancelled):
-            try:
-                result = api.complete_editor_model_inspection(snapshot)
-            except Exception as exc:
-                result = {
-                    "ok": False,
-                    "error": str(exc),
-                    "exception_type": type(exc).__name__,
-                }
-            if cancelled():
-                return None
-            return {
-                "event_kind": "direct_model_inspection",
-                "engine": engine,
-                "generation": generation,
-                "model_id": model_id,
-                "result": result,
-            }
-
-        self.jobs.submit(f"{engine} model inspection", work)
+        self._start_vibescript_model_inspection(model_id)
 
     def _apply_loaded_model(self, model_id: str, result: dict[str, Any]) -> None:
         previous_engine = str(getattr(self.root, "_vibecad_source_highlighter_engine", ""))
@@ -2056,8 +1666,7 @@ class ScriptedEditorController:
             and str(editor_draft.get("base_revision") or "")
             == self.working_revision
         )
-        self.source_path = _model_source_path(self.engine, self.model)
-        main_name = "model.scad" if self.engine == "openscad" else "model.py"
+        main_name = "model.py"
         source_files = self.model.get("source_files")
         if not isinstance(source_files, dict):
             source_files = {main_name: str(self.model.get("source") or "")}
@@ -2115,44 +1724,24 @@ class ScriptedEditorController:
         else:
             self.reference_options = []
         self.loading = True
-        self.file_selector.clear()
-        for path in sorted(self.source_files, key=lambda value: (value != main_name, value)):
-            self.file_selector.addItem(path, path)
-        selected_file = self.file_selector.findData(self.current_source_file)
-        if selected_file >= 0:
-            self.file_selector.setCurrentIndex(selected_file)
         source_text = self.source_files.get(self.current_source_file, "")
         if self.source.toPlainText() != source_text:
             self.source.setPlainText(source_text)
         if self.parameters.toPlainText() != parameters_text:
             self.parameters.setPlainText(parameters_text)
         self.inputs.set_contract(input_schema, input_values, self.reference_options)
-        if self.engine == "openscad":
-            mode_index = self.fidelity_selector.findData(
-                str(self.model.get("conversion_mode") or "")
-            )
-            if mode_index < 0:
-                self.loading = False
-                self.status.setText("OpenSCAD model has no valid conversion mode.")
-                self._update_actions()
-                return
-            self.fidelity_selector.setCurrentIndex(mode_index)
         self.loading = False
         if previous_engine != self.engine:
             self._install_highlighter()
-        self._watch_source()
         self.active_vibescript_candidate = None
         self._set_dirty(False)
-        if self.engine == "vibescript":
-            self._embed_loaded_vibescript_contract()
-        fidelity = str(self.model.get("fidelity") or "not built")
-        conversion = str(self.model.get("conversion_mode") or "")
+        self._embed_loaded_vibescript_contract()
         if restore_draft:
             self.status.setText(
                 "Loaded saved source and inputs from this document. "
                 "Press Build to update the model."
             )
-        elif self.engine == "vibescript":
+        else:
             self.status.setText(
                 (
                     "The model is built from the saved source and inputs."
@@ -2160,32 +1749,12 @@ class ScriptedEditorController:
                     else "The saved source and inputs need to be built."
                 )
             )
-        else:
-            self.status.setText(
-                f"{self.engine} | working {self.working_revision[:10]} | "
-                f"accepted {self.accepted_revision[:10] or 'none'} | "
-                f"{conversion + ' | ' if conversion else ''}{fidelity}"
-            )
         self.diagnostics.clear()
         latest = self.model.get("latest_attempt") or {}
         failure = latest.get("failure") if isinstance(latest, dict) else None
         if isinstance(failure, dict):
             self._populate_diagnostics(failure)
         self._update_actions()
-
-    def _select_source_file(self, index: int):
-        if self.loading or index < 0:
-            return
-        if self.current_source_file:
-            self.source_files[self.current_source_file] = self.source.toPlainText()
-        target = str(self.file_selector.itemData(index) or "")
-        if not target or target == self.current_source_file:
-            return
-        self.current_source_file = target
-        self.loading = True
-        self.source.setPlainText(self.source_files.get(target, ""))
-        self.loading = False
-        self._install_highlighter()
 
     def _install_highlighter(self):
         if (
@@ -2203,21 +1772,11 @@ class ScriptedEditorController:
         )
         self.root._vibecad_source_highlighter_engine = self.engine
 
-    def _watch_source(self):
-        self._clear_source_watch()
-        if not self.editor_active or not self.model_id or self.source_path is None:
-            return
-        directory = self.source_path.parent
-        for name in self.source_files:
-            path = directory / name
-            if path.is_file():
-                self.watcher.addPath(str(path))
-
     def _source_changed(self):
         if self.loading or not self.editor_active or not self.model_id:
             return
         first_change = not self.dirty
-        if first_change or self.busy or self.active_prepared is not None:
+        if first_change or self.busy:
             self._invalidate_preview_for_edit()
         self._set_dirty(True)
         if first_change:
@@ -2227,7 +1786,7 @@ class ScriptedEditorController:
         if self.loading or not self.editor_active or not self.model_id:
             return
         first_change = not self.dirty
-        if first_change or self.busy or self.active_prepared is not None:
+        if first_change or self.busy:
             self._invalidate_preview_for_edit()
         try:
             values = json.loads(self.parameters.toPlainText() or "{}")
@@ -2273,82 +1832,6 @@ class ScriptedEditorController:
         self._invalidate_preview_for_edit()
         self._set_dirty(True)
         self.status.setText("Inputs modified. Press Save or Build.")
-
-    def _fidelity_changed(self, _index: int):
-        if self.loading or not self.editor_active or self.engine != "openscad" or not self.model_id:
-            return
-        self._invalidate_preview_for_edit()
-        self._set_dirty(True)
-        self.status.setText("OpenSCAD fidelity changed. Press Build to validate it.")
-
-    def _conversion_mode(self) -> str:
-        mode = str(self.fidelity_selector.currentData() or "")
-        if mode not in {"exact_brep", "faceted_brep"}:
-            raise RuntimeError("Select Exact BREP or Faceted BREP before rendering.")
-        return mode
-
-    def _external_file_changed(self, path: str):
-        if not self.editor_active or not self.model_id:
-            return
-        if self.source_path is None:
-            return
-        self.external_source_generation += 1
-        external_generation = self.external_source_generation
-        source_root = self.source_path.parent
-        engine = self.engine
-        model_id = self.model_id
-        document_uid = self.document_uid
-
-        def work(cancelled):
-            source_path = Path(path)
-            try:
-                if not source_path.is_file():
-                    return None
-                relative = source_path.resolve().relative_to(source_root.resolve()).as_posix()
-                content = source_path.read_text(encoding="utf-8")
-                result = {"ok": True, "relative": relative, "content": content}
-            except (OSError, ValueError) as exc:
-                result = {"ok": False, "error": str(exc)}
-            if cancelled():
-                return None
-            return {
-                "event_kind": "external_source_loaded",
-                "engine": engine,
-                "model_id": model_id,
-                "document_uid": document_uid,
-                "external_generation": external_generation,
-                "result": result,
-            }
-
-        self.point_jobs.submit("external source reload", work)
-
-    def _apply_external_source_change(self, result: dict[str, Any]) -> None:
-        if result.get("ok") is not True:
-            self.status.setText(
-                f"Could not reload external source change: "
-                f"{result.get('error') or 'unknown error'}"
-            )
-            return
-        relative = str(result.get("relative") or "")
-        content = str(result.get("content") or "")
-        previous = self.source_files.get(relative)
-        self.source_files[relative] = content
-        if content == previous:
-            self._watch_source()
-            return
-        self._invalidate_preview_for_edit()
-        if relative == self.current_source_file and content != self.source.toPlainText():
-            cursor_position = self.source.textCursor().position()
-            self.loading = True
-            self.source.setPlainText(content)
-            cursor = self.source.textCursor()
-            cursor.setPosition(min(cursor_position, len(content)))
-            self.source.setTextCursor(cursor)
-            self.loading = False
-        self.status.setText(f"External source updated in {relative}. Press Build to validate it.")
-        self._set_dirty(True)
-        self._watch_source()
-        self._update_actions()
 
     def _start_vibescript_model_inspection(self, model_id: str) -> None:
         """Inspect one VibeScript program away from the GUI thread."""
@@ -2466,99 +1949,24 @@ class ScriptedEditorController:
         self._save_vibescript_draft(show_status=True)
 
     def render(self):
-        if not self.editor_active or not self.model_id or self.engine not in SCRIPTED_ENGINES:
+        if not self.editor_active or not self.model_id or self.engine != "vibescript":
             return
-        if self.engine == "vibescript" and not self._save_vibescript_draft(
-            show_status=False
-        ):
+        if not self._save_vibescript_draft(show_status=False):
             return
         parameters = self._parse_parameters()
         if parameters is None:
             return
         self.source_files[self.current_source_file] = self.source.toPlainText()
-        if self.engine == "vibescript":
-            self._start_vibescript_build(
-                {
-                    "program_id": self.model_id,
-                    "expected_revision": self.working_revision,
-                    "source": self.source_files.get("model.py", self.source.toPlainText()),
-                    "input_schema": dict(self.model.get("input_schema") or {}),
-                    "inputs": parameters,
-                    "expected_outputs": list(self.model.get("expected_outputs") or []),
-                }
-            )
-            return
-        api = _engine_api(self.engine)
-        try:
-            if self.engine == "openscad":
-                source_stage = api.stage_editor_files(
-                    get_service(),
-                    self.model_id,
-                    self.working_revision,
-                    self.source_files,
-                    self._conversion_mode(),
-                )
-            else:
-                source_stage = api.stage_editor_source(
-                    get_service(),
-                    self.model_id,
-                    self.working_revision,
-                    self.source_files.get("model.py", self.source.toPlainText()),
-                )
-            self.working_revision = str(source_stage["working_revision"])
-            if self.engine == "openscad":
-                self.model["conversion_mode"] = str(source_stage["conversion_mode"])
-            current_parameters = self.model.get("parameters") or {}
-            if parameters != current_parameters:
-                patch = _json_merge_patch(current_parameters, parameters)
-                operation = f"{self.engine}.set_parameters"
-                arguments = {
-                    "model_id": self.model_id,
-                    "expected_revision": self.working_revision,
-                    "patch": patch,
-                }
-                prepared = api.prepare_execution(
-                    get_service(),
-                    operation,
-                    arguments,
-                )
-            else:
-                prepared = api.prepare_execution(
-                    get_service(),
-                    f"{self.engine}.editor_rebuild",
-                    {
-                        "model_id": self.model_id,
-                        "expected_revision": self.working_revision,
-                    },
-                )
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-            return
-        self.working_revision = str(prepared["revision"])
-        self.model["parameters"] = parameters
-        self.generation += 1
-        generation = self.generation
-        engine = self.engine
-        self.status.setText(f"Building {self.engine} candidate {self.working_revision[:10]}...")
-        self.busy = True
-        self.button("VibeScriptedRender").setEnabled(False)
-
-        def work(cancelled):
-            execution = api.execute_prepared(
-                prepared,
-                cancellation_check=cancelled,
-            )
-            if cancelled():
-                return None
-            return {
-                "generation": generation,
-                "engine": engine,
-                "prepared": prepared,
-                "execution": execution,
+        self._start_vibescript_build(
+            {
+                "program_id": self.model_id,
+                "expected_revision": self.working_revision,
+                "source": self.source_files.get("model.py", self.source.toPlainText()),
+                "input_schema": dict(self.model.get("input_schema") or {}),
+                "inputs": parameters,
+                "expected_outputs": list(self.model.get("expected_outputs") or []),
             }
-
-        self.jobs.submit("scripted candidate build", work)
+        )
 
     def _start_vibescript_build(self, arguments: dict[str, Any]) -> None:
         from VibeCADGui import (
@@ -2602,43 +2010,6 @@ class ScriptedEditorController:
         if event_kind == "editor_job_failure":
             self.busy = False
             self._show_failure(dict(event.get("result") or {}))
-            return
-        if event_kind == "external_source_loaded":
-            if (
-                not self.editor_active
-                or event_engine != self.engine
-                or str(event.get("model_id") or "") != self.model_id
-                or str(event.get("document_uid") or "") != self.document_uid
-                or int(event.get("external_generation") or 0)
-                != self.external_source_generation
-            ):
-                return
-            self._apply_external_source_change(dict(event.get("result") or {}))
-            return
-        if event_kind in {"direct_model_list", "direct_model_inspection"}:
-            if (
-                not self.editor_active
-                or event_engine != self.engine
-                or self.engine not in {"build123d", "openscad"}
-                or int(event.get("generation") or 0) != self.generation
-            ):
-                return
-            self.busy = False
-            result = event.get("result")
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                self._show_failure(
-                    result
-                    if isinstance(result, dict)
-                    else {"error": "The scripted editor returned no structured result."}
-                )
-                return
-            if event_kind == "direct_model_list":
-                self._apply_model_list(
-                    list(result.get("models") or []),
-                    str(event.get("preferred_model_id") or ""),
-                )
-            else:
-                self._apply_loaded_model(str(event.get("model_id") or ""), result)
             return
         if event_kind == "vibescript_editor_candidate":
             if (
@@ -2687,7 +2058,6 @@ class ScriptedEditorController:
                 )
             self.working_revision = str(result.get("working_revision") or "")
             self.model["working_revision"] = self.working_revision
-            self.preview_revision = self.working_revision
             self.diagnostics.clear()
             self._start_vibescript_apply()
             return
@@ -2715,7 +2085,6 @@ class ScriptedEditorController:
             model_id = str(result.get("program_id") or self.model_id)
             self.active_vibescript_candidate = None
             self.accepted_revision = revision
-            self.preview_revision = ""
             self._clear_vibescript_draft()
             self._set_dirty(False)
             self.model = {}
@@ -2853,7 +2222,6 @@ class ScriptedEditorController:
                 )
                 return
             self.accepted_revision = revision
-            self.preview_revision = ""
             if model_id == self.model_id:
                 self._clear_vibescript_draft()
             self._set_dirty(False)
@@ -2864,101 +2232,6 @@ class ScriptedEditorController:
             )
             self.refresh(model_id)
             return
-        prepared = event["prepared"]
-        if (
-            not self.editor_active
-            or int(event.get("generation") or 0) != self.generation
-            or event_engine != self.engine
-            or str(prepared.get("model_id") or "") != self.model_id
-            or str(prepared.get("document_name") or "")
-            != str(getattr(App.ActiveDocument, "Name", "") or "")
-        ):
-            _engine_api(event_engine).cleanup_prepared(prepared)
-            return
-        self.button("VibeScriptedRender").setEnabled(True)
-        self.busy = False
-        execution = event["execution"]
-        api = _engine_api(event_engine)
-        if not execution.get("ok"):
-            try:
-                api.record_failed_attempt(prepared, execution)
-            except Exception as exc:
-                _warn(f"Could not record failed preview: {exc}")
-            self._show_failure(execution)
-            api.cleanup_prepared(prepared)
-            return
-        try:
-            imported = api.import_validated_outputs(prepared, execution)
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-            api.cleanup_prepared(prepared)
-            return
-        if self.active_prepared is not None:
-            _engine_api(self.active_engine).cleanup_prepared(self.active_prepared)
-        self.active_prepared = prepared
-        self.active_execution = execution
-        self.active_imported = imported
-        self.active_engine = event_engine
-        self.preview_revision = str(prepared["revision"])
-        _show_preview(event_engine, prepared, imported)
-        fidelity = str(
-            execution.get("fidelity")
-            or ("exact_brep" if event_engine == "build123d" else "unknown")
-        )
-        self.status.setText(
-            f"Live preview ready | revision {self.preview_revision[:10]} | {fidelity}. "
-            "Accepted document geometry is unchanged."
-        )
-        self._set_dirty(False)
-        self.diagnostics.clear()
-        self._update_actions()
-
-    def accept(self):
-        if self.engine == "vibescript":
-            if self.active_vibescript_candidate is None:
-                self.status.setText("Build this revision successfully before applying it.")
-                return
-            self._start_vibescript_apply()
-            return
-        if (
-            self.active_prepared is None
-            or self.active_execution is None
-            or self.active_imported is None
-            or self.preview_revision != self.working_revision
-        ):
-            self.status.setText("The current working revision has no valid preview to accept.")
-            return
-        self.generation += 1
-        self._clear_source_watch()
-        api = _engine_api(self.active_engine)
-        doc = App.ActiveDocument
-        if doc is not None:
-            remove_preview(doc, self.model_id, restore_accepted=True)
-        try:
-            result = api.commit_outputs(
-                get_service(),
-                self.active_prepared,
-                self.active_execution,
-                self.active_imported,
-            )
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-            self._watch_source()
-            return
-        api.cleanup_prepared(self.active_prepared)
-        self.active_prepared = None
-        self.active_execution = None
-        self.active_imported = None
-        self.active_engine = ""
-        self.accepted_revision = self.working_revision
-        self.preview_revision = ""
-        self.status.setText(
-            f"Accepted {self.engine} revision {self.accepted_revision[:10]} | "
-            f"{result.get('fidelity') or 'exact_brep'}"
-        )
-        self.refresh(self.model_id)
 
     def _start_vibescript_apply(self) -> None:
         from VibeCADGui import (
@@ -2994,70 +2267,6 @@ class ScriptedEditorController:
             }
 
         self.jobs.submit("VibeScript candidate apply", work)
-
-    def revert(self):
-        if not self.model_id:
-            return
-        if self.dirty:
-            answer = self.QtWidgets.QMessageBox.warning(
-                self.root,
-                "Discard unbuilt changes?",
-                "Revert this editor to the last accepted source and inputs?",
-                self.QtWidgets.QMessageBox.Discard | self.QtWidgets.QMessageBox.Cancel,
-                self.QtWidgets.QMessageBox.Cancel,
-            )
-            if answer != self.QtWidgets.QMessageBox.Discard:
-                return
-        if (
-            self.engine == "vibescript"
-            and self.working_revision
-            and self.working_revision == self.accepted_revision
-        ):
-            self._clear_vibescript_draft()
-            self._cancel_preview(restore_accepted=True)
-            self.refresh(self.model_id)
-            return
-        self.generation += 1
-        self.active_vibescript_candidate = None
-        self._clear_source_watch()
-        if self.engine == "vibescript":
-            accepted = self.model.get("accepted_contract")
-            if not isinstance(accepted, dict):
-                self.status.setText("This program has no accepted revision to restore.")
-                self._update_actions()
-                return
-            self._start_vibescript_operation(
-                f"vibescript.{self.domain}.reconfigure_program",
-                {
-                    "program_id": self.model_id,
-                    "expected_revision": self.working_revision,
-                    "source": str(accepted.get("source") or ""),
-                    "input_schema": dict(accepted.get("input_schema") or {}),
-                    "inputs": dict(accepted.get("inputs") or {}),
-                    "expected_outputs": list(accepted.get("expected_outputs") or []),
-                },
-            )
-            return
-        api = _engine_api(self.engine)
-        try:
-            result = api.revert_working_to_accepted(get_service(), self.model_id)
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-            self._watch_source()
-            return
-        if self.active_prepared is not None:
-            api.cleanup_prepared(self.active_prepared)
-        self.active_prepared = None
-        self.active_execution = None
-        self.active_imported = None
-        self.active_engine = ""
-        self.preview_revision = ""
-        doc = App.ActiveDocument
-        if doc is not None:
-            remove_preview(doc, self.model_id, restore_accepted=True)
-        self.status.setText(f"Restored accepted revision {result['working_revision'][:10]}.")
-        self.refresh(self.model_id)
 
     def _start_vibescript_operation(self, tool_name: str, arguments: dict[str, Any]) -> None:
         """Run VibeScript through the same non-blocking lifecycle as AI tools."""
@@ -3096,220 +2305,51 @@ class ScriptedEditorController:
 
     def new_model(self):
         name, accepted = self.QtWidgets.QInputDialog.getText(
-            self.root, f"New {self.engine} model", "Model name"
+            self.root, "New VibeScript model", "Model name"
         )
         if not accepted or not name.strip():
             return
-        if self.engine == "openscad":
-            source = (
-                "width = 40;\n"
-                "depth = 30;\n"
-                "height = 12;\n\n"
-                "cube([width, depth, height], center = true);\n"
-            )
-            arguments = {
-                "model_name": name.strip(),
-                "source": source,
-                "parameters": {},
-                "conversion_mode": self._conversion_mode(),
-            }
-        elif self.engine == "vibescript":
-            import VibeCADVibeScriptDomains as domain_contracts
+        import VibeCADVibeScriptDomains as domain_contracts
 
-            pack = domain_contracts.get_vibescript_pack(get_service().active_workbench_name())
-            if pack is None:
-                self.status.setText("No active VibeScript domain is available.")
-                return
-            template = _new_domain_program_template(self.domain, name.strip())
-            if template is None:
-                self.status.setText(
-                    f"Create {pack.title} programs through its domain tools; "
-                    "the editor has no safe empty template for this output type."
-                )
-                return
-            source, output_type = template
-            if self.domain == "partdesign":
-                properties = {
-                    key: {"type": "number", "exclusiveMinimum": 0}
-                    for key in ("width", "depth", "height")
-                }
-                inputs = {"width": 40.0, "depth": 30.0, "height": 12.0}
-            else:
-                properties = {}
-                inputs = {}
-            arguments = {
-                "program_name": name.strip(),
-                "source": source,
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": list(properties),
-                    "additionalProperties": False,
-                },
-                "inputs": inputs,
-                "expected_outputs": [{"name": "Result", "type": output_type}],
-            }
-            self._start_vibescript_operation(f"vibescript.{self.domain}.create_program", arguments)
+        pack = domain_contracts.get_vibescript_pack(get_service().active_workbench_name())
+        if pack is None:
+            self.status.setText("No active VibeScript domain is available.")
             return
+        template = _new_domain_program_template(self.domain, name.strip())
+        if template is None:
+            self.status.setText(
+                f"Create {pack.title} programs through its domain tools; "
+                "the editor has no safe empty template for this output type."
+            )
+            return
+        source, output_type = template
+        if self.domain == "partdesign":
+            properties = {
+                key: {"type": "number", "exclusiveMinimum": 0}
+                for key in ("width", "depth", "height")
+            }
+            inputs = {"width": 40.0, "depth": 30.0, "height": 12.0}
         else:
-            source = (
-                "from build123d import Box\n\n"
-                "width = params.get('width', 40.0)\n"
-                "depth = params.get('depth', 30.0)\n"
-                "height = params.get('height', 12.0)\n"
-                "result = {'Part': Box(width, depth, height)}\n"
-            )
-            arguments = {
-                "model_name": name.strip(),
-                "source": source,
-                "parameters": {"width": 40.0, "depth": 30.0, "height": 12.0},
-                "input_objects": {},
-                "expected_outputs": ["Part"],
-            }
-        try:
-            prepared = _engine_api(self.engine).prepare_execution(
-                get_service(), f"{self.engine}.create_model", arguments
-            )
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-            return
-        self.refresh(prepared["model_id"])
-        self.working_revision = prepared["revision"]
-        self._start_prepared_preview(prepared)
-
-    def _start_prepared_preview(self, prepared: dict[str, Any]):
-        engine = self.engine
-        if engine == "vibescript":
-            raise RuntimeError("VibeScript must use the isolated editor operation lifecycle.")
-        api = _engine_api(engine)
-        self.generation += 1
-        generation = self.generation
-        self.status.setText(f"Rendering {self.engine} preview {prepared['revision'][:10]}...")
-
-        def work(cancelled):
-            execution = api.execute_prepared(prepared, cancellation_check=cancelled)
-            if cancelled():
-                api.cleanup_prepared(prepared)
-                return None
-            return {
-                "generation": generation,
-                "engine": engine,
-                "prepared": prepared,
-                "execution": execution,
-            }
-
-        self.jobs.submit("scripted preview", work)
-
-    def import_model(self):
-        if self.engine != "openscad":
-            return
-        selected, _filter = self.QtWidgets.QFileDialog.getOpenFileName(
-            self.root, "Import OpenSCAD source", str(Path.home()), "OpenSCAD (*.scad)"
+            properties = {}
+            inputs = {}
+        arguments = {
+            "program_name": name.strip(),
+            "source": source,
+            "input_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
+            },
+            "inputs": inputs,
+            "expected_outputs": [{"name": "Result", "type": output_type}],
+        }
+        self._start_vibescript_operation(
+            f"vibescript.{self.domain}.create_program", arguments
         )
-        if not selected:
-            return
-        entry = Path(selected)
-        try:
-            source_files = _read_scad_project(entry)
-            source = source_files["model.scad"]
-            prepared = _engine_api("openscad").prepare_execution(
-                get_service(),
-                "openscad.create_model",
-                {
-                    "model_name": entry.stem,
-                    "source": source,
-                    "source_files": source_files,
-                    "parameters": {},
-                    "conversion_mode": self._conversion_mode(),
-                },
-            )
-        except Exception as exc:
-            payload = getattr(exc, "payload", None)
-            self._show_failure(payload if isinstance(payload, dict) else {"error": str(exc)})
-            return
-        self.refresh(prepared["model_id"])
-        self.working_revision = prepared["revision"]
-        self._start_prepared_preview(prepared)
-
-    def export(self):
-        if not self.model_id or not self.accepted_revision:
-            self.status.setText("Accept a valid model revision before exporting it.")
-            return
-        doc = App.ActiveDocument
-        if doc is None:
-            return
-        shaped = _accepted_output_features(doc, self.model)
-        if not shaped:
-            self.status.setText("The accepted model has no shaped output to export.")
-            return
-        selected, selected_filter = self.QtWidgets.QFileDialog.getSaveFileName(
-            self.root,
-            "Export accepted scripted model",
-            str(Path.home() / f"{self.model.get('label') or 'model'}.step"),
-            "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf)",
-        )
-        if not selected:
-            return
-        suffix = Path(selected).suffix.lower()
-        fidelity = str(self.model.get("fidelity") or "")
-        if suffix in {".step", ".stp"} and fidelity in {"faceted_brep", "mixed"}:
-            answer = self.QtWidgets.QMessageBox.warning(
-                self.root,
-                "Faceted STEP export",
-                "This accepted model contains tessellated surfaces. The STEP file "
-                "will be valid but will not contain fully analytic manufacturing geometry.",
-                self.QtWidgets.QMessageBox.Ok | self.QtWidgets.QMessageBox.Cancel,
-                self.QtWidgets.QMessageBox.Cancel,
-            )
-            if answer != self.QtWidgets.QMessageBox.Ok:
-                return
-        try:
-            if suffix in {".step", ".stp"}:
-                import Part
-
-                Part.export(shaped, selected)
-            elif suffix == ".stl":
-                import Mesh
-
-                Mesh.export(shaped, selected)
-            elif suffix == ".3mf":
-                import Mesh
-
-                Mesh.export(shaped, selected)
-            else:
-                raise RuntimeError(f"Unsupported export extension: {suffix}")
-        except Exception as exc:
-            self.status.setText(f"Export failed: {exc}")
-            return
-        self.status.setText(f"Exported accepted revision to {selected}")
 
     def _cancel_preview(self, *, restore_accepted: bool) -> None:
         self.generation += 1
-        active_model_id = self.model_id
-        document_key = self.document_uid or self.document_name
-        had_live_preview = bool(
-            self.active_prepared is not None
-            or _preview_containers.get((document_key, active_model_id))
-            or _hidden_accepted.get((document_key, active_model_id))
-        )
-        prepared_document_name = ""
-        if self.active_prepared is not None:
-            prepared_document_name = str(self.active_prepared.get("document_name") or "")
-        if self.active_prepared is not None and self.active_engine:
-            _engine_api(self.active_engine).cleanup_prepared(self.active_prepared)
-        self.active_prepared = None
-        self.active_execution = None
-        self.active_imported = None
-        self.active_engine = ""
-        self.preview_revision = ""
-        doc = None
-        if prepared_document_name:
-            doc = dict(App.listDocuments()).get(prepared_document_name)
-        if doc is None:
-            doc = App.ActiveDocument
-        if had_live_preview and doc is not None and active_model_id:
-            remove_preview(doc, active_model_id, restore_accepted=restore_accepted)
 
     def _adopt_failed_vibescript_revision(
         self,
@@ -3332,7 +2372,6 @@ class ScriptedEditorController:
             values = None
         if isinstance(values, dict):
             self.model["parameters"] = values
-        self.preview_revision = ""
         self.active_vibescript_candidate = None
         self._set_dirty(True)
         if self._persist_vibescript_draft():
@@ -3379,18 +2418,6 @@ class ScriptedEditorController:
 
     def _diagnostic_activated(self, item: Any, _column: int):
         line = int(item.data(0, self.QtCore.Qt.UserRole) or 0)
-        diagnostic_file = str(item.data(0, int(self.QtCore.Qt.UserRole) + 1) or "")
-        if diagnostic_file and self.engine == "openscad":
-            candidate = Path(diagnostic_file).name
-            matches = [
-                path
-                for path in self.source_files
-                if path == diagnostic_file.replace("\\", "/") or Path(path).name == candidate
-            ]
-            if len(matches) == 1:
-                index = self.file_selector.findData(matches[0])
-                if index >= 0:
-                    self.file_selector.setCurrentIndex(index)
         if line and hasattr(self.source, "goto_line"):
             self.source.goto_line(line)
 
@@ -3403,31 +2430,13 @@ class ScriptedEditorController:
             and live_document_uid == self.document_uid
         )
         ready = scripted and not self.busy
-        points_active = bool(scripted and self.engine == "vibescript" and self.domain == "points")
-        new_supported = self.engine != "vibescript" or self.domain in _DOMAIN_EDITOR_NEW_TYPES
+        points_active = bool(scripted and self.domain == "points")
+        new_supported = self.domain in _DOMAIN_EDITOR_NEW_TYPES
         self.button("VibeScriptedNew").setEnabled(ready and new_supported)
-        self.button("VibeScriptedImport").setEnabled(ready and self.engine == "openscad")
         self.button("VibeScriptedSave").setEnabled(
-            bool(ready and self.engine == "vibescript" and self.model_id)
+            bool(ready and self.model_id)
         )
         self.button("VibeScriptedRender").setEnabled(bool(ready and self.model_id))
-        applicable = (
-            self.active_vibescript_candidate is not None
-            if self.engine == "vibescript"
-            else bool(self.active_prepared)
-        )
-        self.button("VibeScriptedAccept").setEnabled(
-            ready
-            and applicable
-            and not self.dirty
-            and self.preview_revision == self.working_revision
-        )
-        self.button("VibeScriptedRevert").setEnabled(
-            bool(ready and self.model_id and self.accepted_revision)
-        )
-        self.button("VibeScriptedExport").setEnabled(
-            bool(ready and self.model_id and self.accepted_revision and self.engine != "vibescript")
-        )
         self.button("VibeScriptedPointArtifactAdd").setEnabled(
             bool(
                 points_active
@@ -3495,10 +2504,6 @@ def show_scripted_model_editor() -> None:
 def ensure_scripted_model_editor_registered() -> Any:
     """Register native dock content once so View > Panels can reopen it."""
     global _controller, _registered_widget
-    try:
-        remove_all_previews()
-    except Exception as exc:
-        _warn(f"Could not remove stale transient previews: {exc}")
     dock = _find_dock()
     if dock is None:
         if _registered_widget is None:
@@ -3548,16 +2553,6 @@ def refresh_scripted_model_editor() -> None:
         _controller.refresh()
 
 
-def active_preview_snapshot() -> dict[str, Any] | None:
-    if _controller is None or _controller.active_prepared is None:
-        return None
-    return {
-        "engine": _controller.engine,
-        "model_id": _controller.model_id,
-        "working_revision": _controller.working_revision,
-    }
-
-
 def automated_model_update_started(engine: str, document_name: str, model_id: str) -> None:
     if _controller is not None:
         _controller.automated_update_started(engine, document_name, model_id)
@@ -3566,54 +2561,3 @@ def automated_model_update_started(engine: str, document_name: str, model_id: st
 def automated_model_update_finished(engine: str, document_name: str, model_id: str) -> None:
     if _controller is not None:
         _controller.automated_update_finished(engine, document_name, model_id)
-
-
-def suspend_preview_for_save(doc: Any) -> list[dict[str, str]]:
-    document_key = _document_key(doc)
-    _save_preview_restore.pop(document_key, None)
-    if (
-        _controller is not None
-        and _controller.active_prepared is not None
-        and _controller.active_imported is not None
-        and _controller.active_engine
-        and _controller.preview_revision
-    ):
-        prepared = _controller.active_prepared
-        model_id = str(prepared.get("model_id") or "")
-        preview_name = _preview_containers.get((document_key, model_id), "")
-        if (
-            str(prepared.get("document_name") or "") == str(doc.Name)
-            and preview_name
-            and doc.getObject(preview_name) is not None
-        ):
-            _save_preview_restore[document_key] = (
-                _controller.active_engine,
-                model_id,
-                _controller.preview_revision,
-            )
-    return remove_all_previews(doc)
-
-
-def restore_preview_after_save(doc: Any) -> bool:
-    pending = _save_preview_restore.pop(_document_key(doc), None)
-    if pending is None or _controller is None:
-        return False
-    engine, model_id, revision = pending
-    prepared = _controller.active_prepared
-    if (
-        prepared is None
-        or _controller.active_imported is None
-        or _controller.active_engine != engine
-        or _controller.preview_revision != revision
-        or str(prepared.get("model_id") or "") != model_id
-        or str(prepared.get("document_name") or "") != str(doc.Name)
-        or str(prepared.get("revision") or "") != revision
-    ):
-        return False
-    _show_preview(
-        engine,
-        prepared,
-        _controller.active_imported,
-        frame=False,
-    )
-    return True

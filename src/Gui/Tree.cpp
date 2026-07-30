@@ -39,6 +39,8 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 
+#include <charconv>
+#include <memory>
 #include <string_view>
 
 #include <Base/Console.h>
@@ -60,11 +62,14 @@
 #include "BitmapFactory.h"
 #include "Command.h"
 #include "Document.h"
+#include "ExactTransaction.h"
 #include "ExpressionCompleter.h"
 #include "Macro.h"
 #include "MainWindow.h"
 #include "MenuManager.h"
 #include "ModelTreeBrowser.h"
+#include "TaskView/TaskDialog.h"
+#include "TimelineImport.h"
 #include "TreeParams.h"
 #include "View3DInventor.h"
 #include "ViewProviderDocumentObject.h"
@@ -350,31 +355,29 @@ public:
 class Gui::BrowserFolderItem: public QTreeWidgetItem
 {
 public:
-    enum class VisibilityMode
-    {
-        IndependentItems,
-        LatestPreview,
-    };
-
     BrowserFolderItem(
         DocumentItem* owner,
         QTreeWidgetItem* parent,
         DocumentObjectItem* logicalParent,
         QString key,
         QString label,
-        QByteArray iconName,
-        VisibilityMode visibilityMode = VisibilityMode::IndependentItems
+        QByteArray iconName
     )
         : QTreeWidgetItem(parent, TreeWidget::BrowserFolderType)
         , owner(owner)
         , itemKey(std::move(key))
         , iconName(std::move(iconName))
-        , visibilityMode(visibilityMode)
     {
         if (logicalParent) {
-            // Keep the name only; item pointers dangle between an object
-            // deletion and the next model browser rebuild.
+            // Keep an immutable object identity; item pointers dangle between
+            // an object deletion and the next model browser rebuild, while an
+            // internal name alone can be reused by a replacement object.
             logicalParentName = logicalParent->getName();
+            if (auto* object = logicalParent->object()
+                    ? logicalParent->object()->getObject()
+                    : nullptr) {
+                logicalParentId = object->getID();
+            }
         }
         setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setText(0, std::move(label));
@@ -397,7 +400,10 @@ public:
         auto* parentObject = document
             ? document->getObject(logicalParentName.c_str())
             : nullptr;
-        return parentObject ? owner->findBrowserItem(parentObject) : nullptr;
+        if (!parentObject || parentObject->getID() != logicalParentId) {
+            return nullptr;
+        }
+        return owner->findBrowserItem(parentObject);
     }
 
     const QString& key() const
@@ -405,25 +411,10 @@ public:
         return itemKey;
     }
 
-    bool previewsLatest() const
-    {
-        return visibilityMode == VisibilityMode::LatestPreview;
-    }
-
     void setAllVisible(bool visible)
     {
         std::vector<DocumentObjectItem*> items;
         collectObjectItems(this, items);
-        if (visible && previewsLatest() && !items.empty()) {
-            // Part Design features are cumulative history states, not
-            // independent layers. "Show" previews the latest feature instead
-            // of drawing every historical solid on top of the final result.
-            for (auto* item : items) {
-                TreeWidget::setObjectItemVisibility(item, item == items.back());
-            }
-            owner->updateBrowserFolderStatus();
-            return;
-        }
         for (auto* item : items) {
             TreeWidget::setObjectItemVisibility(item, visible);
         }
@@ -440,8 +431,8 @@ public:
         const bool anyVisible = std::ranges::any_of(items, [](const auto* item) {
             return TreeWidget::objectItemVisibility(item);
         });
-        // A partially visible folder hides on the next click. For Features,
-        // the following click previews the latest cumulative history state.
+        // A partially visible folder hides on the next click. The following
+        // click shows all objects in that category.
         setAllVisible(!anyVisible);
     }
 
@@ -542,9 +533,9 @@ private:
                 auto* objectItem = static_cast<DocumentObjectItem*>(child);
                 if (objectItem->isBrowserProxy() && objectItem->object()
                     && objectItem->object()->canToggleVisibility()) {
-                    // Stop at an object boundary.  For example, Bodies controls
-                    // Body visibility, while a nested Features folder controls
-                    // the history entries individually.
+                    // Stop at an object boundary. A category such as Bodies or
+                    // Sketches controls its direct semantic objects, not every
+                    // dependency nested below them in the document graph.
                     items.push_back(objectItem);
                 }
             }
@@ -555,11 +546,11 @@ private:
     }
 
     DocumentItem* owner;
-    // Stored by name and resolved lazily; see getLogicalParent().
+    // Stored as a stable identity and resolved lazily; see getLogicalParent().
     std::string logicalParentName;
+    long logicalParentId {-1};
     QString itemKey;
     QByteArray iconName;
-    VisibilityMode visibilityMode;
 };
 
 // ---------------------------------------------------------------------------
@@ -1554,35 +1545,84 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
     else if (this->contextItem && this->contextItem->type() == BrowserFolderType) {
         contextMenu.clear();
         auto* folder = static_cast<BrowserFolderItem*>(this->contextItem);
+        const auto* guiDocument = folder->getOwnerDocument()
+            ? folder->getOwnerDocument()->document()
+            : nullptr;
+        const auto* appDocument =
+            guiDocument ? guiDocument->getDocument() : nullptr;
+        const std::string documentName =
+            appDocument ? appDocument->getName() : "";
+        const QString folderKey = folder->key();
+        const auto resolveFolder =
+            [this, guiDocument, appDocument, documentName, folderKey]()
+            -> BrowserFolderItem* {
+            const auto document = DocumentMap.find(guiDocument);
+            if (document == DocumentMap.end() || !document->second) {
+                return nullptr;
+            }
+            const auto* liveAppDocument =
+                document->first ? document->first->getDocument() : nullptr;
+            if (liveAppDocument != appDocument
+                || !liveAppDocument
+                || liveAppDocument->getName() != documentName) {
+                return nullptr;
+            }
 
-        const bool featureFolder = folder->previewsLatest();
-        auto* showAll = contextMenu.addAction(
-            featureFolder ? tr("Preview Latest") : tr("Show All")
-        );
-        connect(showAll, &QAction::triggered, &contextMenu, [folder]() {
-            folder->setAllVisible(true);
+            std::vector<QTreeWidgetItem*> pending {document->second};
+            while (!pending.empty()) {
+                auto* item = pending.back();
+                pending.pop_back();
+                if (!item) {
+                    continue;
+                }
+                if (item->type() == BrowserFolderType) {
+                    auto* candidate = static_cast<BrowserFolderItem*>(item);
+                    if (candidate->key() == folderKey) {
+                        return candidate;
+                    }
+                }
+                for (int index = 0; index < item->childCount(); ++index) {
+                    pending.push_back(item->child(index));
+                }
+            }
+            return nullptr;
+        };
+
+        auto* showAll = contextMenu.addAction(tr("Show All"));
+        connect(showAll, &QAction::triggered, &contextMenu, [resolveFolder]() {
+            if (auto* currentFolder = resolveFolder()) {
+                currentFolder->setAllVisible(true);
+            }
         });
 
-        auto* hideAll = contextMenu.addAction(
-            featureFolder ? tr("Clear Preview") : tr("Hide All")
-        );
-        connect(hideAll, &QAction::triggered, &contextMenu, [folder]() {
-            folder->setAllVisible(false);
+        auto* hideAll = contextMenu.addAction(tr("Hide All"));
+        connect(hideAll, &QAction::triggered, &contextMenu, [resolveFolder]() {
+            if (auto* currentFolder = resolveFolder()) {
+                currentFolder->setAllVisible(false);
+            }
         });
 
         contextMenu.addSeparator();
         auto* expandAll = contextMenu.addAction(tr("Expand All"));
-        connect(expandAll, &QAction::triggered, &contextMenu, [folder]() {
-            folder->setExpanded(true);
-            for (QTreeWidgetItemIterator iterator(folder); *iterator; ++iterator) {
-                (*iterator)->setExpanded(true);
+        connect(expandAll, &QAction::triggered, &contextMenu, [resolveFolder]() {
+            if (auto* currentFolder = resolveFolder()) {
+                currentFolder->setExpanded(true);
+                for (QTreeWidgetItemIterator iterator(currentFolder);
+                     *iterator;
+                     ++iterator) {
+                    (*iterator)->setExpanded(true);
+                }
             }
         });
 
         auto* collapseAll = contextMenu.addAction(tr("Collapse All"));
-        connect(collapseAll, &QAction::triggered, &contextMenu, [folder]() {
-            for (QTreeWidgetItemIterator iterator(folder); *iterator; ++iterator) {
-                (*iterator)->setExpanded(false);
+        connect(collapseAll, &QAction::triggered, &contextMenu, [resolveFolder]() {
+            if (auto* currentFolder = resolveFolder()) {
+                for (QTreeWidgetItemIterator iterator(currentFolder);
+                     *iterator;
+                     ++iterator) {
+                    (*iterator)->setExpanded(false);
+                }
             }
         });
     }
@@ -1662,7 +1702,7 @@ void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
 
     QAction* organizeModelAction = new QAction(tr("Organize Model by Type"), this);
     organizeModelAction->setStatusTip(
-        tr("Groups bodies, sketches, construction geometry, and features without changing the document")
+        tr("Groups bodies, sketches, references, and loose geometry without changing the document")
     );
     organizeModelAction->setCheckable(true);
     organizeModelAction->setChecked(TreeParams::getOrganizeModelByType());
@@ -2315,10 +2355,6 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
                 appObj->getDocument()->getName(),
                 appObj->getNameInDocument()
             );
-            if (auto* parentItem = objectItem->getParentItem();
-                parentItem && parentItem->visibilityPeer()) {
-                parentItem->testStatus(true);
-            }
         }
         for (const auto& entry : DocumentMap) {
             entry.second->updateBrowserFolderStatus();
@@ -2337,17 +2373,10 @@ bool TreeWidget::objectItemVisibility(const DocumentObjectItem* item)
         return false;
     }
 
-    // A body-backed scripted publication uses the native Body as its editable
-    // history and 3D container, while the stable publication peer is the
-    // user-visible solid.  The Body must remain shown so independently enabled
-    // sketches and feature previews can render. Its browser row reports the
-    // parent visibility from the stable publication. Feature rows retain their
-    // own visibility even while this parent gate suppresses their rendering.
-    if (const auto* peer = item->visibilityPeer()) {
-        return peer->Visibility.getValue();
-    }
-
     auto* object = item->object()->getObject();
+    if (item->isBrowserProxy()) {
+        return object->Visibility.getValue();
+    }
     App::DocumentObject* parent = nullptr;
     std::ostringstream subName;
     item->getSubName(subName, parent);
@@ -2374,37 +2403,19 @@ void TreeWidget::setObjectItemVisibility(
     }
 
     auto* object = item->object()->getObject();
-    if (auto* peer = item->visibilityPeer()) {
-        // The native Body remains a scene container for independently visible
-        // sketches and datums. The published solid is the persistent parent
-        // state; result features inherit it through a non-destructive rendering
-        // gate and keep their own Visibility values.
-        if (!object->Visibility.getValue()) {
-            object->Visibility.setValue(true);
-        }
-        if (peer->Visibility.getValue() != visible) {
-            peer->Visibility.setValue(visible);
-        }
-        item->syncVisibilityDependents();
-        if (updateSelection) {
-            Selection().updateSelection(
-                visible,
-                object->getDocument()->getName(),
-                object->getNameInDocument()
-            );
-        }
-        item->testStatus(true);
-        return;
-    }
-
-    App::DocumentObject* parent = nullptr;
-    std::ostringstream subName;
-    item->getSubName(subName, parent);
-    if (parent && parent->isElementVisible(object->getNameInDocument()) >= 0) {
-        parent->setElementVisible(object->getNameInDocument(), visible);
+    if (item->isBrowserProxy()) {
+        object->Visibility.setValue(visible);
     }
     else {
-        object->Visibility.setValue(visible);
+        App::DocumentObject* parent = nullptr;
+        std::ostringstream subName;
+        item->getSubName(subName, parent);
+        if (parent && parent->isElementVisible(object->getNameInDocument()) >= 0) {
+            parent->setElementVisible(object->getNameInDocument(), visible);
+        }
+        else {
+            object->Visibility.setValue(visible);
+        }
     }
     if (updateSelection) {
         Selection().updateSelection(
@@ -2413,11 +2424,40 @@ void TreeWidget::setObjectItemVisibility(
             object->getNameInDocument()
         );
     }
-    if (auto* parentItem = item->getParentItem();
-        parentItem && parentItem->visibilityPeer()) {
-        parentItem->syncVisibilityDependents(visible ? object : nullptr);
-        parentItem->testStatus(true);
+}
+
+App::DocumentObject*
+TreeWidget::resolveModelBrowserVisibilityTarget(App::DocumentObject* object)
+{
+    if (!object || !object->isAttachedToDocument()) {
+        return object;
     }
+
+    auto* document = object->getDocument();
+    if (!document) {
+        return object;
+    }
+
+    ModelTreeBrowserProjection projection(document);
+    const auto* entry = projection.find(object);
+    App::DocumentObject* target = object;
+    if (entry && entry->bodyRepresentation) {
+        target = entry->bodyRepresentation;
+    }
+    else if (entry
+             && entry->role == ModelTreeBrowserProjection::Role::Feature
+             && entry->body) {
+        // A history operation edits a Body, but it is not an independently
+        // persistent rendered solid. Its visibility target is therefore the
+        // Body's current result regardless of the active tree presentation.
+        target = entry->body;
+    }
+
+    if (!target || !target->isAttachedToDocument()
+        || target->getDocument() != document) {
+        return object;
+    }
+    return target;
 }
 
 bool TreeWidget::applyModelBrowserVisibility(
@@ -2429,32 +2469,69 @@ bool TreeWidget::applyModelBrowserVisibility(
     if (!object || !Application::Instance) {
         return false;
     }
-    auto* guiDocument =
-        Application::Instance->getDocument(object->getDocument());
-    if (!guiDocument) {
+
+    auto* target = resolveModelBrowserVisibilityTarget(object);
+    if (!target || !target->isAttachedToDocument()) {
         return false;
     }
+
+    auto* guiDocument =
+        Application::Instance->getDocument(target->getDocument());
+    bool hasBrowserProxy = false;
     for (auto* tree : Instances) {
-        if (!tree) {
+        if (!tree || !guiDocument) {
             continue;
         }
         const auto documentIt = tree->DocumentMap.find(guiDocument);
         if (documentIt == tree->DocumentMap.end() || !documentIt->second) {
             continue;
         }
-        auto* item = documentIt->second->findBrowserItem(object);
-        if (!item || !item->isBrowserProxy()) {
+        if (auto* item = documentIt->second->findBrowserItem(target);
+            item && item->isBrowserProxy()) {
+            hasBrowserProxy = true;
+        }
+    }
+
+    // Direct objects outside the typed browser keep their native visibility
+    // behavior. A semantic redirect, however, must work without any browser
+    // instance so the tree presentation cannot change command meaning.
+    if (target == object && !hasBrowserProxy) {
+        return false;
+    }
+
+    auto* viewProvider = Application::Instance->getViewProvider(target);
+    if (!viewProvider || !viewProvider->canToggleVisibility()) {
+        return false;
+    }
+
+    const bool visible = requestedVisibility < 0
+        ? !viewProvider->isShow()
+        : requestedVisibility != 0;
+    // Standard Show/Hide are imperative commands, not just property
+    // assignments. Invoke the routed view provider even when its logical
+    // Visibility already equals the request so it can idempotently repair a
+    // stale scene branch after restore, adoption, or rollback.
+    if (visible) {
+        viewProvider->show();
+    }
+    else {
+        viewProvider->hide();
+    }
+    resultingVisibility = viewProvider->isShow();
+
+    // Do not retain item pointers across show()/hide(): those calls can emit
+    // document changes and rebuild a browser. Resolve each document item
+    // afresh solely to update aggregate folder indicators.
+    for (auto* tree : Instances) {
+        if (!tree || !guiDocument) {
             continue;
         }
-        const bool visible = requestedVisibility < 0
-            ? !objectItemVisibility(item)
-            : requestedVisibility != 0;
-        setObjectItemVisibility(item, visible, false);
-        documentIt->second->updateBrowserFolderStatus();
-        resultingVisibility = objectItemVisibility(item);
-        return true;
+        const auto documentIt = tree->DocumentMap.find(guiDocument);
+        if (documentIt != tree->DocumentMap.end() && documentIt->second) {
+            documentIt->second->updateBrowserFolderStatus();
+        }
     }
-    return false;
+    return true;
 }
 
 void TreeWidget::mousePressEvent(QMouseEvent* event)
@@ -2523,10 +2600,6 @@ void TreeWidget::mousePressEvent(QMouseEvent* event)
                         else {
                             visible = object->Visibility.getValue();
                             object->Visibility.setValue(!visible);
-                        }
-                        if (auto* parentItem = objectItem->getParentItem();
-                            parentItem && parentItem->visibilityPeer()) {
-                            parentItem->testStatus(true);
                         }
                     }
                 }
@@ -2600,32 +2673,83 @@ void TreeWidget::mouseDoubleClickEvent(QMouseEvent* event)
 
             Gui::Document* guidoc = objitem->getOwnerDocument()->document();
             App::Document* appdoc = guidoc->getDocument();
-
-            guidoc->setActiveView(vp);
-            auto manager = Application::Instance->macroManager();
-            auto lines = manager->getLines();
-
-            std::ostringstream ss;
-            ss << Command::getObjectCmd(vp->getObject()) << ".ViewObject.doubleClicked()";
-
-            const char* commandText = vp->getTransactionText();
-            if (commandText) {
-                appdoc->openTransaction(commandText);
-
-                if (!vp->doubleClicked()) {
-                    QTreeWidget::mouseDoubleClickEvent(event);
-                }
-                else if (lines == manager->getLines()) {
-                    manager->addLine(MacroManager::Gui, ss.str().c_str());
-                }
+            if (appdoc->getBookedTransactionID() != App::NullTransaction
+                && !Gui::TaskView::TaskDialog::
+                    hasOwnedEnclosingTransaction(appdoc)) {
+                // A direct tree gesture has no authority to finish or replace
+                // a transaction opened by another caller.
+                return;
             }
-            else {
-                if (!vp->doubleClicked()) {
+            Gui::TaskView::TaskDialog::beginCommandInvocation();
+            int openedTransactionId = App::NullTransaction;
+            const auto abortOpenedTransaction = [&]() {
+                if (openedTransactionId == App::NullTransaction
+                    || !App::GetApplication().abortTransaction(
+                        openedTransactionId
+                    )) {
+                    return;
+                }
+                Gui::TaskView::TaskDialog::
+                    recordCommandTransactionCompletion(
+                        appdoc,
+                        openedTransactionId
+                    );
+            };
+            try {
+                guidoc->setActiveView(vp);
+                auto manager = Application::Instance->macroManager();
+                const auto submittedLines =
+                    manager->getSubmittedCommandLines();
+
+                std::ostringstream ss;
+                ss << Command::getObjectCmd(vp->getObject())
+                   << ".ViewObject.doubleClicked()";
+
+                const char* commandText = vp->getTransactionText();
+                if (commandText) {
+                    openedTransactionId =
+                        appdoc->openTransaction(commandText);
+                }
+
+                const bool legacyHandled = vp->doubleClicked();
+                const bool editing =
+                    guidoc->getEditViewProvider()
+                    && Application::Instance->isInEdit(guidoc);
+                bool accepted = legacyHandled || editing;
+                if (editing
+                    && openedTransactionId != App::NullTransaction
+                    && !guidoc->adoptOwnedEditTransaction(
+                        openedTransactionId
+                    )) {
+                    guidoc->resetEdit();
+                    abortOpenedTransaction();
+                    accepted = false;
+                }
+                if (!accepted) {
+                    abortOpenedTransaction();
                     QTreeWidget::mouseDoubleClickEvent(event);
                 }
-                else if (lines == manager->getLines()) {
-                    manager->addLine(MacroManager::Gui, ss.str().c_str());
+                else {
+                    if (submittedLines
+                        == manager->getSubmittedCommandLines()) {
+                        manager->addLine(
+                            MacroManager::Gui,
+                            ss.str().c_str()
+                        );
+                    }
                 }
+                Gui::TaskView::TaskDialog::endCommandInvocation(
+                    accepted
+                );
+            }
+            catch (...) {
+                // A synchronous callback may have opened a successor. The
+                // tree gesture can roll back only the exact transaction it
+                // opened, never whichever transaction happens to be current
+                // when an exception propagates.
+                abortOpenedTransaction();
+                Gui::TaskView::TaskDialog::endCommandInvocation(false);
+                throw;
             }
         }
         else if (item->type() == TreeWidget::BrowserFolderType) {
@@ -3018,10 +3142,12 @@ bool TreeWidget::dropInDocument(
     infos.reserve(items.size());
     bool syncPlacement = TreeParams::getSyncPlacement();
 
-    int tid = 0;
     std::string transName = da == Qt::LinkAction ? "Link object"
         : da == Qt::CopyAction                   ? "Copy object"
                                                  : "Move object";
+    std::vector<App::Document*> transactionDocuments {
+        targetInfo.targetDoc,
+    };
 
     // check if items can be dragged
     for (auto& v : items) {
@@ -3029,16 +3155,20 @@ bool TreeWidget::dropInDocument(
         auto obj = item->object()->getObject();
         auto parentItem = item->getParentItem();
 
-        tid = obj->getDocument()->openTransaction(
-            transName,
-            tid
-        );  // If the same document already has this transaction opened, it is ignored
+        if (std::ranges::find(
+                transactionDocuments,
+                obj->getDocument()
+            )
+            == transactionDocuments.end()) {
+            transactionDocuments.push_back(
+                obj->getDocument()
+            );
+        }
         if (parentItem) {
             bool allParentsOK = canDragFromParents(parentItem, obj, nullptr);
 
             if (!allParentsOK || !parentItem->object()->canDragObjects()
                 || !parentItem->object()->canDragObject(obj)) {
-                App::GetApplication().abortTransaction(tid);
                 TREE_ERR(
                     "'" << obj->getFullName() << "' cannot be dragged out of '"
                         << parentItem->object()->getObject()->getFullName() << "'"
@@ -3072,6 +3202,49 @@ bool TreeWidget::dropInDocument(
                 info.topSubname = ss.str();
             }
         }
+    }
+    Gui::TaskView::TaskDialog::beginCommandInvocation();
+    bool invocationFinished = false;
+    const auto finishInvocation = [&invocationFinished](bool success) {
+        if (!invocationFinished) {
+            invocationFinished = true;
+            Gui::TaskView::TaskDialog::endCommandInvocation(success);
+        }
+    };
+    std::unique_ptr<ExactTransaction> transaction;
+    try {
+        transaction = std::make_unique<ExactTransaction>(
+            transactionDocuments,
+            transName
+        );
+    }
+    catch (const Base::Exception& error) {
+        error.reportException();
+        finishInvocation(false);
+        QMessageBox::critical(
+            getMainWindow(),
+            QObject::tr("Drag & drop failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
+    catch (const std::exception& error) {
+        finishInvocation(false);
+        QMessageBox::critical(
+            getMainWindow(),
+            QObject::tr("Drag & drop failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
+    catch (...) {
+        finishInvocation(false);
+        QMessageBox::critical(
+            getMainWindow(),
+            QObject::tr("Drag & drop failed"),
+            QObject::tr("The exact drag-and-drop transaction could not be opened.")
+        );
+        return false;
     }
     // Because the existence of subname, we must de-select the drag the
     // object manually. Just do a complete clear here for simplicity
@@ -3161,9 +3334,13 @@ bool TreeWidget::dropInDocument(
                 std::ostringstream ss;
                 ss << Command::getObjectCmd(vpp->getObject()) << ".ViewObject.dragObject("
                    << Command::getObjectCmd(obj) << ')';
-                auto lines = manager->getLines();
+                const auto submittedLines =
+                    manager->getSubmittedCommandLines();
                 vpp->dragObject(obj);
-                if (manager->getLines() == lines) {
+                if (
+                    manager->getSubmittedCommandLines()
+                    == submittedLines
+                ) {
                     manager->addLine(MacroManager::Gui, ss.str().c_str());
                 }
 
@@ -3186,16 +3363,29 @@ bool TreeWidget::dropInDocument(
                 }
             }
             else {
-                std::ostringstream ss;
-                ss << "App.getDocument('" << targetInfo.targetDoc->getName() << "')."
-                   << (da == Qt::CopyAction ? "copyObject(" : "moveObject(")
-                   << Command::getObjectCmd(obj) << ", True)";
                 App::DocumentObject* res = nullptr;
                 if (da == Qt::CopyAction) {
-                    auto copied = targetInfo.targetDoc->copyObject({obj}, true);
-                    if (!copied.empty()) {
-                        res = copied.back();
+                    auto imported = copyTimelineObjects(
+                        *targetInfo.targetDoc,
+                        {obj},
+                        true
+                    );
+                    if (imported.selectedObjects.size() != 1) {
+                        throw Base::RuntimeError(
+                            "The copied tree object did not map to one exact "
+                            "result"
+                        );
                     }
+                    res = imported.selectedObjects.front();
+                    propPlacement = dynamic_cast<App::PropertyPlacement*>(
+                        res->getPropertyByName("Placement")
+                    );
+                    if (propPlacement) {
+                        propPlacement->setValueIfChanged(
+                            Base::Placement(mat)
+                        );
+                    }
+                    adoptTimelineImport(imported);
                 }
                 else if (da == Qt::MoveAction && obj->getDocument() == targetInfo.targetDoc) {
                     // Moving a object within the document root.
@@ -3203,19 +3393,54 @@ bool TreeWidget::dropInDocument(
                     droppedObjs.push_back(obj);
                 }
                 else {
-                    // Moving a object from another document.
-                    res = targetInfo.targetDoc->moveObject(obj, true);
-                }
-                if (res) {
+                    // Moving across documents is a semantic copy followed by
+                    // exact source deletion in the same multi-document
+                    // transaction. This keeps owned history resources and
+                    // replacement blocks together.
+                    const auto sourcePlan =
+                        prepareTimelineExport({obj}, true);
+                    auto imported = copyTimelineObjects(
+                        *targetInfo.targetDoc,
+                        {obj},
+                        true
+                    );
+                    if (imported.selectedObjects.size() != 1) {
+                        throw Base::RuntimeError(
+                            "The moved tree object did not map to one exact "
+                            "result"
+                        );
+                    }
+                    res = imported.selectedObjects.front();
                     propPlacement = dynamic_cast<App::PropertyPlacement*>(
                         res->getPropertyByName("Placement")
                     );
                     if (propPlacement) {
-                        propPlacement->setValueIfChanged(Base::Placement(mat));
+                        propPlacement->setValueIfChanged(
+                            Base::Placement(mat)
+                        );
+                    }
+                    adoptTimelineImport(imported);
+                    deleteTimelineExportSource(sourcePlan);
+                }
+                if (res) {
+                    if (!propPlacement) {
+                        propPlacement =
+                            dynamic_cast<App::PropertyPlacement*>(
+                                res->getPropertyByName("Placement")
+                            );
+                        if (propPlacement) {
+                            propPlacement->setValueIfChanged(
+                                Base::Placement(mat)
+                            );
+                        }
                     }
                     droppedObjs.push_back(res);
                 }
-                manager->addLine(MacroManager::App, ss.str().c_str());
+                // Semantic copy/move currently has no public replay command.
+                // Recording the legacy copyObject()/moveObject() call would
+                // silently omit owned resources, accepted timeline state, and
+                // exact source cleanup, so deliberately emit no misleading
+                // macro line until exact replay is available.
             }
         }
         touched = true;
@@ -3240,7 +3465,10 @@ bool TreeWidget::dropInDocument(
         errMsg = "Unknown exception";
     }
     if (!errMsg.empty()) {
-        App::GetApplication().abortTransaction(tid);
+        if (transaction) {
+            (void)transaction->abort();
+        }
+        finishInvocation(false);
         QMessageBox::critical(
             getMainWindow(),
             QObject::tr("Drag & drop failed"),
@@ -3249,7 +3477,18 @@ bool TreeWidget::dropInDocument(
         return false;
     }
 
-    App::GetApplication().commitTransaction(tid);
+    if (!transaction || !transaction->commit()) {
+        finishInvocation(false);
+        QMessageBox::critical(
+            getMainWindow(),
+            QObject::tr("Drag & drop failed"),
+            QObject::tr(
+                "The exact drag-and-drop transaction could not be committed."
+            )
+        );
+        return false;
+    }
+    finishInvocation(true);
     return touched;
 }
 
@@ -3467,11 +3706,15 @@ bool TreeWidget::dropInObject(
             auto manager = Application::Instance->macroManager();
             std::ostringstream ss;
             if (vpp) {
-                auto lines = manager->getLines();
+                const auto submittedLines =
+                    manager->getSubmittedCommandLines();
                 ss << Command::getObjectCmd(vpp->getObject()) << ".ViewObject.dragObject("
                    << Command::getObjectCmd(obj) << ')';
                 vpp->dragObject(obj);
-                if (manager->getLines() == lines) {
+                if (
+                    manager->getSubmittedCommandLines()
+                    == submittedLines
+                ) {
                     manager->addLine(MacroManager::Gui, ss.str().c_str());
                 }
                 owner = nullptr;
@@ -3555,9 +3798,13 @@ bool TreeWidget::dropInObject(
                     ss << "'" << sub << "',";
                 }
                 ss << "])";
-                auto lines = manager->getLines();
+                const auto submittedLines =
+                    manager->getSubmittedCommandLines();
                 dropName = vp->dropObjectEx(obj, owner, subname.c_str(), info.subs);
-                if (manager->getLines() == lines) {
+                if (
+                    manager->getSubmittedCommandLines()
+                    == submittedLines
+                ) {
                     manager->addLine(MacroManager::Gui, ss.str().c_str());
                 }
                 if (!dropName.empty()) {
@@ -3902,6 +4149,15 @@ void TreeWidget::slotChangedViewObject(const Gui::ViewProvider& vp, const App::P
 {
     if (!App::GetApplication().isRestoring() && vp.isDerivedFrom<ViewProviderDocumentObject>()) {
         const auto& vpd = static_cast<const ViewProviderDocumentObject&>(vp);
+        auto* document = vpd.getObject() ? vpd.getObject()->getDocument() : nullptr;
+        if (document && document->isPerformingTransaction()) {
+            if (auto documentIt = DocumentMap.find(vpd.getDocument());
+                documentIt != DocumentMap.end()) {
+                documentIt->second->modelBrowserDirty = true;
+                documentIt->second->transactionRefreshPending = true;
+            }
+            return;
+        }
         if (&prop == &vpd.ShowInTree) {
             ChangedObjects.emplace(vpd.getObject(), 0);
             _updateStatus();
@@ -3911,6 +4167,16 @@ void TreeWidget::slotChangedViewObject(const Gui::ViewProvider& vp, const App::P
 
 void TreeWidget::slotTouchedObject(const App::DocumentObject& obj)
 {
+    auto* document = obj.getDocument();
+    if (document && document->isPerformingTransaction()) {
+        auto* guiDocument = Application::Instance->getDocument(document);
+        if (auto documentIt = DocumentMap.find(guiDocument);
+            documentIt != DocumentMap.end()) {
+            documentIt->second->modelBrowserDirty = true;
+            documentIt->second->transactionRefreshPending = true;
+        }
+        return;
+    }
     ChangedObjects.emplace(const_cast<App::DocumentObject*>(&obj), 0);
     _updateStatus();
 }
@@ -4938,6 +5204,9 @@ DocumentItem::DocumentItem(const Gui::Document* doc, QTreeWidgetItem* parent)
     connectRecomputedObj = adoc->signalRecomputedObject.connect(
         std::bind(&DocumentItem::slotRecomputedObject, this, sp::_1)
     );
+    connectDocumentStable = adoc->signalBecameStable.connect(
+        std::bind(&DocumentItem::slotDocumentStable, this, sp::_1)
+    );
     // NOLINTEND
 
     setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable /*|Qt::ItemIsEditable*/);
@@ -4958,6 +5227,7 @@ DocumentItem::~DocumentItem()
     connectScrObject.disconnect();
     connectRecomputed.disconnect();
     connectRecomputedObj.disconnect();
+    connectDocumentStable.disconnect();
 }
 
 TreeWidget* DocumentItem::getTree() const
@@ -5127,9 +5397,7 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     App::DocumentObject* object,
     QTreeWidgetItem* parent,
     DocumentObjectItem* logicalParent,
-    bool browserDefaultHidden,
-    App::DocumentObject* browserVisibilityPeer,
-    const std::vector<App::DocumentObject*>& browserVisibilityDependents
+    bool browserDefaultHidden
 )
 {
     if (!object || !parent) {
@@ -5148,21 +5416,6 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
         logicalParent,
         browserDefaultHidden
     );
-    item->browserVisibilityPeerName =
-        browserVisibilityPeer && browserVisibilityPeer->getNameInDocument()
-        ? browserVisibilityPeer->getNameInDocument()
-        : "";
-    item->browserVisibilityDependentNames.reserve(
-        browserVisibilityDependents.size()
-    );
-    for (const auto* dependent : browserVisibilityDependents) {
-        if (dependent && dependent->getNameInDocument()) {
-            item->browserVisibilityDependentNames.emplace_back(
-                dependent->getNameInDocument()
-            );
-        }
-    }
-    item->syncVisibilityDependents();
     parent->addChild(item);
     item->setText(0, QString::fromUtf8(data->label.c_str()));
     if (!data->label2.empty()) {
@@ -5176,6 +5429,23 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     item->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
     item->testStatus(true);
     return item;
+}
+
+DocumentObjectItem* DocumentItem::createBrowserObjectItem(
+    App::DocumentObject* object,
+    QTreeWidgetItem* parent,
+    DocumentObjectItem* logicalParent,
+    bool browserDefaultHidden,
+    App::DocumentObject*,
+    const std::vector<App::DocumentObject*>&
+)
+{
+    return createBrowserObjectItem(
+        object,
+        parent,
+        logicalParent,
+        browserDefaultHidden
+    );
 }
 
 DocumentObjectItem* DocumentItem::findBrowserItem(App::DocumentObject* object) const
@@ -5216,13 +5486,6 @@ void DocumentItem::clearModelBrowser()
 
     const bool selectionLock = tree->blockSelection(true);
     QSignalBlocker signalBlocker(tree);
-    for (const auto& entry : ObjectMap) {
-        for (auto* item : entry.second->items) {
-            if (item->isBrowserProxy()) {
-                item->syncVisibilityDependents(nullptr, true);
-            }
-        }
-    }
     for (int index = childCount() - 1; index >= 0; --index) {
         auto* childItem = child(index);
         const bool isBrowserRoot = childItem->type() == TreeWidget::BrowserFolderType
@@ -5275,9 +5538,7 @@ void DocumentItem::updateBrowserFolderStatus()
                 childItem->type() == TreeWidget::ObjectType
                 && static_cast<DocumentObjectItem*>(childItem)->isBrowserProxy()
             ) {
-                auto* objectItem = static_cast<DocumentObjectItem*>(childItem);
-                objectItem->syncVisibilityDependents();
-                collect(objectItem);
+                collect(childItem);
             }
         }
     };
@@ -5301,9 +5562,9 @@ void DocumentItem::rebuildModelBrowser()
     using Entry = Projection::Entry;
     using Role = Projection::Role;
 
-    std::set<std::string> expandedObjects;
+    std::set<const App::DocumentObject*> expandedObjects;
     std::set<std::string> expandedFolders;
-    std::set<std::string> selectedObjects;
+    std::set<const App::DocumentObject*> selectedObjects;
 
     std::function<void(QTreeWidgetItem*)> captureState = [&](QTreeWidgetItem* parent) {
         for (int index = 0; index < parent->childCount(); ++index) {
@@ -5320,12 +5581,16 @@ void DocumentItem::rebuildModelBrowser()
                 if (!objectItem->isBrowserProxy()) {
                     continue;
                 }
-                const std::string name = objectItem->getName();
-                if (objectItem->isExpanded()) {
-                    expandedObjects.insert(name);
-                }
-                if (objectItem->isSelected()) {
-                    selectedObjects.insert(name);
+                const auto* object = objectItem->object()
+                    ? objectItem->object()->getObject()
+                    : nullptr;
+                if (object) {
+                    if (objectItem->isExpanded()) {
+                        expandedObjects.insert(object);
+                    }
+                    if (objectItem->isSelected()) {
+                        selectedObjects.insert(object);
+                    }
                 }
                 captureState(objectItem);
             }
@@ -5368,9 +5633,7 @@ void DocumentItem::rebuildModelBrowser()
                           const std::string& context,
                           const char* id,
                           const QString& label,
-                          const char* icon,
-                          BrowserFolderItem::VisibilityMode visibilityMode =
-                              BrowserFolderItem::VisibilityMode::IndependentItems
+                          const char* icon
                       ) {
         const QString key = QString::fromStdString(context + "/folder:" + id);
         auto* folder = new BrowserFolderItem(
@@ -5379,8 +5642,7 @@ void DocumentItem::rebuildModelBrowser()
             logicalParent,
             key,
             label,
-            QByteArray(icon),
-            visibilityMode
+            QByteArray(icon)
         );
         folder->setExpanded(expandedFolders.contains(key.toStdString()));
         return folder;
@@ -5402,9 +5664,7 @@ void DocumentItem::rebuildModelBrowser()
             entry.object,
             parent,
             logicalParent,
-            entry.publishedImplementation || entry.bodyRepresentation,
-            entry.publicationRepresentation,
-            entry.bodyResultRepresentations
+            entry.publishedImplementation || entry.bodyRepresentation
         );
         if (!item) {
             return nullptr;
@@ -5423,12 +5683,11 @@ void DocumentItem::rebuildModelBrowser()
         proxies.emplace(entry.object, item);
         rendered.insert(entry.object);
 
-        const std::string name = objectKey(entry.object);
-        const bool wasExpanded = expandedObjects.contains(name);
+        const bool wasExpanded = expandedObjects.contains(entry.object);
         const bool persistedExpanded = entry.object->testStatus(App::Expand);
         const bool defaultExpanded = firstBuild && entry.role == Role::Component;
         item->setExpanded(wasExpanded || persistedExpanded || defaultExpanded);
-        const bool selected = selectedObjects.contains(name);
+        const bool selected = selectedObjects.contains(entry.object);
         item->selected = selected ? 1 : 0;
         item->setSelected(selected);
         item->setCheckState(selected);
@@ -5462,7 +5721,7 @@ void DocumentItem::rebuildModelBrowser()
     std::unordered_map<RoleContextKey, EntryBucket, RoleContextKeyHash> entriesByLogicalParentRole;
     // Feature entries keyed by their owning Body.
     std::unordered_map<const App::DocumentObject*, EntryBucket> featureEntriesByBody;
-    // Entries claimed by a plain group, keyed by that group.
+    // Entries keyed by their immediate plain organizational group.
     std::unordered_map<const App::DocumentObject*, EntryBucket> entriesByGroup;
     // Entries keyed by (owning component, role); the nullptr-component bucket
     // holds document-root entries.
@@ -5634,9 +5893,7 @@ void DocumentItem::rebuildModelBrowser()
                               const char* id,
                               const QString& label,
                               const char* icon,
-                              const std::vector<const Entry*>& categoryEntries,
-                              BrowserFolderItem::VisibilityMode visibilityMode =
-                                  BrowserFolderItem::VisibilityMode::IndependentItems
+                              const std::vector<const Entry*>& categoryEntries
                           ) {
         if (categoryEntries.empty()) {
             return static_cast<BrowserFolderItem*>(nullptr);
@@ -5647,14 +5904,48 @@ void DocumentItem::rebuildModelBrowser()
             contextKey(contextObject),
             id,
             label,
-            icon,
-            visibilityMode
+            icon
         );
         for (const auto* entry : categoryEntries) {
-            auto* logicalParent = logicalItem(entry->logicalParent, nullptr);
+            // A type category can intentionally present an object outside its
+            // plain organizational Group. If that Group has not been rendered
+            // yet, retain the component as the selection-path parent rather
+            // than incorrectly treating the object as document-root.
+            auto* logicalParent = logicalItem(entry->logicalParent, contextItem);
             renderObject(*entry, folder, logicalParent);
         }
         return folder;
+    };
+
+    renderGroup = [&](const Entry& groupEntry,
+                      QTreeWidgetItem* parent,
+                      DocumentObjectItem* logicalParent) {
+        auto* groupItem = renderObject(groupEntry, parent, logicalParent);
+        if (!groupItem) {
+            return;
+        }
+        const auto children = takeBucket(
+            findBucket(entriesByGroup, groupEntry.object)
+        );
+        for (const auto* child : children) {
+            if (child->role == Role::Group) {
+                renderGroup(*child, groupItem, groupItem);
+                continue;
+            }
+            // Bodies, Sketches, Parameters, References, and loose Geometry are
+            // already collected by type. A plain group keeps only otherwise
+            // unclassified children, so it stays useful without duplicating
+            // primary model objects.
+            if (child->role == Role::Other
+                && !child->publishedImplementation
+                && !child->bodyRepresentation) {
+                renderObject(*child, groupItem, groupItem);
+            }
+        }
+        groupItem->setChildIndicatorPolicy(
+            groupItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                        : QTreeWidgetItem::DontShowIndicator
+        );
     };
 
     renderBody = [&](const Entry& bodyEntry,
@@ -5665,57 +5956,90 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
 
-        const auto origins = originEntriesFor(bodyEntry.object);
-        for (const auto* origin : origins) {
-            renderOrigin(*origin, bodyItem, bodyItem);
-        }
-
+        // Body history is presented by the bottom timeline. Mark the native
+        // history objects as intentionally consumed so the browser's safety
+        // sweep cannot recreate them under an "Other" folder.
         const auto features = takeBucket(findBucket(featureEntriesByBody, bodyEntry.object));
-        renderCategory(
-            bodyItem,
-            bodyItem,
-            bodyEntry.object,
-            "features",
-            TreeWidget::tr("Features"),
-            "PartDesign_Pad",
-            features,
-            BrowserFolderItem::VisibilityMode::LatestPreview
-        );
+        for (const auto* feature : features) {
+            rendered.insert(feature->object);
+        }
         bodyItem->setChildIndicatorPolicy(
             bodyItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
                                        : QTreeWidgetItem::DontShowIndicator
         );
     };
 
-    renderGroup = [&](const Entry& groupEntry,
-                      QTreeWidgetItem* parent,
-                      DocumentObjectItem* logicalParent) {
-        auto* groupItem = renderObject(groupEntry, parent, logicalParent);
-        if (!groupItem) {
+    auto renderReferences = [&](
+                                QTreeWidgetItem* parent,
+                                DocumentObjectItem* contextItem,
+                                App::DocumentObject* contextObject,
+                                const EntryBucket& bodyEntries,
+                                const EntryBucket& referenceEntries
+                            ) {
+        struct OriginReference
+        {
+            const Entry* entry {};
+            App::DocumentObject* owner {};
+        };
+        std::vector<OriginReference> origins;
+        for (const auto* origin : originEntriesFor(contextObject)) {
+            origins.push_back({origin, contextObject});
+        }
+        for (const auto* body : bodyEntries) {
+            for (const auto* origin : originEntriesFor(body->object)) {
+                origins.push_back({origin, body->object});
+            }
+        }
+
+        const auto visibleReferences = filterBucket(
+            &referenceEntries,
+            [](const Entry& entry) {
+                return !entry.publishedImplementation
+                    && !entry.bodyRepresentation;
+            }
+        );
+        if (origins.empty() && visibleReferences.empty()) {
             return;
         }
-        const auto children = takeBucket(findBucket(entriesByGroup, groupEntry.object));
-        for (const auto* child : children) {
-            if (child->role == Role::Group) {
-                renderGroup(*child, groupItem, groupItem);
-            }
-            else if (child->role == Role::Component) {
-                renderComponent(*child, groupItem, groupItem);
-            }
-            else if (child->role == Role::Body) {
-                renderBody(*child, groupItem, groupItem);
-            }
-            else if (child->role == Role::Origin) {
-                renderOrigin(*child, groupItem, groupItem);
-            }
-            else {
-                renderObject(*child, groupItem, groupItem);
-            }
-        }
-        groupItem->setChildIndicatorPolicy(
-            groupItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
-                                        : QTreeWidgetItem::DontShowIndicator
+
+        auto* folder = makeFolder(
+            parent,
+            contextItem,
+            contextKey(contextObject),
+            "references",
+            TreeWidget::tr("References"),
+            "PartDesign_SubShapeBinder"
         );
+        for (const auto& origin : origins) {
+            auto* logicalParent = logicalItem(origin.entry->logicalParent, contextItem);
+            renderOrigin(*origin.entry, folder, logicalParent);
+            const auto item = proxies.find(origin.entry->object);
+            if (item == proxies.end() || !item->second
+                || origin.owner == contextObject) {
+                continue;
+            }
+            if (!contextObject && origins.size() == 1) {
+                // A document with one root Body has only one meaningful
+                // coordinate system. Present the human-facing name "Origin";
+                // qualify origins only where siblings could be ambiguous.
+                item->second->setText(0, TreeWidget::tr("Origin"));
+                continue;
+            }
+            const QString ownerLabel = origin.owner
+                ? QString::fromUtf8(origin.owner->Label.getValue())
+                : QString();
+            item->second->setText(
+                0,
+                TreeWidget::tr("%1 Origin").arg(ownerLabel)
+            );
+        }
+        for (const auto* reference : visibleReferences) {
+            renderObject(
+                *reference,
+                folder,
+                logicalItem(reference->logicalParent, contextItem)
+            );
+        }
     };
 
     renderComponent = [&](const Entry& componentEntry,
@@ -5726,12 +6050,14 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
 
-        const auto origins = originEntriesFor(componentEntry.object);
-        for (const auto* origin : origins) {
-            renderOrigin(*origin, componentItem, componentItem);
+        const auto nestedComponents =
+            componentRoleEntries(componentEntry.object, Role::Component);
+        for (const auto* nested : nestedComponents) {
+            renderComponent(*nested, componentItem, componentItem);
         }
 
-        const auto parameters = componentRoleEntries(componentEntry.object, Role::Parameter);
+        const auto parameters =
+            componentRoleEntries(componentEntry.object, Role::Parameter);
         renderCategory(
             componentItem,
             componentItem,
@@ -5741,22 +6067,6 @@ void DocumentItem::rebuildModelBrowser()
             "VarSet",
             parameters
         );
-
-        const auto nestedComponents =
-            componentRoleEntries(componentEntry.object, Role::Component);
-        if (!nestedComponents.empty()) {
-            auto* folder = makeFolder(
-                componentItem,
-                componentItem,
-                contextKey(componentEntry.object),
-                "components",
-                TreeWidget::tr("Components"),
-                "Std_Part"
-            );
-            for (const auto* nested : nestedComponents) {
-                renderComponent(*nested, folder, componentItem);
-            }
-        }
 
         const auto bodies = componentRoleEntries(componentEntry.object, Role::Body);
         if (!bodies.empty()) {
@@ -5784,19 +6094,28 @@ void DocumentItem::rebuildModelBrowser()
             sketches
         );
 
-        const auto construction =
-            componentRoleEntries(componentEntry.object, Role::Construction);
-        renderCategory(
+        const auto references = componentRoleEntries(componentEntry.object, Role::Reference);
+        renderReferences(
             componentItem,
             componentItem,
             componentEntry.object,
-            "construction",
-            TreeWidget::tr("Construction"),
-            "PartDesign_Plane",
-            construction
+            bodies,
+            references
         );
 
-        const auto geometry = componentRoleEntries(componentEntry.object, Role::Geometry);
+        // Geometry is a compatibility escape hatch only for genuine loose
+        // user/legacy objects. Body history and scripted publication internals
+        // are deliberately represented elsewhere and must never appear here.
+        const auto looseGeometry = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::Geometry}
+            ),
+            [](const Entry& entry) {
+                return !entry.body && !entry.publishedImplementation
+                    && !entry.bodyRepresentation;
+            }
+        );
         renderCategory(
             componentItem,
             componentItem,
@@ -5804,18 +6123,7 @@ void DocumentItem::rebuildModelBrowser()
             "geometry",
             TreeWidget::tr("Geometry"),
             "Part_Primitives",
-            geometry
-        );
-
-        const auto references = componentRoleEntries(componentEntry.object, Role::Reference);
-        renderCategory(
-            componentItem,
-            componentItem,
-            componentEntry.object,
-            "references",
-            TreeWidget::tr("References"),
-            "PartDesign_SubShapeBinder",
-            references
+            looseGeometry
         );
 
         const auto groups = filterBucket(
@@ -5847,7 +6155,9 @@ void DocumentItem::rebuildModelBrowser()
                 RoleContextKey {componentEntry.object, Role::Other}
             ),
             [](const Entry& entry) {
-                return !entry.body && !entry.group;
+                return !entry.body && !entry.group
+                    && !entry.publishedImplementation
+                    && !entry.bodyRepresentation;
             }
         );
         renderCategory(
@@ -5869,7 +6179,8 @@ void DocumentItem::rebuildModelBrowser()
     // Components are the primary browser roots, matching component-oriented CAD
     // systems.  Type folders below handle document-level loose objects and Bodies.
     const auto topComponents = filterBucket(&componentEntries, [](const Entry& entry) {
-        return !entry.logicalParent && !entry.group;
+        return !entry.logicalParent
+            || !Projection::isComponent(entry.logicalParent);
     });
     for (const auto* component : topComponents) {
         renderComponent(*component, this, nullptr);
@@ -5912,18 +6223,22 @@ void DocumentItem::rebuildModelBrowser()
         rootSketches
     );
 
-    const auto rootConstruction = componentRoleEntries(nullptr, Role::Construction);
-    renderCategory(
+    const auto rootReferences = componentRoleEntries(nullptr, Role::Reference);
+    renderReferences(
         this,
         nullptr,
         nullptr,
-        "construction",
-        TreeWidget::tr("Construction"),
-        "PartDesign_Plane",
-        rootConstruction
+        rootBodies,
+        rootReferences
     );
 
-    const auto rootGeometry = componentRoleEntries(nullptr, Role::Geometry);
+    const auto rootLooseGeometry = filterBucket(
+        findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Geometry}),
+        [](const Entry& entry) {
+            return !entry.body && !entry.publishedImplementation
+                && !entry.bodyRepresentation;
+        }
+    );
     renderCategory(
         this,
         nullptr,
@@ -5931,18 +6246,7 @@ void DocumentItem::rebuildModelBrowser()
         "geometry",
         TreeWidget::tr("Geometry"),
         "Part_Primitives",
-        rootGeometry
-    );
-
-    const auto rootReferences = componentRoleEntries(nullptr, Role::Reference);
-    renderCategory(
-        this,
-        nullptr,
-        nullptr,
-        "references",
-        TreeWidget::tr("References"),
-        "PartDesign_SubShapeBinder",
-        rootReferences
+        rootLooseGeometry
     );
 
     const auto rootGroups = filterBucket(
@@ -5968,10 +6272,12 @@ void DocumentItem::rebuildModelBrowser()
     const auto rootOther = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Other}),
         [](const Entry& entry) {
-            return !entry.body && !entry.group;
+            return !entry.body && !entry.group
+                && !entry.publishedImplementation
+                && !entry.bodyRepresentation;
         }
     );
-    renderCategory(
+    auto* rootOtherFolder = renderCategory(
         this,
         nullptr,
         nullptr,
@@ -5981,26 +6287,32 @@ void DocumentItem::rebuildModelBrowser()
         rootOther
     );
 
-    // Never make a valid document object disappear because a new or third-party
-    // type did not match a known role.  The fallback remains deterministic and is
-    // deliberately presentation-only.
-    // Terminal safety sweep: one deliberate O(N) pass over all entries to
-    // collect everything still unrendered; not a per-category scan.
+    // A third-party or partially restored object must never disappear because
+    // its role or ownership pattern was unknown. Deliberately internal
+    // publications and Body history are the only objects omitted here.
     EntryBucket unrendered;
     for (const auto& entry : entries) {
-        if (entryAvailable(entry) && !rendered.contains(entry.object)) {
-            unrendered.push_back(&entry);
+        if (!entryAvailable(entry) || rendered.contains(entry.object)) {
+            continue;
         }
+        if (entry.publishedImplementation || entry.bodyRepresentation
+            || (entry.role == Role::Feature && entry.body)) {
+            rendered.insert(entry.object);
+            continue;
+        }
+        unrendered.push_back(&entry);
     }
     if (!unrendered.empty()) {
-        auto* folder = makeFolder(
-            this,
-            nullptr,
-            contextKey(nullptr),
-            "unclassified",
-            TreeWidget::tr("Other"),
-            "folder"
-        );
+        auto* folder = rootOtherFolder
+            ? rootOtherFolder
+            : makeFolder(
+                  this,
+                  nullptr,
+                  contextKey(nullptr),
+                  "other",
+                  TreeWidget::tr("Other"),
+                  "folder"
+              );
         for (const auto* entry : unrendered) {
             renderObject(
                 *entry,
@@ -6129,6 +6441,34 @@ void TreeWidget::_slotDeleteObject(const Gui::ViewProviderDocumentObject& view, 
         auto& items = data->items;
 
         if (obj->getDocument() == doc) {
+            auto parentMapIt = docItem->_ParentMap.find(obj);
+            if (parentMapIt != docItem->_ParentMap.end()) {
+                // Remove the deleted identity from every live parent's child
+                // cache before ObjectTable stops owning that identity. This
+                // keeps delayed browser refreshes from ever inheriting a raw
+                // pointer to an object whose lifetime has ended.
+                const auto parents = parentMapIt->second;
+                for (auto* parent : parents) {
+                    if (!parent || !ObjectTable.contains(parent)) {
+                        continue;
+                    }
+                    auto parentDataIt = docItem->ObjectMap.find(parent);
+                    if (parentDataIt == docItem->ObjectMap.end()
+                        || !parentDataIt->second) {
+                        continue;
+                    }
+                    auto& parentChildren = parentDataIt->second->children;
+                    parentChildren.erase(
+                        std::remove(
+                            parentChildren.begin(),
+                            parentChildren.end(),
+                            obj
+                        ),
+                        parentChildren.end()
+                    );
+                    parentDataIt->second->childSet.erase(obj);
+                }
+            }
             docItem->_ParentMap.erase(obj);
         }
 
@@ -6147,11 +6487,17 @@ void TreeWidget::_slotDeleteObject(const Gui::ViewProviderDocumentObject& view, 
         // Check for any child of the deleted object that is not in the tree, and put it
         // under document item.
         for (auto child : data->children) {
+            if (!child || !ObjectTable.contains(child)) {
+                continue;
+            }
             auto childVp = docItem->getViewProvider(child);
             if (!childVp || child->getDocument() != doc) {
                 continue;
             }
-            docItem->_ParentMap[child].erase(obj);
+            auto childParents = docItem->_ParentMap.find(child);
+            if (childParents != docItem->_ParentMap.end()) {
+                childParents->second.erase(obj);
+            }
             auto cit = docItem->ObjectMap.find(child);
             if (cit == docItem->ObjectMap.end() || cit->second->items.empty()) {
                 if (docItem->createNewItem(*childVp)) {
@@ -6562,6 +6908,23 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         return;
     }
 
+    // Undo, Cancel, and Redo restore linked properties as an atomic document
+    // operation. In particular, PropertyLinkList::Paste can remove a newly
+    // created Body member before restoring the Body's Group list. The tree's
+    // normal incremental path retains raw object identities between timer
+    // passes, so it must not inspect or mutate those caches while that list is
+    // only partially restored. Mark the document projection dirty and rebuild
+    // it from live document objects at signalBecameStable() instead.
+    if (auto* document = obj->getDocument();
+        document && document->isPerformingTransaction()) {
+        if (auto documentIt = DocumentMap.find(view.getDocument());
+            documentIt != DocumentMap.end()) {
+            documentIt->second->modelBrowserDirty = true;
+            documentIt->second->transactionRefreshPending = true;
+        }
+        return;
+    }
+
     auto itEntry = ObjectTable.find(obj);
     if (itEntry == ObjectTable.end() || itEntry->second.empty()) {
         return;
@@ -6578,17 +6941,41 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         || changedProperty == "VibeCADScriptedModelId"
         || changedProperty == "VibeCADScriptedOutputKey"
         || changedProperty == "VibeCADNativeFeatureRole";
-    if (changesBrowserProjection) {
-        for (const auto& data : itEntry->second) {
+    auto* geoGroup = changedProperty == "Group"
+        ? obj->getExtensionByType<App::GeoFeatureGroupExtension>(true)
+        : nullptr;
+    const bool changesDirectChildGroup =
+        geoGroup && geoGroup->keepDirectChildrenInTree() && &prop == &geoGroup->Group;
+    std::set<App::DocumentObject*> directGroupMembers;
+    for (const auto& data : itEntry->second) {
+        if (changesBrowserProjection) {
             data->docItem->modelBrowserDirty = true;
+        }
+        if (!changesDirectChildGroup) {
+            continue;
+        }
+        for (auto* member : data->children) {
+            // DocumentObjectData deliberately retains raw child identities until
+            // the delayed tree refresh. During transaction rollback a newly
+            // created object is destroyed before its owner's Group property is
+            // restored, so a cached pointer must never be dereferenced here.
+            // _slotDeleteObject removes destroyed objects from ObjectTable
+            // synchronously, making membership the lifetime-safe test.
+            if (member && ObjectTable.contains(member)) {
+                directGroupMembers.insert(member);
+            }
+        }
+    }
+    if (changesDirectChildGroup) {
+        for (auto* member : geoGroup->Group.getValues()) {
+            if (member && ObjectTable.contains(member)) {
+                directGroupMembers.insert(member);
+            }
         }
     }
 
     _updateStatus();
 
-    // Visibility changes must update the final-versus-history presentation
-    // synchronously. In particular, an adopted Part::Feature does not receive
-    // Part Design's native single-feature visibility handling.
     if (&prop == &obj->Visibility) {
         std::set<DocumentItem*> documents;
         for (const auto& data : itEntry->second) {
@@ -6597,19 +6984,7 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
             }
         }
         for (auto* document : documents) {
-            auto* changedItem = document->findBrowserItem(obj);
-            auto* parentItem = changedItem ? changedItem->getParentItem() : nullptr;
-            if (parentItem && parentItem->visibilityPeer()) {
-                parentItem->syncVisibilityDependents(
-                    obj->Visibility.getValue() ? obj : nullptr
-                );
-            }
-            else {
-                // The changed object may be the hidden publication peer rather
-                // than a visible history row. Refreshing all paired Body rows
-                // resolves that relationship without depending on tree focus.
-                document->updateBrowserFolderStatus();
-            }
+            document->updateBrowserFolderStatus();
         }
         return;
     }
@@ -6648,19 +7023,9 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     // Invalidate both the previous and current members whenever Group changes.  Without this, a
     // feature created at document root can keep its pre-adoption dependency nesting cached after it
     // is moved into a Body; removed members have the inverse stale-cache problem.
-    auto* geoGroup = obj->getExtensionByType<App::GeoFeatureGroupExtension>(true);
-    if (geoGroup && geoGroup->keepDirectChildrenInTree() && &prop == &geoGroup->Group) {
-        for (const auto& data : itEntry->second) {
-            for (auto* member : data->children) {
-                if (member && member->isAttachedToDocument()) {
-                    ChangedObjects.emplace(member, 0);
-                }
-            }
-        }
-        for (auto* member : geoGroup->Group.getValues()) {
-            if (member && member->isAttachedToDocument()) {
-                ChangedObjects.emplace(member, 0);
-            }
+    if (changesDirectChildGroup) {
+        for (auto* member : directGroupMembers) {
+            ChangedObjects.emplace(member, 0);
         }
     }
 
@@ -7042,6 +7407,31 @@ void DocumentItem::slotRecomputed(const App::Document&, const std::vector<App::D
     }
 }
 
+void DocumentItem::slotDocumentStable(const App::Document& stableDocument)
+{
+    if (!transactionRefreshPending
+        || document()->getDocument() != &stableDocument) {
+        return;
+    }
+
+    transactionRefreshPending = false;
+    modelBrowserDirty = true;
+
+    // Re-establish the incremental child cache only from identities that are
+    // live after the complete transaction outcome. This gives the legacy tree
+    // and the VibeCAD type projection the same post-transaction model without
+    // carrying pointers across rollback.
+    auto* tree = getTree();
+    for (const auto& [object, data] : ObjectMap) {
+        if (object && data && object->isAttachedToDocument()
+            && object->getDocument() == &stableDocument
+            && tree->ObjectTable.contains(object)) {
+            tree->ChangedObjects.emplace(object, 0);
+        }
+    }
+    tree->_updateStatus();
+}
+
 Gui::Document* DocumentItem::document() const
 {
     return this->pDocument;
@@ -7391,6 +7781,11 @@ DocumentObjectItem* DocumentItem::findItemByObject(
         if (auto* browserItem = findBrowserItem(obj)) {
             return findItem(sync, browserItem, subname, select);
         }
+        // Features are represented by the timeline, while implementation and
+        // publication objects are intentionally absent from the simplified
+        // browser. Never expose a hidden legacy dependency-tree row merely
+        // because one of those objects becomes selected or reports an error.
+        return nullptr;
     }
 
     // prefer top level item of this object
@@ -7849,9 +8244,15 @@ DocumentObjectItem::DocumentObjectItem(
     , browserDefaultHidden(browserDefaultHidden)
 {
     if (browserLogicalParent) {
-        // Keep the parent's name only: the parent item may be destroyed
-        // (object deletion, model browser rebuild) while this item is alive.
+        // Keep an immutable parent identity: the parent item may be destroyed
+        // (object deletion, model browser rebuild) while this item is alive,
+        // and an object name alone may be reused by a replacement.
         browserLogicalParentName = browserLogicalParent->getName();
+        if (auto* parentView = browserLogicalParent->object();
+            parentView && parentView->getObject()) {
+            browserLogicalParentId =
+                std::to_string(parentView->getObject()->getID());
+        }
     }
     setFlags(flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
     setCheckState(false);
@@ -7964,121 +8365,20 @@ Gui::ViewProviderDocumentObject* DocumentObjectItem::object() const
 
 App::DocumentObject* DocumentObjectItem::visibilityPeer() const
 {
-    const auto* viewProvider = object();
-    auto* source = viewProvider ? viewProvider->getObject() : nullptr;
-    auto* document = source ? source->getDocument() : nullptr;
-    return document && !browserVisibilityPeerName.empty()
-        ? document->getObject(browserVisibilityPeerName.c_str())
-        : nullptr;
+    return nullptr;
 }
 
-std::vector<App::DocumentObject*> DocumentObjectItem::visibilityDependents() const
+std::vector<App::DocumentObject*>
+DocumentObjectItem::visibilityDependents() const
 {
-    std::vector<App::DocumentObject*> dependents;
-    const auto* viewProvider = object();
-    auto* source = viewProvider ? viewProvider->getObject() : nullptr;
-    auto* document = source ? source->getDocument() : nullptr;
-    if (!document) {
-        return dependents;
-    }
-    dependents.reserve(browserVisibilityDependentNames.size());
-    for (const auto& name : browserVisibilityDependentNames) {
-        if (auto* dependent = document->getObject(name.c_str())) {
-            dependents.push_back(dependent);
-        }
-    }
-    return dependents;
+    return {};
 }
 
 void DocumentObjectItem::syncVisibilityDependents(
-    App::DocumentObject* preferredPreview,
-    bool releaseGate
+    App::DocumentObject*,
+    bool
 ) const
-{
-    if (!Application::Instance) {
-        return;
-    }
-    auto* peer = visibilityPeer();
-    if (!peer && !releaseGate) {
-        return;
-    }
-    const auto dependents = visibilityDependents();
-    auto viewProviderFor = [](App::DocumentObject* object) {
-        return freecad_cast<ViewProviderDocumentObject*>(
-            Application::Instance->getViewProvider(object)
-        );
-    };
-
-    if (releaseGate) {
-        if (peer) {
-            if (auto* viewProvider = viewProviderFor(peer)) {
-                viewProvider->setVisibilityGate(true);
-            }
-        }
-        for (auto* dependent : dependents) {
-            if (auto* viewProvider = viewProviderFor(dependent)) {
-                viewProvider->setVisibilityGate(true);
-            }
-        }
-        return;
-    }
-
-    App::DocumentObject* activePreview = nullptr;
-    if (preferredPreview && preferredPreview->Visibility.getValue()
-        && std::ranges::find(dependents, preferredPreview) != dependents.end()) {
-        activePreview = preferredPreview;
-    }
-    if (!activePreview) {
-        // Prefer the latest enabled history state when repairing a document
-        // saved by an older build that allowed several results to be visible.
-        const auto visible = std::ranges::find_if(
-            dependents.rbegin(),
-            dependents.rend(),
-            [](const auto* dependent) {
-                return dependent && dependent->Visibility.getValue();
-            }
-        );
-        if (visible != dependents.rend()) {
-            activePreview = *visible;
-        }
-    }
-
-    // Native Part Design already makes its own Feature subclasses exclusive.
-    // Adopted Part results do not participate in that rule, so normalize the
-    // entire projected history to one persisted preview state.
-    for (auto* dependent : dependents) {
-        if (dependent && dependent != activePreview
-            && dependent->Visibility.getValue()) {
-            dependent->Visibility.setValue(false);
-        }
-    }
-
-    const bool bodyVisible = peer->Visibility.getValue();
-    auto* peerViewProvider = viewProviderFor(peer);
-
-    // Close obsolete scene branches before opening the chosen one. This
-    // ordering prevents even a transient frame containing coincident solids.
-    if (peerViewProvider && (!bodyVisible || activePreview)) {
-        peerViewProvider->setVisibilityGate(false);
-    }
-    for (auto* dependent : dependents) {
-        auto* viewProvider = freecad_cast<ViewProviderDocumentObject*>(
-            Application::Instance->getViewProvider(dependent)
-        );
-        if (viewProvider
-            && (!bodyVisible || !activePreview || dependent != activePreview)) {
-            viewProvider->setVisibilityGate(false);
-        }
-    }
-    if (bodyVisible && activePreview) {
-        if (auto* viewProvider = viewProviderFor(activePreview)) {
-            viewProvider->setVisibilityGate(true);
-        }
-    }
-    else if (bodyVisible && peerViewProvider) {
-        peerViewProvider->setVisibilityGate(true);
-    }
-}
+{}
 
 void DocumentObjectItem::testStatus(bool resetStatus)
 {
@@ -8542,10 +8842,22 @@ int DocumentObjectItem::isParentGroup() const
 DocumentObjectItem* DocumentObjectItem::getParentItem() const
 {
     if (browserProxy) {
-        // Resolve the logical parent lazily by name.  The parent object or
-        // its item may have been deleted since this item was built; a cached
-        // item pointer would dangle until the next model browser rebuild.
-        if (browserLogicalParentName.empty() || !myOwner) {
+        // Resolve the exact logical parent lazily. A cached item pointer would
+        // dangle between an object deletion and the next browser rebuild.
+        if (browserLogicalParentName.empty()
+            || browserLogicalParentId.empty() || !myOwner) {
+            return nullptr;
+        }
+        long parentId = -1;
+        const auto parseResult = std::from_chars(
+            browserLogicalParentId.data(),
+            browserLogicalParentId.data() + browserLogicalParentId.size(),
+            parentId
+        );
+        if (parseResult.ec != std::errc()
+            || parseResult.ptr
+                != browserLogicalParentId.data()
+                    + browserLogicalParentId.size()) {
             return nullptr;
         }
         auto* guiDocument = myOwner->document();
@@ -8553,7 +8865,10 @@ DocumentObjectItem* DocumentObjectItem::getParentItem() const
         auto* parentObject = document
             ? document->getObject(browserLogicalParentName.c_str())
             : nullptr;
-        return parentObject ? myOwner->findBrowserItem(parentObject) : nullptr;
+        if (!parentObject || parentObject->getID() != parentId) {
+            return nullptr;
+        }
+        return myOwner->findBrowserItem(parentObject);
     }
     if (!parent() || parent()->type() != TreeWidget::ObjectType) {
         return nullptr;

@@ -34,6 +34,9 @@ public:
         OriginFeature,
         Parameter,
         Sketch,
+        // Compatibility-only role value. Datum/construction objects are now
+        // classified as Reference, but retaining this enumerator preserves
+        // source compatibility and the numeric values of subsequent roles.
         Construction,
         Feature,
         Geometry,
@@ -60,12 +63,15 @@ public:
         // folders never become part of this logical chain.
         App::DocumentObject* logicalParent {};
 
-        // True for a root-level App::Link that publishes hidden implementation
-        // geometry owned by a component.
+        // True only for a stable VibeScript publication link carrying a
+        // complete, unique persisted output identity that has a unique
+        // persisted native Body or private target counterpart.
         bool publishedOutput {};
 
-        // True when a root-level published link exposes this implementation
-        // object. The browser hides it by default without changing ShowInTree.
+        // True only for a private publication target paired with one complete,
+        // unique persisted VibeScript publication identity. The browser never
+        // infers this state from native Link topology, ownership, labels, or
+        // names.
         bool publishedImplementation {};
 
         // The stable publication link for a VibeScript output remains in the
@@ -73,21 +79,16 @@ public:
         // the canonical browser representation of the same output.
         App::DocumentObject* bodyRepresentation {};
 
-        // The stable publication whose rendered visibility is represented by
-        // this native Body's browser row. The Body itself remains visible as
-        // the 3D container for independently controlled history objects.
+        // Compatibility-only members retained in their original positions so
+        // out-of-tree browser extensions keep the same Entry source and binary
+        // layout. The retired publication/history renderer no longer populates
+        // or consumes either field.
         App::DocumentObject* publicationRepresentation {};
-
-        // Body-owned result objects represented in the Features folder. The
-        // paired publication is the default renderer; enabling one result
-        // temporarily gates that publication and previews exactly one
-        // cumulative history state. Parent hide/show remains reversible while
-        // sketches, datums, and references stay independent.
         std::vector<App::DocumentObject*> bodyResultRepresentations;
 
-        // Older VibeScript documents gave an adopted result the same label as
-        // its Body. FreeCAD uniquified that duplicate into an opaque numeric
-        // label. The browser presents that compatibility object as "Result".
+        // Compatibility-only layout slot. Adopted-result presentation is not
+        // inferred from object names or labels; current documents persist the
+        // intended native label explicitly.
         bool compatibilityResultLabel {};
     };
 

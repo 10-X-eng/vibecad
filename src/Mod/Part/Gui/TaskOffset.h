@@ -44,7 +44,7 @@ public:
     ~OffsetWidget() override;
 
     bool accept();
-    bool reject();
+    void prepareForClose();
     Part::Offset* getObject() const;
 
 private:
@@ -87,6 +87,7 @@ public:
 
 private:
     OffsetWidget* widget;
+    int launchTransactionId {0};
 };
 
 }  // namespace PartGui

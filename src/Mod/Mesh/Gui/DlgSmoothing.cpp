@@ -22,18 +22,25 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+
 #include <QButtonGroup>
 #include <QDialogButtonBox>
 
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <Gui/Command.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/WaitCursor.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/Core/Smoothing.h>
 
 #include "DlgSmoothing.h"
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ui_DlgSmoothing.h"
 #include "Selection.h"
 
@@ -147,90 +154,124 @@ SmoothingDialog::~SmoothingDialog() = default;
 
 TaskSmoothing::TaskSmoothing()
 {
+    auto selected = Gui::Selection().getSelectionEx(nullptr, Mesh::Feature::getClassTypeId());
     widget = new DlgSmoothing();  // NOLINT
     addTaskBox(widget, false, nullptr);
 
     selection = new Selection();  // NOLINT
-    selection->setObjects(Gui::Selection().getSelectionEx(nullptr, Mesh::Feature::getClassTypeId()));
+    selection->setObjects(selected);
+    targets.reserve(selected.size());
+    for (auto& item : selected) {
+        if (auto* object = freecad_cast<Mesh::Feature*>(item.getObject())) {
+            targets.emplace_back(object);
+        }
+    }
     Gui::Selection().clearSelection();
     QWidget* box = addTaskBoxWithoutHeader(selection);
     box->hide();
 
     connect(widget, &DlgSmoothing::toggledSelection, box, &QWidget::setVisible);
+    App::Document* taskDocument = nullptr;
+    if (!selected.empty()) {
+        if (auto* object = selected.front().getObject()) {
+            taskDocument = object->getDocument();
+        }
+    }
+    else {
+        taskDocument = App::GetApplication().getActiveDocument();
+    }
+    if (taskDocument) {
+        setDocumentName(taskDocument->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
 }
 
 bool TaskSmoothing::accept()
 {
-    std::vector<App::DocumentObject*> meshes = selection->getObjects();
-    if (meshes.empty()) {
-        return true;
+    if (targets.empty()) {
+        return false;
+    }
+    std::vector<Mesh::Feature*> meshes;
+    meshes.reserve(targets.size());
+    for (const auto& target : targets) {
+        auto* mesh = target.get<Mesh::Feature>();
+        if (!mesh) {
+            return false;
+        }
+        meshes.push_back(mesh);
     }
 
     Gui::WaitCursor wc;
 
-    int tid = 0;
-    bool hasSelection = false;
-    for (auto it : meshes) {
-        Mesh::Feature* mesh = static_cast<Mesh::Feature*>(it);
-        tid = mesh->getDocument()->openTransaction(QT_TRANSLATE_NOOP("Command", "Mesh Smoothing"), tid);
-
-        std::vector<Mesh::FacetIndex> selection;
-        if (widget->smoothSelection()) {
-            // clear the selection before editing the mesh to avoid
-            // to have coloured triangles when doing an 'undo'
-            const Mesh::MeshObject* mm = mesh->Mesh.getValuePtr();
-            mm->getFacetsFromSelection(selection);
-            selection = mm->getPointsFromFacets(selection);
-            mm->clearFacetSelection();
-            if (!selection.empty()) {
-                hasSelection = true;
-            }
-        }
-        Mesh::MeshObject* mm = mesh->Mesh.startEditing();
-        switch (widget->method()) {
-            case MeshGui::DlgSmoothing::Taubin: {
-                MeshCore::TaubinSmoothing s(mm->getKernel());
-                s.SetLambda(widget->lambdaStep());
-                s.SetMicro(widget->microStep());
-                if (widget->smoothSelection()) {
-                    s.SmoothPoints(widget->iterations(), selection);
-                }
-                else {
-                    s.Smooth(widget->iterations());
-                }
-            } break;
-            case MeshGui::DlgSmoothing::Laplace: {
-                MeshCore::LaplaceSmoothing s(mm->getKernel());
-                s.SetLambda(widget->lambdaStep());
-                if (widget->smoothSelection()) {
-                    s.SmoothPoints(widget->iterations(), selection);
-                }
-                else {
-                    s.Smooth(widget->iterations());
-                }
-            } break;
-            case MeshGui::DlgSmoothing::MedianFilter: {
-                MeshCore::MedianFilterSmoothing s(mm->getKernel());
-                if (widget->smoothSelection()) {
-                    s.SmoothPoints(widget->iterations(), selection);
-                }
-                else {
-                    s.Smooth(widget->iterations());
-                }
-            } break;
-            default:
-                break;
-        }
-        mesh->Mesh.finishEditing();
-    }
-
-    if (widget->smoothSelection() && !hasSelection && tid) {
-        App::GetApplication().abortTransaction(tid);
+    App::Document* document = meshes.front()->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)
+        || std::ranges::any_of(meshes, [document](const Mesh::Feature* object) {
+               return !object || object->getDocument() != document
+                   || !MeshGui::isNativeMeshInputActive(object);
+           })) {
         return false;
     }
 
-    App::GetApplication().commitTransaction(tid);
-    return true;
+    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    operations.reserve(meshes.size());
+    for (auto* mesh : meshes) {
+        std::vector<Mesh::FacetIndex> selectedFacets;
+        std::vector<Mesh::PointIndex> selectedPoints;
+        if (widget->smoothSelection()) {
+            mesh->Mesh.getValue().getFacetsFromSelection(selectedFacets);
+            selectedPoints = mesh->Mesh.getValue().getPointsFromFacets(selectedFacets);
+            if (selectedPoints.empty()) {
+                return false;
+            }
+        }
+        std::vector<long> persistedPoints(selectedPoints.begin(), selectedPoints.end());
+        int method = 0;
+        if (widget->method() == MeshGui::DlgSmoothing::Laplace) {
+            method = 1;
+        }
+        else if (widget->method() == MeshGui::DlgSmoothing::MedianFilter) {
+            method = 2;
+        }
+        const int iterations = widget->iterations();
+        const double lambda = widget->lambdaStep();
+        const double mu = widget->microStep();
+        operations.push_back(
+            MeshGui::ParametricMeshFilterTarget {
+                mesh,
+                [mesh, method, iterations, lambda, mu, points = std::move(persistedPoints)](
+                    App::DocumentObject& object
+                ) {
+                    auto& smoothing = static_cast<Mesh::Smoothing&>(object);
+                    smoothing.Method.setValue(method);
+                    smoothing.Iterations.setValue(iterations);
+                    smoothing.Lambda.setValue(lambda);
+                    smoothing.Mu.setValue(mu);
+                    smoothing.PointIndices.setValues(points);
+                    if (!points.empty()) {
+                        smoothing.SelectionSource.setValue(mesh->Mesh.getValue());
+                    }
+                },
+            }
+        );
+    }
+
+    try {
+        MeshGui::createParametricMeshFilters(
+            *document,
+            operations,
+            MeshGui::ParametricMeshFilterSpec {
+                "Mesh::Smoothing",
+                "Smoothing",
+                "Smooth Mesh",
+                QT_TRANSLATE_NOOP("Command", "Mesh Smoothing"),
+            }
+        );
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh smoothing failed: %s\n", error.what());
+        return false;
+    }
 }
 
 #include "moc_DlgSmoothing.cpp"

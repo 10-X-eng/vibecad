@@ -45,6 +45,7 @@
 #include <Mod/Measure/App/Measurement.h>
 
 #include "QuickMeasure.h"
+#include "TimelineSelection.h"
 
 using namespace Measure;
 using namespace MeasureGui;
@@ -140,7 +141,9 @@ bool QuickMeasure::shouldMeasure(const Gui::SelectionChanges& msg) const
 bool QuickMeasure::isObjAcceptable(App::DocumentObject* obj)
 {
     // only measure shapes. Exclude datums that derive from Part::Feature
-    if (obj && obj->isDerivedFrom<Part::Feature>() && !obj->isDerivedFrom<Part::Datum>()) {
+    if (isTimelineSelectionActive(obj)
+        && obj->isDerivedFrom<Part::Feature>()
+        && !obj->isDerivedFrom<Part::Datum>()) {
         return true;
     }
 
@@ -160,6 +163,9 @@ void QuickMeasure::addSelectionToMeasurement()
 
     for (auto& selObj : selObjs) {
         App::DocumentObject* rootObj = selObj.getObject();
+        if (!isTimelineSelectionActive(rootObj)) {
+            continue;
+        }
         const std::vector<std::string> subNames = selObj.getSubNames();
 
         // Check that there's not too many selection

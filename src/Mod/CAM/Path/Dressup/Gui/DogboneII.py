@@ -26,9 +26,17 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
 import Path.Dressup.DogboneII as DogboneII
 import Path.Dressup.Utils as PathDressup
 import PathScripts.PathUtils as PathUtils
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    begin_task_launch,
+    can_start_document_command,
+    is_document_object,
+    open_timeline_mode_zero_editor,
+)
 
 if False:
     Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
@@ -99,31 +107,70 @@ class TaskPanel(object):
     DataIds = QtCore.Qt.ItemDataRole.UserRole
     DataState = QtCore.Qt.ItemDataRole.UserRole + 1
 
-    def __init__(self, viewProvider, obj):
+    def __init__(self, viewProvider, obj, transaction=None):
         self.viewProvider = viewProvider
         self.obj = obj
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                obj,
+                "Edit Dogbone Dress-up",
+            )
+        elif transaction.document is not obj.Document:
+            raise RuntimeError(
+                "The Dogbone task transaction belongs to another document"
+            )
+        self.transaction = transaction
+        self.document = self.transaction.document
         self.form = FreeCADGui.PySideUic.loadUi(":/panels/DogboneEdit.ui")
         self.s = None
-        FreeCAD.ActiveDocument.openTransaction("Edit Dogbone Dress-up")
         # self.height = 10 ???
         self.markers = []
 
     def reject(self):
-        FreeCAD.ActiveDocument.abortTransaction()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
-        FreeCADGui.Selection.removeObserver(self.s)
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
+        self.clearTaskPanel()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        if self.s is not None:
+            FreeCADGui.Selection.removeObserver(self.s)
+            self.s = None
         self.cleanup()
+        return True
 
     def accept(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self.getFields()
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
-        FreeCADGui.Selection.removeObserver(self.s)
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.commit((self.obj,))
+        self.clearTaskPanel()
+        self.transaction.reset_edit()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        if self.s is not None:
+            FreeCADGui.Selection.removeObserver(self.s)
+            self.s = None
         self.cleanup()
+        return True
+
+    def clearTaskPanel(self):
+        if self.viewProvider.panel is self:
+            self.viewProvider.panel = None
+
+    def closeDeletedDocumentTask(self):
+        """Release GUI-only state after the edited document disappeared."""
+
+        self.transaction.close_dialog()
+        self.viewProvider.panel = None
+        if self.s is not None:
+            FreeCADGui.Selection.removeObserver(self.s)
+            self.s = None
+        # The scene graph belongs to the deleted GUI document.  Do not touch
+        # its nodes after deletion; dropping our Python references is enough.
+        self.markers = []
 
     def cleanup(self):
         self.viewProvider.showMarkers(False)
@@ -192,9 +239,11 @@ class TaskPanel(object):
         self.updateBoneList()
 
     def updateModel(self):
+        if not self.transaction.is_open():
+            return
         self.getFields()
         self.updateUI()
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.recompute((self.obj,))
 
     def setupCombo(self, combo, text, items):
         if items and len(items) > 0:
@@ -215,7 +264,7 @@ class TaskPanel(object):
         self.updateUI()
 
     def open(self):
-        self.s = SelObserver()
+        self.s = SelObserver(self.document)
         # install the function mode resident
         FreeCADGui.Selection.addObserver(self.s)
 
@@ -238,7 +287,8 @@ class TaskPanel(object):
 
 
 class SelObserver(object):
-    def __init__(self):
+    def __init__(self, document):
+        self.document = document
         import Path.Op.Gui.Selection as PST
 
         PST.eselect()
@@ -249,7 +299,11 @@ class SelObserver(object):
         PST.clear()
 
     def addSelection(self, doc, obj, sub, pnt):
-        FreeCADGui.doCommand("Gui.Selection.addSelection(FreeCAD.ActiveDocument." + obj + ")")
+        if doc != self.document.Name:
+            return
+        selected = self.document.getObject(obj)
+        if selected is not None:
+            FreeCADGui.Selection.addSelection(selected)
         FreeCADGui.updateGui()
 
 
@@ -257,9 +311,11 @@ class ViewProviderDressup(object):
     def __init__(self, vobj):
         self.vobj = vobj
         self.obj = None
+        self.panel = None
 
     def attach(self, vobj):
         self.obj = vobj.Object
+        self.panel = None
         if self.obj and self.obj.Base:
             for i in self.obj.Base.InList:
                 if hasattr(i, "Group"):
@@ -279,12 +335,39 @@ class ViewProviderDressup(object):
     def claimChildren(self):
         return [self.obj.Base]
 
-    def setEdit(self, vobj, mode=0):
-        FreeCADGui.Control.closeDialog()
-        panel = TaskPanel(self, vobj.Object)
-        FreeCADGui.Control.showDialog(panel)
-        panel.setupUi()
+    def supportsDocumentTimelineEdit(self):
         return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
+
+    def setEdit(self, vobj, mode=0):
+        transaction = TaskDocumentTransaction(
+            vobj.Object,
+            "Edit Dogbone Dress-up",
+        )
+        try:
+            panel = TaskPanel(
+                self,
+                vobj.Object,
+                transaction=transaction,
+            )
+            self.panel = panel
+            transaction.close_dialog()
+            transaction.show_dialog(panel)
+            panel.setupUi()
+            return True
+        except Exception:
+            self.panel = None
+            transaction.close_dialog()
+            if transaction.owns_transaction():
+                transaction.abort()
+            raise
+
+    def unsetEdit(self, vobj, mode=0):
+        if self.panel is not None:
+            self.panel.reject()
+        return False
 
     def dumps(self):
         return None
@@ -295,7 +378,16 @@ class ViewProviderDressup(object):
     def onDelete(self, arg1=None, arg2=None):
         """this makes sure that the base operation is added back to the project and visible"""
         if arg1.Object and arg1.Object.Base:
-            FreeCADGui.ActiveDocument.getObject(arg1.Object.Base.Name).Visibility = True
+            gui_document = FreeCADGui.getDocument(
+                arg1.Object.Document.Name
+            )
+            if PathUtil.shouldRestoreTimelineReplacedInput(
+                arg1.Object,
+                arg1.Object.Base,
+            ):
+                gui_document.getObject(
+                    arg1.Object.Base.Name
+                ).Visibility = True
             job = PathUtils.findParentJob(arg1.Object)
             if job:
                 job.Proxy.addOperation(arg1.Object.Base, arg1.Object)
@@ -303,7 +395,7 @@ class ViewProviderDressup(object):
         return True
 
     def getIcon(self):
-        if getattr(PathDressup.baseOp(self.obj), "Active", True):
+        if PathUtil.activeForOp(self.obj):
             return ":/icons/CAM_Dressup.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
@@ -313,12 +405,20 @@ def Create(base, name="DressupDogbone"):
     """
     Create(obj, name='DressupDogbone')… dresses the given Path.Op.Profile object with dogbones.
     """
+    base_was_visible = bool(
+        base.ViewObject
+        and base.ViewObject.Visibility
+    )
     obj = DogboneII.Create(base, name)
     job = PathUtils.findParentJob(base)
     job.Proxy.addOperation(obj, base)
 
     if FreeCAD.GuiUp:
         obj.ViewObject.Proxy = ViewProviderDressup(obj.ViewObject)
+        PathUtil.markTimelineReplacedInputs(
+            obj,
+            [base] if base_was_visible else [],
+        )
         obj.Base.ViewObject.Visibility = False
 
     return obj
@@ -336,22 +436,41 @@ class CommandDressupDogboneII(object):
         }
 
     def IsActive(self):
-        return bool(PathDressup.selection())
+        return (
+            can_start_document_command()
+            and is_document_object(PathDressup.selection())
+        )
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         # check that the selection contains exactly what we want
         op = PathDressup.selection(verbose=True)
         if not op:
             return
 
         # everything ok!
-        FreeCAD.ActiveDocument.openTransaction("Create Dogbone Dress-up")
-        FreeCADGui.addModule("Path.Dressup.Gui.DogboneII")
-        FreeCADGui.doCommand(
-            "Path.Dressup.Gui.DogboneII.Create(FreeCAD.ActiveDocument.%s)" % op.Name
+        launch = begin_task_launch(
+            "Create Dogbone Dress-up",
+            op.Document,
         )
+        try:
+            FreeCADGui.addModule("Path.Dressup.Gui.DogboneII")
+            FreeCADGui.doCommand(
+                "obj = Path.Dressup.Gui.DogboneII.Create("
+                "FreeCAD.getDocument(%r).getObject(%r))"
+                % (op.Document.Name, op.Name)
+            )
+            FreeCADGui.doCommand(
+                "obj.ViewObject.Document.setEdit(obj.ViewObject, 0)"
+            )
+            launch.require_claimed()
+        except Exception:
+            launch.abort()
+            raise
         # FreeCAD.ActiveDocument.commitTransaction()  # Final `commitTransaction()` called via TaskPanel.accept()
-        FreeCAD.ActiveDocument.recompute()
+        op.Document.recompute()
 
 
 if FreeCAD.GuiUp:

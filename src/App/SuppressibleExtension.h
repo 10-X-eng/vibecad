@@ -44,8 +44,29 @@ public:
 
     PyObject* getExtensionPyObject() override;
 
+    /**
+     * Declare that the owner computes a bypass result while suppressed.
+     *
+     * The document timeline normally hides future operations. A parametric
+     * filter may opt in when its suppressed output is deliberately the
+     * unchanged upstream result; the last normally-visible filter can then
+     * keep rendering the correct pre-marker state without exposing every
+     * intermediate object.
+     */
+    void setTimelineResultVisibleWhenSuppressed(bool visible) noexcept
+    {
+        timelineResultVisibleWhenSuppressed = visible;
+    }
+    [[nodiscard]] bool isTimelineResultVisibleWhenSuppressed() const noexcept
+    {
+        return timelineResultVisibleWhenSuppressed;
+    }
+
     /// Properties
     PropertyBool Suppressed;
+
+private:
+    bool timelineResultVisibleWhenSuppressed {false};
 };
 
 template<typename ExtensionT>

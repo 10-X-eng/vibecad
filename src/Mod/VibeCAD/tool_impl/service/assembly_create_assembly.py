@@ -47,15 +47,23 @@ def run(service: Any, label: str) -> dict[str, Any]:
         doc = App.ActiveDocument
         if doc is None:
             raise RuntimeError("No active document.")
-        assembly = doc.addObject("Assembly::AssemblyObject", "Assembly")
-        if assembly is None:
-            raise RuntimeError(
-                "FreeCAD did not create an Assembly::AssemblyObject; "
-                "the Assembly workbench may not be available in this build."
+        with domain_runtime.NewTimelineOperation() as timeline:
+            assembly = doc.addObject(
+                "Assembly::AssemblyObject",
+                "Assembly",
             )
-        assembly.Type = "Assembly"
-        assembly.Label = clean_label
-        joint_group = assembly.newObject("Assembly::JointGroup", "Joints")
+            if assembly is None:
+                raise RuntimeError(
+                    "FreeCAD did not create an Assembly::AssemblyObject; "
+                    "the Assembly workbench may not be available in this build."
+                )
+            timeline.set_operation(assembly)
+            assembly.Type = "Assembly"
+            assembly.Label = clean_label
+            joint_group = assembly.newObject(
+                "Assembly::JointGroup",
+                "Joints",
+            )
         doc.recompute()
         return {
             "document": doc.Name,

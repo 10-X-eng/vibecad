@@ -26,10 +26,12 @@
 
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
+#include <App/PropertyLinks.h>
+#include <App/SuppressibleExtension.h>
 
+#include <Base/Matrix.h>
 #include <Mod/Inspection/InspectionGlobal.h>
 #include <Mod/Points/App/Points.h>
-
 
 class TopoDS_Shape;
 class BRepExtrema_DistShapeShape;
@@ -57,7 +59,8 @@ class TopoShape;
 namespace Inspection
 {
 
-/** Delivers the number of points to be checked and returns the appropriate point to an index. */
+/** Delivers the number of points to be checked and returns the appropriate
+ * point to an index. */
 class InspectionExport InspectActualGeometry
 {
 public:
@@ -72,6 +75,7 @@ class InspectionExport InspectActualMesh: public InspectActualGeometry
 {
 public:
     explicit InspectActualMesh(const Mesh::MeshObject& rMesh);
+    InspectActualMesh(const Mesh::MeshObject& rMesh, const Base::Matrix4D& transform);
     ~InspectActualMesh() override;
     unsigned long countPoints() const override;
     Base::Vector3f getPoint(unsigned long) const override;
@@ -108,7 +112,8 @@ private:
     std::vector<Base::Vector3d> points;
 };
 
-/** Calculates the shortest distance of the underlying geometry to a given point. */
+/** Calculates the shortest distance of the underlying geometry to a given
+ * point. */
 class InspectionExport InspectNominalGeometry
 {
 public:
@@ -121,6 +126,7 @@ class InspectionExport InspectNominalMesh: public InspectNominalGeometry
 {
 public:
     InspectNominalMesh(const Mesh::MeshObject& rMesh, float offset);
+    InspectNominalMesh(const Mesh::MeshObject& rMesh, const Base::Matrix4D& transform, float offset);
     ~InspectNominalMesh() override;
     float getDistance(const Base::Vector3f&) const override;
 
@@ -136,6 +142,7 @@ class InspectionExport InspectNominalFastMesh: public InspectNominalGeometry
 {
 public:
     InspectNominalFastMesh(const Mesh::MeshObject& rMesh, float offset);
+    InspectNominalFastMesh(const Mesh::MeshObject& rMesh, const Base::Matrix4D& transform, float offset);
     ~InspectNominalFastMesh() override;
     float getDistance(const Base::Vector3f&) const override;
 
@@ -240,7 +247,7 @@ private:
 /** The inspection feature.
  * \author Werner Mayer
  */
-class InspectionExport Feature: public App::DocumentObject
+class InspectionExport Feature: public App::DocumentObject, public App::SuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Inspection::Feature);
 
@@ -255,6 +262,7 @@ public:
     App::PropertyFloat Thickness;
     App::PropertyLink Actual;
     App::PropertyLinkList Nominals;
+    App::PropertyLinkList SourceDependencies;
     PropertyDistanceList Distances;
     //@}
 
@@ -276,7 +284,7 @@ public:
     }
 };
 
-class InspectionExport Group: public App::DocumentObjectGroup
+class InspectionExport Group: public App::DocumentObjectGroup, public App::SuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Inspection::Group);
 

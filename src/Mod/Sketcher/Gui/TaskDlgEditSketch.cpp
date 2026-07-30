@@ -23,7 +23,11 @@
  ***************************************************************************/
 
 
+#include <App/Application.h>
+#include <App/Document.h>
+#include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/Document.h>
 
 #include "TaskDlgEditSketch.h"
 #include "ViewProviderSketch.h"
@@ -41,6 +45,25 @@ namespace sp = std::placeholders;
 TaskDlgEditSketch::TaskDlgEditSketch(ViewProviderSketch* sketchView)
     : TaskDialog()
     , sketchView(sketchView)
+    , exactDocument(
+          sketchView ? sketchView->getObject()->getDocument() : nullptr
+      )
+    , exactDocumentName(
+          exactDocument ? exactDocument->getName() : std::string()
+      )
+    , exactDocumentUid(
+          exactDocument
+              ? exactDocument->Uid.getValueStr()
+              : std::string()
+      )
+    , exactSketchId(
+          sketchView ? sketchView->getObject()->getID() : 0
+      )
+    , exactSketchName(
+          sketchView && sketchView->getObject()->getNameInDocument()
+              ? sketchView->getObject()->getNameInDocument()
+              : std::string()
+      )
 {
     assert(sketchView);
     roleOnEscape = QDialogButtonBox::ButtonRole::AcceptRole;
@@ -102,10 +125,14 @@ TaskDlgEditSketch::~TaskDlgEditSketch()
 
 void TaskDlgEditSketch::slotToolChanged(const std::string& toolname)
 {
+    auto* exactView = resolveExactSketchView();
+    if (!exactView) {
+        return;
+    }
     bool widgetvisible = false;
 
     if (toolname != "DSH_None") {
-        widgetvisible = sketchView->toolManager.isWidgetVisible();
+        widgetvisible = exactView->toolManager.isWidgetVisible();
 
         ToolSettings->toolChanged(toolname);
     }
@@ -125,22 +152,115 @@ void TaskDlgEditSketch::closed()
 void TaskDlgEditSketch::clicked(int)
 {}
 
+Gui::Document* TaskDlgEditSketch::resolveExactGuiDocument() const
+{
+    if (!exactDocument || exactDocumentName.empty()
+        || exactDocumentUid.empty()) {
+        return nullptr;
+    }
+    auto* document =
+        App::GetApplication().getDocument(exactDocumentName.c_str());
+    if (document != exactDocument
+        || document->Uid.getValueStr() != exactDocumentUid) {
+        return nullptr;
+    }
+    return Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(document)
+        : nullptr;
+}
+
+ViewProviderSketch* TaskDlgEditSketch::resolveExactSketchView() const
+{
+    auto* guiDocument = resolveExactGuiDocument();
+    auto* document =
+        guiDocument ? guiDocument->getDocument() : nullptr;
+    auto* object =
+        document && exactSketchId > 0
+        ? document->getObjectByID(exactSketchId)
+        : nullptr;
+    if (!object || !object->getNameInDocument()
+        || exactSketchName != object->getNameInDocument()
+        || document->getObject(exactSketchName.c_str()) != object) {
+        return nullptr;
+    }
+    auto* view = dynamic_cast<ViewProviderSketch*>(
+        Gui::Application::Instance->getViewProvider(object)
+    );
+    return view == sketchView ? view : nullptr;
+}
+
 bool TaskDlgEditSketch::reject()
 {
-    ViewProviderSketch* view = sketchView;
-    std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
+    auto* guiDocument = resolveExactGuiDocument();
+    auto* view = resolveExactSketchView();
+    if (!guiDocument || !view
+        || guiDocument->getInEdit() != view) {
+        return false;
+    }
+
+    App::Document* documentAddress = exactDocument;
+    const std::string documentName = exactDocumentName;
+    const std::string documentUid = exactDocumentUid;
+    const long sketchId = exactSketchId;
+    const std::string sketchName = exactSketchName;
     view->editingCancelled = true;
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
-    view->editingCancelled = false;
+    guiDocument->cancelEdit();
+
+    // Cancel can abort the transaction that created this sketch, so resolve
+    // the exact original identity instead of accepting a same-name
+    // replacement after rollback.
+    auto* restoredDocument =
+        App::GetApplication().getDocument(documentName.c_str());
+    if (restoredDocument == documentAddress
+        && restoredDocument->Uid.getValueStr() == documentUid) {
+        auto* sketch = restoredDocument->getObjectByID(sketchId);
+        if (sketch && sketch->getNameInDocument()
+            && sketchName == sketch->getNameInDocument()
+            && restoredDocument->getObject(sketchName.c_str())
+                == sketch) {
+            if (auto* restored =
+                    dynamic_cast<ViewProviderSketch*>(
+                        Gui::Application::Instance->getViewProvider(
+                            sketch
+                        )
+                    )) {
+                restored->editingCancelled = false;
+            }
+        }
+    }
 
     return true;
 }
 
 bool TaskDlgEditSketch::accept()
 {
-    std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
-    Gui::Command::doCommand(Gui::Command::Doc, "App.getDocument('%s').recompute()", document.c_str());
+    auto* guiDocument = resolveExactGuiDocument();
+    auto* view = resolveExactSketchView();
+    if (!guiDocument || !view
+        || guiDocument->getInEdit() != view) {
+        return false;
+    }
+
+    // resetEdit() deletes this task. Keep only value copies and verify the
+    // exact document before issuing each command.
+    App::Document* documentAddress = exactDocument;
+    const std::string document = exactDocumentName;
+    const std::string documentUid = exactDocumentUid;
+    Gui::Command::doCommand(
+        Gui::Command::Gui,
+        "Gui.getDocument('%s').resetEdit()",
+        document.c_str()
+    );
+    auto* recomputeDocument =
+        App::GetApplication().getDocument(document.c_str());
+    if (recomputeDocument == documentAddress
+        && recomputeDocument->Uid.getValueStr() == documentUid) {
+        Gui::Command::doCommand(
+            Gui::Command::Doc,
+            "App.getDocument('%s').recompute()",
+            document.c_str()
+        );
+    }
 
     return true;
 }

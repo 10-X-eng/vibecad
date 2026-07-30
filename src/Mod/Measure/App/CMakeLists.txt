@@ -45,6 +45,7 @@ SET(MeasureModule_SRCS
 
     MassPropertiesObject.cpp
     MassPropertiesObject.h
+    MassPropertiesOccurrence.h
     MassPropertiesResult.cpp
     MassPropertiesResult.h
 

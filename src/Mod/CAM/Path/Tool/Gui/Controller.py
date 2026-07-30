@@ -31,7 +31,9 @@ import Path
 import Path.Base.Gui.Util as PathGuiUtil
 import Path.Base.Util as PathUtil
 import Path.Tool.Controller as PathToolController
+from Path.CommandBoundary import TaskDocumentTransaction
 from Path.Tool.toolbit.ui.selector import ToolBitSelector
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 Part = LazyLoader("Part", globals(), "Part")
 
@@ -49,6 +51,7 @@ class ViewProvider:
     def __init__(self, vobj):
         vobj.Proxy = self
         self.vobj = vobj
+        self.taskPanel = None
 
     def attach(self, vobj):
         mode = 2
@@ -62,6 +65,7 @@ class ViewProvider:
         vobj.setEditorMode("Transparency", mode)
         vobj.setEditorMode("Visibility", mode)
         self.vobj = vobj
+        self.taskPanel = None
 
     def dumps(self):
         return None
@@ -94,18 +98,34 @@ class ViewProvider:
         if 0 == mode:
             if vobj is None:
                 vobj = self.vobj
-            FreeCADGui.Control.closeDialog()
-            taskd = TaskPanel(vobj.Object)
-            FreeCADGui.Control.showDialog(taskd)
-            taskd.setupUi()
-
-            FreeCAD.ActiveDocument.recompute()
-
-            return True
+            transaction = TaskDocumentTransaction(
+                vobj.Object,
+                "Edit Tool Controller",
+            )
+            try:
+                taskd = TaskPanel(
+                    vobj.Object,
+                    transaction=transaction,
+                    viewProvider=self,
+                )
+                self.taskPanel = taskd
+                transaction.close_dialog()
+                transaction.show_dialog(taskd)
+                taskd.setupUi()
+                transaction.recompute((vobj.Object,))
+                return True
+            except Exception:
+                self.taskPanel = None
+                transaction.close_dialog()
+                if transaction.owns_transaction():
+                    transaction.abort()
+                raise
         return False
 
     def unsetEdit(self, vobj, mode):
         # this is executed when the user cancels or terminates edit mode
+        if self.taskPanel is not None:
+            self.taskPanel.reject()
         return False
 
     def setupContextMenu(self, vobj, menu):
@@ -126,10 +146,22 @@ class ViewProvider:
         return []
 
 
-def Create(name="Default Tool", tool=None, toolNumber=1):
+def Create(
+    name="Default Tool",
+    tool=None,
+    toolNumber=1,
+    document=None,
+    timelineOwner=None,
+):
     Path.Log.track(tool, toolNumber)
 
-    obj = PathToolController.Create(name, tool, toolNumber)
+    obj = PathToolController.Create(
+        name,
+        tool,
+        toolNumber,
+        document=document,
+        timelineOwner=timelineOwner,
+    )
     ViewProvider(obj.ViewObject)
     # ToolBits are visible by default, which is typically not what the user wants
     if tool and tool.ViewObject and tool.ViewObject.Visibility:
@@ -170,23 +202,47 @@ class CommandPathToolController(object):
         selector = ToolBitSelector()
         if not selector.exec_():
             return
-        tool = selector.get_selected_tool()
-        if not tool:
+        selected_tool = selector.get_selected_tool()
+        if not selected_tool:
             return
 
-        # Find a tool number
-        toolNr = None
-        for tc in job.Tools.Group:
-            if tc.Tool == tool:
-                toolNr = tc.ToolNumber
-                break
-        if not toolNr:
-            toolNr = max([tc.ToolNumber for tc in job.Tools.Group]) + 1
-
-        # Create the new tool controller with the tool.
-        tc = Create("TC: {}".format(tool.Label), tool, toolNr)
-        job.Proxy.addToolController(tc)
-        FreeCAD.ActiveDocument.recompute()
+        document = job.Document
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Add CAM tool controller",
+        )
+        try:
+            reconciliation = PathUtil.stageTimelineResourceGraphExtension(job)
+            toolbit = selected_tool.from_dict(selected_tool.to_dict())
+            tool = toolbit.attach_to_doc(
+                document,
+                timeline_owner=job,
+            )
+            toolNr = (
+                max(
+                    (int(tc.ToolNumber) for tc in job.Tools.Group),
+                    default=0,
+                )
+                + 1
+            )
+            tc = Create(
+                f"TC: {toolbit.label}",
+                tool,
+                toolNr,
+                document=document,
+                timelineOwner=job,
+            )
+            job.Proxy.addToolController(tc)
+            document.recompute()
+            PathUtil.finalizeTimelineResourceGraphExtension(
+                job,
+                reconciliation,
+                PathUtil.toolControllerResourceGraph(tc),
+            )
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
 
 
 class BlockScrollWheel(QtCore.QObject):
@@ -203,6 +259,8 @@ class ToolControllerEditor(object):
         self, obj, asDialog, notifyChanged=None, showCountLabel=False, disableToolNumber=False
     ):
         self.notifyChanged = notifyChanged
+        self._signalConnections = []
+        self._uiConnected = False
         self.form = FreeCADGui.PySideUic.loadUi(":/panels/DlgToolControllerEdit.ui")
         self.controller = FreeCADGui.PySideUic.loadUi(":/panels/ToolControllerEdit.ui")
         self.form.tc_layout.addWidget(self.controller)
@@ -232,6 +290,31 @@ class ToolControllerEditor(object):
         self.controller.tcNumber.setReadOnly(disableToolNumber)
 
         self.editor = None
+
+    def _connectSignal(self, signal, callback):
+        signal.connect(callback)
+        self._signalConnections.append((signal, callback))
+
+    def cleanupUi(self):
+        """Release every Python callback owned by this editor."""
+
+        connections = self._signalConnections
+        self._signalConnections = []
+        self._uiConnected = False
+        for signal, callback in reversed(connections):
+            try:
+                signal.disconnect(callback)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        for widget in (
+            self.controller.tcNumber,
+            self.controller.spindleDirection,
+        ):
+            try:
+                widget.removeEventFilter(self.blockScrollWheel)
+            except RuntimeError:
+                pass
+        self.notifyChanged = None
 
     def selectInComboBox(self, name, combo):
         """selectInComboBox(name, combo) ...
@@ -335,24 +418,40 @@ class ToolControllerEditor(object):
             self.notifyChanged()
 
     def setupUi(self):
+        if self._uiConnected:
+            return
+        self._uiConnected = True
         if self.editor:
             self.editor.setupUI()
 
-        self.controller.tcName.textChanged.connect(self.changed)
-        self.controller.tcNumber.editingFinished.connect(self.changed)
-        self.vertFeed.widget.textChanged.connect(self.changed)
-        self.horizFeed.widget.textChanged.connect(self.changed)
-        self.leadInFeed.widget.textChanged.connect(self.changed)
-        self.leadOutFeed.widget.textChanged.connect(self.changed)
-        self.rampFeed.widget.textChanged.connect(self.changed)
-        self.vertRapid.widget.textChanged.connect(self.changed)
-        self.horizRapid.widget.textChanged.connect(self.changed)
-        self.controller.spindleSpeed.editingFinished.connect(self.changed)
-        self.controller.spindleDirection.currentIndexChanged.connect(self.changed)
+        for signal in (
+            self.controller.tcName.textChanged,
+            self.controller.tcNumber.editingFinished,
+            self.vertFeed.widget.textChanged,
+            self.horizFeed.widget.textChanged,
+            self.leadInFeed.widget.textChanged,
+            self.leadOutFeed.widget.textChanged,
+            self.rampFeed.widget.textChanged,
+            self.vertRapid.widget.textChanged,
+            self.horizRapid.widget.textChanged,
+            self.controller.spindleSpeed.editingFinished,
+            self.controller.spindleDirection.currentIndexChanged,
+        ):
+            self._connectSignal(signal, self.changed)
 
 
 class TaskPanel:
-    def __init__(self, obj):
+    def __init__(self, obj, transaction=None, viewProvider=None):
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                obj,
+                "Edit Tool Controller",
+            )
+        elif transaction.document is not obj.Document:
+            raise RuntimeError("The tool-controller task transaction belongs to another document")
+        self.transaction = transaction
+        self.document = self.transaction.document
+        self.viewProvider = viewProvider
         self.editor = ToolControllerEditor(obj, False)
         self.form = self.editor.form
         self.updating = False
@@ -360,19 +459,42 @@ class TaskPanel:
         self.obj = obj
 
     def accept(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self.getFields()
 
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCADGui.Control.closeDialog()
-        if self.toolrep:
-            FreeCAD.ActiveDocument.removeObject(self.toolrep.Name)
-        FreeCAD.ActiveDocument.recompute()
+        if self.toolrep and self.document.getObject(self.toolrep.Name) is self.toolrep:
+            self.document.removeObject(self.toolrep.Name)
+        self.transaction.recompute((self.obj,))
+        self.transaction.commit((self.obj,), recompute=False)
+        self.clearTaskPanel()
+        self.transaction.reset_edit()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
 
     def reject(self):
-        FreeCADGui.Control.closeDialog()
-        if self.toolrep:
-            FreeCAD.ActiveDocument.removeObject(self.toolrep.Name)
-        FreeCAD.ActiveDocument.recompute()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
+        self.clearTaskPanel()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
+
+    def clearTaskPanel(self):
+        self.editor.cleanupUi()
+        if self.viewProvider is not None and self.viewProvider.taskPanel is self:
+            self.viewProvider.taskPanel = None
+
+    def closeDeletedDocumentTask(self):
+        self.editor.cleanupUi()
+        if self.viewProvider is not None:
+            self.viewProvider.taskPanel = None
+        self.toolrep = None
+        self.transaction.close_dialog()
 
     def getFields(self):
         self.editor.updateToolController()
@@ -394,12 +516,16 @@ class TaskPanel:
 
     def resetObject(self, remove=None):
         "transfers the values from the widget to the object"
-        FreeCAD.ActiveDocument.recompute()
+        if self.transaction.is_open():
+            self.transaction.recompute((self.obj,))
 
     def setupUi(self):
         if self.editor.editor:
             t = Part.makeCylinder(1, 1)
-            self.toolrep = FreeCAD.ActiveDocument.addObject("Part::Feature", "tool")
+            self.toolrep = self.document.addObject(
+                "Part::Feature",
+                "tool",
+            )
             self.toolrep.Shape = t
 
         self.setFields()
@@ -416,15 +542,18 @@ class DlgToolControllerEdit:
     def exec_(self):
         restoreTC = self.obj.Proxy.templateAttrs(self.obj)
 
-        rc = False
-        if not self.editor.form.exec_():
-            Path.Log.info("revert")
-            self.obj.Proxy.setFromTemplate(self.obj, restoreTC)
-            rc = True
-        else:
-            self.editor.updateToolController()
-            self.obj.Proxy.execute(self.obj)
-        return rc
+        try:
+            rc = False
+            if not self.editor.form.exec_():
+                Path.Log.info("revert")
+                self.obj.Proxy.setFromTemplate(self.obj, restoreTC)
+                rc = True
+            else:
+                self.editor.updateToolController()
+                self.obj.Proxy.execute(self.obj)
+            return rc
+        finally:
+            self.editor.cleanupUi()
 
 
 if FreeCAD.GuiUp:

@@ -708,7 +708,9 @@ class PostProcessDialog:
 
     def _get_active_operations(self):
         """Return only active operations, matching what the tree widget displays."""
-        return [op for op in self._get_operations() if getattr(op, "Active", True)]
+        import Path.Base.Util as PathUtil
+
+        return [op for op in self._get_operations() if PathUtil.activeForOp(op)]
 
     def _on_ops_changed(self, _item, _col=None):
         self._update_ops_tab_label()
@@ -1234,27 +1236,18 @@ class PostProcessDialog:
         template = dlg.lineEditFilenameTemplate.text().strip() or None
         output_dir = dlg.lineEditOutputLocation.text().strip() or None
 
-        # Temporarily override the job's output file template
-        old_template = getattr(self.job, "PostProcessorOutputFile", "")
-        try:
-            if template:
-                self.job.PostProcessorOutputFile = template
+        generator = FilenameGenerator(job=self.job, output_file=template)
+        gen_filenames = generator.generate_filenames()
 
-            generator = FilenameGenerator(job=self.job)
-            gen_filenames = generator.generate_filenames()
-
-            new_fnames = []
-            for subpart, gcode in self._output_sections:
-                subpart_clean = "" if subpart == "allitems" else subpart
-                generator.set_subpartname(subpart_clean)
-                fname = next(gen_filenames)
-                if output_dir:
-                    fname = os.path.join(output_dir, os.path.basename(fname))
-                if gcode is not None:
-                    new_fnames.append(fname)
-        finally:
-            if template:
-                self.job.PostProcessorOutputFile = old_template
+        new_fnames = []
+        for subpart, gcode in self._output_sections:
+            subpart_clean = "" if subpart == "allitems" else subpart
+            generator.set_subpartname(subpart_clean)
+            fname = next(gen_filenames)
+            if output_dir:
+                fname = os.path.join(output_dir, os.path.basename(fname))
+            if gcode is not None:
+                new_fnames.append(fname)
 
         # Map new names onto existing gcode (preserving user edits) by position
         old_gcodes = list(self._generated_outputs.values())

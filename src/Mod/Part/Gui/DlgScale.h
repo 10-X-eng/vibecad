@@ -26,6 +26,7 @@
 
 #include <QDialog>
 #include <string>
+#include <vector>
 
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
@@ -46,6 +47,14 @@ public:
     ~DlgScale() = default;
     void accept() override;
     void apply();
+    bool wasLastApplySuccessful() const
+    {
+        return applySucceeded;
+    }
+    const std::vector<App::DocumentObject*>& lastAppliedResults() const
+    {
+        return appliedResults;
+    }
     void reject() override;
 
     std::vector<App::DocumentObject*> getShapesToScale() const;
@@ -69,6 +78,10 @@ private:
 
     std::unique_ptr<Ui_DlgScale> ui;
     std::string m_document, m_label;
+    App::Document* documentAddress {nullptr};
+    std::string documentUid;
+    bool applySucceeded {false};
+    std::vector<App::DocumentObject*> appliedResults;
 };
 
 class TaskScale: public Gui::TaskView::TaskDialog

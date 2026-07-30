@@ -39,6 +39,7 @@
 #include <Mod/Material/App/PropertyMaterial.h>
 
 #include "DlgInspectMaterial.h"
+#include "SelectionTargetIdentity.h"
 #include "ui_DlgInspectMaterial.h"
 
 
@@ -92,9 +93,14 @@ std::vector<Gui::ViewProvider*> DlgInspectMaterial::getSelection() const
     std::vector<Gui::SelectionSingleton::SelObj> sel =
         Gui::Selection().getSelection(nullptr, Gui::ResolveMode::OldStyleElement, true);
     for (const auto& it : sel) {
-        Gui::ViewProvider* view =
-            Gui::Application::Instance->getDocument(it.pDoc)->getViewProvider(it.pObject);
-        views.push_back(view);
+        const auto target = SelectionTargetIdentity::capture(
+            it.pObject
+        );
+        if (target) {
+            if (auto* view = target->resolveViewProvider()) {
+                views.push_back(view);
+            }
+        }
     }
 
     return views;

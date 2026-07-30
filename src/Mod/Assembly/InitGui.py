@@ -64,7 +64,7 @@ class AssemblyWorkbench(Workbench):
         import AssemblyGui
         from PySide import QtCore, QtGui
         from PySide.QtCore import QT_TRANSLATE_NOOP
-        import CommandCreateAssembly, CommandInsertLink, CommandInsertNewPart, CommandCreateJoint, CommandSolveAssembly, CommandExportASMT, CommandCreateView, CommandCreateSimulation, CommandCreateBom
+        import CommandCreateAssembly, CommandInsertLink, CommandInsertNewPart, CommandCreateJoint, CommandSolveAssembly, CommandExportASMT, CommandCreateView, CommandCreateSimulation, CommandCreateBom, CommandEditHistoryOperation
         import Preferences
         cmdListStandardComponents = []
         try:
@@ -91,6 +91,7 @@ class AssemblyWorkbench(Workbench):
         # build commands list
         cmdList = [
             "Assembly_CreateAssembly",
+            "Assembly_ActivateAssembly",
             "Assembly_Insert",
             "Assembly_SolveAssembly",
             "Assembly_CreateView",
@@ -101,6 +102,14 @@ class AssemblyWorkbench(Workbench):
         cmdListMenuOnly = [
             "Assembly_LinkSelectLinked",
             "Assembly_ExportASMT",
+        ]
+
+        cmdListDiagnose = [
+            "Assembly_SelectConflictingConstraints",
+            "Assembly_SelectRedundantConstraints",
+            "Assembly_SelectPartiallyRedundantConstraints",
+            "Assembly_SelectMalformedConstraints",
+            "Separator",
             "Assembly_SelectJointsOfComponent",
         ]
 
@@ -125,6 +134,7 @@ class AssemblyWorkbench(Workbench):
 
         self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly"), cmdList)
         self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly Joints"), cmdListJoints)
+        self.appendToolbar(QT_TRANSLATE_NOOP("Workbench", "Assembly Diagnose"), cmdListDiagnose)
         if cmdListStandardComponents:
             self.appendToolbar(
                 QT_TRANSLATE_NOOP("Workbench", "Standard Components"),
@@ -133,7 +143,12 @@ class AssemblyWorkbench(Workbench):
 
         self.appendMenu(
             [QT_TRANSLATE_NOOP("Workbench", "&Assembly")],
-            cmdList + cmdListMenuOnly + ["Separator"] + cmdListJoints,
+            cmdList
+            + cmdListMenuOnly
+            + ["Separator"]
+            + cmdListJoints
+            + ["Separator"]
+            + cmdListDiagnose,
         )
         if cmdListStandardComponents:
             self.appendMenu(

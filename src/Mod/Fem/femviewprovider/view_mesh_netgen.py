@@ -35,6 +35,7 @@ import FreeCADGui
 import FemGui
 from PySide import QtGui
 from femtaskpanels import task_mesh_netgen
+from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
 from femtools.femutils import is_of_type
 from femviewprovider import view_base_femobject
 
@@ -43,6 +44,9 @@ class VPMeshNetgen(view_base_femobject.VPBaseFemObject):
     """
     A View Provider for the MeshNetgen object
     """
+
+    def supportsDocumentTimelineEdit(self):
+        return True
 
     def __init__(self, vobj):
         vobj.Proxy = self
@@ -57,15 +61,18 @@ class VPMeshNetgen(view_base_femobject.VPBaseFemObject):
                 obj.ViewObject.hide()
         # show the mesh we like to edit
         self.ViewObject.show()
-        # show task panel
-        taskd = task_mesh_netgen._TaskPanel(self.Object)
-        FreeCADGui.Control.showDialog(taskd)
-        return True
+        return super().setEdit(
+            vobj,
+            mode,
+            task_mesh_netgen._TaskPanel,
+            hide_mesh=False,
+        )
 
     def doubleClicked(self, vobj):
         # Group meshing is only active on active analysis
         # we should make sure the analysis the mesh belongs too is active
-        gui_doc = FreeCADGui.getDocument(vobj.Object.Document)
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_doc = identity.resolve_gui_document()
         if not gui_doc.getInEdit():
             # may be go the other way around and just activate the
             # analysis the user has doubleClicked on ?!

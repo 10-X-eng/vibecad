@@ -701,6 +701,26 @@ App::DocumentObjectExecReturn* DrawViewDimension::execute()
     return DrawView::execute();
 }
 
+bool DrawViewDimension::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawView::timelineDependenciesActive(stack)) {
+        return false;
+    }
+
+    for (auto* object : References2D.getValues()) {
+        if (!timelineDependencyIsActive(object, stack)) {
+            return false;
+        }
+    }
+    for (auto* object : References3D.getValues()) {
+        if (!timelineDependencyIsActive(object, stack)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // true if we have enough information to execute, false otherwise
 bool DrawViewDimension::okToProceed()
 {

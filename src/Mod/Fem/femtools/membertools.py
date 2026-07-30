@@ -36,6 +36,47 @@ from FreeCAD import Base
 from . import femutils
 
 
+def _is_after_timeline_marker(member):
+    """Compatibility query for FEM members inactive at the History marker."""
+    return not _is_usable_at_current_timeline_position(member)
+
+
+def _is_usable_at_current_timeline_position(member):
+    """Delegate one local FEM input decision to the shared App contract.
+
+    The App query deliberately does not follow links. A FEM consumer which
+    dereferences a linked definition must validate that exact definition in
+    its own document at the point where it consumes it.
+    """
+
+    if member is None:
+        return False
+    document = getattr(member, "Document", None)
+    if document is None:
+        return False
+    try:
+        return bool(
+            document.isObjectUsableAtCurrentTimelinePosition(member)
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
+
+
+def _is_suppressed(member):
+    """Return whether an analysis member is computationally inactive.
+
+    Kept as the FEM compatibility surface; the semantic decision belongs to
+    the document-wide History input contract.
+    """
+
+    return not _is_usable_at_current_timeline_position(member)
+
+
+def _active_group_members(group):
+    """Return the computationally active members of a FEM group object."""
+    return [member for member in group.Group if not _is_suppressed(member)]
+
+
 def get_member(analysis, t):
     """Return list of all members of *analysis* of type *t*.
 
@@ -56,12 +97,10 @@ def get_member(analysis, t):
     if analysis is None:
         raise ValueError("Analysis must not be None")
     matching = []
-    for m in analysis.Group:
+    for m in _active_group_members(analysis):
         # since is _derived_from is used the father could be used
         # to test too (ex. "Fem::FemMeshObject")
-        if femutils.is_derived_from(m, t) and not (
-            m.hasExtension("App::SuppressibleExtension") and m.Suppressed
-        ):
+        if femutils.is_derived_from(m, t):
             matching.append(m)
     return matching
 
@@ -140,8 +179,8 @@ def get_mesh_to_solve(analysis):
      error message indicating what went wrong.
     """
     mesh_to_solve = None
-    for m in analysis.Group:
-        if m.isDerivedFrom("Fem::FemMeshObject") and not m.Suppressed:
+    for m in _active_group_members(analysis):
+        if m.isDerivedFrom("Fem::FemMeshObject"):
             if not mesh_to_solve:
                 mesh_to_solve = m
             else:

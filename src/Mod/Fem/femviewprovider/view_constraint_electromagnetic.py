@@ -42,6 +42,9 @@ class VPConstraintElectromagnetic(view_base_femconstraint.VPBaseFemConstraint):
         mat.DiffuseColor = (1.0, 0.0, 0.2, 0.0)
         vobj.ShapeAppearance = mat
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return view_base_femconstraint.VPBaseFemConstraint.setEdit(
             self, vobj, mode, task_constraint_electromagnetic._TaskPanel

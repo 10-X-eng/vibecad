@@ -33,6 +33,7 @@ from FreeCAD import Qt
 import FreeCADGui
 
 import Part
+import PartGui
 from . import Shapes
 from . import ViewProviderShapes
 import math
@@ -64,7 +65,11 @@ class CommandTube:
         vp.startDefaultEditMode(tube.ViewObject)
 
     def IsActive(self):
-        return not FreeCAD.ActiveDocument is None
+        return (
+            FreeCAD.ActiveDocument is not None
+            and not FreeCADGui.Control.activeDialog()
+            and PartGui.canStartRetainedModelingTask()
+        )
 
 
 FreeCADGui.addCommand("Part_Tube", CommandTube())

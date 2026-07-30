@@ -14,6 +14,7 @@ set(PartDesign_Scripts
 if(BUILD_GUI)
     list (APPEND PartDesign_Scripts
           InitGui.py
+          PartDesignTimeline.py
           TestPartDesignGui.py
           InvoluteGearFeature.py
           InvoluteGearFeature.ui
@@ -55,7 +56,19 @@ set(PartDesign_TestScripts
     PartDesignTests/TestChamfer.py
     PartDesignTests/TestConsolidatedPart.py
     PartDesignTests/TestConsolidatedPartTools.py
+    PartDesignTests/TestContextMenuTracking.py
+    PartDesignTests/TestExactTransactionContract.py
+    PartDesignTests/TestFeatureBasePlacement.py
+    PartDesignTests/TestFeatureTimeline.py
     PartDesignTests/TestModelTreeBrowser.py
+    PartDesignTests/TestNativeRibbonTools.py
+    PartDesignTests/TestNativeTaskContract.py
+    PartDesignTests/TestPartMultiInputRibbonTools.py
+    PartDesignTests/TestPartDesignTaskLifecycle.py
+    PartDesignTests/TestPythonFeatureTasks.py
+    PartDesignTests/TestPartSingleInputRibbonTools.py
+    PartDesignTests/TestRetainedPartDialogs.py
+    PartDesignTests/TestRibbonInspectView.py
     PartDesignTests/TestVibeScriptPresentation.py
     PartDesignTests/TestDraft.py
     PartDesignTests/TestThickness.py
@@ -109,6 +122,13 @@ add_custom_target(PartDesignScripts ALL SOURCES
     ${PartDesign_GearScripts}
     ${PartDesign_SprocketScripts}
 )
+
+# PartDesignGui imports PartDesignTimeline at runtime through native Python
+# features and VibeScript publication.  A targeted PartDesignGui build must
+# therefore stage the module just as a full ALL build does.
+if(TARGET PartDesignGui)
+    add_dependencies(PartDesignGui PartDesignScripts)
+endif()
 
 fc_target_copy_resource(PartDesignScripts
     ${CMAKE_CURRENT_SOURCE_DIR}

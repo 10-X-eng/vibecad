@@ -34,6 +34,10 @@
 
 #include <Base/Interpreter.h>
 
+#include <Mod/Assembly/App/AssemblyObject.h>
+#include <Mod/Assembly/App/AssemblyUtils.h>
+#include <Mod/Assembly/App/BomObject.h>
+
 #include "ViewProviderBom.h"
 
 using namespace AssemblyGui;
@@ -52,6 +56,16 @@ QIcon ViewProviderBom::getIcon() const
 
 bool ViewProviderBom::doubleClicked()
 {
+    auto* bom = dynamic_cast<Assembly::BomObject*>(getObject());
+    if (!bom || !Assembly::isTimelineOperationActive(bom)) {
+        return false;
+    }
+    if (auto* assembly = bom->getAssembly();
+        assembly
+        && !Assembly::isTimelineOperationActive(assembly)) {
+        return false;
+    }
+
     std::string obj_name = getObject()->getNameInDocument();
     std::string doc_name = getObject()->getDocument()->getName();
 
@@ -59,7 +73,13 @@ bool ViewProviderBom::doubleClicked()
                                 "obj = App.getDocument('"
         + doc_name + "').getObject('" + obj_name
         + "')\n"
-          "Gui.Control.showDialog(CommandCreateBom.TaskAssemblyCreateBom(obj))";
+          "panel = CommandCreateBom.TaskAssemblyCreateBom("
+          "obj, existing_transaction_id="
+          "obj.Document.getBookedTransactionID())\n"
+          "dialog = Gui.Control.showDialog(panel, panel.gui_doc)\n"
+          "if dialog is not None:\n"
+          "    dialog.setAutoCloseOnDeletedDocument(True)\n"
+          "    dialog.setDocumentName(obj.Document.Name)";
 
     Gui::Command::runCommand(Gui::Command::App, pythonCommand.c_str());
 

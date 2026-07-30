@@ -140,6 +140,12 @@ public:
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
     static void refreshModelBrowsers();
+    // Resolve the semantic object controlled by a visibility command. This
+    // mapping is independent of whether the typed model browser is enabled or
+    // currently has a proxy item for the requested object.
+    static App::DocumentObject* resolveModelBrowserVisibilityTarget(
+        App::DocumentObject* object
+    );
     // Route standard visibility commands through a projected browser object.
     // requestedVisibility < 0 toggles; zero hides; positive shows.
     static bool applyModelBrowserVisibility(
@@ -435,6 +441,7 @@ protected:
     void slotScrollToObject(const Gui::ViewProviderDocumentObject&);
     void slotRecomputed(const App::Document& doc, const std::vector<App::DocumentObject*>& objs);
     void slotRecomputedObject(const App::DocumentObject&);
+    void slotDocumentStable(const App::Document& stableDocument);
 
     bool updateObject(const Gui::ViewProviderDocumentObject&, const App::Property& prop);
 
@@ -478,6 +485,15 @@ protected:
         App::DocumentObject* object,
         QTreeWidgetItem* parent,
         DocumentObjectItem* logicalParent,
+        bool browserDefaultHidden
+    );
+    // Compatibility overload for extensions built against the retired
+    // publication/history visibility presentation. The final two arguments
+    // are deliberately ignored by the native Body/Tip renderer.
+    DocumentObjectItem* createBrowserObjectItem(
+        App::DocumentObject* object,
+        QTreeWidgetItem* parent,
+        DocumentObjectItem* logicalParent,
         bool browserDefaultHidden,
         App::DocumentObject* browserVisibilityPeer,
         const std::vector<App::DocumentObject*>& browserVisibilityDependents
@@ -493,6 +509,7 @@ private:
     std::vector<App::DocumentObject*> PopulateObjects;
     bool modelBrowserDirty {true};
     bool modelBrowserActive {false};
+    bool transactionRefreshPending {false};
 
     ExpandInfoPtr _ExpandInfo;
     void restoreItemExpansion(const ExpandInfoPtr&, DocumentObjectItem*);
@@ -509,6 +526,7 @@ private:
     Connection connectScrObject;
     Connection connectRecomputed;
     Connection connectRecomputedObj;
+    Connection connectDocumentStable;
 
     friend class TreeWidget;
     friend class DocumentObjectData;
@@ -602,6 +620,9 @@ public:
     }
 
 private:
+    // Compatibility-only helpers for the retired presentation visibility
+    // gate. They intentionally resolve no peer/dependents and perform no
+    // rendering work.
     App::DocumentObject* visibilityPeer() const;
     std::vector<App::DocumentObject*> visibilityDependents() const;
     void syncVisibilityDependents(
@@ -633,7 +654,12 @@ private:
     // resolved lazily.  A cached item pointer would dangle between an object
     // deletion and the next model browser rebuild (see getParentItem()).
     std::string browserLogicalParentName;
-    std::string browserVisibilityPeerName;
+    // Reuse the former visibility-peer string slot for the logical parent's
+    // immutable object ID. Keeping the type and position preserves the
+    // private layout while preventing a replacement object with the same
+    // internal name from becoming this item's selection-path parent.
+    std::string browserLogicalParentId;
+    // Retain the remaining former private layout for binary compatibility.
     std::vector<std::string> browserVisibilityDependentNames;
 
     friend class TreeWidget;

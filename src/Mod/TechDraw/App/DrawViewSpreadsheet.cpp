@@ -91,6 +91,16 @@ short DrawViewSpreadsheet::mustExecute() const
     return TechDraw::DrawView::mustExecute();
 }
 
+bool DrawViewSpreadsheet::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawView::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    auto* source = Source.getValue();
+    return !source || timelineDependencyIsActive(source, stack);
+}
+
 void DrawViewSpreadsheet::onChanged(const App::Property* prop)
 {
     TechDraw::DrawView::onChanged(prop);
@@ -98,6 +108,10 @@ void DrawViewSpreadsheet::onChanged(const App::Property* prop)
 
 App::DocumentObjectExecReturn *DrawViewSpreadsheet::execute()
 {
+    if (!keepUpdated()) {
+        return App::DocumentObject::StdReturn;
+    }
+
     App::DocumentObject* link = Source.getValue();
     std::string scellstart = CellStart.getValue();
     std::string scellend = CellEnd.getValue();

@@ -102,6 +102,9 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
         self.assertIsNotNone(application)
         root = VibeCADGui._build_panel_widget()
         try:
+            self.assertIsNone(
+                root.findChild(QtWidgets.QLabel, "VibeProviderIdentity")
+            )
             root.resize(414, 800)
             root.show()
             application.processEvents()
@@ -110,6 +113,21 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 "VibeComposerButtons",
             )
             self.assertIsNotNone(composer)
+            interaction_mode = root.findChild(
+                QtWidgets.QComboBox,
+                "VibeInteractionMode",
+            )
+            self.assertIsNotNone(interaction_mode)
+            self.assertEqual(
+                [
+                    (
+                        interaction_mode.itemText(index),
+                        interaction_mode.itemData(index),
+                    )
+                    for index in range(interaction_mode.count())
+                ],
+                [("Build", "build"), ("Plan", "plan")],
+            )
             self.assertLess(
                 composer.width(),
                 VibeCADGui._COMPOSER_ICON_ONLY_BREAKPOINT,
@@ -135,17 +153,61 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 buttons["VibeAttachImage"].icon().cacheKey(),
             )
 
+            # This is the width from the reported dock screenshot: it exceeds
+            # the old 500 px guess but still cannot fit all four full labels.
+            root.resize(520, 800)
+            application.processEvents()
+            self.assertLess(
+                composer.width(),
+                int(composer.property("VibeFullLabelRequiredWidth")),
+            )
+            for button in buttons.values():
+                self.assertEqual(button.text(), "")
+                self.assertTrue(button.property("VibeCompactMode"))
+
             root.resize(760, 800)
             application.processEvents()
+            full_label_width = int(
+                composer.property("VibeFullLabelRequiredWidth")
+            )
             self.assertGreaterEqual(
                 composer.width(),
-                VibeCADGui._COMPOSER_ICON_ONLY_BREAKPOINT,
+                full_label_width,
             )
             self.assertEqual(buttons["VibeAttachView"].text(), "Attach View")
             self.assertEqual(buttons["VibeAttachImage"].text(), "Attach Image")
             self.assertEqual(buttons["VibeSend"].text(), "Send")
             self.assertEqual(buttons["VibeStop"].text(), "Stop")
 
+            # A standalone top-level QWidget will not resize below its own
+            # current minimumSizeHint. Constrain the composer itself to
+            # exercise the exact responsive boundary used inside a dock.
+            composer.setFixedWidth(full_label_width - 1)
+            VibeCADGui._update_composer_button_presentation(
+                composer,
+                busy=False,
+            )
+            application.processEvents()
+            self.assertLess(composer.width(), full_label_width)
+            for button in buttons.values():
+                self.assertEqual(button.text(), "")
+                self.assertTrue(button.property("VibeCompactMode"))
+            self.assertEqual(
+                len({button.width() for button in buttons.values()}),
+                1,
+            )
+
+            VibeCADGui._update_composer_button_presentation(
+                composer,
+                busy=True,
+            )
+            self.assertEqual(buttons["VibeSend"].text(), "")
+            self.assertEqual(buttons["VibeSend"].accessibleName(), "Steer")
+
+            composer.setMinimumWidth(0)
+            composer.setMaximumWidth(16777215)
+            root.resize(760, 800)
+            application.processEvents()
             VibeCADGui._update_composer_button_presentation(
                 composer,
                 busy=True,
@@ -254,6 +316,25 @@ def test_every_runtime_entry_point_uses_only_the_vibecad_config_namespace() -> N
         assert 'Config()["AppDataSkipVendor"] = "true"' in source
         assert 'Config()["ExeName"] = "FreeCAD"' not in source
         assert 'Config()["ExeVendor"] = "FreeCAD"' not in source
+
+
+def test_fresh_gui_profiles_initialize_the_native_tree_before_main_window_construction() -> None:
+    main_gui = _source("src/Main/MainGui.cpp")
+
+    defaults = main_gui.split("static void initializeVibeCADDockDefaults()", 1)[1]
+    defaults = defaults.split("int main(", 1)[0]
+    assert 'GetGroup("TreeView")' in defaults
+    assert 'GetGroup("PropertyView")' in defaults
+    assert 'GetGroup("ComboView")' in defaults
+    assert defaults.count('hasBoolParameter(') == 3
+    assert 'treeView->SetBool("Enabled", true)' in defaults
+    assert 'propertyView->SetBool("Enabled", false)' in defaults
+    assert 'comboView->SetBool("Enabled", false)' in defaults
+
+    startup = main_gui.split("App::Application::init(argc", 1)[1]
+    assert startup.index("initializeVibeCADDockDefaults();") < startup.index(
+        "Gui::Application::initApplication();"
+    )
 
 
 def test_vibecad_docks_are_registered_before_native_window_restore() -> None:
@@ -481,9 +562,71 @@ def test_native_late_docks_consume_saved_entry_before_default_placement() -> Non
     )[0]
 
     assert addition.index("dw->setObjectName") < addition.index("mw->restoreDockWidget(dw)")
+    assert addition.index("dw->toggleViewAction()->setData") < addition.index(
+        "mw->restoreDockWidget(dw)"
+    )
     assert addition.index("mw->restoreDockWidget(dw)") < addition.index(
         "mw->addDockWidget(pos, dw)"
     )
+
+
+def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
+    source = _source("src/Gui/DockWindowManager.cpp")
+    overlay = _source("src/Gui/OverlayManager.cpp")
+    overlay_widgets = _source("src/Gui/OverlayWidgets.cpp")
+    addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[1].split(
+        "QWidget* DockWindowManager::getDockWindow", 1
+    )[0]
+    persistence = addition.split(
+        "connect(dw->toggleViewAction(), &QAction::triggered", 1
+    )[1]
+    save = source.split("void DockWindowManager::saveState()", 1)[1].split(
+        "void DockWindowManager::loadState()", 1
+    )[0]
+
+    # Effective QWidget visibility and overlay splitter presentation are not
+    # user intent. The dock manager owns the requested state and sends the
+    # exact checked value through one presentation API.
+    assert "[this, dw](bool checked)" in persistence
+    assert "d->_requestedVisibility.insert(dockName, checked)" in persistence
+    assert "SetBool(encodedName.constData(), checked)" in persistence
+    assert "applyRequestedVisibility(dw, checked)" in persistence
+    assert "requested.value()" in save
+    assert "isHidden()" not in save
+    assert "isChecked()" not in save
+    assert "dw->isVisible()" not in save
+    assert "setDockWidgetVisible(dock, visible)" in source
+    assert 'name == QStringLiteral("Std_TreeView")' in source
+
+    presentation = overlay.split(
+        "bool setDockWidgetVisible(QDockWidget* dock, bool visible)", 1
+    )[1].split("void setDockWidgetPersistent", 1)[0]
+    assert "sizes[index] = 0" in presentation
+    assert "dock->hide()" in presentation
+    assert "dock->toggleViewAction()->setChecked(false)" in presentation
+    assert "dock->show()" in presentation
+    assert "dock->toggleViewAction()->setChecked(true)" in presentation
+    # OverlayManager keeps its public direct-initialization behavior for
+    # unmanaged docks, but must defer managed docks to the requested-state
+    # owner above.
+    direct_initialization = overlay.split(
+        "void OverlayManager::initDockWidget", 1
+    )[1].split("bool OverlayManager::setDockWidgetVisible", 1)[0]
+    direct_toggle = overlay.split(
+        "void OverlayManager::onToggleDockWidget", 1
+    )[1].split("void OverlayManager::onDockVisibleChange", 1)[0]
+    assert "dw->toggleViewAction()" in direct_initialization
+    assert "&OverlayManager::onToggleDockWidget" in direct_initialization
+    assert "DockWindowManager::instance()->managesDockWidget(dock)" in direct_toggle
+    assert "splitter->widget(i)->setVisible(presented)" in overlay_widgets
+    assert "if (count() && !hasPresentedWidget)" in overlay_widgets
+    assert (
+        overlay_widgets.index(
+            "OverlayManager::instance()->synchronizePersistentPresentation(this)"
+        )
+        < overlay_widgets.index("if (count() && !hasPresentedWidget)")
+    )
+    assert "DockWindowManager::instance()->isVisibilityRequested(dock)" in overlay
 
 
 def test_corrupt_duplicate_dock_state_is_repaired_after_startup() -> None:
@@ -727,7 +870,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert 'new RibbonGroup(QObject::tr("Inspect")' in ribbon
     assert '("InspectionGui", "MeshPartGui", "PartGui")' in vibecad_gui_startup
     assert 'convert->setCommand("Mesh Convert")' in mesh_workbench
-    assert '<< "Part_ShapeFromMesh"' in mesh_workbench
+    assert '<< "MeshPart_ShapeFromMesh"' in mesh_workbench
     assert '<< "MeshPart_CurveOnMesh"' in mesh_workbench
     assert 'QStringLiteral("VibeCAD_OpenPreferences")' in ribbon
     assert "VibeCADRibbon::install(mainWindow);" in startup
@@ -798,11 +941,87 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     )
 
     preferences.disabled = (
-        "NoneWorkbench,OpenSCADWorkbench,RobotWorkbench,InspectionWorkbench,"
-        "ReverseEngineeringWorkbench,PointsWorkbench,MaterialWorkbench,TestWorkbench"
+        "InspectionWorkbench,MaterialWorkbench,OpenSCADWorkbench,"
+        "PointsWorkbench,ReverseEngineeringWorkbench,RobotWorkbench,"
+        "TestWorkbench,NoneWorkbench"
     )
     assert namespace["_restore_vibecad_disabled_workbenches"]() is True
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
+
+
+def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -> None:
+    """InitGui helpers must not rely on names held only in exec() locals."""
+
+    class ParameterGroup:
+        def GetString(self, _name: str, default: str) -> str:
+            return default
+
+        def SetString(self, _name: str, _value: str) -> None:
+            pass
+
+        def GetBool(self, _name: str, default: bool) -> bool:
+            return default
+
+        def SetBool(self, _name: str, _value: bool) -> None:
+            pass
+
+    warnings: list[str] = []
+    startup_events: list[str] = []
+    app = SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+        ParamGet=lambda _path: ParameterGroup(),
+    )
+    qt_core = SimpleNamespace(
+        QTimer=SimpleNamespace(
+            singleShot=lambda _delay, callback: startup_events.append(
+                f"scheduled:{callback.__name__}"
+            )
+        )
+    )
+    fasteners = SimpleNamespace(require_available=lambda: None)
+    monkeypatch.setitem(sys.modules, "FreeCAD", app)
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: startup_events.append("assistant")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFasteners",
+        fasteners,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFastenersGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: startup_events.append("fasteners")
+        ),
+    )
+
+    init_gui = ROOT / "src/Mod/VibeCAD/InitGui.py"
+    loader_globals = {"App": app}
+    loader_locals = {}
+    exec(
+        compile(init_gui.read_bytes(), str(init_gui), "exec"),
+        loader_globals,
+        loader_locals,
+    )
+
+    assert "assistant" in startup_events
+    assert "fasteners" in startup_events
+    assert "scheduled:_setup_always_on_grid" in startup_events
+    assert not any("GUI bootstrap failed" in warning for warning in warnings)
+    assert any("ribbon extension" in warning for warning in warnings)
+
+    def fail_catalog() -> None:
+        raise RuntimeError("catalog unavailable")
+
+    fasteners.require_available = fail_catalog
+    assert loader_locals["_check_bundled_fasteners"]() is False
+    assert any("catalog unavailable" in warning for warning in warnings)
 
 
 def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None:
@@ -870,3 +1089,83 @@ def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None
     assert migration.values["VibeCADConsolidatedPartWorkbench2026"] is True
     assert any("retired architecture workbench" in warning for warning in warnings)
     assert any("Part workbench references" in warning for warning in warnings)
+
+
+def test_vibecad_bootstrap_migrates_removed_openscad_preferences(monkeypatch) -> None:
+    class ParameterGroup:
+        def __init__(self, values=None) -> None:
+            self.values = dict(values or {})
+
+        def GetString(self, name: str, default: str) -> str:
+            return str(self.values.get(name, default))
+
+        def SetString(self, name: str, value: str) -> None:
+            self.values[name] = value
+
+        def GetBool(self, name: str, default: bool) -> bool:
+            return bool(self.values.get(name, default))
+
+        def SetBool(self, name: str, value: bool) -> None:
+            self.values[name] = value
+
+    workbenches = ParameterGroup(
+        {
+            "Ordered": "PartDesignWorkbench,OpenSCADWorkbench,MeshWorkbench",
+            "Disabled": "TestWorkbench,OpenSCADWorkbench,NoneWorkbench",
+        }
+    )
+    general = ParameterGroup(
+        {
+            "BackgroundAutoloadModules": (
+                "OpenSCADWorkbench,MeshWorkbench,PartDesignWorkbench"
+            ),
+            "AutoloadModule": "OpenSCADWorkbench",
+            "LastModule": "OpenSCADWorkbench",
+        }
+    )
+    migration = ParameterGroup()
+    groups = {
+        "User parameter:BaseApp/Preferences/Workbenches": workbenches,
+        "User parameter:BaseApp/Preferences/General": general,
+        "User parameter:BaseApp/Preferences/Migration": migration,
+    }
+    warnings: list[str] = []
+    app = SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+        ParamGet=groups.__getitem__,
+    )
+    qt_core = SimpleNamespace(QTimer=SimpleNamespace(singleShot=lambda *_args: None))
+    gui = SimpleNamespace(ensure_commands_registered=lambda: None)
+    monkeypatch.setitem(sys.modules, "FreeCAD", app)
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+
+    init_gui = ROOT / "src/Mod/VibeCAD/InitGui.py"
+    loader_globals = {"App": app}
+    loader_locals = {}
+    exec(
+        compile(init_gui.read_bytes(), str(init_gui), "exec"),
+        loader_globals,
+        loader_locals,
+    )
+
+    assert workbenches.values["Ordered"] == (
+        "PartDesignWorkbench,MeshWorkbench"
+    )
+    assert workbenches.values["Disabled"] == "TestWorkbench,NoneWorkbench"
+    assert general.values["BackgroundAutoloadModules"] == (
+        "MeshWorkbench,PartDesignWorkbench"
+    )
+    assert general.values["AutoloadModule"] == "MeshWorkbench"
+    assert general.values["LastModule"] == "MeshWorkbench"
+    assert migration.values["VibeCADRemovedOpenSCADWorkbench2026"] is True
+    assert any(
+        "OpenSCAD workbench references to Mesh" in warning
+        for warning in warnings
+    )
+
+    workbenches.values["Ordered"] = "OpenSCADWorkbench,PartDesignWorkbench"
+    assert loader_locals["_migrate_removed_openscad_workbench"]() is False
+    assert workbenches.values["Ordered"] == (
+        "OpenSCADWorkbench,PartDesignWorkbench"
+    )

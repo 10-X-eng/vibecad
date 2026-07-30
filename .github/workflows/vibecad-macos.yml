@@ -145,7 +145,7 @@ jobs:
             ~/.cache/pixi
             ~/.cache/rattler
             ~/Library/Caches/pip
-          key: pixi-${{ matrix.target }}-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'src/Mod/VibeCAD/build123d-requirements.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_build123d_runtime.sh', 'package/rattler-build/scripts/install_vibecad_openscad_runtime.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/write_vibecad_build123d_manifest.py', 'package/rattler-build/scripts/relocate_conda_environment.py') }}
+          key: pixi-${{ matrix.target }}-${{ hashFiles('package/rattler-build/pixi.lock', 'package/rattler-build/pixi.toml', 'package/rattler-build/recipe.yaml', 'src/Mod/VibeCAD/requirements.txt', 'package/rattler-build/scripts/install_vibecad_provider_deps.sh', 'package/rattler-build/scripts/install_vibecad_codex_runtime.sh', 'package/rattler-build/scripts/purge_vibecad_retired_authoring_artifacts.sh', 'package/rattler-build/scripts/relocate_conda_environment.py') }}
           restore-keys: |
             pixi-${{ matrix.target }}-
 

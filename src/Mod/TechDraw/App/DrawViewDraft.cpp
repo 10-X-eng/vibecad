@@ -73,6 +73,16 @@ short DrawViewDraft::mustExecute() const
     return DrawViewSymbol::mustExecute();
 }
 
+bool DrawViewDraft::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    if (!DrawView::timelineDependenciesActive(stack)) {
+        return false;
+    }
+    auto* source = Source.getValue();
+    return !source || timelineDependencyIsActive(source, stack);
+}
+
 
 
 App::DocumentObjectExecReturn *DrawViewDraft::execute()

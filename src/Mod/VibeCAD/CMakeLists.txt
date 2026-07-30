@@ -4,23 +4,25 @@ set(VibeCAD_Scripts
     Init.py
     InitGui.py
     VibeCADAuth.py
-    VibeCADBuild123d.py
     VibeCADCodex.py
+    VibeCADComponentCatalog.py
     VibeCADCore.py
     VibeCADDebug.py
     VibeCADDesignReview.py
+    VibeCADDocumentReferences.py
     VibeCADEditState.py
     VibeCADFasteners.py
     VibeCADFastenersGui.py
     VibeCADGrid.py
     VibeCADGeometry.py
     VibeCADGui.py
-    VibeCADInspection.py
     VibeCADLegacyArchitecture.py
     VibeCADIntentMemory.py
     VibeCADIntentMemoryCompiler.py
+    VibeCADMechanismEngine.py
+    VibeCADMechanismGeometry.py
     VibeCADModelingSurface.py
-    VibeCADOpenSCAD.py
+    VibeCADNativeTransaction.py
     VibeCADPreferences.py
     VibeCADPromptStarters.py
     VibeCADProvider.py
@@ -77,9 +79,6 @@ set(VibeCAD_Scripts
     vibescript_techdraw_worker.py
     VibeCADPointArtifacts.py
     VibeCADWorkbenchTools.py
-    build123d_worker.py
-    openscad_freecad_worker.py
-    build123d-requirements.txt
     requirements.txt
 )
 
@@ -98,6 +97,17 @@ set(VibeCAD_Resources
     vibecad-prompt-starters.svg
 )
 
+set(VibeCAD_TestScripts)
+if(BUILD_TEST AND BUILD_GUI)
+    list(APPEND VibeCAD_TestScripts
+        vibecad_tests/__init__.py
+        vibecad_tests/TestDirectDomainTimeline.py
+        vibecad_tests/TestDirectModelTimeline.py
+        vibecad_tests/grid_gui_integration.py
+        vibecad_tests/qt_ribbon_theme_integration.py
+    )
+endif()
+
 file(GLOB_RECURSE VibeCAD_ToolImplScripts
     CONFIGURE_DEPENDS
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -105,7 +115,11 @@ file(GLOB_RECURSE VibeCAD_ToolImplScripts
 )
 
 add_custom_target(VibeCADScripts ALL
-    SOURCES ${VibeCAD_Scripts} ${VibeCAD_ToolImplScripts} ${VibeCAD_Resources}
+    SOURCES
+        ${VibeCAD_Scripts}
+        ${VibeCAD_ToolImplScripts}
+        ${VibeCAD_Resources}
+        ${VibeCAD_TestScripts}
 )
 
 fc_target_copy_resource(VibeCADScripts
@@ -114,6 +128,7 @@ fc_target_copy_resource(VibeCADScripts
     ${VibeCAD_Scripts}
     ${VibeCAD_ToolImplScripts}
     ${VibeCAD_Resources}
+    ${VibeCAD_TestScripts}
 )
 
 install(

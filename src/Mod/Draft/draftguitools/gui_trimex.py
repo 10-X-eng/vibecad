@@ -54,7 +54,10 @@ from draftguitools import gui_tool_utils
 from draftguitools import gui_trackers as trackers
 from draftutils import gui_utils
 from draftutils import params
+from draftutils import timeline
 from draftutils import utils
+from draftutils.transaction import object_is_usable_at_current_position
+from draftutils.transaction import run_document_mutation
 from draftutils.messages import _msg, _err, _toolmsg
 from draftutils.translate import translate
 
@@ -90,8 +93,16 @@ class Trimex(gui_base_original.Modifier):
         self.linetrack = None
         self.color = None
         self.width = None
+        self.extrude_shape = None
+        self.extrude_source = None
+        self.extrude_subelements = ()
         if self.ui:
-            if not Gui.Selection.getSelection():
+            selection = tuple(
+                obj
+                for obj in Gui.Selection.getSelection(self.doc.Name)
+                if object_is_usable_at_current_position(obj, self.doc)
+            )
+            if not selection:
                 self.ui.selectUi(on_close_call=self.finish)
                 _msg(translate("draft", "Select objects to trim or extend"))
                 self.call = self.view.addEventCallback("SoEvent", gui_tool_utils.selectObject)
@@ -102,13 +113,31 @@ class Trimex(gui_base_original.Modifier):
         """Proceed with execution of the command after proper selection."""
         if self.call:
             self.view.removeEventCallback("SoEvent", self.call)
-        sel = Gui.Selection.getSelection()
-        if len(sel) == 2:
-            self.trimObjects(sel)
+        selection = tuple(
+            obj
+            for obj in Gui.Selection.getSelection(self.doc.Name)
+            if object_is_usable_at_current_position(obj, self.doc)
+        )
+        if len(selection) == 2:
+            self.trimObjects(selection)
             self.finish()
             return
-        self.obj = sel[0]
-        sel = Gui.Selection.getSelectionEx("", 0)[0]
+        if len(selection) != 1:
+            self.finish()
+            _err(translate("draft", "Select one object, one face, or two objects"))
+            return
+        self.obj = selection[0]
+        selected_details = tuple(
+            selected
+            for selected in Gui.Selection.getSelectionEx(self.doc.Name, 0)
+            if selected.Object is self.obj
+        )
+        if len(selected_details) != 1:
+            self.obj = None
+            self.finish()
+            _err(translate("draft", "The selected object changed before Trimex started"))
+            return
+        sel = selected_details[0]
 
         import Part
 
@@ -126,20 +155,29 @@ class Trimex(gui_base_original.Modifier):
             self.obj = sel.Object
             if len(self.obj.Shape.Faces) == 1:
                 # simple extrude mode, the object itself is extruded
-                pass
+                self.extrude_shape = self.obj.Shape
             elif len(sel.SubObjects) == 1 and sel.SubObjects[0].ShapeType == "Face":
-                # face extrude mode, a new object is created
-                self.obj = self.doc.addObject("Part::Feature", "Face")
-                self.obj.Shape = sel.SubObjects[0]
+                # Keep the preview in the scene graph only. On acceptance a
+                # linked Facebinder is created so the extrusion remains
+                # parametric to this exact source face.
+                self.extrude_shape = sel.SubObjects[0]
+                self.extrude_subelements = tuple(sel.SubElementNames)
             else:
                 self.obj = None
                 self.finish()
                 _err(translate("draft", "Only a single face can be extruded"))
                 return
+            self.extrude_source = self.obj
             self.extrudeMode = True
-            self.normal = self.obj.Shape.Faces[0].normalAt(0.5, 0.5)
-            self.ghost = [trackers.ghostTracker([self.obj]), trackers.lineTracker(dotted=True)]
-            self.ghost += [trackers.lineTracker() for _ in self.obj.Shape.Vertexes]
+            self.normal = self.extrude_shape.Faces[0].normalAt(0.5, 0.5)
+            self.ghost = [
+                trackers.ghostTracker([self.extrude_shape]),
+                trackers.lineTracker(dotted=True),
+            ]
+            self.ghost += [
+                trackers.lineTracker()
+                for _ in self.extrude_shape.Vertexes
+            ]
         else:
             # normal wire trimex mode
             self.color = self.obj.ViewObject.LineColor
@@ -250,7 +288,7 @@ class Trimex(gui_base_original.Modifier):
 
     def extrude(self, shift=False, real=False):
         """Redraw the ghost in extrude mode."""
-        self.newpoint = self.obj.Shape.Faces[0].CenterOfMass
+        self.newpoint = self.extrude_shape.Faces[0].CenterOfMass
         dvec = self.point.sub(self.newpoint)
         if not shift:
             delta = DraftVecUtils.project(dvec, self.normal)
@@ -270,7 +308,7 @@ class Trimex(gui_base_original.Modifier):
         self.ghost[1].p2(self.newpoint + dvec)
         # Update the vertex lineTrackers:
         for i in range(2, len(self.ghost)):
-            base = self.obj.Shape.Vertexes[i - 2].Point
+            base = self.extrude_shape.Vertexes[i - 2].Point
             self.ghost[i].p1(base)
             self.ghost[i].p2(base + delta)
         return delta.Length
@@ -424,69 +462,108 @@ class Trimex(gui_base_original.Modifier):
 
         if self.extrudeMode:
             delta = self.extrude(self.shift, real=True)
-            # print("delta", delta)
-            self.doc.openTransaction("Extrude")
-            Gui.addModule("Draft")
-            obj = extrude.extrude(self.obj, delta, solid=True)
-            self.doc.commitTransaction()
+            source = self.extrude_source
+            subelements = self.extrude_subelements
+
+            def create_extrusion():
+                if subelements:
+                    from draftmake import make_facebinder
+
+                    selection = timeline.selection_references(
+                        [(source, subelements)]
+                    )
+                    base = make_facebinder.make_facebinder(
+                        selection,
+                        name="Face",
+                    )
+                    if base is None:
+                        raise RuntimeError(
+                            "Draft Trimex could not create a linked face"
+                        )
+                    obj = extrude.extrude(base, delta, solid=True)
+                    outputs = [base, obj]
+                    replaced_inputs = ()
+                else:
+                    replaced_inputs = timeline.visible_inputs([source])
+                    obj = extrude.extrude(source, delta, solid=True)
+                    outputs = [obj]
+                if obj is None:
+                    raise RuntimeError(
+                        "Draft Trimex extrusion produced no result"
+                    )
+                timeline.accept_outputs(outputs, replaced_inputs)
+                return obj
+
+            obj = run_document_mutation(
+                self.doc,
+                translate("draft", "Extrude"),
+                create_extrusion,
+                objects=(source,),
+            )
             self.obj = obj
         else:
             edges = self.redraw(self.point, self.snapped, self.shift, self.alt, real=True)
             newshape = Part.Wire(edges)
-            self.doc.openTransaction("Trim/extend")
-            if utils.getType(self.obj) in ["Wire", "BSpline"]:
-                p = []
-                if self.placement:
-                    invpl = self.placement.inverse()
-                for v in newshape.Vertexes:
-                    np = v.Point
+
+            def trim_or_extend():
+                if utils.getType(self.obj) in ["Wire", "BSpline"]:
+                    p = []
                     if self.placement:
-                        np = invpl.multVec(np)
-                    p.append(np)
-                self.obj.Points = p
-            elif utils.getType(self.obj) == "Part::Line":
-                p = []
-                if self.placement:
-                    invpl = self.placement.inverse()
-                for v in newshape.Vertexes:
-                    np = v.Point
+                        invpl = self.placement.inverse()
+                    for v in newshape.Vertexes:
+                        np = v.Point
+                        if self.placement:
+                            np = invpl.multVec(np)
+                        p.append(np)
+                    self.obj.Points = p
+                elif utils.getType(self.obj) == "Part::Line":
+                    p = []
                     if self.placement:
-                        np = invpl.multVec(np)
-                    p.append(np)
-                if (p[0].x == self.obj.X1) and (p[0].y == self.obj.Y1) and (p[0].z == self.obj.Z1):
-                    self.obj.X2 = p[-1].x
-                    self.obj.Y2 = p[-1].y
-                    self.obj.Z2 = p[-1].z
-                elif (
-                    (p[-1].x == self.obj.X1)
-                    and (p[-1].y == self.obj.Y1)
-                    and (p[-1].z == self.obj.Z1)
-                ):
-                    self.obj.X2 = p[0].x
-                    self.obj.Y2 = p[0].y
-                    self.obj.Z2 = p[0].z
-                elif (
-                    (p[0].x == self.obj.X2) and (p[0].y == self.obj.Y2) and (p[0].z == self.obj.Z2)
-                ):
-                    self.obj.X1 = p[-1].x
-                    self.obj.Y1 = p[-1].y
-                    self.obj.Z1 = p[-1].z
+                        invpl = self.placement.inverse()
+                    for v in newshape.Vertexes:
+                        np = v.Point
+                        if self.placement:
+                            np = invpl.multVec(np)
+                        p.append(np)
+                    if (p[0].x == self.obj.X1) and (p[0].y == self.obj.Y1) and (p[0].z == self.obj.Z1):
+                        self.obj.X2 = p[-1].x
+                        self.obj.Y2 = p[-1].y
+                        self.obj.Z2 = p[-1].z
+                    elif (
+                        (p[-1].x == self.obj.X1)
+                        and (p[-1].y == self.obj.Y1)
+                        and (p[-1].z == self.obj.Z1)
+                    ):
+                        self.obj.X2 = p[0].x
+                        self.obj.Y2 = p[0].y
+                        self.obj.Z2 = p[0].z
+                    elif (
+                        (p[0].x == self.obj.X2)
+                        and (p[0].y == self.obj.Y2)
+                        and (p[0].z == self.obj.Z2)
+                    ):
+                        self.obj.X1 = p[-1].x
+                        self.obj.Y1 = p[-1].y
+                        self.obj.Z1 = p[-1].z
+                    else:
+                        self.obj.X1 = p[0].x
+                        self.obj.Y1 = p[0].y
+                        self.obj.Z1 = p[0].z
+                elif utils.getType(self.obj) == "Circle":
+                    angles = self.ghost[0].getAngles()
+                    if angles[0] > angles[1]:
+                        angles = (angles[1], angles[0])
+                    self.obj.FirstAngle = angles[0]
+                    self.obj.LastAngle = angles[1]
                 else:
-                    self.obj.X1 = p[0].x
-                    self.obj.Y1 = p[0].y
-                    self.obj.Z1 = p[0].z
-            elif utils.getType(self.obj) == "Circle":
-                angles = self.ghost[0].getAngles()
-                # print("original", self.obj.FirstAngle," ",self.obj.LastAngle)
-                # print("new", angles)
-                if angles[0] > angles[1]:
-                    angles = (angles[1], angles[0])
-                self.obj.FirstAngle = angles[0]
-                self.obj.LastAngle = angles[1]
-            else:
-                self.obj.Shape = newshape
-            self.doc.commitTransaction()
-        self.doc.recompute()
+                    self.obj.Shape = newshape
+
+            run_document_mutation(
+                self.doc,
+                translate("draft", "Trim/extend"),
+                trim_or_extend,
+                objects=(self.obj,),
+            )
         for g in self.ghost:
             g.off()
 
@@ -540,6 +617,7 @@ class Trimex(gui_base_original.Modifier):
             last2 = True
         else:
             last2 = False
+        updates = []
         for i, obj in enumerate(objectslist):
             if i == 0:
                 ed = edge1
@@ -552,7 +630,7 @@ class Trimex(gui_base_original.Modifier):
                     pts = obj.Points[: ed + 1] + ints
                 else:
                     pts = ints + obj.Points[ed + 1 :]
-                obj.Points = pts
+                updates.append((obj, "Points", pts))
             else:
                 vec = ints[0].sub(obj.Placement.Base)
                 vec = obj.Placement.inverse().Rotation.multVec(vec)
@@ -562,10 +640,20 @@ class Trimex(gui_base_original.Modifier):
                 )
                 ang = math.degrees(_ang)
                 if la:
-                    obj.LastAngle = ang
+                    updates.append((obj, "LastAngle", ang))
                 else:
-                    obj.FirstAngle = ang
-        self.doc.recompute()
+                    updates.append((obj, "FirstAngle", ang))
+
+        def apply_updates():
+            for obj, property_name, value in updates:
+                setattr(obj, property_name, value)
+
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Trim/extend"),
+            apply_updates,
+            objects=objectslist,
+        )
 
     def finish(self, cont=False):
         """Terminate the operation of the Trimex tool."""

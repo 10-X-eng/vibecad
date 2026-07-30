@@ -57,6 +57,7 @@
 #include "PreferencesGui.h"
 #include "QGIView.h"
 #include "TaskDetail.h"
+#include "TaskDocumentGuard.h"
 #include "TaskProjGroup.h"
 #include "ViewProviderViewPart.h"
 #include "ViewProviderPage.h"
@@ -279,14 +280,14 @@ bool ViewProviderViewPart::setEdit(int ModNum)
         return ViewProviderDrawingView::setEdit(ModNum);
     }
 
-    if (Gui::Control().activeDialog())  {         //TaskPanel already open!
+    TechDraw::DrawViewPart* dvp = getViewObject();
+    if (!dvp || Gui::Control().activeDialog(dvp->getDocument())) {
         return false;
     }
 
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
 
-    TechDraw::DrawViewPart* dvp = getViewObject();
     auto* dvd = dynamic_cast<TechDraw::DrawViewDetail*>(dvp);
     if (dvd) {
         if (!dvd->BaseView.getValue()) {
@@ -296,7 +297,10 @@ bool ViewProviderViewPart::setEdit(int ModNum)
         return setDetailEdit(ModNum, dvd);
     }
     auto* view = getObject<TechDraw::DrawView>();
-    Gui::Control().showDialog(new TaskDlgProjGroup(view, false));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgProjGroup(view, false),
+        view->getDocument()
+    );
 
     return true;
 }
@@ -305,7 +309,10 @@ bool ViewProviderViewPart::setDetailEdit(int ModNum, DrawViewDetail* dvd)
 {
     Q_UNUSED(ModNum);
 
-    Gui::Control().showDialog(new TaskDlgDetail(dvd));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgDetail(dvd),
+        dvd->getDocument()
+    );
     Gui::Selection().clearSelection();
     Gui::Selection().addSelection(dvd->getDocument()->getName(),
                                   dvd->getNameInDocument());
@@ -315,7 +322,7 @@ bool ViewProviderViewPart::setDetailEdit(int ModNum, DrawViewDetail* dvd)
 
 bool ViewProviderViewPart::doubleClicked()
 {
-    setEdit(ViewProvider::Default);
+    startDefaultEditMode();
     return true;
 }
 
@@ -454,7 +461,7 @@ void ViewProviderViewPart::fixSceneDependencies()
     auto scene = page->getQGSPage();
     auto partQView = getQView();
 
-    auto dimensions =  getViewPart()->getDimensions();
+    auto dimensions = getViewPart()->getActiveDimensions();
     for (auto& dim : dimensions) {
         auto dimQView = dynamic_cast<QGIViewDimension *>(scene->findQViewForDocObj(dim));
         if (dimQView && dimQView->parentItem() != partQView) {
@@ -463,7 +470,7 @@ void ViewProviderViewPart::fixSceneDependencies()
         }
     }
 
-    auto balloons = getViewPart()->getBalloons();
+    auto balloons = getViewPart()->getActiveBalloons();
     for (auto& bal : balloons) {
         auto balQView = dynamic_cast<QGIViewBalloon*>(scene->findQViewForDocObj(bal));
         if (balQView && balQView->parentItem() != partQView) {

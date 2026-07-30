@@ -33,6 +33,7 @@
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
 #include <Gui/InputHint.h>
 #include <Gui/MainWindow.h>
@@ -827,8 +828,7 @@ void TaskBoxPrimitives::onPlacementChanged()
 bool TaskBoxPrimitives::setPrimitive(App::DocumentObject* obj)
 {
     try {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (!doc) {
+        if (!obj || !obj->isAttachedToDocument()) {
             return false;
         }
 
@@ -998,7 +998,7 @@ bool TaskBoxPrimitives::setPrimitive(App::DocumentObject* obj)
         // No need to open a transaction because this is already done in the command
         // class or when starting to edit a primitive.
         Gui::Command::runCommand(Gui::Command::Doc, cmd.c_str());
-        Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        Gui::cmdAppDocument(obj, "recompute()");
     }
     catch (const Base::PyException& e) {
         QMessageBox::warning(
@@ -1116,24 +1116,16 @@ TaskDlgPrimitiveParameters::~TaskDlgPrimitiveParameters() = default;
 
 bool TaskDlgPrimitiveParameters::accept()
 {
-    bool primitiveOK = primitive->setPrimitive(vp_prm->getObject());
-    if (!primitiveOK) {
-        return primitiveOK;
+    if (!vp_prm || !vp_prm->getObject()
+        || !primitive->setPrimitive(vp_prm->getObject())) {
+        return false;
     }
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-
-    return true;
+    return TaskDlgFeatureParameters::accept();
 }
 
 bool TaskDlgPrimitiveParameters::reject()
 {
-    // roll back the done things
-    // Gui::Command::abortCommand();
-    vp_prm->getDocument()->abortCommand();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-
-    return true;
+    return TaskDlgFeatureParameters::reject();
 }
 
 QDialogButtonBox::StandardButtons TaskDlgPrimitiveParameters::getStandardButtons() const

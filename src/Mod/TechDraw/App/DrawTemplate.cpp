@@ -106,7 +106,8 @@ std::pair<int, int> DrawTemplate::getPageNumbers() const
     std::vector<QString> pageNames;
     for (auto page : pages) {
         if (page->isAttachedToDocument() &&
-            !page->testStatus(App::ObjectStatus::Remove)) {
+            !page->testStatus(App::ObjectStatus::Remove)
+            && DrawUtil::isActiveInDocumentTimeline(page)) {
             pageNames.push_back(QString::fromUtf8(page->Label.getValue()));
         }
     }

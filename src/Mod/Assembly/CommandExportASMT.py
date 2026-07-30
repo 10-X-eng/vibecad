@@ -55,6 +55,8 @@ class CommandExportASMT:
         return UtilsAssembly.isAssemblyCommandActive()
 
     def Activated(self):
+        if not self.IsActive():
+            return
         document = App.ActiveDocument
         if not document:
             return
@@ -62,6 +64,14 @@ class CommandExportASMT:
         assembly = UtilsAssembly.activeAssembly()
         if not assembly:
             return
+        document_uid = str(
+            getattr(document, "Uid", "") or ""
+        )
+        assembly_identity = (
+            str(assembly.Name),
+            int(assembly.ID),
+            assembly,
+        )
 
         # Prompt the user for a file location and name
         defaultFileName = document.Name + ".asmt"
@@ -72,10 +82,22 @@ class CommandExportASMT:
             "ASMT Files (*.asmt);;All Files (*)",
         )
 
-        if filePath:
-            Gui.addModule("UtilsAssembly")
-            Gui.doCommand("assembly = UtilsAssembly.activeAssembly()")
-            Gui.doCommand(f'assembly.exportAsASMT("{filePath}")')
+        if (
+            filePath
+            and UtilsAssembly._document_is_open(document)
+            and str(getattr(document, "Uid", "") or "")
+            == document_uid
+            and document.getObject(assembly_identity[0])
+            is assembly_identity[2]
+            and int(assembly_identity[2].ID)
+            == assembly_identity[1]
+            and UtilsAssembly.isTimelineOperationActive(assembly)
+        ):
+            Gui.doCommand(
+                f"document = App.getDocument({str(document.Name)!r})\n"
+                f"assembly = document.getObject({str(assembly.Name)!r})\n"
+                f"assembly.exportAsASMT({str(filePath)!r})"
+            )
 
 
 if App.GuiUp:

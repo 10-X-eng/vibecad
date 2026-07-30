@@ -34,11 +34,13 @@
 # @{
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
+import FreeCAD as App
 import FreeCADGui as Gui
 
 from draftguitools import gui_base_original
 from draftutils.translate import translate
 from draftutils import groups
+from draftutils.transaction import document_is_available_for_mutation
 
 
 class ApplyStyle(gui_base_original.Modifier):
@@ -55,7 +57,11 @@ class ApplyStyle(gui_base_original.Modifier):
         }
 
     def IsActive(self):
-        return bool(Gui.Selection.getSelection())
+        document = App.activeDocument()
+        return bool(
+            Gui.Selection.getSelection()
+            and document_is_available_for_mutation(document)
+        )
 
     def Activated(self):
         """Execute when the command is called."""
@@ -71,7 +77,11 @@ class ApplyStyle(gui_base_original.Modifier):
                 + "])",
                 "doc.recompute()",
             ]
-            self.commit(translate("draft", "Change Style"), cmd_list)
+            self.commit(
+                translate("draft", "Change Style"),
+                cmd_list,
+                inputs=objs,
+            )
         self.finish()
 
 

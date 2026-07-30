@@ -25,6 +25,7 @@
 
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 import math
 from PySide.QtCore import QT_TRANSLATE_NOOP
 from PySide import QtCore
@@ -368,10 +369,32 @@ def _getBase(job):
     return None
 
 
+def _getDocument(job, base):
+    job_document = getattr(job, "Document", None)
+    base_document = getattr(base, "Document", None)
+    if (
+        job_document is not None
+        and base_document is not None
+        and job_document is not base_document
+    ):
+        raise RuntimeError("CAM stock and its base must share a document")
+    document = job_document or base_document
+    if document is None:
+        document = FreeCAD.ActiveDocument
+    if document is None:
+        raise RuntimeError("CAM stock requires a document")
+    return document
+
+
 def CreateFromBase(job, neg=None, pos=None, placement=None):
     Path.Log.track(job.Label, neg, pos, placement)
     base = _getBase(job)
-    obj = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "Stock")
+    obj = _getDocument(job, base).addObject(
+        "Part::FeaturePython",
+        "Stock",
+    )
+    if getattr(job, "Document", None) is obj.Document:
+        PathUtil.markTimelineResource(obj, job)
     obj.Proxy = StockFromBase(obj, base)
 
     if neg:
@@ -395,7 +418,12 @@ def CreateFromBase(job, neg=None, pos=None, placement=None):
 
 def CreateBox(job, extent=None, placement=None):
     base = _getBase(job)
-    obj = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "Stock")
+    obj = _getDocument(job, base).addObject(
+        "Part::FeaturePython",
+        "Stock",
+    )
+    if getattr(job, "Document", None) is obj.Document:
+        PathUtil.markTimelineResource(obj, job)
     obj.Proxy = StockCreateBox(obj)
 
     if extent:
@@ -421,7 +449,12 @@ def CreateBox(job, extent=None, placement=None):
 
 def CreateCylinder(job, radius=None, height=None, placement=None):
     base = _getBase(job)
-    obj = FreeCAD.ActiveDocument.addObject("Part::FeaturePython", "Stock")
+    obj = _getDocument(job, base).addObject(
+        "Part::FeaturePython",
+        "Stock",
+    )
+    if getattr(job, "Document", None) is obj.Document:
+        PathUtil.markTimelineResource(obj, job)
     obj.Proxy = StockCreateCylinder(obj)
 
     if radius:

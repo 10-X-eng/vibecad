@@ -11,6 +11,8 @@ SET(Inspection_SRCS
     AppInspection.cpp
     InspectionFeature.cpp
     InspectionFeature.h
+    InspectionSource.cpp
+    InspectionSource.h
     PreCompiled.h
 )
 

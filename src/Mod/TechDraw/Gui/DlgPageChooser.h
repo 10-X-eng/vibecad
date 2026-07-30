@@ -21,6 +21,9 @@
  ****************************************************************************/
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
 #include <QDialog>
@@ -42,6 +45,15 @@ public:
     ~DlgPageChooser() override;
 
     std::string getSelection() const;
+    /**
+     * Return the original input position for the selected page.
+     *
+     * Page object names are unique only within one document.  Callers which
+     * offer pages from several documents must use this identity-preserving
+     * index instead of resolving getSelection() in whichever document happens
+     * to be active after the chooser closes.
+     */
+    int getSelectionIndex() const;
     void accept() override;
     void reject() override;
 

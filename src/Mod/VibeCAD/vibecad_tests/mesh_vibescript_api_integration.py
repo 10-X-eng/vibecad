@@ -57,7 +57,19 @@ from vibescript_mesh_worker import (  # noqa: E402
 )
 
 
-EXPORTS = ("mesh", "from_object", "transform", "repair", "diagnostics")
+EXPORTS = (
+    "mesh",
+    "from_object",
+    "transform",
+    "union",
+    "difference",
+    "intersection",
+    "repair",
+    "diagnostics",
+    "mesh_from_shape",
+    "shape_from_mesh",
+)
+OUTPUT_TYPES = ("mesh", "solid", "shell", "face", "wire", "compound")
 EXPECTED_OUTPUTS = [{"name": "Mesh", "type": "mesh"}]
 
 
@@ -142,7 +154,7 @@ def _run_candidate(captured: dict, service: _Service):
 
 
 def _api() -> MeshDomainAPI:
-    return MeshDomainAPI(EXPORTS, ("mesh",))
+    return MeshDomainAPI(EXPORTS, OUTPUT_TYPES)
 
 
 def _expect_error(fragment: str, call) -> None:
@@ -163,8 +175,177 @@ def _tetrahedron(height: float = 1.0) -> list[list[list[float]]]:
     ]
 
 
+def _box_triangles(
+    origin: tuple[float, float, float],
+    size: tuple[float, float, float],
+    *,
+    inward: bool = False,
+) -> list[list[list[float]]]:
+    x0, y0, z0 = origin
+    x1, y1, z1 = (
+        x0 + size[0],
+        y0 + size[1],
+        z0 + size[2],
+    )
+    points = [
+        [x0, y0, z0],
+        [x1, y0, z0],
+        [x1, y1, z0],
+        [x0, y1, z0],
+        [x0, y0, z1],
+        [x1, y0, z1],
+        [x1, y1, z1],
+        [x0, y1, z1],
+    ]
+    indices = [
+        (0, 2, 1),
+        (0, 3, 2),
+        (4, 5, 6),
+        (4, 6, 7),
+        (0, 1, 5),
+        (0, 5, 4),
+        (3, 7, 6),
+        (3, 6, 2),
+        (0, 4, 7),
+        (0, 7, 3),
+        (1, 2, 6),
+        (1, 6, 5),
+    ]
+    if inward:
+        indices = [(first, third, second) for first, second, third in indices]
+    return [[points[index] for index in triangle] for triangle in indices]
+
+
+def _boolean_source(operation: str, *, label: str | None = None) -> str:
+    first = json.dumps(
+        _box_triangles((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+        separators=(",", ":"),
+    )
+    second = json.dumps(
+        _box_triangles((0.0, 2.0, 2.0), (6.0, 6.0, 6.0)),
+        separators=(",", ":"),
+    )
+    output_label = label or f"Native {operation.title()}"
+    return (
+        f"first = api.mesh({first}, label='First Solid')\n"
+        f"second_local = api.mesh({second}, label='Second Local Solid')\n"
+        "second = api.transform(second_local, "
+        "translation=[inputs['offset'],0,0], label='Positioned Second Solid')\n"
+        f"combined = api.{operation}(first, second, linear_deflection=0.05, "
+        "angular_deflection_degrees=20, relative=False, "
+        f"label={output_label!r})\n"
+        "result = {'Mesh': combined}\n"
+    )
+
+
+def _hollow_union_source(operation: str) -> str:
+    hollow = [
+        *_box_triangles((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+        *_box_triangles(
+            (3.0, 3.0, 3.0),
+            (4.0, 4.0, 4.0),
+            inward=True,
+        ),
+    ]
+    void_solid = _box_triangles((4.0, 4.0, 4.0), (2.0, 2.0, 2.0))
+    return (
+        f"hollow = api.mesh({json.dumps(hollow, separators=(',', ':'))}, "
+        "label='Hollow Solid')\n"
+        f"inside_void = api.mesh({json.dumps(void_solid, separators=(',', ':'))}, "
+        "label='Solid Inside Void')\n"
+        f"combined = api.{operation}(hollow, inside_void, label='Cavity Check')\n"
+        "result = {'Mesh': combined}\n"
+    )
+
+
+def _identical_operand_source(operation: str) -> str:
+    solid = json.dumps(
+        _box_triangles((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+        separators=(",", ":"),
+    )
+    return (
+        f"solid = api.mesh({solid}, label='Shared Solid')\n"
+        f"combined = api.{operation}(solid, solid, label='Identical "
+        f"{operation.title()}')\n"
+        "result = {'Mesh': combined}\n"
+    )
+
+
+def _inverted_orientation_source() -> str:
+    inverted = json.dumps(
+        _box_triangles(
+            (0.0, 0.0, 0.0),
+            (10.0, 10.0, 10.0),
+            inward=True,
+        ),
+        separators=(",", ":"),
+    )
+    normal = json.dumps(
+        _box_triangles((5.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+        separators=(",", ":"),
+    )
+    return (
+        f"inverted = api.mesh({inverted}, label='Uniformly Inverted Solid')\n"
+        f"normal = api.mesh({normal}, label='Normal Solid')\n"
+        "combined = api.union(inverted, normal, label='Orientation Corrected Union')\n"
+        "result = {'Mesh': combined}\n"
+    )
+
+
+def _boolean_arguments(operation: str, *, source: str | None = None) -> dict:
+    return {
+        "program_name": f"Native Mesh {operation.title()} Lifecycle",
+        "source": source or _boolean_source(operation),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "offset": {
+                    "type": "number",
+                    "minimum": -1000,
+                    "maximum": 1000,
+                }
+            },
+            "required": ["offset"],
+            "additionalProperties": False,
+        },
+        "inputs": {"offset": 5.0},
+        "expected_outputs": EXPECTED_OUTPUTS,
+    }
+
+
+def _hollow_arguments(operation: str) -> dict:
+    return {
+        "program_name": f"Hollow Mesh {operation.title()} Cavity",
+        "source": _hollow_union_source(operation),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "inputs": {},
+        "expected_outputs": EXPECTED_OUTPUTS,
+    }
+
+
+def _literal_boolean_arguments(program_name: str, source: str) -> dict:
+    return {
+        "program_name": program_name,
+        "source": source,
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "inputs": {},
+        "expected_outputs": EXPECTED_OUTPUTS,
+    }
+
+
 def _exercise_source_api() -> None:
     import Mesh
+    from vibescript_meshpart_worker import validate_meshpart_definition
 
     api = _api()
     assert api.exported_names == EXPORTS
@@ -183,12 +364,42 @@ def _exercise_source_api() -> None:
     assert validate_mesh_definition(imported, require_domain_value=True) == (
         imported.to_payload()
     )
+    reference = {"document_uid": "document", "object_name": "ExistingShape"}
+    converted_mesh = api.mesh_from_shape(reference, label="Converted Mesh")
+    converted_shape = api.shape_from_mesh(
+        {"document_uid": "document", "object_name": "ExistingMesh"},
+        output_type="solid",
+        label="Converted Solid",
+    )
+    for converted in (converted_mesh, converted_shape):
+        assert converted.domain == "mesh"
+        assert validate_meshpart_definition(
+            converted,
+            definition_domain="mesh",
+        ) == converted.to_payload()
+    _expect_error(
+        "publish that conversion and reference its stable Mesh::Feature",
+        lambda: api.transform(converted_mesh),
+    )
     moved = api.transform(
         raw,
         translation=[1, 2, 3],
         rotation=[0, 0, 0, 2],
         scale=[2, 3, 4],
     )
+    for operation in ("union", "difference", "intersection"):
+        boolean = getattr(api, operation)(
+            raw,
+            moved,
+            linear_deflection=0.05,
+            angular_deflection_degrees=20,
+            relative=True,
+            label=operation.title(),
+        )
+        assert validate_mesh_definition(
+            boolean,
+            require_domain_value=True,
+        ) == boolean.to_payload()
     repaired = api.repair(
         moved,
         remove_non_manifolds=True,
@@ -235,6 +446,24 @@ def _exercise_source_api() -> None:
     )
     _expect_error("greater than 0", lambda: api.transform(raw, scale=[1, 0, 1]))
     _expect_error("non-zero", lambda: api.transform(raw, rotation=[0, 0, 0, 0]))
+    for operation in ("union", "difference", "intersection"):
+        identical = getattr(api, operation)(raw, raw)
+        assert validate_mesh_definition(
+            identical,
+            require_domain_value=True,
+        ) == identical.to_payload()
+    _expect_error(
+        "linear_deflection must be greater than 0",
+        lambda: api.difference(raw, moved, linear_deflection=0),
+    )
+    _expect_error(
+        "angular_deflection_degrees must be at most 180",
+        lambda: api.intersection(
+            raw,
+            moved,
+            angular_deflection_degrees=181,
+        ),
+    )
     _expect_error(
         "must both be zero",
         lambda: api.repair(raw, decimate_reduction=0.5),
@@ -455,24 +684,546 @@ def _assert_native_output(obj, expected_facts: dict) -> None:
     assert validation["diagnostics"] == expected_facts
 
 
+def _assert_volume(facts: dict, expected: float) -> None:
+    assert math.isclose(
+        abs(float(facts["volume_mm3"])),
+        expected,
+        rel_tol=1.0e-9,
+        abs_tol=1.0e-7,
+    ), facts
+
+
+def _exercise_boolean_lifecycle(root: Path) -> None:
+    document = App.newDocument("VibeScriptMeshBooleanNative")
+    service = _Service(root)
+    tracked: list[dict[str, object]] = []
+    try:
+        App.setActiveDocument(document.Name)
+        expected_initial = {
+            "union": 1036.0,
+            "difference": 820.0,
+            "intersection": 180.0,
+        }
+        expected_updated = {
+            "union": 1216.0,
+            "difference": 1000.0,
+            "intersection": 216.0,
+        }
+        updated_offsets = {
+            "union": 20.0,
+            "difference": 20.0,
+            "intersection": 2.0,
+        }
+        for operation in ("union", "difference", "intersection"):
+            create_capture = _captured(
+                root,
+                document,
+                operation="create_program",
+                arguments=_boolean_arguments(operation),
+            )
+            prepared, execution, validated = _prepare_execute_validate(
+                create_capture,
+                service,
+            )
+            facts = validated["outputs"][0]["facts"]
+            _assert_volume(facts, expected_initial[operation])
+            trace = validated["outputs"][0]["mesh_data"]["operation_trace"]
+            assert [item["operation"] for item in trace] == [
+                "mesh",
+                "mesh",
+                "transform",
+                operation,
+            ]
+            boolean_trace = trace[-1]
+            assert boolean_trace["backend"] == "MeshPart::Boolean/OpenCASCADE"
+            assert boolean_trace["tessellation"] == {
+                "linear_deflection": 0.05,
+                "angular_deflection_degrees": 20.0,
+                "relative": False,
+            }
+            assert boolean_trace["first"]["is_solid"] is True
+            assert boolean_trace["second"]["is_solid"] is True
+            assert boolean_trace["result"]["is_solid"] is True
+
+            forged = copy.deepcopy(execution)
+            forged["outputs"][0]["mesh_data"]["operation_trace"][-1][
+                "backend"
+            ] = "OpenSCAD"
+            _expect_error(
+                "changed its OCC backend",
+                lambda: validate_candidate(prepared, forged),
+            )
+
+            retain_candidate(prepared, status="validated")
+            publication = publish_candidate(service, prepared, validated)
+            accepted = accept_candidate(prepared, publication)
+            obj = _output(document, accepted)
+            stable_name = str(obj.Name)
+            if operation == "union":
+                edit_capture = _captured(
+                    root,
+                    document,
+                    operation="edit_source",
+                    arguments={
+                        "program_id": prepared["program_id"],
+                        "expected_revision": accepted["working_revision"],
+                        "source": _boolean_source(
+                            operation,
+                            label="Edited Native Union",
+                        ),
+                    },
+                )
+                (
+                    _,
+                    _,
+                    _,
+                    edit_publication,
+                    accepted,
+                ) = _run_candidate(edit_capture, service)
+                assert edit_publication["created_objects"] == []
+                assert _output(document, accepted) is obj
+                assert str(obj.Label) == "Edited Native Union"
+
+            input_capture = _captured(
+                root,
+                document,
+                operation="set_inputs",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": accepted["working_revision"],
+                    "patch": {"offset": updated_offsets[operation]},
+                },
+            )
+            (
+                input_prepared,
+                _,
+                input_validated,
+                input_publication,
+                accepted,
+            ) = _run_candidate(input_capture, service)
+            assert input_publication["created_objects"] == []
+            assert _output(document, accepted) is obj
+            _assert_volume(
+                input_validated["outputs"][0]["facts"],
+                expected_updated[operation],
+            )
+            if operation == "union":
+                assert input_validated["outputs"][0]["facts"]["components"] >= 2
+            if operation == "difference":
+                # A disjoint subtraction is a valid identity result, not an error.
+                assert (
+                    input_validated["outputs"][0]["mesh_data"]["operation_trace"][-1][
+                        "operation"
+                    ]
+                    == "difference"
+                )
+            tracked.append(
+                {
+                    "program_id": prepared["program_id"],
+                    "expected_revision": input_prepared["revision"],
+                    "object_name": stable_name,
+                    "facts": input_validated["outputs"][0]["facts"],
+                }
+            )
+
+        intersection = tracked[2]
+        non_overlap_capture = _captured(
+            root,
+            document,
+            operation="set_inputs",
+            arguments={
+                "program_id": intersection["program_id"],
+                "expected_revision": intersection["expected_revision"],
+                "patch": {"offset": 20.0},
+            },
+        )
+        non_overlap_prepared = prepare_candidate(non_overlap_capture)
+        non_overlap_execution = execute_candidate(
+            non_overlap_prepared,
+            cancellation_check=None,
+        )
+        assert non_overlap_execution["ok"] is False
+        assert non_overlap_execution["observed"]["details"]["stage"] == (
+            "boolean_non_overlap"
+        )
+        assert "positive solid overlap" in non_overlap_execution["observed"][
+            "details"
+        ]["correction"]
+        retain_candidate(
+            non_overlap_prepared,
+            status="failed",
+            failure=non_overlap_execution,
+        )
+        intersection["expected_revision"] = non_overlap_prepared["revision"]
+
+        hollow_capture = _captured(
+            root,
+            document,
+            operation="create_program",
+            arguments=_hollow_arguments("union"),
+        )
+        (
+            hollow_prepared,
+            _,
+            hollow_validated,
+            _,
+            hollow_accepted,
+        ) = _run_candidate(hollow_capture, service)
+        hollow_obj = _output(document, hollow_accepted)
+        _assert_volume(hollow_validated["outputs"][0]["facts"], 944.0)
+        assert hollow_validated["outputs"][0]["facts"]["components"] >= 2
+        hollow_intersection_capture = _captured(
+            root,
+            document,
+            operation="edit_source",
+            arguments={
+                "program_id": hollow_prepared["program_id"],
+                "expected_revision": hollow_accepted["working_revision"],
+                "source": _hollow_union_source("intersection"),
+            },
+        )
+        hollow_failed = prepare_candidate(hollow_intersection_capture)
+        hollow_execution = execute_candidate(hollow_failed, cancellation_check=None)
+        assert hollow_execution["ok"] is False
+        assert hollow_execution["observed"]["details"]["stage"] == (
+            "boolean_non_overlap"
+        )
+        retain_candidate(hollow_failed, status="failed", failure=hollow_execution)
+        tracked.append(
+            {
+                "program_id": hollow_prepared["program_id"],
+                "expected_revision": hollow_failed["revision"],
+                "object_name": str(hollow_obj.Name),
+                "facts": hollow_validated["outputs"][0]["facts"],
+            }
+        )
+
+        for operation in ("union", "intersection"):
+            identical_capture = _captured(
+                root,
+                document,
+                operation="create_program",
+                arguments=_literal_boolean_arguments(
+                    f"Identical Operand {operation.title()}",
+                    _identical_operand_source(operation),
+                ),
+            )
+            (
+                identical_prepared,
+                _,
+                identical_validated,
+                _,
+                identical_accepted,
+            ) = _run_candidate(identical_capture, service)
+            identical_obj = _output(document, identical_accepted)
+            _assert_volume(identical_validated["outputs"][0]["facts"], 1000.0)
+            tracked.append(
+                {
+                    "program_id": identical_prepared["program_id"],
+                    "expected_revision": identical_prepared["revision"],
+                    "object_name": str(identical_obj.Name),
+                    "facts": identical_validated["outputs"][0]["facts"],
+                }
+            )
+
+        identical_difference_capture = _captured(
+            root,
+            document,
+            operation="create_program",
+            arguments=_literal_boolean_arguments(
+                "Identical Operand Difference",
+                _identical_operand_source("difference"),
+            ),
+        )
+        identical_difference = prepare_candidate(identical_difference_capture)
+        identical_difference_execution = execute_candidate(
+            identical_difference,
+            cancellation_check=None,
+        )
+        assert identical_difference_execution["ok"] is False
+        assert identical_difference_execution["observed"]["details"]["stage"] == (
+            "boolean_empty_result"
+        )
+        retain_candidate(
+            identical_difference,
+            status="failed",
+            failure=identical_difference_execution,
+        )
+        tracked.append(
+            {
+                "program_id": identical_difference["program_id"],
+                "expected_revision": identical_difference["revision"],
+                "object_name": "",
+                "facts": {},
+            }
+        )
+
+        inverted_capture = _captured(
+            root,
+            document,
+            operation="create_program",
+            arguments=_literal_boolean_arguments(
+                "Uniformly Inverted Mesh Boolean",
+                _inverted_orientation_source(),
+            ),
+        )
+        (
+            inverted_prepared,
+            _,
+            inverted_validated,
+            _,
+            inverted_accepted,
+        ) = _run_candidate(inverted_capture, service)
+        inverted_obj = _output(document, inverted_accepted)
+        _assert_volume(inverted_validated["outputs"][0]["facts"], 1500.0)
+        tracked.append(
+            {
+                "program_id": inverted_prepared["program_id"],
+                "expected_revision": inverted_prepared["revision"],
+                "object_name": str(inverted_obj.Name),
+                "facts": inverted_validated["outputs"][0]["facts"],
+            }
+        )
+
+        open_first = json.dumps(_tetrahedron()[:3], separators=(",", ":"))
+        closed_second = json.dumps(
+            _box_triangles((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+            separators=(",", ":"),
+        )
+        invalid_capture = _captured(
+            root,
+            document,
+            operation="create_program",
+            arguments={
+                "program_name": "Invalid Mesh Boolean Operand",
+                "source": (
+                    f"first = api.mesh({open_first}, label='Open Operand')\n"
+                    f"second = api.mesh({closed_second}, label='Solid Operand')\n"
+                    "result = {'Mesh': api.union(first, second, label='Invalid')}\n"
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                "inputs": {},
+                "expected_outputs": EXPECTED_OUTPUTS,
+            },
+        )
+        invalid_prepared = prepare_candidate(invalid_capture)
+        invalid_execution = execute_candidate(
+            invalid_prepared,
+            cancellation_check=None,
+        )
+        assert invalid_execution["ok"] is False
+        assert invalid_execution["observed"]["details"]["stage"] == "boolean_input"
+        assert invalid_execution["observed"]["details"]["operand"] == "first"
+        assert "closed manifold solid" in invalid_execution["observed"]["details"][
+            "correction"
+        ]
+        retain_candidate(
+            invalid_prepared,
+            status="failed",
+            failure=invalid_execution,
+        )
+        tracked.append(
+            {
+                "program_id": invalid_prepared["program_id"],
+                "expected_revision": invalid_prepared["revision"],
+                "object_name": "",
+                "facts": {},
+            }
+        )
+
+        save_path = root / "mesh-booleans.FCStd"
+        document.saveAs(str(save_path))
+        App.closeDocument(document.Name)
+        reopened = App.openDocument(str(save_path))
+        assert reopened is not None
+        App.setActiveDocument(reopened.Name)
+        reopened.recompute()
+        for item in tracked:
+            object_name = str(item["object_name"])
+            if not object_name:
+                continue
+            obj = reopened.getObject(object_name)
+            assert obj is not None
+            _assert_native_output(obj, item["facts"])
+
+        for item in reversed(tracked):
+            delete_capture = _captured(
+                root,
+                reopened,
+                operation="delete_program",
+                arguments={
+                    "program_id": item["program_id"],
+                    "expected_revision": item["expected_revision"],
+                    "reason": "Mesh boolean integration complete",
+                },
+            )
+            prepared_delete = prepare_delete(delete_capture)
+            finished = finish_delete(
+                prepared_delete,
+                delete_live_program(service, prepared_delete),
+            )
+            assert finished["ok"] is True
+        App.closeDocument(reopened.Name)
+    finally:
+        if App.ActiveDocument is not None:
+            App.closeDocument(App.ActiveDocument.Name)
+
+
+def _exercise_meshworkbench_conversions(root: Path) -> None:
+    """Prove both existing MeshPart calls execute from the shipped Mesh domain."""
+
+    import Mesh
+    import Part
+
+    document = App.newDocument("VibeScriptMeshConversions")
+    service = _Service(root)
+    try:
+        App.setActiveDocument(document.Name)
+        shape_source = document.addObject("Part::Feature", "ShapeSource")
+        shape_source.Shape = Part.makeBox(10, 8, 6)
+        mesh_source = document.addObject("Mesh::Feature", "MeshSource")
+        mesh_source.Mesh = Mesh.Mesh(
+            _box_triangles((0.0, 0.0, 0.0), (10.0, 8.0, 6.0))
+        )
+        document.recompute()
+        context = complete_domain_context(domain_context_snapshot(service, "mesh"))
+        shape_context = {
+            item["name"]: item
+            for item in context["document_shape_sources"]["objects"]
+        }
+        mesh_context = {
+            item["name"]: item for item in context["document_meshes"]["objects"]
+        }
+        assert shape_context[shape_source.Name]["eligible_for_mesh_from_shape"] is True
+        assert mesh_context[mesh_source.Name]["eligible_for_shape_from_mesh"] is True
+        reference_schema = {
+            "type": "object",
+            "x-vibecad-reference": True,
+            "properties": {
+                "document_uid": {"type": "string", "minLength": 1},
+                "object_name": {"type": "string", "minLength": 1},
+            },
+            "required": ["document_uid", "object_name"],
+            "additionalProperties": False,
+        }
+        arguments = {
+            "program_name": "Mesh Workbench Conversions",
+            "source": (
+                "native = api.mesh([[[0,0,0],[1,0,0],[0,1,0]],"
+                "[[0,0,0],[0,0,1],[1,0,0]],"
+                "[[0,0,0],[0,1,0],[0,0,1]],"
+                "[[1,0,0],[0,0,1],[0,1,0]]], label='Native Mesh')\n"
+                "meshed = api.mesh_from_shape(inputs['shape'], method='standard', "
+                "linear_deflection=0.25, angular_deflection_degrees=15, "
+                "preserve_face_groups=True, label='Converted Mesh')\n"
+                "solid = api.shape_from_mesh(inputs['mesh'], output_type='solid', "
+                "tolerance=0.01, harmonize_normals=True, refine=True, "
+                "label='Recovered Solid')\n"
+                "result = {'Native': native, 'Meshed': meshed, 'Solid': solid}\n"
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "shape": reference_schema,
+                    "mesh": reference_schema,
+                },
+                "required": ["shape", "mesh"],
+                "additionalProperties": False,
+            },
+            "inputs": {
+                "shape": {
+                    "document_uid": str(document.Uid),
+                    "object_name": str(shape_source.Name),
+                },
+                "mesh": {
+                    "document_uid": str(document.Uid),
+                    "object_name": str(mesh_source.Name),
+                },
+            },
+            "expected_outputs": [
+                {"name": "Native", "type": "mesh"},
+                {"name": "Meshed", "type": "mesh"},
+                {"name": "Solid", "type": "solid"},
+            ],
+        }
+        prepared, execution, validated, publication, accepted = _run_candidate(
+            _captured(
+                root,
+                document,
+                operation="create_program",
+                arguments=arguments,
+            ),
+            service,
+        )
+        assert execution["mesh_validation"]["output_count"] == 1
+        assert execution["meshpart_validation"]["output_count"] == 2
+        assert validated["meshpart_validation"]["mesh_output_count"] == 1
+        assert validated["meshpart_validation"]["shape_output_count"] == 1
+        assert [item["type"] for item in validated["outputs"]] == [
+            "mesh",
+            "mesh",
+            "solid",
+        ]
+        assert all(
+            item["definition"]["domain"] == "mesh"
+            for item in validated["outputs"]
+        )
+        assert publication["ok"] is True
+        live = accepted["live_outputs"]
+        mesh_output = document.getObject(live["Meshed"]["object_name"])
+        solid_output = document.getObject(live["Solid"]["object_name"])
+        assert mesh_output is not None and mesh_output.TypeId == "Mesh::Feature"
+        assert int(mesh_output.Mesh.CountFacets) > 0
+        assert solid_output is not None and solid_output.TypeId == "Part::Feature"
+        assert not solid_output.Shape.isNull() and solid_output.Shape.isValid()
+        assert solid_output.Shape.ShapeType == "Solid"
+
+        prepared_delete = prepare_delete(
+            _captured(
+                root,
+                document,
+                operation="delete_program",
+                arguments={
+                    "program_id": prepared["program_id"],
+                    "expected_revision": prepared["revision"],
+                    "reason": "Mesh workbench conversion integration complete",
+                },
+            )
+        )
+        finish_delete(
+            prepared_delete,
+            delete_live_program(service, prepared_delete),
+        )
+    finally:
+        if App.ActiveDocument is not None:
+            App.closeDocument(App.ActiveDocument.Name)
+
+
 def main() -> int:
     _exercise_source_api()
     root = Path(tempfile.mkdtemp(prefix="vibecad-mesh-native-"))
+    _exercise_boolean_lifecycle(root)
+    _exercise_meshworkbench_conversions(root)
     document = App.newDocument("VibeScriptMeshNative")
     service = _Service(root)
     try:
         App.setActiveDocument(document.Name)
         surface = resolve_modeling_surface("MeshWorkbench", "vibescript")
         assert surface.available is True, surface.unavailable_reason
-        assert surface.cad_tool_names == tuple(
-            f"vibescript.mesh.{name}"
-            for name in (
-                "create_program",
-                "edit_source",
-                "set_inputs",
-                "reconfigure_program",
-                "delete_program",
-            )
+        assert surface.cad_tool_names == (
+            "vibescript.read_source",
+            "vibescript.read_api",
+            "vibescript.edit_source",
+            "vibescript.mesh.create_program",
+            "vibescript.mesh.set_inputs",
+            "vibescript.mesh.reconfigure_program",
+            "vibescript.mesh.delete_program",
+            "mesh.list_meshes",
         )
 
         create_capture = _captured(
@@ -551,9 +1302,10 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": accepted["working_revision"],
-                "replacements": [
-                    {"old": "fill_holes_max_edges=3", "new": "fill_holes_max_edges=2"}
-                ],
+                "source": _source().replace(
+                    "fill_holes_max_edges=3",
+                    "fill_holes_max_edges=2",
+                ),
             },
         )
         failed_prepared = prepare_candidate(failed_capture)
@@ -581,10 +1333,10 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": failed_prepared["revision"],
-                "replacements": [
-                    {"old": "fill_holes_max_edges=2", "new": "fill_holes_max_edges=3"},
-                    {"old": "label='Checked Mesh'", "new": "label='Edited Mesh'"},
-                ],
+                "source": _source().replace(
+                    "label='Checked Mesh'",
+                    "label='Edited Mesh'",
+                ),
             },
         )
         _, _, _, edit_publication, accepted = _run_candidate(edit_capture, service)
@@ -787,6 +1539,7 @@ def main() -> int:
         document_mesh = context_by_name[stable_name]
         assert document_mesh["name"] == stable_name
         assert document_mesh["eligible_for_from_object"] is True
+        assert document_mesh["eligible_for_shape_from_mesh"] is True
         assert document_mesh["accepted_validation"]["schema"] == VALIDATION_SCHEMA
         assert document_mesh["accepted_validation"]["operation_trace"] == [
             "mesh",
@@ -799,6 +1552,7 @@ def main() -> int:
             "object_name": human_source_name,
         }
         assert context_by_name[human_source_name]["eligible_for_from_object"] is True
+        assert context_by_name[human_source_name]["eligible_for_shape_from_mesh"] is True
         assert context_by_name[reference_stable_name]["accepted_validation"][
             "operation_trace"
         ] == ["from_object", "repair", "diagnostics"]

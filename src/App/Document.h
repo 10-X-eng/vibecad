@@ -74,7 +74,7 @@ enum class RemoveObjectOption
 };
 using RemoveObjectOptions = Base::Flags<RemoveObjectOption>;
 
-}
+}  // namespace App
 ENABLE_BITMASK_OPERATORS(App::AddObjectOption)
 ENABLE_BITMASK_OPERATORS(App::RemoveObjectOption)
 
@@ -88,6 +88,8 @@ class DocumentPy;
 class Application;
 class Transaction;
 class StringHasher;
+struct TimelineSegmentReplacementMapping;
+struct TimelineResourceReconciliationMapping;
 using StringHasherRef = Base::Reference<StringHasher>;
 
 struct AppExport RecomputeDiagnostic
@@ -153,6 +155,8 @@ public:
         IgnoreErrorOnRecompute = 12,
         /// Whether a recompute is necessary on restore for migration purposes.
         RecomputeOnRestore = 13,
+        /// Whether the application is irreversibly closing this document.
+        Closing = 14,
         /// Whether the local coordinate system of older versions should be migrated.
         MigrateLCS = 14
     };
@@ -281,6 +285,16 @@ public:
     App::MainThreadSignal<void(const Document&)> signalCommitTransaction;
     /// Signal on an aborted transaction.
     App::MainThreadSignal<void(const Document&)> signalAbortTransaction;
+    /**
+     * Signal whenever this document's booked transaction ID changes.
+     *
+     * This includes empty transaction booking before the first model delta,
+     * materialized transaction close/abort, and undo/redo cleanup.
+     */
+    App::MainThreadSignal<void(const Document&, int, int)>
+        signalBookedTransactionChanged;
+    /// Signal whenever this document's transaction lock count changes.
+    App::MainThreadSignal<void(const Document&)> signalTransactionLockChanged;
     /// Signal after document recompute/transaction state has fully unwound and
     /// observers may treat the document as stable again.
     App::MainThreadSignal<void(const Document&)> signalBecameStable;
@@ -342,9 +356,11 @@ public:
      * names.  This is useful to partially restore a document.  If empty,
      * restore all objects in the document.
      */
-    void restore(const char* filename = nullptr,
-                 bool delaySignal = false,
-                 const std::vector<std::string>& objNames = {});
+    void restore(
+        const char* filename = nullptr,
+        bool delaySignal = false,
+        const std::vector<std::string>& objNames = {}
+    );
 
     /**
      * @brief Called after a document is restored.
@@ -430,6 +446,150 @@ public:
      * @return The list of imported objects.
      */
     std::vector<DocumentObject*> importObjects(Base::XMLReader& reader);
+
+    /**
+     * Enroll one fully restored/finalized import in document History.
+     *
+     * The
+     * caller owns the surrounding transaction. sourceOrder contains the
+     * imported identities
+     * mapped from the source DocumentTimeline order.
+     * Optional visibility and suppression
+     * arrays carry the parallel accepted
+     * source end state.
+     * Temporary staging
+     * documents deliberately do not create user history.
+     */
+    void adoptImportedTimelineOperations(
+        const std::vector<DocumentObject*>& importedObjects,
+        const std::vector<DocumentObject*>& sourceOrder = {},
+        const std::vector<bool>& sourceVisibility = {},
+        const std::vector<bool>& sourceSuppression = {}
+    );
+
+    /**
+     * Classify one exact same-transaction provisional object as persistent
+     * internal
+     * state rather than a user-visible History operation.
+     */
+    void classifyProvisionalTimelineInternalObject(DocumentObject* object);
+
+    /**
+     * Reclassify one exact pre-existing standalone leaf History operation as
+     *
+     * persistent internal state.
+     */
+    void classifyExistingTimelineLeafInternalObject(DocumentObject* object);
+
+    /**
+     * Return whether object is an exact provisional timeline enrollment owned
+     * by
+     * this document's current still-active transaction.
+     */
+    [[nodiscard]] bool isProvisionallyEnrolledInTimelineByCurrentTransaction(
+        const DocumentObject* object
+    ) const noexcept;
+
+    /**
+     * Return whether native History is applying an internally validated
+     *
+     * document-state transition.
+     *
+     * View providers use this read-only signal to avoid
+     * translating a parent
+     * visibility notification into additional child visibility
+     * mutations
+     * while History is already applying every saved state explicitly.
+     */
+    [[nodiscard]] bool isApplyingTimelineState() const noexcept;
+
+    /**
+     * Return whether an exact object in this document is usable at the
+     * current
+     * native History position.
+     *
+     * This read-only query rejects future, suppressed,
+     * internal, detached,
+     * and malformed semantic-resource objects. It does not follow links
+     * and
+     * does not use object visibility.
+     */
+    [[nodiscard]] bool isObjectUsableAtCurrentTimelinePosition(
+        const DocumentObject* object
+    ) const noexcept;
+
+    /**
+     * Stage disjoint chronological segments of canonical semantic roots for
+     * exact
+     * many-to-many replacement in the current transaction.
+     */
+    void stageTimelineOperationSegmentReplacement(
+        const std::vector<std::vector<DocumentObject*>>& oldRootSegments
+    );
+
+    /**
+     * Finalize one exact staged semantic segment replacement.
+     */
+    void finalizeProvisionalTimelineOperationSegmentReplacement(
+        const std::vector<TimelineSegmentReplacementMapping>& mappings
+    );
+
+    /**
+     * Atomically assign semantic role/ownership and publish one exact block
+     * of
+     * objects created by the current transaction.
+     *
+     * resourceOwners is empty when every
+     * ordered resource belongs directly
+     * to operation; otherwise it must be exactly parallel
+     * and may declare
+     * canonical nested ownership.
+     */
+    void publishProvisionalTimelineOperationBlock(
+        DocumentObject* operation,
+        const std::vector<DocumentObject*>& orderedResources,
+        const std::vector<DocumentObject*>& resourceOwners = {}
+    );
+
+    /**
+     * Atomically adopt one contiguous set of pre-existing independent
+     * History
+     * operations as a semantic operation/resource block.
+     */
+    void adoptExistingTimelineOperationBlock(
+        DocumentObject* operation,
+        const std::vector<DocumentObject*>& orderedResources,
+        const std::vector<DocumentObject*>& resourceOwners = {}
+    );
+
+    /**
+     * Stage one surviving operation's complete old resource graph.
+     *
+     *
+     * oldResourceRoots must be disjoint canonical subtree roots which expand
+     * to every
+     * pre-existing resource owned by owner.
+     */
+    void stageTimelineOperationResourceReconciliation(
+        DocumentObject* owner,
+        const std::vector<DocumentObject*>& oldResourceRoots
+    );
+
+    /**
+     * Finalize one exact retained/new/retired resource identity
+     * reconciliation.
+ *
+
+     * * mapping.owner is the unchanged staged root,
+     * mapping.orderedFinalResources is its
+     * complete canonical nested graph,
+     * mapping.stateSourceIndices is parallel to that final
+     * graph, and
+     * mapping.consumerReplacementIndices is parallel to the staged old graph.
+ */
+    void finalizeProvisionalTimelineOperationResourceReconciliation(
+        const TimelineResourceReconciliationMapping& mapping
+    );
 
     /**
      * @brief Import any externally linked objects
@@ -520,10 +680,12 @@ public:
      * @return The newly added object.
      */
     template<typename T>
-    T* addObject(const char* pObjectName = nullptr,
-                 bool isNew = true,
-                 const char* viewType = nullptr,
-                 bool isPartial = false);
+    T* addObject(
+        const char* pObjectName = nullptr,
+        bool isNew = true,
+        const char* viewType = nullptr,
+        bool isPartial = false
+    );
 
     /**
      * @brief Add multiple objects of a given type to the document.
@@ -537,8 +699,11 @@ public:
      * @param[in] isNew If false don't call the DocumentObject::setupObject()
      * callback (default is true)
      */
-    std::vector<DocumentObject*>
-    addObjects(const char* sType, const std::vector<std::string>& objectNames, bool isNew = true);
+    std::vector<DocumentObject*> addObjects(
+        const char* sType,
+        const std::vector<std::string>& objectNames,
+        bool isNew = true
+    );
 
     /**
      * @brief Remove an object from the document.
@@ -596,9 +761,11 @@ public:
      *
      * @return Returns the list of objects copied.
      */
-    std::vector<DocumentObject*> copyObject(const std::vector<DocumentObject*>& objs,
-                                            bool recursive = false,
-                                            bool returnAll = false);
+    std::vector<DocumentObject*> copyObject(
+        const std::vector<DocumentObject*>& objs,
+        bool recursive = false,
+        bool returnAll = false
+    );
 
     /**
      * @brief Move an object from another document to this document.
@@ -614,6 +781,13 @@ public:
 
     /// Get the active Object of this document.
     DocumentObject* getActiveObject() const;
+    /**
+     * Set the active Object of this document.
+     *
+     * Passing nullptr restores the explicit state in which the document has
+     * no active object.  A non-null object must belong to this document.
+     */
+    void setActiveObject(DocumentObject* object);
 
     /**
      * @brief Get the object with the given name.
@@ -718,8 +892,10 @@ public:
      *
      * @return A vector of objects with the given extension.
      */
-    std::vector<DocumentObject*> getObjectsWithExtension(const Base::Type& typeId,
-                                                         bool derived = true) const;
+    std::vector<DocumentObject*> getObjectsWithExtension(
+        const Base::Type& typeId,
+        bool derived = true
+    ) const;
 
     /**
      * @brief Find objects by type, name, and label.
@@ -735,8 +911,11 @@ public:
      *
      *@return A vector of objects matching the given criteria.
      */
-    std::vector<DocumentObject*>
-    findObjects(const Base::Type& typeId, const char* objname, const char* label) const;
+    std::vector<DocumentObject*> findObjects(
+        const Base::Type& typeId,
+        const char* objname,
+        const char* label
+    ) const;
 
     /**
      * @brief Get all objects of a given type.
@@ -818,10 +997,12 @@ public:
      *
      * @returns The number of objects recomputed.
      */
-    int recompute(const std::vector<DocumentObject*>& objs = {},
-                  bool force = false,
-                  bool* hasError = nullptr,
-                  int options = 0);
+    int recompute(
+        const std::vector<DocumentObject*>& objs = {},
+        bool force = false,
+        bool* hasError = nullptr,
+        int options = 0
+    );
 
     /**
      * @brief Recompute a single object.
@@ -1134,8 +1315,10 @@ public:
      *
      * @return A list of all objects that the given objects depend on.
      */
-    static std::vector<DocumentObject*>
-    getDependencyList(const std::vector<DocumentObject*>& objs, int options = 0);
+    static std::vector<DocumentObject*> getDependencyList(
+        const std::vector<DocumentObject*>& objs,
+        int options = 0
+    );
 
     /**
      * @brief Get a list of documents that depend on this document.
@@ -1154,8 +1337,7 @@ public:
      *
      * @return A list of documents that depend on the given documents.
      */
-    static std::vector<Document*> getDependentDocuments(std::vector<Document*> docs,
-                                                        bool sort);
+    static std::vector<Document*> getDependentDocuments(std::vector<Document*> docs, bool sort);
 
     // set Changed
     // void setChanged(DocumentObject* change);
@@ -1199,8 +1381,10 @@ public:
      * @return A vector of object lists, each list is one path from @p from to
      * @p to.
      */
-    std::vector<std::list<DocumentObject*>>
-    getPathsByOutList(const DocumentObject* from, const DocumentObject* to) const;
+    std::vector<std::list<DocumentObject*>> getPathsByOutList(
+        const DocumentObject* from,
+        const DocumentObject* to
+    ) const;
     /// @}
 
     /**
@@ -1251,11 +1435,13 @@ public:
      * @param[in] objs: optional objects to search for, if empty, then all objects
      * of this document are searched.
      */
-    void getLinksTo(std::set<DocumentObject*>& links,
-                    const DocumentObject* obj,
-                    int options,
-                    int maxCount = 0,
-                    const std::vector<DocumentObject*>& objs = {}) const;
+    void getLinksTo(
+        std::set<DocumentObject*>& links,
+        const DocumentObject* obj,
+        int options,
+        int maxCount = 0,
+        const std::vector<DocumentObject*>& objs = {}
+    ) const;
 
     /**
      * @brief Check if there is any link to the given object.
@@ -1291,10 +1477,10 @@ public:
      */
     void renameObjectIdentifiers(
         const std::map<ObjectIdentifier, ObjectIdentifier>& paths,
-        const std::function<bool(const DocumentObject*)>& selector =
-            [](const DocumentObject*) {
-                return true;
-            });
+        const std::function<bool(const DocumentObject*)>& selector = [](const DocumentObject*) {
+            return true;
+        }
+    );
 
     PyObject* getPyObject() override;
 
@@ -1336,9 +1522,11 @@ protected:
      * @param[in] pcObject The object to remove.
      * @param[in] options A bitmask of RemoveObjectOptions.
      */
-    void _removeObject(DocumentObject* pcObject,
-                       RemoveObjectOptions options = RemoveObjectOption::DestroyOnRollback
-                           | RemoveObjectOption::PreserveChildrenVisibility);
+    void _removeObject(
+        DocumentObject* pcObject,
+        RemoveObjectOptions options = RemoveObjectOption::DestroyOnRollback
+            | RemoveObjectOption::PreserveChildrenVisibility
+    );
 
     /**
      * @brief Add an object to the document.
@@ -1349,7 +1537,12 @@ protected:
      * @param[in] options A bitmask of AddObjectOptions.
      * @param[in] viewType Override object's view provider name.
      */
-    void _addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options = AddObjectOption::ActivateObject, const char* viewType = nullptr);
+    void _addObject(
+        DocumentObject* pcObject,
+        const char* pObjectName,
+        AddObjectOptions options = AddObjectOption::ActivateObject,
+        const char* viewType = nullptr
+    );
 
     /**
      * @brief Check if a valid transaction is open.
@@ -1451,8 +1644,7 @@ protected:
      *
      * @return The name of the transient directory.
      */
-    std::string getTransientDirectoryName(const std::string& uuid,
-                                          const std::string& filename) const;
+    std::string getTransientDirectoryName(const std::string& uuid, const std::string& filename) const;
 
     /**
      * @brief Open a new command Undo/Redo.
@@ -1486,8 +1678,12 @@ protected:
     void _abortTransaction();
 
 private:
-    void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
-                                const std::function<void()>& changeFunc);
+    void setBookedTransaction(int transactionId) const;
+    void changePropertyOfObject(
+        TransactionalObject* obj,
+        const Property* prop,
+        const std::function<void()>& changeFunc
+    );
 
 private:
     // # Data Member of the document
@@ -1501,7 +1697,7 @@ private:
 
     std::string oldLabel;
     std::string myName;
-    bool autoCreated;    // Flag to know if the document was automatically created at startup
+    bool autoCreated;  // Flag to know if the document was automatically created at startup
 };
 
 template<typename T>
@@ -1519,8 +1715,7 @@ inline std::vector<T*> Document::getObjectsOfType() const
 template<typename T>
 inline int Document::countObjectsOfType() const
 {
-    static_assert(std::is_base_of_v<DocumentObject, T>,
-                  "T must be derived from App::DocumentObject");
+    static_assert(std::is_base_of_v<DocumentObject, T>, "T must be derived from App::DocumentObject");
     return this->countObjectsOfType(T::getClassTypeId());
 }
 

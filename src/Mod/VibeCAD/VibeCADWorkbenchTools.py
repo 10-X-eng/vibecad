@@ -239,9 +239,10 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "Build assemblies from existing parts: create the container, insert "
         "components as links, ground the base component, then relate "
         "components with joints. The solver positions unfixed components; "
-        "check its verdict after every joint. Use only exact component and "
-        "subelement names returned by core.inspect for the active Assembly, and verify "
-        "solved positions from the returned placements or a screenshot.",
+        "check its verdict after every joint. Call assembly.list_structure to "
+        "read exact assembly, component, joint, and grounding names before "
+        "editing an existing assembly. Verify solved positions from the "
+        "returned placements or a screenshot.",
         ("Assembly_",),
         ("Assembly::AssemblyObject",),
         ({"name": "assembly", "object_type": "Assembly::AssemblyObject"},),
@@ -252,10 +253,10 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "CAM",
         "Create a machining job for shaped model objects, add cutting "
         "tools, then add operations (profile, pocket, drilling, face). "
-        "Depths are absolute Z and face references must be exact; derive both "
-        "from core.inspect on the active document or ask the human to confirm "
-        "them. An operation reporting an empty toolpath cut nothing; fix "
-        "depths or faces before continuing. G-code "
+        "Call cam.list_jobs before editing an existing job. Depths are absolute "
+        "Z and face references must be exact; use the current selection or the "
+        "exact result of the preceding modeling tool. An operation reporting an "
+        "empty toolpath cut nothing; fix depths or faces before continuing. G-code "
         "postprocessing to files is left to the user in the FreeCAD GUI.",
         ("CAM_",),
         ("Path::FeaturePython",),
@@ -281,10 +282,10 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "FEA",
         "Finite element analysis on solid models: create an analysis with "
         "a CalculiX solver, add a library material, add fixed supports and "
-        "loads on exact model subelements returned by core.inspect, "
-        "generate a Gmsh mesh, then solve. If an exact subelement name or "
-        "material UUID is unavailable, ask the human to provide it rather "
-        "than guessing or calling another workbench's tools. "
+        "loads on exact selected model subelements, generate a Gmsh mesh, "
+        "then solve. Call fem.list_analysis before editing an existing "
+        "analysis. If an exact selected subelement or material UUID is "
+        "unavailable, ask the human rather than guessing. "
         "fem.solve reports peak von Mises stress and displacement; compare "
         "them against the material's yield strength. Solving requires the "
         "external Gmsh and CalculiX binaries and fails with instructions "
@@ -312,7 +313,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "MaterialWorkbench",
         "materials",
         "Assign materials and appearance to shaped objects. Find the material "
-        "card's exact UUID with core.inspect scope='domain', then apply it with "
+        "card's exact UUID with material.list_materials, then apply it with "
         "material.apply_material; the card carries physical properties used "
         "by FEM. Use material.set_appearance for display color/transparency "
         "only, without physical properties.",
@@ -324,9 +325,9 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     "MeshWorkbench": WorkbenchToolPack(
         "MeshWorkbench",
         "mesh",
-        "Inspect and repair triangle meshes. Use core.inspect for exact names, "
-        "analyze one mesh to see its defects, then repair only what the "
-        "analysis justifies and re-analyze to confirm. A watertight, "
+        "Inspect and repair triangle meshes. Call mesh.list_meshes for exact "
+        "mesh names, analyze one mesh to see its defects, then repair only "
+        "what the analysis justifies and re-analyze to confirm. A watertight, "
         "defect-free mesh is the goal before conversion or export.",
         ("Mesh_",),
         ("Mesh::",),
@@ -339,9 +340,8 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "Convert between meshes and BREP shapes. mesh_from_shape "
         "tessellates a shaped object into a triangle mesh; shape_from_mesh "
         "sews a mesh into a faceted BREP shape. A solid result requires an "
-        "already validated watertight source mesh; ask the human to validate "
-        "it in the owning workbench if core.inspect cannot verify that state. Sources "
-        "are never modified.",
+        "already validated watertight source mesh from the current selection "
+        "or a preceding Mesh result. Sources are never modified.",
         ("MeshPart_",),
         ("Mesh::", "Part::"),
         ({"name": "mesh_from_shape", "object_type": "Mesh::Feature"},),
@@ -381,7 +381,7 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     "PointsWorkbench": WorkbenchToolPack(
         "PointsWorkbench",
         "point clouds",
-        "Read point-cloud data with core.inspect for exact names, counts, and "
+        "Call points.list_clouds to read exact point-cloud names, counts, and "
         "bounds. Clouds are source data — never modify or delete them; "
         "import and conversion run in the FreeCAD GUI.",
         ("Points_",),
@@ -406,8 +406,8 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
     "RobotWorkbench": WorkbenchToolPack(
         "RobotWorkbench",
         "robot simulation",
-        "Read the robot-simulation setup with core.inspect: robots, trajectories, and "
-        "related geometry with their roles; placement and trajectory editing "
+        "Call robot.list_setup to read robots, trajectories, related geometry, "
+        "and their roles; placement and trajectory editing "
         "run in the FreeCAD GUI.",
         ("Robot_",),
         ("Robot::",),
@@ -432,7 +432,8 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "SpreadsheetWorkbench",
         "spreadsheet",
         "Parametric data sheets. Read before writing; aliases make cells "
-        "addressable as SheetName.alias from expressions in other objects.",
+        "addressable as SheetName.alias from expressions in other objects. "
+        "Call spreadsheet.read_sheet before changing an existing sheet.",
         ("Spreadsheet_",),
         ("Spreadsheet::Sheet",),
         ({"name": "sheet", "object_type": "Spreadsheet::Sheet"},),
@@ -443,8 +444,9 @@ WORKBENCH_TOOL_PACKS: dict[str, WorkbenchToolPack] = {
         "surfaces",
         "Freeform surfacing: fill closed edge loops, loft through profiles, "
         "blend between edges, extend faces, thicken into solids. Reference "
-        "only exact edge and face names returned by core.inspect; "
-        "ask the human to identify missing prerequisites rather than guessing.",
+        "only exact edges and faces from the current selection or the result "
+        "of the preceding modeling tool; ask the human to identify missing "
+        "prerequisites rather than guessing.",
         ("Surface_",),
         ("Surface::",),
         (

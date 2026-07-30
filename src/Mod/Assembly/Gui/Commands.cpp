@@ -53,7 +53,10 @@ static AssemblyObject* getActiveAssembly()
 
     auto* vp = doc->getInEdit();
     if (auto* assemblyVP = freecad_cast<ViewProviderAssembly*>(vp)) {
-        return assemblyVP->getObject<AssemblyObject>();
+        auto* assembly = assemblyVP->getObject<AssemblyObject>();
+        return Assembly::isTimelineOperationActive(assembly)
+            ? assembly
+            : nullptr;
     }
 
     return nullptr;
@@ -65,10 +68,55 @@ void selectObjects(const std::vector<App::DocumentObject*>& objectsToSelect)
         return;
     }
 
-    Gui::Selection().clearSelection();
-    for (App::DocumentObject* obj : objectsToSelect) {
-        Gui::Selection().addSelection(obj->getDocument()->getName(), obj->getNameInDocument());
+    auto* document = objectsToSelect.front()
+        ? objectsToSelect.front()->getDocument()
+        : nullptr;
+    if (!document) {
+        return;
     }
+    Gui::Selection().clearSelection(document->getName());
+    for (App::DocumentObject* obj : objectsToSelect) {
+        if (obj && obj->getDocument() == document
+            && Assembly::isTimelineOperationActive(obj)) {
+            Gui::Selection().addSelection(
+                document->getName(),
+                obj->getNameInDocument()
+            );
+        }
+    }
+}
+
+bool selectionContainsAssemblyComponent(
+    AssemblyObject* assembly
+)
+{
+    if (!Assembly::isTimelineOperationActive(assembly)) {
+        return false;
+    }
+    auto* document = assembly->getDocument();
+    for (auto& selection : Gui::Selection().getSelectionEx(
+             "",
+             App::DocumentObject::getClassTypeId(),
+             Gui::ResolveMode::NoResolve
+         )) {
+        auto* root = selection.getObject();
+        if (!root || root->getDocument() != document
+            || !Assembly::isTimelineOperationActive(root)) {
+            continue;
+        }
+        auto subs = selection.getSubNames();
+        if (subs.empty()) {
+            subs.emplace_back();
+        }
+        for (const auto& sub : subs) {
+            auto* component =
+                getMovingPartFromSel(assembly, root, sub);
+            if (Assembly::isTimelineOperationActive(component)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void selectObjectsByName(AssemblyObject* assembly, const std::vector<std::string>& names)
@@ -82,7 +130,10 @@ void selectObjectsByName(AssemblyObject* assembly, const std::vector<std::string
 
     for (const auto& name : names) {
         if (auto* obj = doc->getObject(name.c_str())) {
-            objectsToSelect.push_back(obj);
+            if (assembly->hasObject(obj, true)
+                && Assembly::isTimelineOperationActive(obj)) {
+                objectsToSelect.push_back(obj);
+            }
         }
     }
 
@@ -119,17 +170,22 @@ void CmdAssemblyLinkSelectLinked::activated(int iMsg)
 
     auto* asmLink = dynamic_cast<Assembly::AssemblyLink*>(selection[0].getObject());
 
-    if (!asmLink) {
+    if (!asmLink || !Assembly::isTimelineOperationActive(asmLink)) {
         return;
     }
 
     // Get the linked object (usually an AssemblyObject in another doc)
     App::DocumentObject* linkedObj = asmLink->getLinkedAssembly();
-    if (!linkedObj) {
+    if (!linkedObj || !Assembly::isTimelineOperationActive(linkedObj)) {
         return;
     }
 
-    Gui::Selection().clearSelection();
+    auto* sourceDocument = asmLink->getDocument();
+    auto* linkedDocument = linkedObj->getDocument();
+    Gui::Selection().clearSelection(sourceDocument->getName());
+    if (linkedDocument != sourceDocument) {
+        Gui::Selection().clearSelection(linkedDocument->getName());
+    }
     Gui::Selection().addSelection(linkedObj->getDocument()->getName(), linkedObj->getNameInDocument());
 
     // Switch view/tab
@@ -146,10 +202,16 @@ void CmdAssemblyLinkSelectLinked::activated(int iMsg)
 bool CmdAssemblyLinkSelectLinked::isActive()
 {
     std::vector<Gui::SelectionObject> selection = Gui::Selection().getSelectionEx();
-    return (
-        selection.size() == 1 && selection[0].getObject()
-        && selection[0].getObject()->isDerivedFrom(Assembly::AssemblyLink::getClassTypeId())
+    if (selection.size() != 1) {
+        return false;
+    }
+    auto* link = freecad_cast<AssemblyLink*>(
+        selection[0].getObject()
     );
+    return Assembly::isTimelineOperationActive(link)
+        && Assembly::isTimelineOperationActive(
+            link->getLinkedAssembly()
+        );
 }
 
 
@@ -167,6 +229,7 @@ CmdAssemblySelectConflictingConstraints::CmdAssemblySelectConflictingConstraints
     sToolTipText = QT_TR_NOOP("Selects conflicting joints in the active assembly");
     sWhatsThis = "Assembly_SelectConflictingConstraints";
     sStatusTip = sToolTipText;
+    sPixmap = "Assembly_SelectConflictingConstraints";
     eType = ForEdit;
 }
 
@@ -178,9 +241,7 @@ void CmdAssemblySelectConflictingConstraints::activated(int iMsg)
         return;
     }
 
-    // NOTE: The solver currently reports conflicting constraints as redundant.
-    // This uses the redundant list until the solver provides a separate conflicting list.
-    selectObjectsByName(assembly, assembly->getLastRedundant());
+    selectObjectsByName(assembly, assembly->getLastConflicting());
 }
 
 bool CmdAssemblySelectConflictingConstraints::isActive()
@@ -202,6 +263,7 @@ CmdAssemblySelectRedundantConstraints::CmdAssemblySelectRedundantConstraints()
     sToolTipText = QT_TR_NOOP("Selects redundant joints in the active assembly");
     sWhatsThis = "Assembly_SelectRedundantConstraints";
     sStatusTip = sToolTipText;
+    sPixmap = "Assembly_SelectRedundantConstraints";
     eType = ForEdit;
 }
 
@@ -222,6 +284,40 @@ bool CmdAssemblySelectRedundantConstraints::isActive()
 }
 
 // ================================================================================
+// Select Partially Redundant Constraints
+// ================================================================================
+
+DEF_STD_CMD_A(CmdAssemblySelectPartiallyRedundantConstraints)
+
+CmdAssemblySelectPartiallyRedundantConstraints::CmdAssemblySelectPartiallyRedundantConstraints()
+    : Command("Assembly_SelectPartiallyRedundantConstraints")
+{
+    sGroup = QT_TR_NOOP("Assembly");
+    sMenuText = QT_TR_NOOP("Select Partially Redundant Constraints");
+    sToolTipText = QT_TR_NOOP("Selects partially redundant joints in the active assembly");
+    sWhatsThis = "Assembly_SelectPartiallyRedundantConstraints";
+    sStatusTip = sToolTipText;
+    sPixmap = "Assembly_SelectPartiallyRedundantConstraints";
+    eType = ForEdit;
+}
+
+void CmdAssemblySelectPartiallyRedundantConstraints::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    AssemblyObject* assembly = getActiveAssembly();
+    if (!assembly) {
+        return;
+    }
+
+    selectObjectsByName(assembly, assembly->getLastPartiallyRedundant());
+}
+
+bool CmdAssemblySelectPartiallyRedundantConstraints::isActive()
+{
+    return getActiveAssembly() != nullptr;
+}
+
+// ================================================================================
 // Select Malformed Constraints
 // ================================================================================
 
@@ -235,6 +331,7 @@ CmdAssemblySelectMalformedConstraints::CmdAssemblySelectMalformedConstraints()
     sToolTipText = QT_TR_NOOP("Selects malformed joints in the active assembly");
     sWhatsThis = "Assembly_SelectMalformedConstraints";
     sStatusTip = sToolTipText;
+    sPixmap = "Assembly_SelectMalformedConstraints";
     eType = ForEdit;
 }
 
@@ -336,11 +433,22 @@ void CmdAssemblySelectJointsOfComponent::activated(int iMsg)
     std::set<App::DocumentObject*> components;
 
     for (auto& sel : selection) {
-        const std::vector<std::string> subs = sel.getSubNames();
-        std::string sub = subs.empty() ? "" : subs.front();
-
-        if (App::DocumentObject* comp = getMovingPartFromSel(assembly, sel.getObject(), sub)) {
-            components.insert(comp);
+        auto* root = sel.getObject();
+        if (!root
+            || root->getDocument() != assembly->getDocument()
+            || !Assembly::isTimelineOperationActive(root)) {
+            continue;
+        }
+        auto subs = sel.getSubNames();
+        if (subs.empty()) {
+            subs.emplace_back();
+        }
+        for (const auto& sub : subs) {
+            if (App::DocumentObject* comp =
+                    getMovingPartFromSel(assembly, root, sub);
+                Assembly::isTimelineOperationActive(comp)) {
+                components.insert(comp);
+            }
         }
     }
 
@@ -359,7 +467,9 @@ void CmdAssemblySelectJointsOfComponent::activated(int iMsg)
 
 bool CmdAssemblySelectJointsOfComponent::isActive()
 {
-    return getActiveAssembly() != nullptr && !Gui::Selection().getSelection().empty();
+    return selectionContainsAssemblyComponent(
+        getActiveAssembly()
+    );
 }
 
 
@@ -374,6 +484,7 @@ void AssemblyGui::CreateAssemblyCommands()
     rcCmdMgr.addCommand(new CmdAssemblyLinkSelectLinked());
     rcCmdMgr.addCommand(new CmdAssemblySelectConflictingConstraints());
     rcCmdMgr.addCommand(new CmdAssemblySelectRedundantConstraints());
+    rcCmdMgr.addCommand(new CmdAssemblySelectPartiallyRedundantConstraints());
     rcCmdMgr.addCommand(new CmdAssemblySelectMalformedConstraints());
     rcCmdMgr.addCommand(new CmdAssemblySelectComponentsWithDoFs());
     rcCmdMgr.addCommand(new CmdAssemblySelectJointsOfComponent());

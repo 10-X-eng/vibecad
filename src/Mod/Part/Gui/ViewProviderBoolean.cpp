@@ -27,6 +27,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <QMessageBox>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/MainWindow.h>
@@ -251,6 +252,19 @@ bool ViewProviderBoolean::onDelete(const std::vector<std::string>& subNames)
     );
 }
 
+bool ViewProviderBoolean::onDeleteOwnedTimelineResource(
+    App::DocumentObject* semanticOwner
+)
+{
+    if (App::DocumentTimeline::isTimelineResourceOwnedBy(
+            getObject(),
+            semanticOwner
+        )) {
+        return true;
+    }
+    return onDelete({});
+}
+
 PROPERTY_SOURCE(PartGui::ViewProviderMultiFuse, PartGui::ViewProviderPart)
 
 ViewProviderMultiFuse::ViewProviderMultiFuse() = default;
@@ -348,6 +362,19 @@ bool ViewProviderMultiFuse::onDelete(const std::vector<std::string>& subNames)
         pShapes,
         inputDescription
     );
+}
+
+bool ViewProviderMultiFuse::onDeleteOwnedTimelineResource(
+    App::DocumentObject* semanticOwner
+)
+{
+    if (App::DocumentTimeline::isTimelineResourceOwnedBy(
+            getObject(),
+            semanticOwner
+        )) {
+        return true;
+    }
+    return onDelete({});
 }
 
 bool ViewProviderMultiFuse::canDragObjects() const
@@ -492,6 +519,19 @@ bool ViewProviderMultiCommon::onDelete(const std::vector<std::string>& subNames)
         pShapes,
         inputDescription
     );
+}
+
+bool ViewProviderMultiCommon::onDeleteOwnedTimelineResource(
+    App::DocumentObject* semanticOwner
+)
+{
+    if (App::DocumentTimeline::isTimelineResourceOwnedBy(
+            getObject(),
+            semanticOwner
+        )) {
+        return true;
+    }
+    return onDelete({});
 }
 
 bool ViewProviderMultiCommon::canDragObjects() const

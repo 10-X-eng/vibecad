@@ -54,6 +54,15 @@ public:
     explicit SelectionObject(const SelectionChanges& msg);
     explicit SelectionObject(const App::DocumentObject*);
     ~SelectionObject() override;
+
+    /**
+     * Return the same selection rebound to another document object.
+     *
+     * The selected sub-elements and viewport pick positions are preserved.
+     * This is intended for command-specific projections of a visible
+     * container onto the feature that actually supplies its geometry.
+     */
+    SelectionObject withObject(const App::DocumentObject*) const;
     /**
      * The default implementation returns an instance of @ref SelectionObjectPy.
      */

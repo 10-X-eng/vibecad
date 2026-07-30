@@ -49,6 +49,15 @@ ViewProviderFemMeshShapeNetgen::ViewProviderFemMeshShapeNetgen()
 
 ViewProviderFemMeshShapeNetgen::~ViewProviderFemMeshShapeNetgen() = default;
 
+bool ViewProviderFemMeshShapeNetgen::supportsDocumentTimelineEdit() const noexcept
+{
+#ifdef FCWithNetgen
+    return true;
+#else
+    return false;
+#endif
+}
+
 void ViewProviderFemMeshShapeNetgen::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
 {
     QAction* act = menu->addAction(QObject::tr("Meshing"), receiver, member);
@@ -61,7 +70,7 @@ bool ViewProviderFemMeshShapeNetgen::setEdit(int ModNum)
         // clear the selection (convenience)
         Gui::Selection().clearSelection();
 #ifdef FCWithNetgen
-        Gui::Control().showDialog(new TaskDlgMeshShapeNetgen(this));
+        Gui::Control().showDialog(new TaskDlgMeshShapeNetgen(this), getObject()->getDocument());
         return true;
 #else
         QMessageBox::critical(

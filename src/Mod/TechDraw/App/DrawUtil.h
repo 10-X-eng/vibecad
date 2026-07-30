@@ -88,6 +88,29 @@ struct EdgePoints
 class TechDrawExport DrawUtil
 {
 public:
+    /**
+     * Return whether an object belongs to the active side of its document's
+     * modeling timeline.
+     *
+     * Documents without a timeline, and objects which are not timeline
+     * operations, remain active. TechDraw consumers use this instead of
+     * treating GUI visibility as execution state.
+     */
+    static bool isActiveInDocumentTimeline(const App::DocumentObject* object);
+
+    /**
+     * Classify a generated TechDraw implementation object as a persistent
+     * resource of its durable user operation.
+     *
+     * The owner metadata is an exact App::PropertyLinkHidden. It therefore
+     * persists without exposing an editable public link or adding its owner
+     * to the resource's OutList. The central document timeline uses the
+     * metadata to keep the resource out of visible history while applying
+     * its owner's marker state to computation and rendering.
+     */
+    static void markAsTimelineResource(App::DocumentObject* resource,
+                                       App::DocumentObject* owner);
+
     static int getIndexFromName(const std::string& geomName);
     static std::vector<int> getIndexFromName(const std::vector<std::string>& geomNames);
     static std::string getGeomTypeFromName(const std::string& geomName);

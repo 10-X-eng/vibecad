@@ -70,6 +70,10 @@ public:
     ViewProviderHole();
     /// destructor
     ~ViewProviderHole() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     bool onDelete(const std::vector<std::string>& arg) override;
 
     /// grouping handling

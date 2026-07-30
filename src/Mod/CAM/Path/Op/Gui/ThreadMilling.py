@@ -239,9 +239,18 @@ class TaskPanelOpPage(PathCircularHoleBaseGui.TaskPanelOpPage):
         return signals
 
     def registerSignalHandlers(self, obj):
-        self.form.threadType.currentIndexChanged.connect(self._updateFromThreadType)
-        self.form.threadName.currentIndexChanged.connect(self._updateFromThreadName)
-        self.form.threadFit.valueChanged.connect(self._updateFromThreadName)
+        self.connectSignal(
+            self.form.threadType.currentIndexChanged,
+            self._updateFromThreadType,
+        )
+        self.connectSignal(
+            self.form.threadName.currentIndexChanged,
+            self._updateFromThreadName,
+        )
+        self.connectSignal(
+            self.form.threadFit.valueChanged,
+            self._updateFromThreadName,
+        )
 
 
 Command = PathOpGui.SetupOperation(

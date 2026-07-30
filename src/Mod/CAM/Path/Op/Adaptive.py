@@ -116,6 +116,65 @@ def sceneClean():
     del scenePathNodes[:]
 
 
+def _hideJobPresentation(job, currentOperation):
+    """Temporarily hide the rendered Job graph without changing its model.
+
+    Adaptive recompute can run inside an operation's command transaction.
+    Persistent ``Visibility`` writes made only to reduce redraw would pollute
+    that transaction and could reappear when the user undoes the operation.
+    ViewProvider show/hide calls affect the scene graph only.
+    """
+
+    candidates = [
+        job,
+        currentOperation,
+        *getattr(getattr(job, "Operations", None), "Group", ()),
+        *getattr(getattr(job, "Model", None), "Group", ()),
+        getattr(job, "Stock", None),
+    ]
+    candidates.extend(
+        getattr(controller, "Tool", None)
+        for controller in getattr(
+            getattr(job, "Tools", None),
+            "Group",
+            (),
+        )
+    )
+
+    render_objects = []
+    for candidate in candidates:
+        view = getattr(candidate, "ViewObject", None)
+        if (
+            candidate is None
+            or view is None
+            or any(candidate is remembered for remembered in render_objects)
+        ):
+            continue
+        render_objects.append(candidate)
+
+    # Snapshot the complete graph before hiding its parent. A hidden Job can
+    # make child ViewProviders report effectively hidden even though their
+    # own prior presentation state was visible.
+    states = tuple(
+        (candidate, bool(candidate.ViewObject.isVisible()))
+        for candidate in render_objects
+    )
+    for candidate in render_objects:
+        candidate.ViewObject.setTemporaryVisibility(False)
+    return states
+
+
+def _restoreJobPresentation(states):
+    """Restore one exact scene-only visibility snapshot."""
+
+    for candidate, visible in states:
+        try:
+            view = candidate.ViewObject
+            view.setTemporaryVisibility(bool(visible))
+        except (AttributeError, ReferenceError, RuntimeError):
+            continue
+
+
 def renderProgressCallback(tpaths):
     if FreeCAD.GuiUp:
         for path in tpaths:
@@ -129,7 +188,7 @@ def renderProgressCallback(tpaths):
         FreeCADGui.updateGui()
 
 
-def initSceneGraph(z=10):
+def initSceneGraph(z=10, document=None):
     """Initialize the scene graph for adaptive visualization.
 
     Args:
@@ -142,7 +201,11 @@ def initSceneGraph(z=10):
     if not FreeCAD.GuiUp:
         return False
 
-    sceneGraph = FreeCADGui.ActiveDocument.ActiveView.getSceneGraph()
+    document = document or FreeCAD.ActiveDocument
+    if document is None:
+        return False
+    gui_document = FreeCADGui.getDocument(document.Name)
+    sceneGraph = gui_document.ActiveView.getSceneGraph()
     topZ = z
     return True
 
@@ -332,23 +395,27 @@ def GenerateGCode(op, obj, adaptiveResults):
 
 
 def Execute(op, obj):
-    initSceneGraph()
+    """Calculate Adaptive paths with a transaction-neutral GUI preview."""
+
+    if not FreeCAD.GuiUp:
+        return _execute(op, obj)
+
+    presentation = _hideJobPresentation(op.getJob(obj), obj)
+    try:
+        return _execute(op, obj)
+    finally:
+        _restoreJobPresentation(presentation)
+
+
+def _execute(op, obj):
+    initSceneGraph(document=obj.Document)
 
     Path.Log.info("*** Adaptive toolpath processing started...\n")
 
     # hide old toolpaths during recalculation
     obj.Path = Path.Path("(Calculating...)")
 
-    oldObjVisibility = oldJobVisibility = False
     if FreeCAD.GuiUp:
-        # store old visibility state
-        job = op.getJob(obj)
-        oldObjVisibility = obj.ViewObject.Visibility
-        oldJobVisibility = job.ViewObject.Visibility
-
-        obj.ViewObject.Visibility = False
-        job.ViewObject.Visibility = False
-
         FreeCADGui.updateGui()
 
     try:
@@ -481,8 +548,6 @@ def Execute(op, obj):
 
     finally:
         if FreeCAD.GuiUp:
-            obj.ViewObject.Visibility = oldObjVisibility
-            job.ViewObject.Visibility = oldJobVisibility
             sceneClean()
 
 
@@ -517,23 +582,27 @@ def get_cleared_area(op, obj, pathArray, zOverride=None):
 
 
 def ExecuteModelAware(op, obj):
-    initSceneGraph()
+    """Calculate model-aware paths with a transaction-neutral GUI preview."""
+
+    if not FreeCAD.GuiUp:
+        return _executeModelAware(op, obj)
+
+    presentation = _hideJobPresentation(op.getJob(obj), obj)
+    try:
+        return _executeModelAware(op, obj)
+    finally:
+        _restoreJobPresentation(presentation)
+
+
+def _executeModelAware(op, obj):
+    initSceneGraph(document=obj.Document)
 
     Path.Log.info("*** Adaptive toolpath processing started...\n")
 
     # hide old toolpaths during recalculation
     obj.Path = Path.Path("(Calculating...)")
 
-    oldObjVisibility = oldJobVisibility = False
     if FreeCAD.GuiUp:
-        # store old visibility state
-        job = op.getJob(obj)
-        oldObjVisibility = obj.ViewObject.Visibility
-        oldJobVisibility = job.ViewObject.Visibility
-
-        obj.ViewObject.Visibility = False
-        job.ViewObject.Visibility = False
-
         FreeCADGui.updateGui()
 
     try:
@@ -792,8 +861,6 @@ def ExecuteModelAware(op, obj):
 
     finally:
         if FreeCAD.GuiUp:
-            obj.ViewObject.Visibility = oldObjVisibility
-            job.ViewObject.Visibility = oldJobVisibility
             sceneClean()
 
 
@@ -1988,7 +2055,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Adaptive operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = PathAdaptive(obj, name, parentJob)
     return obj

@@ -60,6 +60,8 @@ TaskCosVertex::TaskCosVertex(TechDraw::DrawViewPart* baseFeat,
     m_tracker(nullptr),
     m_baseFeat(baseFeat),
     m_basePage(page),
+    m_baseIdentity(baseFeat),
+    m_pageIdentity(page),
     m_qgParent(nullptr),
     m_trackerMode(QGTracker::TrackerMode::None),
     m_saveContextPolicy(Qt::DefaultContextMenu),
@@ -69,13 +71,25 @@ TaskCosVertex::TaskCosVertex(TechDraw::DrawViewPart* baseFeat,
     m_pbTrackerState(TrackerAction::PICK),
     m_savePoint(QPointF(0.0, 0.0))
 {
-    //baseFeat and page existence checked in cosmetic vertex command (CommandAnnotate.cpp)
+    if (!baseFeat || !page
+        || baseFeat->getDocument() != page->getDocument()) {
+        throw Base::TypeError(
+            "The cosmetic vertex requires a live view on one drawing page"
+        );
+    }
 
     ui->setupUi(this);
 
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    Gui::Document* guiDocument =
+        Gui::Application::Instance->getDocument(page->getDocument());
+    Gui::ViewProvider* vp =
+        guiDocument ? guiDocument->getViewProvider(page) : nullptr;
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp || !m_vpp->getMDIViewPage()) {
+        throw Base::RuntimeError(
+            "The cosmetic vertex requires an open drawing page"
+        );
+    }
 
     setUiPrimary();
 
@@ -83,6 +97,11 @@ TaskCosVertex::TaskCosVertex(TechDraw::DrawViewPart* baseFeat,
             this, &TaskCosVertex::onTrackerClicked);
 
     m_trackerMode = QGTracker::TrackerMode::Point;
+}
+
+TaskCosVertex::~TaskCosVertex()
+{
+    removeTracker();
 }
 
 void TaskCosVertex::updateTask()
@@ -131,14 +150,10 @@ void TaskCosVertex::updateUi()
 //! create the cv as entered, addCosmeticVertex will invert it
 void TaskCosVertex::addCosVertex(QPointF qPos)
 {
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Add Cosmetic Vertex"));
-
 //    Base::Vector3d pos = DU::invertY(DU::toVector3d(qPos));
 //    int idx =
     (void) m_baseFeat->addCosmeticVertex(DU::toVector3d(qPos));
     m_baseFeat->requestPaint();
-
-    Gui::Command::commitCommand(tid);
 }
 
 
@@ -255,9 +270,10 @@ void TaskCosVertex::onTrackerFinished(std::vector<QPointF> pts, QGIView* qgParen
 
 void TaskCosVertex::removeTracker()
 {
-//    Base::Console().message("TCV::removeTracker()\n");
-    if (m_tracker && m_tracker->scene()) {
-        m_vpp->getQGSPage()->removeItem(m_tracker);
+    if (m_tracker) {
+        // QGraphicsItem destruction removes it from its scene.  Do not
+        // dereference the page provider here: document-close cancellation
+        // may already be tearing that provider down.
         delete m_tracker;
         m_tracker = nullptr;
     }
@@ -265,9 +281,11 @@ void TaskCosVertex::removeTracker()
 
 void TaskCosVertex::setEditCursor(QCursor cursor)
 {
-    if (m_baseFeat) {
+    if (m_baseFeat && m_vpp && m_vpp->getQGSPage()) {
         QGIView* qgivBase = m_vpp->getQGSPage()->findQViewForDocObj(m_baseFeat);
-        qgivBase->setCursor(cursor);
+        if (qgivBase) {
+            qgivBase->setCursor(cursor);
+        }
     }
 }
 
@@ -298,9 +316,12 @@ void TaskCosVertex::enableTaskButtons(bool button)
 //******************************************************************************
 bool TaskCosVertex::accept()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc)
+    auto* baseFeature = m_baseIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!baseFeature || !page
+        || baseFeature->getDocument() != page->getDocument()) {
         return false;
+    }
 
     removeTracker();
     // whatever is in the ui for x,y is treated as an unscaled, unrotated, conventional Y position.
@@ -309,34 +330,46 @@ bool TaskCosVertex::accept()
     double y = ui->dsbY->value().getValue();
     QPointF uiPoint(x, y);
 
-    addCosVertex(uiPoint);
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            baseFeature->getDocument(),
+            "Add Cosmetic Vertex"
+        );
+        m_baseFeat = baseFeature;
+        addCosVertex(uiPoint);
+        baseFeature->recomputeFeature();
+        baseFeature->requestPaint();
+        TaskInternal::updateExactDocument(baseFeature->getDocument());
+        transaction.commit();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not add cosmetic vertex: %s\n",
+            error.what()
+        );
+        return false;
+    }
 
-    m_baseFeat->recomputeFeature();
-    m_baseFeat->requestPaint();
-    m_vpp->getMDIViewPage()->setContextMenuPolicy(m_saveContextPolicy);
+    if (m_vpp && m_vpp->getMDIViewPage()) {
+        m_vpp->getMDIViewPage()->setContextMenuPolicy(
+            m_saveContextPolicy
+        );
+    }
     m_trackerMode = QGTracker::TrackerMode::None;
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    TaskInternal::resetExactEdit(baseFeature->getDocument());
 
     return true;
 }
 
 bool TaskCosVertex::reject()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc)
-        return false;
-
     removeTracker();
     m_trackerMode = QGTracker::TrackerMode::None;
-    if (m_vpp->getMDIViewPage()) {
+    if (m_vpp && m_vpp->getMDIViewPage()) {
         m_vpp->getMDIViewPage()->setContextMenuPolicy(m_saveContextPolicy);
     }
-
-    //make sure any dangling objects are cleaned up
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().recompute()");
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-
-    return false;
+    TaskInternal::resetExactEdit(m_pageIdentity.resolveDocument());
+    return true;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -378,14 +411,12 @@ void TaskDlgCosVertex::clicked(int)
 
 bool TaskDlgCosVertex::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgCosVertex::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskCosVertex.cpp>

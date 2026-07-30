@@ -235,8 +235,9 @@ class Offset(gui_base_original.Modifier):
                 ):
                     copymode = True
                 Gui.addModule("Draft")
+                Gui.addModule("draftutils.timeline")
                 if self.npts:
-                    _cmd = "Draft.offset"
+                    _cmd = "draftutils.timeline.offset"
                     _cmd += "("
                     _cmd += "FreeCAD.ActiveDocument."
                     _cmd += self.sel.Name + ", "
@@ -244,13 +245,17 @@ class Offset(gui_base_original.Modifier):
                     _cmd += "copy=" + str(copymode)
                     _cmd += ")"
                     _cmd_list = ["offst = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-                    self.commit(translate("draft", "Offset"), _cmd_list)
+                    self.commit(
+                        translate("draft", "Offset"),
+                        _cmd_list,
+                        inputs=(self.sel,),
+                    )
                 elif self.dvec:
                     if isinstance(self.dvec, float):
                         delta = str(self.dvec)
                     else:
                         delta = DraftVecUtils.toString(self.dvec)
-                    _cmd = "Draft.offset"
+                    _cmd = "draftutils.timeline.offset"
                     _cmd += "("
                     _cmd += "FreeCAD.ActiveDocument."
                     _cmd += self.sel.Name + ", "
@@ -259,7 +264,11 @@ class Offset(gui_base_original.Modifier):
                     _cmd += "occ=" + str(occmode)
                     _cmd += ")"
                     _cmd_list = ["offst = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-                    self.commit(translate("draft", "Offset"), _cmd_list)
+                    self.commit(
+                        translate("draft", "Offset"),
+                        _cmd_list,
+                        inputs=(self.sel,),
+                    )
                 if gui_tool_utils.hasMod(arg, gui_tool_utils.get_mod_alt_key()):
                     self.extendedCopy = True
                 else:
@@ -313,7 +322,8 @@ class Offset(gui_base_original.Modifier):
             if self.ui.isCopy.isChecked():
                 copymode = True
             Gui.addModule("Draft")
-            _cmd = "Draft.offset"
+            Gui.addModule("draftutils.timeline")
+            _cmd = "draftutils.timeline.offset"
             _cmd += "("
             _cmd += "FreeCAD.ActiveDocument."
             _cmd += self.sel.Name + ", "
@@ -322,7 +332,11 @@ class Offset(gui_base_original.Modifier):
             _cmd += "occ=" + str(occmode)
             _cmd += ")"
             _cmd_list = ["offst = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-            self.commit(translate("draft", "Offset"), _cmd_list)
+            self.commit(
+                translate("draft", "Offset"),
+                _cmd_list,
+                inputs=(self.sel,),
+            )
             self.finish()
         else:
             _err(

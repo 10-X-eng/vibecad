@@ -80,8 +80,11 @@ class OrthoArray(gui_base.GuiCommandBase):
         # The calling class (this one) is saved in the object
         # of the interface, to be able to call a function from within it.
         self.ui.source_command = self
-        task = Gui.Control.showDialog(self.ui)
-        task.setDocumentName(Gui.ActiveDocument.Document.Name)
+        task = Gui.Control.showDialog(
+            self.ui,
+            Gui.getDocument(self.doc.Name),
+        )
+        task.setDocumentName(self.doc.Name)
         task.setAutoCloseOnDeletedDocument(True)
 
     def click(self, event_cb=None):
@@ -116,8 +119,7 @@ class OrthoArray(gui_base.GuiCommandBase):
             # the view has been deleted already
             pass
         self.callback_click = None
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        self.close_task_dialog()
         self.finish()
 
 

@@ -36,6 +36,7 @@
 #include "ZVALUE.h"
 #include "QGIView.h"
 #include "TaskRichAnno.h"
+#include "TaskDocumentGuard.h"
 #include "QGSPage.h"
 #include "ViewProviderRichAnno.h"
 
@@ -75,20 +76,25 @@ bool ViewProviderRichAnno::setEdit(int ModNum)
     if (ModNum != Gui::ViewProvider::Default) {
         return Gui::ViewProviderDocumentObject::setEdit(ModNum);
     }
-    if (Gui::Control().activeDialog()) {
+    auto* annotation = getViewObject();
+    if (!annotation
+        || Gui::Control().activeDialog(annotation->getDocument())) {
         return false;  // TaskPanel already open!
     }
 
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
-    Gui::Control().showDialog(new TaskDlgRichAnno(this));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgRichAnno(this),
+        annotation->getDocument()
+    );
     return true;
 }
 
 bool ViewProviderRichAnno::doubleClicked()
 {
 //    Base::Console().message("VPRA::doubleClicked()\n");
-    setEdit(ViewProvider::Default);
+    startDefaultEditMode();
     return true;
 }
 

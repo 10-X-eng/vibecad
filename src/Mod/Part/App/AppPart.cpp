@@ -73,6 +73,7 @@
 #include "WireJoiner.h"
 #include "FeatureChamfer.h"
 #include "FeatureCompound.h"
+#include "FeatureCrossSections.h"
 #include "FeatureExtrusion.h"
 #include "FeatureScale.h"
 #include "FeatureFace.h"
@@ -475,6 +476,7 @@ PyMOD_INIT_FUNC(Part)
     Part::Chamfer               ::init();
     Part::Compound              ::init();
     Part::Compound2             ::init();
+    Part::CrossSections         ::init();
     Part::Extrusion             ::init();
     Part::Scale                 ::init();
     Part::Revolution            ::init();

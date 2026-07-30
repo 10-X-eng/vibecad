@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import unittest
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
 if str(MODULE_ROOT) not in sys.path:
@@ -46,6 +47,8 @@ from VibeCADVibeScriptDomains import (  # noqa: E402
 )
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     PROP_OUTPUT_TYPE,
+    PROP_PARTDESIGN_MATERIAL_BASELINE,
+    _set_physical_material_preserving_view,
     publish_candidate,
 )
 from vibescript_domain_api import create_domain_api  # noqa: E402
@@ -1202,11 +1205,125 @@ def _assert_consumers(document, consumers, published) -> None:
             assert current.VibeCADTestSource is published
 
 
+def _linked_object(value):
+    if (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and hasattr(value[0], "TypeId")
+    ):
+        return value[0]
+    return value
+
+
+def _assert_partdesign_timeline_graph(
+    document,
+    program_id: str,
+    publication_name: str,
+    *,
+    expected_state: dict[str, object] | None = None,
+) -> dict[str, object]:
+    published = document.getObject(publication_name)
+    assert published is not None
+    roots = [
+        obj
+        for obj in document.Objects
+        if role_of(obj) == ROLE_MODEL
+        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+    ]
+    assert len(roots) == 1
+    bodies = [
+        obj
+        for obj in document.Objects
+        if obj.TypeId == "PartDesign::Body"
+        and role_of(obj) == ROLE_IMPLEMENTATION
+        and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+        == program_id
+    ]
+    assert len(bodies) == 1
+    body = bodies[0]
+    timeline = document.getObject("VibeCADTimeline")
+    assert timeline is not None
+    timeline_operations = list(timeline.Operations)
+    authored = [
+        obj
+        for obj in body.Group
+        if str(getattr(obj, "VibeCADTimelineRole", "") or "")
+        in {"operation", "resource"}
+    ]
+    assert authored
+    authored_indices = sorted(timeline_operations.index(obj) for obj in authored)
+    assert authored_indices == list(
+        range(authored_indices[0], authored_indices[-1] + 1)
+    )
+    assert set(timeline_operations[authored_indices[0] : authored_indices[-1] + 1]) == set(
+        authored
+    )
+    roles = {}
+    for obj in authored:
+        role = str(obj.VibeCADTimelineRole)
+        assert obj.getTypeIdOfProperty("VibeCADTimelineRole") == "App::PropertyString"
+        owner = getattr(obj, "VibeCADTimelineOwner", None)
+        if role == "operation":
+            assert owner is None
+        else:
+            assert role == "resource"
+            assert obj.getTypeIdOfProperty(
+                "VibeCADTimelineOwner"
+            ) == "App::PropertyLinkHidden"
+            assert owner in authored
+        roles[str(obj.Name)] = [
+            role,
+            str(getattr(owner, "Name", "") or ""),
+        ]
+
+    sketches = [
+        obj for obj in authored if obj.TypeId == "Sketcher::SketchObject"
+    ]
+    pads = [obj for obj in authored if obj.TypeId == "PartDesign::Pad"]
+    pockets = [obj for obj in authored if obj.TypeId == "PartDesign::Pocket"]
+    assert len(sketches) == 2
+    assert len(pads) == 1
+    assert len(pockets) == 1
+    pad = pads[0]
+    pocket = pockets[0]
+    pad_profile = _linked_object(pad.Profile)
+    pocket_profile = _linked_object(pocket.Profile)
+    assert pad_profile in sketches
+    assert pocket_profile in sketches
+    assert pad_profile is not pocket_profile
+    assert body.Tip is pocket
+
+    state = {
+        "root": str(roots[0].Name),
+        "publication": str(published.Name),
+        "body": str(body.Name),
+        "timeline": [
+            str(obj.Name)
+            for obj in timeline_operations[
+                authored_indices[0] : authored_indices[-1] + 1
+            ]
+        ],
+        "roles": roles,
+        "pad": str(pad.Name),
+        "pad_label": str(pad.Label),
+        "pad_profile": str(pad_profile.Name),
+        "pocket": str(pocket.Name),
+        "pocket_profile": str(pocket_profile.Name),
+        "tip": str(body.Tip.Name),
+    }
+    if expected_state is not None:
+        assert state == expected_state
+    return state
+
+
 def _exercise_lifecycle(root: Path, pack) -> dict:
     import FreeCAD as App
     from pathlib import Path as LocalPath
 
     document = App.newDocument("PartDesignVibeScriptV2")
+    document.setUndoMode(1)
+    document.commitTransaction()
     service = _Service(document, root)
     base_capture = {
         "pack": pack,
@@ -1222,12 +1339,13 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         "timeout_seconds": 60.0,
         "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
     }
+    lifecycle_source = _source()
     create = _capture(
         base_capture,
         operation="create_program",
         arguments={
             "program_name": "Part Design v2 Lifecycle",
-            "source": _source(),
+            "source": lifecycle_source,
             "input_schema": _input_schema(),
             "inputs": {
                 "outer_radius": 10.0,
@@ -1252,6 +1370,24 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     top = resolve_interface(service, published, "Top")
     assert top["publication_name"] == identity
     assert top["interface_name"] == "Top"
+    created_state = _assert_partdesign_timeline_graph(
+        document,
+        program_id,
+        identity,
+    )
+    assert created_state["pad_label"] == "Base Extrusion"
+    assert document.undo()
+    assert document.getObject(identity) is None
+    assert document.getObject(str(created_state["body"])) is None
+    assert document.redo()
+    _assert_partdesign_timeline_graph(
+        document,
+        program_id,
+        identity,
+        expected_state=created_state,
+    )
+    published = document.getObject(identity)
+    assert published is not None
 
     inspected = complete_inspection(
         {
@@ -1265,33 +1401,60 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert inspected["model_state"]["status"] == "accepted_current"
     assert inspected["program"]["accepted_revision"] == accepted["accepted_revision"]
 
+    edited_source = lifecycle_source.replace(
+        "label='Base Extrusion'",
+        "label='Primary Extrusion'",
+        1,
+    )
+    assert edited_source != lifecycle_source
     edit = _capture(
         base_capture,
         operation="edit_source",
         arguments={
             "program_id": program_id,
             "expected_revision": accepted["working_revision"],
-            "replacements": [
-                {"old": "label='Base Extrusion'", "new": "label='Primary Extrusion'"}
-            ],
+            "source": edited_source,
         },
     )
     _edited, edit_publication, accepted = _run_candidate(edit, service)
     assert edit_publication["created_objects"] == []
     assert accepted["live_outputs"]["Part"]["object_name"] == identity
+    edited_state = _assert_partdesign_timeline_graph(
+        document,
+        program_id,
+        identity,
+    )
+    assert edited_state["pad_label"] == "Primary Extrusion"
+    assert document.undo()
+    _assert_partdesign_timeline_graph(
+        document,
+        program_id,
+        identity,
+        expected_state=created_state,
+    )
+    assert document.redo()
+    _assert_partdesign_timeline_graph(
+        document,
+        program_id,
+        identity,
+        expected_state=edited_state,
+    )
+    published = document.getObject(identity)
+    assert published is not None
 
+    failing_source = edited_source.replace(
+        "z_offset_mm=inputs['height']",
+        "z_offset_mm=inputs['height'] + 100",
+        1,
+    )
+    assert failing_source != edited_source
     failed = _capture(
         base_capture,
         operation="edit_source",
         arguments={
             "program_id": program_id,
             "expected_revision": accepted["working_revision"],
-            "replacements": [
-                {
-                    "old": "z_offset_mm=inputs['height']",
-                    "new": "z_offset_mm=inputs['height'] + 100",
-                }
-            ],
+            "source": failing_source,
         },
     )
     failed_prepared = prepare_candidate(failed)
@@ -1309,12 +1472,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": program_id,
             "expected_revision": failed_prepared["revision"],
-            "replacements": [
-                {
-                    "old": "z_offset_mm=inputs['height'] + 100",
-                    "new": "z_offset_mm=inputs['height']",
-                }
-            ],
+            "source": edited_source,
         },
     )
     _recovered, recovery_publication, accepted = _run_candidate(recovery, service)
@@ -1441,6 +1599,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     App.closeDocument(document.Name)
     reopened = App.openDocument(str(saved_path))
     assert reopened is not None
+    reopened.setUndoMode(1)
     service.document = reopened
     reopened_published = reopened.getObject(identity)
     assert reopened_published is not None
@@ -1523,6 +1682,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     restore_prepared_delete(deletion)
     for consumer in reversed(reopened_consumers):
         reopened.removeObject(consumer.Name)
+    reopened.commitTransaction()
     reopened_root = next(
         obj
         for obj in reopened.Objects
@@ -1534,6 +1694,11 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         str(obj.Name) for obj in implementation_closure(reopened_root)
     }
     assert implementation_names
+    pre_delete_state = _assert_partdesign_timeline_graph(
+        reopened,
+        program_id,
+        identity,
+    )
     deletion = prepare_delete(delete_capture)
     deletion_publication = adapter.delete(service, deletion, deletion["manifest"])
     deleted = finish_delete(deletion, deletion_publication)
@@ -1543,6 +1708,18 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         name for name in implementation_names if reopened.getObject(name) is not None
     }
     assert not LocalPath(deletion["program_directory"]).exists()
+    assert reopened.undo()
+    _assert_partdesign_timeline_graph(
+        reopened,
+        program_id,
+        identity,
+        expected_state=pre_delete_state,
+    )
+    assert reopened.redo()
+    assert reopened.getObject(identity) is None
+    assert not {
+        name for name in implementation_names if reopened.getObject(name) is not None
+    }
     App.closeDocument(reopened.Name)
     return {
         "program_id": program_id,
@@ -1666,8 +1843,13 @@ def _exercise_physical_material_publication(root: Path, pack) -> dict:
         list(Materials.MaterialManager().Materials.values()),
         key=lambda card: (str(card.Name), str(card.UUID)),
     )
-    assert cards
+    assert len(cards) >= 2
     card = cards[0]
+    drift_card = next(
+        candidate
+        for candidate in cards[1:]
+        if str(candidate.UUID) != str(card.UUID)
+    )
     document = App.newDocument("PartDesignPhysicalMaterialPublication")
     service = _Service(document, root)
     base_capture = {
@@ -1713,32 +1895,127 @@ def _exercise_physical_material_publication(root: Path, pack) -> dict:
         },
     )
     try:
-        prepared, _publication, accepted = _run_candidate(create, service)
+        prepared, publication, accepted = _run_candidate(create, service)
+        document.recompute()
         identity = accepted["live_outputs"]["Coupon"]["object_name"]
         published = document.getObject(identity)
+        body = document.getObject(
+            publication["native_history"]["body_objects"]["Coupon"]
+        )
         assert published is not None
+        assert body is not None
         assert str(published.ShapeMaterial.UUID) == str(card.UUID)
-        initial_volume = float(published.Shape.Volume)
+        assert str(body.ShapeMaterial.UUID) == str(card.UUID)
+        baseline_uuid = str(
+            getattr(published, PROP_PARTDESIGN_MATERIAL_BASELINE).UUID
+        )
+        initial_volume = float(body.Shape.Volume)
+
+        # A user or another workbench may change presentation independently.
+        # That live drift must never make the owning VibeScript source
+        # impossible to edit. The newly accepted source remains authoritative.
+        _set_physical_material_preserving_view(published, drift_card)
+        assert str(published.ShapeMaterial.UUID) == str(drift_card.UUID)
+        edited_source = source.replace(
+            "api.box(inputs['size'], 4, 2",
+            "api.box(inputs['size'], 5, 2",
+            1,
+        )
+        assert edited_source != source
+        source_edit = _capture(
+            base_capture,
+            operation="edit_source",
+            arguments={
+                "program_id": prepared["program_id"],
+                "expected_revision": accepted["working_revision"],
+                "source": edited_source,
+            },
+        )
+        _edited, edit_publication, edited = _run_candidate(
+            source_edit,
+            service,
+        )
+        document.recompute()
+        published = document.getObject(identity)
+        body = document.getObject(
+            edit_publication["native_history"]["body_objects"]["Coupon"]
+        )
+        assert published is not None
+        assert body is not None
+        assert edit_publication["created_objects"] == []
+        assert edited["live_outputs"]["Coupon"]["object_name"] == identity
+        assert float(body.Shape.Volume) > initial_volume
+        assert str(published.ShapeMaterial.UUID) == str(card.UUID)
+        assert str(body.ShapeMaterial.UUID) == str(card.UUID)
+
+        # Removing a source-owned material is an ordinary complete-source edit,
+        # even if the live presentation drifted again after the previous build.
+        _set_physical_material_preserving_view(published, drift_card)
+        assert str(published.ShapeMaterial.UUID) == str(drift_card.UUID)
+        material_removed_source = edited_source.replace(
+            "card = api.material(inputs['material_uuid'])\n",
+            "",
+            1,
+        ).replace(
+            "api.publish(shape, material=card, ",
+            "api.publish(shape, ",
+            1,
+        )
+        assert material_removed_source != edited_source
+        remove_material = _capture(
+            base_capture,
+            operation="edit_source",
+            arguments={
+                "program_id": prepared["program_id"],
+                "expected_revision": edited["working_revision"],
+                "source": material_removed_source,
+            },
+        )
+        _removed, remove_publication, removed = _run_candidate(
+            remove_material,
+            service,
+        )
+        document.recompute()
+        published = document.getObject(identity)
+        body = document.getObject(
+            remove_publication["native_history"]["body_objects"]["Coupon"]
+        )
+        assert published is not None
+        assert body is not None
+        assert remove_publication["created_objects"] == []
+        assert removed["live_outputs"]["Coupon"]["object_name"] == identity
+        assert str(published.ShapeMaterial.UUID) == baseline_uuid
+        assert str(body.ShapeMaterial.UUID) == baseline_uuid
+
         update = _capture(
             base_capture,
             operation="set_inputs",
             arguments={
                 "program_id": prepared["program_id"],
-                "expected_revision": accepted["working_revision"],
+                "expected_revision": removed["working_revision"],
                 "patch": {"size": 9.0},
             },
         )
         _updated, update_publication, updated = _run_candidate(update, service)
+        document.recompute()
         published = document.getObject(identity)
+        body = document.getObject(
+            update_publication["native_history"]["body_objects"]["Coupon"]
+        )
         assert published is not None
+        assert body is not None
         assert update_publication["created_objects"] == []
         assert updated["live_outputs"]["Coupon"]["object_name"] == identity
-        assert float(published.Shape.Volume) > initial_volume
-        assert str(published.ShapeMaterial.UUID) == str(card.UUID)
+        assert float(body.Shape.Volume) > initial_volume
+        assert str(published.ShapeMaterial.UUID) == baseline_uuid
+        assert str(body.ShapeMaterial.UUID) == baseline_uuid
         return {
             "object_name": identity,
-            "material_uuid": str(card.UUID),
-            "regenerated_volume_mm3": float(published.Shape.Volume),
+            "source_material_uuid": str(card.UUID),
+            "restored_baseline_uuid": baseline_uuid,
+            "external_drift_reconciled": True,
+            "source_material_removed": True,
+            "regenerated_volume_mm3": float(body.Shape.Volume),
         }
     finally:
         App.closeDocument(document.Name)
@@ -1922,6 +2199,22 @@ def _exercise_saved_source_compatibility(root: Path, pack) -> dict:
         }
     finally:
         App.closeDocument(document.Name)
+
+
+class PartDesignMaterialDriftIntegration(unittest.TestCase):
+    """Focused GUI-hosted regression for source edits after presentation drift."""
+
+    def test_source_edit_reconciles_external_material_change(self) -> None:
+        pack = get_vibescript_pack("PartDesignWorkbench")
+        self.assertIsNotNone(pack)
+        root = Path(
+            tempfile.mkdtemp(prefix="vibecad-partdesign-material-integration-")
+        )
+        try:
+            result = _exercise_physical_material_publication(root, pack)
+        finally:
+            shutil.rmtree(root)
+        self.assertTrue(result["external_drift_reconciled"])
 
 
 def main() -> int:

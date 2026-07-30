@@ -152,9 +152,16 @@ def run(
             boolean.Shapes = [base, *tools]
         if hasattr(boolean, "Refine"):
             boolean.Refine = bool(refine)
-        domain_runtime.adopt_part_result(boolean)
-        doc.recompute()
         operands = [base, *tools]
+        domain_runtime.adopt_part_result(
+            boolean,
+            replaced_inputs=[
+                operand
+                for operand in operands
+                if visibility_before[operand.Name].get("visible") is True
+            ],
+        )
+        doc.recompute()
         for operand in operands:
             view = getattr(operand, "ViewObject", None)
             if view is not None and hasattr(view, "Visibility"):

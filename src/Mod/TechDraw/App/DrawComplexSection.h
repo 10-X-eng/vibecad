@@ -137,6 +137,10 @@ public Q_SLOTS:
     void onSectionCutFinished() override;
 
 private:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+    std::string geometrySourceStateSignature() const override;
+
     bool validateOffsetProfile(const TopoDS_Wire& profile,
                                Base::Vector3d direction,
                                double angleThresholdDeg) const;

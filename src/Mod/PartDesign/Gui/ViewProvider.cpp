@@ -127,10 +127,17 @@ bool ViewProvider::setEdit(int ModNum)
         return forwardedViewProvider->startEditing(ModNum);
     }
     else if (ModNum == ViewProvider::Default) {
+        auto* feature = getObject();
+        auto* document =
+            feature ? feature->getDocument() : nullptr;
+        if (!document) {
+            return false;
+        }
         // When double-clicking on the item for this feature the
         // object unsets and sets its edit mode without closing
         // the task panel
-        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog();
+        Gui::TaskView::TaskDialog* dlg =
+            Gui::Control().activeDialog(document);
         TaskDlgFeatureParameters* featureDlg = qobject_cast<TaskDlgFeatureParameters*>(dlg);
         // NOTE: if the dialog is not partDesigan dialog the featureDlg will be NULL
         if (featureDlg && featureDlg->getViewObject() != this) {
@@ -144,7 +151,7 @@ bool ViewProvider::setEdit(int ModNum)
             msgBox.setDefaultButton(QMessageBox::Yes);
 
             if (msgBox.exec() == QMessageBox::Yes) {
-                Gui::Control().reject();
+                Gui::Control().reject(document);
             }
             else {
                 return false;
@@ -159,7 +166,7 @@ bool ViewProvider::setEdit(int ModNum)
         }
 
         // clear the selection (convenience)
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(document->getName());
 
         // always change to PartDesign WB, remember where we come from
         oldWb = Gui::Command::assureWorkbench("PartDesignWorkbench");
@@ -172,7 +179,7 @@ bool ViewProvider::setEdit(int ModNum)
             }
         }
 
-        Gui::Control().showDialog(featureDlg);
+        Gui::Control().showDialog(featureDlg, document);
         return true;
     }
     else {
@@ -201,13 +208,13 @@ void ViewProvider::unsetEdit(int ModNum)
         previouslyShownViewProvider->show();
     }
 
-    if (ModNum == ViewProvider::Default) {
-        // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
-    }
-    else {
+    if (ModNum != ViewProvider::Default) {
         PartGui::ViewProviderPart::unsetEdit(ModNum);
     }
+    // Default feature dialogs auto-close from TaskView only after the exact
+    // edit transaction has committed or rolled back.  Closing the global
+    // dialog here destroys its command checkpoint while _resetEdit() still
+    // holds the transaction lock and can turn a normal reset into a rollback.
 }
 
 void ViewProvider::updateData(const App::Property* prop)

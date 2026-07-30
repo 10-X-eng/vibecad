@@ -24,15 +24,261 @@
 
 #include <TopExp_Explorer.hxx>
 
+#include <QByteArray>
 
+#include <optional>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include <App/Application.h>
+#include <App/Document.h>
+#include <App/DocumentObserver.h>
+#include <App/DocumentTimeline.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/Control.h>
 #include <Gui/Document.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Selection/SelectionObject.h>
 #include <Mod/CAM/App/FeatureArea.h>
+#include <Mod/CAM/App/FeaturePathCompound.h>
 #include <Mod/CAM/App/FeaturePathShape.h>
+
+
+namespace
+{
+
+App::Document* exactActiveDocument()
+{
+    auto* document = App::GetApplication().getActiveDocument();
+    auto* guiDocument = Gui::Application::Instance->activeDocument();
+    return document && guiDocument && guiDocument->getDocument() == document ? document : nullptr;
+}
+
+bool canStartCAMMutation()
+{
+    const auto* document = exactActiveDocument();
+    return document && document->getBookedTransactionID() == App::NullTransaction
+        && !document->hasPendingTransaction() && !document->isTransactionLocked()
+        && !document->transacting() && !Gui::Control().activeDialog();
+}
+
+class ExactDocumentIdentity
+{
+public:
+    explicit ExactDocumentIdentity(App::Document& document)
+        : weakDocument(&document)
+        , name(document.getName())
+        , uid(document.Uid.getValueStr())
+    {}
+
+    App::Document& resolve() const
+    {
+        auto* document = *weakDocument;
+        if (!document || document->getName() != name || document->Uid.getValueStr() != uid
+            || App::GetApplication().getDocument(name.c_str()) != document) {
+            throw Base::RuntimeError(
+                "The CAM command document changed while its factory was running"
+            );
+        }
+        return *document;
+    }
+
+private:
+    App::DocumentWeakPtrT weakDocument;
+    std::string name;
+    std::string uid;
+};
+
+bool isCAMInputUsable(const App::DocumentObject* object) noexcept
+{
+    try {
+        std::unordered_set<const App::DocumentObject*> visited;
+        for (const auto* current = object; current;) {
+            if (!visited.insert(current).second || !current->isValid()
+                || !App::DocumentTimeline::isObjectUsableAtCurrentPosition(current)) {
+                return false;
+            }
+            const auto* linked = current->getLinkedObject(false);
+            if (!linked || linked == current) {
+                return true;
+            }
+            current = linked;
+        }
+        return false;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+class ExactObjectIdentity
+{
+public:
+    ExactObjectIdentity(App::Document& document, App::DocumentObject& object)
+        : expectedAddress(&object)
+        , name(object.getNameInDocument() ? object.getNameInDocument() : "")
+        , id(object.getID())
+    {
+        if (name.empty() || id <= 0 || object.getDocument() != &document
+            || !document.containsObject(&object) || document.getObject(name.c_str()) != &object
+            || document.getObjectByID(id) != &object) {
+            throw Base::RuntimeError("A CAM command captured an invalid document-object identity");
+        }
+    }
+
+    App::DocumentObject& resolve(App::Document& document) const
+    {
+        auto* byName = document.getObject(name.c_str());
+        auto* byId = document.getObjectByID(id);
+        if (!byName || byName != expectedAddress || byId != expectedAddress || byName != byId
+            || byName->getDocument() != &document || !byName->getNameInDocument()
+            || name != byName->getNameInDocument() || byName->getID() != id
+            || !document.containsObject(byName)) {
+            throw Base::RuntimeError(
+                "A CAM command object changed while Python callbacks were running"
+            );
+        }
+        return *byName;
+    }
+
+    App::DocumentObject& resolveUsable(App::Document& document) const
+    {
+        auto& object = resolve(document);
+        if (!isCAMInputUsable(&object)) {
+            throw Base::RuntimeError("A CAM command input is no longer usable at the current "
+                                     "History position");
+        }
+        return object;
+    }
+
+private:
+    const App::DocumentObject* expectedAddress;
+    std::string name;
+    long id;
+};
+
+std::vector<App::DocumentObject*> resolveExactObjects(
+    App::Document& document,
+    const std::vector<ExactObjectIdentity>& identities
+)
+{
+    std::vector<App::DocumentObject*> objects;
+    objects.reserve(identities.size());
+    for (const auto& identity : identities) {
+        objects.push_back(&identity.resolveUsable(document));
+    }
+    return objects;
+}
+
+Part::Feature* resolveSelectedPartFeature(App::Document& document, const Gui::SelectionObject& selection)
+{
+    const auto* selectedObject = selection.getObject();
+    auto* liveObject = selectedObject ? document.getObjectByID(selectedObject->getID()) : nullptr;
+    auto* feature = freecad_cast<Part::Feature*>(liveObject);
+    return feature && feature == selectedObject && feature->getDocument() == &document
+            && document.containsObject(feature) && isCAMInputUsable(feature)
+        ? feature
+        : nullptr;
+}
+
+bool hasUsablePartFeatureSelection(bool rejectUnsupportedSubelements)
+{
+    auto* document = exactActiveDocument();
+    if (!document) {
+        return false;
+    }
+
+    bool hasUsableSource = false;
+    const auto selection = Gui::Selection().getSelectionEx(nullptr, Part::Feature::getClassTypeId());
+    if (selection.empty()) {
+        return false;
+    }
+    for (const auto& selected : selection) {
+        if (!resolveSelectedPartFeature(*document, selected)) {
+            return false;
+        }
+        const auto& subnames = selected.getSubNames();
+        if (subnames.empty()) {
+            hasUsableSource = true;
+            continue;
+        }
+        for (const auto& subname : subnames) {
+            const bool supported = !subname.compare(0, 4, "Face") || !subname.compare(0, 4, "Edge");
+            if (!supported && rejectUnsupportedSubelements) {
+                return false;
+            }
+            hasUsableSource = hasUsableSource || supported;
+        }
+    }
+    return hasUsableSource;
+}
+
+bool hasUsablePathSelection()
+{
+    auto* document = exactActiveDocument();
+    if (!document) {
+        return false;
+    }
+    const auto selection = Gui::Selection().getSelection();
+    if (selection.empty()) {
+        return false;
+    }
+    for (const auto& selected : selection) {
+        const auto* source = freecad_cast<Path::Feature*>(selected.pObject);
+        if (!source || source->getDocument() != document || !document->containsObject(source)
+            || !source->isValid() || source->Path.getValue().getCommands().empty()
+            || !isCAMInputUsable(source)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool hasUsableAreaWorkplaneSelection()
+{
+    auto* document = exactActiveDocument();
+    if (!document) {
+        return false;
+    }
+
+    std::size_t areaCount = 0;
+    std::size_t planeCount = 0;
+    const auto selection = Gui::Selection().getSelectionEx(nullptr, Part::Feature::getClassTypeId());
+    for (const auto& selected : selection) {
+        auto* feature = resolveSelectedPartFeature(*document, selected);
+        if (!feature || selected.getSubNames().size() > 1) {
+            return false;
+        }
+        const auto& subnames = selected.getSubNames();
+        if (subnames.empty() && feature->isDerivedFrom<Path::FeatureArea>()) {
+            ++areaCount;
+            continue;
+        }
+        if (subnames.empty()) {
+            for (TopExp_Explorer it(feature->Shape.getShape().getShape(), TopAbs_SHELL); it.More();
+                 it.Next()) {
+                return false;
+            }
+        }
+        for (const auto& subname : subnames) {
+            if (subname.compare(0, 4, "Face") && subname.compare(0, 4, "Edge")) {
+                return false;
+            }
+        }
+        ++planeCount;
+    }
+    return areaCount == 1 && planeCount == 1;
+}
+
+}  // namespace
 
 
 // Path Area
@@ -55,23 +301,37 @@ CmdPathArea::CmdPathArea()
 void CmdPathArea::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::list<std::string> cmds;
-    std::ostringstream sources;
-    std::string areaName;
-    bool addView = true;
+    if (!canStartCAMMutation()) {
+        return;
+    }
+    auto* commandDocument = exactActiveDocument();
+    if (!commandDocument) {
+        return;
+    }
+    ExactDocumentIdentity documentIdentity(*commandDocument);
+    const std::string commandDocumentName = commandDocument->getName();
+
+    struct AreaSource
+    {
+        App::DocumentObject* existing {nullptr};
+        std::string factory;
+    };
+    std::vector<AreaSource> sourceSpecs;
+    Path::FeatureArea* sourceArea = nullptr;
     for (const Gui::SelectionObject& selObj :
          getSelection().getSelectionEx(nullptr, Part::Feature::getClassTypeId())) {
-        const Part::Feature* pcObj = static_cast<const Part::Feature*>(selObj.getObject());
-        const std::vector<std::string>& subnames = selObj.getSubNames();
-        if (addView && !areaName.empty()) {
-            addView = false;
+        auto* pcObj = resolveSelectedPartFeature(*commandDocument, selObj);
+        if (!pcObj) {
+            Base::Console().error("A Path Area cannot span documents\n");
+            return;
         }
+        const std::vector<std::string>& subnames = selObj.getSubNames();
 
         if (subnames.empty()) {
-            if (addView && pcObj->isDerivedFrom<Path::FeatureArea>()) {
-                areaName = pcObj->getNameInDocument();
+            if (pcObj->isDerivedFrom<Path::FeatureArea>()) {
+                sourceArea = static_cast<Path::FeatureArea*>(pcObj);
             }
-            sources << "FreeCAD.activeDocument()." << pcObj->getNameInDocument() << ",";
+            sourceSpecs.push_back({pcObj, {}});
             continue;
         }
         for (const std::string& name : subnames) {
@@ -83,57 +343,217 @@ void CmdPathArea::activated(int iMsg)
             std::ostringstream subname;
             subname << pcObj->getNameInDocument() << '_' << name;
             std::string sub_fname = getUniqueObjectName(subname.str().c_str());
+            const auto sourceCommand = getObjectCmd(pcObj);
 
-            std::ostringstream cmd;
-            cmd << "FreeCAD.activeDocument().addObject('Part::Feature','" << sub_fname
-                << "').Shape = PathCommands.findShape(FreeCAD.activeDocument()."
-                << pcObj->getNameInDocument() << ".Shape,'" << name << "'";
+            std::ostringstream factory;
+            factory << "PathCommands.createSubshapeResource(" << "App.getDocument('"
+                    << commandDocument->getName() << "')," << sourceCommand << ",'" << name << "',";
             if (!name.compare(0, 4, "Edge")) {
-                cmd << ",'Wires'";
+                factory << "'Wires'";
             }
-            cmd << ')';
-            cmds.push_back(cmd.str());
-            sources << "FreeCAD.activeDocument()." << sub_fname << ",";
+            else {
+                factory << "None";
+            }
+            factory << ",'" << sub_fname << "')";
+            sourceSpecs.push_back({nullptr, factory.str()});
         }
     }
-    if (addView && !areaName.empty()) {
+    if (sourceSpecs.empty()) {
+        Base::Console().error("Select at least one shape, face, or edge for a Path Area\n");
+        return;
+    }
+    const bool createAreaView = sourceSpecs.size() == 1 && sourceArea
+        && sourceSpecs.front().existing == sourceArea;
+    if (createAreaView) {
+        ExactObjectIdentity sourceIdentity(*commandDocument, *sourceArea);
         std::string FeatName = getUniqueObjectName("FeatureAreaView");
+        const auto sourceCommand = getObjectCmd(sourceArea);
         openCommand(QT_TRANSLATE_NOOP("Command", "Create Path Area View"));
-        doCommand(
-            Doc,
-            "FreeCAD.activeDocument().addObject('Path::FeatureAreaView','%s')",
-            FeatName.c_str()
-        );
-        doCommand(
-            Doc,
-            "FreeCAD.activeDocument().%s.Source = FreeCAD.activeDocument().%s",
-            FeatName.c_str(),
-            areaName.c_str()
-        );
+        try {
+            const QByteArray factory = QByteArray("App.getDocument('") + commandDocumentName.c_str()
+                + "').addObject('Path::FeatureAreaView','" + FeatName.c_str() + "')";
+            auto* result = freecad_cast<Path::FeatureAreaView*>(Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *commandDocument,
+                factory,
+                Path::FeatureAreaView::getClassTypeId()
+            ));
+            auto& liveDocument = documentIdentity.resolve();
+            sourceArea = freecad_cast<Path::FeatureArea*>(&sourceIdentity.resolveUsable(liveDocument));
+            if (!result || !sourceArea) {
+                throw Base::RuntimeError("The Path Area view factory returned invalid identities");
+            }
+            ExactObjectIdentity resultIdentity(liveDocument, *result);
+            const auto resolveObjects = [&]() {
+                auto& document = documentIdentity.resolve();
+                auto* liveResult = freecad_cast<Path::FeatureAreaView*>(
+                    &resultIdentity.resolve(document)
+                );
+                auto* liveSource = freecad_cast<Path::FeatureArea*>(
+                    &sourceIdentity.resolveUsable(document)
+                );
+                if (!liveResult || !liveSource) {
+                    throw Base::RuntimeError("The Path Area view identities changed");
+                }
+                return std::pair {liveResult, liveSource};
+            };
+            const auto resultCommand = getObjectCmd(result);
+            doCommand(Doc, "%s.Source = %s", resultCommand.c_str(), sourceCommand.c_str());
+            std::tie(result, sourceArea) = resolveObjects();
+            doCommand(Doc, "import Path.Base.Util as PathTimeline");
+            std::tie(result, sourceArea) = resolveObjects();
+            doCommand(Doc, "PathTimeline.markTimelineOperation(%s)", resultCommand.c_str());
+            std::tie(result, sourceArea) = resolveObjects();
+            documentIdentity.resolve().recompute();
+            std::tie(result, sourceArea) = resolveObjects();
+            if (!result || result->Source.getValue() != sourceArea || !result->isValid()) {
+                abortCommand();
+                Base::Console().error("The Path Area view could not be created\n");
+                return;
+            }
+            App::DocumentTimeline::ensure(&documentIdentity.resolve())
+                ->finalizeProvisionalOperationBlock(result, {result});
+        }
+        catch (...) {
+            abortCommand();
+            throw;
+        }
         commitCommand();
         updateActive();
         return;
     }
     std::string FeatName = getUniqueObjectName("FeatureArea");
     openCommand(QT_TRANSLATE_NOOP("Command", "Create Path Area"));
-    doCommand(Doc, "import PathCommands");
-    for (const std::string& cmd : cmds) {
-        doCommand(Doc, "%s", cmd.c_str());
+    try {
+        std::vector<std::optional<ExactObjectIdentity>> sourceIdentities(sourceSpecs.size());
+        std::vector<std::size_t> resourceIndices;
+        for (std::size_t index = 0; index < sourceSpecs.size(); ++index) {
+            if (sourceSpecs[index].existing) {
+                sourceIdentities[index].emplace(*commandDocument, *sourceSpecs[index].existing);
+            }
+            else {
+                resourceIndices.push_back(index);
+            }
+        }
+        const auto resolveSources = [&]() {
+            auto& document = documentIdentity.resolve();
+            std::vector<App::DocumentObject*> liveSources;
+            liveSources.reserve(sourceIdentities.size());
+            for (const auto& identity : sourceIdentities) {
+                if (!identity) {
+                    throw Base::RuntimeError("A Path Area source has not been created");
+                }
+                liveSources.push_back(&identity->resolveUsable(document));
+            }
+            return liveSources;
+        };
+        doCommand(Doc, "import PathCommands");
+        for (const auto& identity : sourceIdentities) {
+            if (identity) {
+                (void)identity->resolveUsable(documentIdentity.resolve());
+            }
+        }
+        for (std::size_t index = 0; index < sourceSpecs.size(); ++index) {
+            const auto& sourceSpec = sourceSpecs[index];
+            if (sourceSpec.existing) {
+                continue;
+            }
+            auto* resource = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                documentIdentity.resolve(),
+                QByteArray::fromStdString(sourceSpec.factory),
+                Part::Feature::getClassTypeId()
+            );
+            if (!resource) {
+                throw Base::RuntimeError("The Path Area subshape factory returned no object");
+            }
+            auto& liveDocument = documentIdentity.resolve();
+            for (const auto& identity : sourceIdentities) {
+                if (identity) {
+                    (void)identity->resolveUsable(liveDocument);
+                }
+            }
+            sourceIdentities[index].emplace(liveDocument, *resource);
+        }
+        const QByteArray factory = QByteArray("App.getDocument('") + commandDocumentName.c_str()
+            + "').addObject('Path::FeatureArea','" + FeatName.c_str() + "')";
+        auto* result = freecad_cast<Path::FeatureArea*>(Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            documentIdentity.resolve(),
+            factory,
+            Path::FeatureArea::getClassTypeId()
+        ));
+        auto sources = resolveSources();
+        auto& liveDocument = documentIdentity.resolve();
+        if (!result) {
+            throw Base::RuntimeError("The Path Area factory returned an invalid identity");
+        }
+        ExactObjectIdentity resultIdentity(liveDocument, *result);
+        const auto resolveResult = [&]() {
+            auto& document = documentIdentity.resolve();
+            auto* liveResult = freecad_cast<Path::FeatureArea*>(&resultIdentity.resolve(document));
+            if (!liveResult) {
+                throw Base::RuntimeError("The Path Area identity changed");
+            }
+            return liveResult;
+        };
+        const auto resultCommand = getObjectCmd(result);
+        std::ostringstream sourceCommands;
+        for (const auto* source : sources) {
+            sourceCommands << getObjectCmd(source) << ",";
+        }
+        doCommand(Doc, "%s.Sources = [ %s ]", resultCommand.c_str(), sourceCommands.str().c_str());
+        result = resolveResult();
+        sources = resolveSources();
+        doCommand(Doc, "import Path.Base.Util as PathTimeline");
+        result = resolveResult();
+        sources = resolveSources();
+        doCommand(Doc, "PathTimeline.markTimelineOperation(%s)", resultCommand.c_str());
+        result = resolveResult();
+        sources = resolveSources();
+        for (const std::size_t index : resourceIndices) {
+            auto* resource = &sourceIdentities[index]->resolveUsable(documentIdentity.resolve());
+            const auto resourceCommand = getObjectCmd(resource);
+            doCommand(Doc, "%s.ViewObject.Visibility = False", resourceCommand.c_str());
+            result = resolveResult();
+            sources = resolveSources();
+            doCommand(
+                Doc,
+                "PathTimeline.markTimelineResource(%s, %s)",
+                resourceCommand.c_str(),
+                resultCommand.c_str()
+            );
+            result = resolveResult();
+            sources = resolveSources();
+        }
+        documentIdentity.resolve().recompute();
+        result = resolveResult();
+        sources = resolveSources();
+        if (!result || result->Sources.getValues() != sources || !result->isValid()) {
+            abortCommand();
+            Base::Console().error("The Path Area could not be created\n");
+            return;
+        }
+        std::vector<App::DocumentObject*> block;
+        block.reserve(resourceIndices.size() + 1);
+        for (const std::size_t index : resourceIndices) {
+            block.push_back(&sourceIdentities[index]->resolveUsable(documentIdentity.resolve()));
+        }
+        block.push_back(result);
+        App::DocumentTimeline::ensure(documentIdentity.resolve())
+            ->finalizeProvisionalOperationBlock(result, block);
     }
-    doCommand(Doc, "FreeCAD.activeDocument().addObject('Path::FeatureArea','%s')", FeatName.c_str());
-    doCommand(
-        Doc,
-        "FreeCAD.activeDocument().%s.Sources = [ %s ]",
-        FeatName.c_str(),
-        sources.str().c_str()
-    );
+    catch (...) {
+        abortCommand();
+        throw;
+    }
     commitCommand();
     updateActive();
 }
 
 bool CmdPathArea::isActive()
 {
-    return hasActiveDocument();
+    return canStartCAMMutation() && hasUsablePartFeatureSelection(true);
 }
 
 
@@ -154,19 +574,33 @@ CmdPathAreaWorkplane::CmdPathAreaWorkplane()
 void CmdPathAreaWorkplane::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    if (!canStartCAMMutation()) {
+        return;
+    }
+    auto* commandDocument = exactActiveDocument();
+    if (!commandDocument) {
+        return;
+    }
 
     std::string areaName;
     std::string planeSubname;
+    std::string planeElement;
     std::string planeName;
+    Path::FeatureArea* areaObject = nullptr;
+    Part::Feature* planeObject = nullptr;
 
-    for (Gui::SelectionObject& selObj :
+    for (const Gui::SelectionObject& selObj :
          getSelection().getSelectionEx(nullptr, Part::Feature::getClassTypeId())) {
         const std::vector<std::string>& subnames = selObj.getSubNames();
         if (subnames.size() > 1) {
             Base::Console().error("Select one sub shape object for plane only\n");
             return;
         }
-        const Part::Feature* pcObj = static_cast<Part::Feature*>(selObj.getObject());
+        auto* pcObj = resolveSelectedPartFeature(*commandDocument, selObj);
+        if (!pcObj) {
+            Base::Console().error("A Path Area workplane cannot span documents\n");
+            return;
+        }
         if (subnames.empty()) {
             if (pcObj->isDerivedFrom<Path::FeatureArea>()) {
                 if (!areaName.empty()) {
@@ -174,6 +608,7 @@ void CmdPathAreaWorkplane::activated(int iMsg)
                     return;
                 }
                 areaName = pcObj->getNameInDocument();
+                areaObject = static_cast<Path::FeatureArea*>(pcObj);
                 continue;
             }
             for (TopExp_Explorer it(pcObj->Shape.getShape().getShape(), TopAbs_SHELL); it.More();
@@ -187,8 +622,9 @@ void CmdPathAreaWorkplane::activated(int iMsg)
             return;
         }
         else {
-            planeSubname = planeName = pcObj->getNameInDocument();
-            planeSubname += ".Shape";
+            planeName = pcObj->getNameInDocument();
+            planeObject = pcObj;
+            planeSubname = getObjectCmd(pcObj) + ".Shape";
         }
 
         for (const std::string& name : subnames) {
@@ -199,6 +635,7 @@ void CmdPathAreaWorkplane::activated(int iMsg)
             std::ostringstream subname;
             subname << planeSubname << ",'" << name << "','Wires'";
             planeSubname = subname.str();
+            planeElement = name;
         }
     }
     if (areaName.empty()) {
@@ -209,24 +646,85 @@ void CmdPathAreaWorkplane::activated(int iMsg)
         Base::Console().error("Please select one shape object\n");
         return;
     }
+    if (!areaObject || !planeObject) {
+        Base::Console().error("The Path Area workplane selection is no longer available\n");
+        return;
+    }
 
+    ExactDocumentIdentity documentIdentity(*commandDocument);
+    ExactObjectIdentity areaIdentity(*commandDocument, *areaObject);
+    ExactObjectIdentity planeIdentity(*commandDocument, *planeObject);
+    const auto resolveObjects = [&]() {
+        auto& document = documentIdentity.resolve();
+        auto* area = freecad_cast<Path::FeatureArea*>(&areaIdentity.resolveUsable(document));
+        auto* plane = freecad_cast<Part::Feature*>(&planeIdentity.resolveUsable(document));
+        if (!area || !plane) {
+            throw Base::RuntimeError("The Path Area workplane identities changed");
+        }
+        return std::pair {area, plane};
+    };
     openCommand(QT_TRANSLATE_NOOP("Command", "Select Workplane for Path Area"));
-    doCommand(Doc, "import PathCommands");
-    doCommand(
-        Doc,
-        "FreeCAD.activeDocument().%s.WorkPlane = PathCommands.findShape("
-        "FreeCAD.activeDocument().%s)",
-        areaName.c_str(),
-        planeSubname.c_str()
-    );
-    doCommand(Doc, "FreeCAD.activeDocument().%s.ViewObject.Visibility = True", areaName.c_str());
+    try {
+        const auto areaCommand = getObjectCmd(areaName.c_str(), commandDocument);
+        const auto planeCommand = getObjectCmd(planeObject);
+        const std::string planeElementCommand = planeElement.empty() ? "" : "'" + planeElement + "'";
+        const bool useContainingWire = !planeElement.compare(0, 4, "Edge");
+        doCommand(Doc, "import PathCommands");
+        std::tie(areaObject, planeObject) = resolveObjects();
+        doCommand(Doc, "%s.WorkPlaneSourceEnabled = True", areaCommand.c_str());
+        std::tie(areaObject, planeObject) = resolveObjects();
+        doCommand(
+            Doc,
+            "%s.WorkPlaneSource = (%s, [%s])",
+            areaCommand.c_str(),
+            planeCommand.c_str(),
+            planeElementCommand.c_str()
+        );
+        std::tie(areaObject, planeObject) = resolveObjects();
+        doCommand(
+            Doc,
+            "%s.WorkPlaneSourceCollection = %s",
+            areaCommand.c_str(),
+            useContainingWire ? "'Wires'" : "''"
+        );
+        std::tie(areaObject, planeObject) = resolveObjects();
+        doCommand(
+            Doc,
+            "%s.WorkPlane = PathCommands.findShape(%s)",
+            areaCommand.c_str(),
+            planeSubname.c_str()
+        );
+        std::tie(areaObject, planeObject) = resolveObjects();
+        doCommand(Doc, "%s.ViewObject.Visibility = True", areaCommand.c_str());
+        std::tie(areaObject, planeObject) = resolveObjects();
+        documentIdentity.resolve().recompute();
+        std::tie(areaObject, planeObject) = resolveObjects();
+        auto* result = areaObject;
+        const auto& workplaneSubelements = result->WorkPlaneSource.getSubValues();
+        const bool exactWorkplaneSource = result->WorkPlaneSourceEnabled.getValue()
+            && result->WorkPlaneSource.getValue() == planeObject
+            && std::string_view(result->WorkPlaneSourceCollection.getValue())
+                == (useContainingWire ? "Wires" : "")
+            && ((planeElement.empty() && workplaneSubelements.empty())
+                || (workplaneSubelements.size() == 1 && workplaneSubelements.front() == planeElement));
+        if (!result || !exactWorkplaneSource || result->WorkPlane.getShape().isNull()
+            || !result->isValid()) {
+            abortCommand();
+            Base::Console().error("The Path Area workplane could not be assigned\n");
+            return;
+        }
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
     commitCommand();
     updateActive();
 }
 
 bool CmdPathAreaWorkplane::isActive()
 {
-    return !getSelection().getSelectionEx(nullptr, Path::FeatureArea::getClassTypeId()).empty();
+    return canStartCAMMutation() && hasUsableAreaWorkplaneSelection();
 }
 
 
@@ -251,46 +749,95 @@ CmdPathCompound::CmdPathCompound()
 void CmdPathCompound::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::vector<Gui::SelectionSingleton::SelObj> Sel = getSelection().getSelection();
-    if (!Sel.empty()) {
-        std::ostringstream cmd;
-        cmd << "[";
-        Path::Feature* pcPathObject;
-        for (std::vector<Gui::SelectionSingleton::SelObj>::const_iterator it = Sel.begin();
-             it != Sel.end();
-             ++it) {
-            if ((*it).pObject->isDerivedFrom<Path::Feature>()) {
-                pcPathObject = static_cast<Path::Feature*>((*it).pObject);
-                cmd << "FreeCAD.activeDocument()." << pcPathObject->getNameInDocument() << ",";
-            }
-            else {
-                Base::Console().error(
-                    "Only path objects must be selected before running this command\n"
-                );
-                return;
-            }
-        }
-        cmd << "]";
-        std::string FeatName = getUniqueObjectName("PathCompound");
-        openCommand(QT_TRANSLATE_NOOP("Command", "Create Path Compound"));
-        doCommand(
-            Doc,
-            "FreeCAD.activeDocument().addObject('Path::FeatureCompound','%s')",
-            FeatName.c_str()
-        );
-        doCommand(Doc, "FreeCAD.activeDocument().%s.Group = %s", FeatName.c_str(), cmd.str().c_str());
-        commitCommand();
-        updateActive();
+    if (!canStartCAMMutation()) {
+        return;
     }
-    else {
+    auto* commandDocument = exactActiveDocument();
+    if (!commandDocument) {
+        return;
+    }
+    ExactDocumentIdentity documentIdentity(*commandDocument);
+    const std::string commandDocumentName = commandDocument->getName();
+
+    const auto selection = getSelection().getSelection();
+    if (selection.empty()) {
         Base::Console().error("At least one path object must be selected\n");
         return;
     }
+
+    std::vector<ExactObjectIdentity> sourceIdentities;
+    std::ostringstream sourceCommands;
+    sourceIdentities.reserve(selection.size());
+    for (const auto& selected : selection) {
+        auto* source = freecad_cast<Path::Feature*>(selected.pObject);
+        if (!source || source->getDocument() != commandDocument
+            || !commandDocument->containsObject(source) || !source->isValid()
+            || source->Path.getValue().getCommands().empty() || !isCAMInputUsable(source)) {
+            Base::Console().error(
+                "Only live path objects from the active document may be combined\n"
+            );
+            return;
+        }
+        sourceIdentities.emplace_back(*commandDocument, *source);
+        sourceCommands << getObjectCmd(source) << ",";
+    }
+
+    const std::string featureName = getUniqueObjectName("PathCompound");
+    openCommand(QT_TRANSLATE_NOOP("Command", "Create Path Compound"));
+    try {
+        const QByteArray factory = QByteArray("App.getDocument('") + commandDocumentName.c_str()
+            + "').addObject('Path::FeatureCompound','" + featureName.c_str() + "')";
+        auto* result = freecad_cast<Path::FeatureCompound*>(Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            documentIdentity.resolve(),
+            factory,
+            Path::FeatureCompound::getClassTypeId()
+        ));
+        auto& liveDocument = documentIdentity.resolve();
+        auto sources = resolveExactObjects(liveDocument, sourceIdentities);
+        if (!result) {
+            throw Base::RuntimeError("The Path Compound factory returned an invalid identity");
+        }
+        ExactObjectIdentity resultIdentity(liveDocument, *result);
+        const auto resolveCommandObjects = [&]() {
+            auto& document = documentIdentity.resolve();
+            auto* liveResult = freecad_cast<Path::FeatureCompound*>(&resultIdentity.resolve(document));
+            if (!liveResult) {
+                throw Base::RuntimeError("The Path Compound identity changed");
+            }
+            return std::pair {
+                liveResult,
+                resolveExactObjects(document, sourceIdentities),
+            };
+        };
+        const auto resultCommand = getObjectCmd(result);
+        doCommand(Doc, "%s.Group = [%s]", resultCommand.c_str(), sourceCommands.str().c_str());
+        std::tie(result, sources) = resolveCommandObjects();
+        doCommand(Doc, "import Path.Base.Util as PathTimeline");
+        std::tie(result, sources) = resolveCommandObjects();
+        doCommand(Doc, "PathTimeline.markTimelineOperation(%s)", resultCommand.c_str());
+        std::tie(result, sources) = resolveCommandObjects();
+        documentIdentity.resolve().recompute();
+        std::tie(result, sources) = resolveCommandObjects();
+        if (!result || result->Group.getValues() != sources || !result->isValid()) {
+            abortCommand();
+            Base::Console().error("The Path Compound could not be created\n");
+            return;
+        }
+        App::DocumentTimeline::ensure(documentIdentity.resolve())
+            ->finalizeProvisionalOperationBlock(result, {result});
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
+    commitCommand();
+    updateActive();
 }
 
 bool CmdPathCompound::isActive()
 {
-    return hasActiveDocument();
+    return canStartCAMMutation() && hasUsablePathSelection();
 }
 
 // Path Shape
@@ -314,59 +861,196 @@ CmdPathShape::CmdPathShape()
 void CmdPathShape::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    std::list<std::string> cmds;
-    std::ostringstream sources;
+    if (!canStartCAMMutation()) {
+        return;
+    }
+    auto* commandDocument = exactActiveDocument();
+    if (!commandDocument) {
+        return;
+    }
+    ExactDocumentIdentity documentIdentity(*commandDocument);
+    const std::string commandDocumentName = commandDocument->getName();
+
+    struct ShapeSource
+    {
+        App::DocumentObject* existing {nullptr};
+        std::string factory;
+    };
+    std::vector<ShapeSource> sourceSpecs;
     for (const Gui::SelectionObject& selObj :
          getSelection().getSelectionEx(nullptr, Part::Feature::getClassTypeId())) {
-        const Part::Feature* pcObj = static_cast<const Part::Feature*>(selObj.getObject());
+        auto* pcObj = resolveSelectedPartFeature(*commandDocument, selObj);
+        if (!pcObj) {
+            Base::Console().error("A Path Shape cannot span documents\n");
+            return;
+        }
         const std::vector<std::string>& subnames = selObj.getSubNames();
         if (subnames.empty()) {
-            sources << "FreeCAD.activeDocument()." << pcObj->getNameInDocument() << ",";
+            sourceSpecs.push_back({pcObj, {}});
             continue;
         }
         for (const std::string& name : subnames) {
             if (name.compare(0, 4, "Face") && name.compare(0, 4, "Edge")) {
-                Base::Console()
-                    .warning("Ignored shape %s %s\n", pcObj->getNameInDocument(), name.c_str());
-                continue;
+                Base::Console().error("Path Shape supports whole shapes, faces, and edges only\n");
+                return;
             }
 
             std::ostringstream subname;
             subname << pcObj->getNameInDocument() << '_' << name;
-            std::string sub_fname = getUniqueObjectName(subname.str().c_str());
+            const std::string subFeatureName = getUniqueObjectName(subname.str().c_str());
 
-            std::ostringstream cmd;
-            cmd << "FreeCAD.activeDocument().addObject('Part::Feature','" << sub_fname
-                << "').Shape = PathCommands.findShape(FreeCAD.activeDocument()."
-                << pcObj->getNameInDocument() << ".Shape,'" << name << "'";
+            std::ostringstream factory;
+            factory << "PathCommands.createSubshapeResource(" << "App.getDocument('"
+                    << commandDocument->getName() << "')," << getObjectCmd(pcObj) << ",'" << name
+                    << "',";
             if (!name.compare(0, 4, "Edge")) {
-                cmd << ",'Wires'";
+                factory << "'Wires'";
             }
-            cmd << ')';
-            cmds.push_back(cmd.str());
-            sources << "FreeCAD.activeDocument()." << sub_fname << ",";
+            else {
+                factory << "None";
+            }
+            factory << ",'" << subFeatureName << "')";
+            sourceSpecs.push_back({nullptr, factory.str()});
         }
     }
-    std::string FeatName = getUniqueObjectName("PathShape");
-    openCommand(QT_TRANSLATE_NOOP("Command", "Create Path Shape"));
-    doCommand(Doc, "import PathCommands");
-    for (const std::string& cmd : cmds) {
-        doCommand(Doc, "%s", cmd.c_str());
+    if (sourceSpecs.empty()) {
+        Base::Console().error("Select at least one shape, face, or edge for a Path Shape\n");
+        return;
     }
-    doCommand(Doc, "FreeCAD.activeDocument().addObject('Path::FeatureShape','%s')", FeatName.c_str());
-    doCommand(
-        Doc,
-        "FreeCAD.activeDocument().%s.Sources = [ %s ]",
-        FeatName.c_str(),
-        sources.str().c_str()
-    );
+
+    const std::string featureName = getUniqueObjectName("PathShape");
+    openCommand(QT_TRANSLATE_NOOP("Command", "Create Path Shape"));
+    try {
+        std::vector<std::optional<ExactObjectIdentity>> sourceIdentities(sourceSpecs.size());
+        std::vector<std::size_t> resourceIndices;
+        for (std::size_t index = 0; index < sourceSpecs.size(); ++index) {
+            if (sourceSpecs[index].existing) {
+                sourceIdentities[index].emplace(*commandDocument, *sourceSpecs[index].existing);
+            }
+            else {
+                resourceIndices.push_back(index);
+            }
+        }
+        const auto resolveSources = [&]() {
+            auto& document = documentIdentity.resolve();
+            std::vector<App::DocumentObject*> liveSources;
+            liveSources.reserve(sourceIdentities.size());
+            for (const auto& identity : sourceIdentities) {
+                if (!identity) {
+                    throw Base::RuntimeError("A Path Shape source has not been created");
+                }
+                liveSources.push_back(&identity->resolveUsable(document));
+            }
+            return liveSources;
+        };
+        doCommand(Doc, "import PathCommands");
+        for (const auto& identity : sourceIdentities) {
+            if (identity) {
+                (void)identity->resolveUsable(documentIdentity.resolve());
+            }
+        }
+        for (std::size_t index = 0; index < sourceSpecs.size(); ++index) {
+            const auto& sourceSpec = sourceSpecs[index];
+            if (sourceSpec.existing) {
+                continue;
+            }
+            auto* resource = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                documentIdentity.resolve(),
+                QByteArray::fromStdString(sourceSpec.factory),
+                Part::Feature::getClassTypeId()
+            );
+            if (!resource) {
+                throw Base::RuntimeError("The Path Shape subshape factory returned no object");
+            }
+            auto& liveDocument = documentIdentity.resolve();
+            for (const auto& identity : sourceIdentities) {
+                if (identity) {
+                    (void)identity->resolveUsable(liveDocument);
+                }
+            }
+            sourceIdentities[index].emplace(liveDocument, *resource);
+        }
+
+        const QByteArray factory = QByteArray("App.getDocument('") + commandDocumentName.c_str()
+            + "').addObject('Path::FeatureShape','" + featureName.c_str() + "')";
+        auto* result = freecad_cast<Path::FeatureShape*>(Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            documentIdentity.resolve(),
+            factory,
+            Path::FeatureShape::getClassTypeId()
+        ));
+        auto sources = resolveSources();
+        auto& liveDocument = documentIdentity.resolve();
+        if (!result) {
+            throw Base::RuntimeError("The Path Shape factory returned an invalid identity");
+        }
+        ExactObjectIdentity resultIdentity(liveDocument, *result);
+        const auto resolveResult = [&]() {
+            auto& document = documentIdentity.resolve();
+            auto* liveResult = freecad_cast<Path::FeatureShape*>(&resultIdentity.resolve(document));
+            if (!liveResult) {
+                throw Base::RuntimeError("The Path Shape identity changed");
+            }
+            return liveResult;
+        };
+        const auto resultCommand = getObjectCmd(result);
+        std::ostringstream sourceCommands;
+        for (const auto* source : sources) {
+            sourceCommands << getObjectCmd(source) << ",";
+        }
+        doCommand(Doc, "%s.Sources = [%s]", resultCommand.c_str(), sourceCommands.str().c_str());
+        result = resolveResult();
+        sources = resolveSources();
+        doCommand(Doc, "import Path.Base.Util as PathTimeline");
+        result = resolveResult();
+        sources = resolveSources();
+        doCommand(Doc, "PathTimeline.markTimelineOperation(%s)", resultCommand.c_str());
+        result = resolveResult();
+        sources = resolveSources();
+        for (const std::size_t index : resourceIndices) {
+            auto* resource = &sourceIdentities[index]->resolveUsable(documentIdentity.resolve());
+            const auto resourceCommand = getObjectCmd(resource);
+            doCommand(Doc, "%s.ViewObject.Visibility = False", resourceCommand.c_str());
+            result = resolveResult();
+            sources = resolveSources();
+            doCommand(
+                Doc,
+                "PathTimeline.markTimelineResource(%s, %s)",
+                resourceCommand.c_str(),
+                resultCommand.c_str()
+            );
+            result = resolveResult();
+            sources = resolveSources();
+        }
+        documentIdentity.resolve().recompute();
+        result = resolveResult();
+        sources = resolveSources();
+        if (!result || result->Sources.getValues() != sources || !result->isValid()) {
+            abortCommand();
+            Base::Console().error("The Path Shape could not be created\n");
+            return;
+        }
+        std::vector<App::DocumentObject*> block;
+        block.reserve(resourceIndices.size() + 1);
+        for (const std::size_t index : resourceIndices) {
+            block.push_back(&sourceIdentities[index]->resolveUsable(documentIdentity.resolve()));
+        }
+        block.push_back(result);
+        App::DocumentTimeline::ensure(documentIdentity.resolve())
+            ->finalizeProvisionalOperationBlock(result, block);
+    }
+    catch (...) {
+        abortCommand();
+        throw;
+    }
     commitCommand();
     updateActive();
 }
 
 bool CmdPathShape::isActive()
 {
-    return hasActiveDocument();
+    return canStartCAMMutation() && hasUsablePartFeatureSelection(true);
 }
 
 

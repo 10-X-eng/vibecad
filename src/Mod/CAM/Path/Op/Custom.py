@@ -154,12 +154,15 @@ class ObjectCustom(PathOp.ObjectOp):
             obj.setEditorMode("GcodeFile", 0)
             obj.setEditorMode("Gcode", 2)
 
-    def findGcodeFile(self, filename):
+    def findGcodeFile(self, filename, document=None):
         if os.path.exists(filename):
             # probably absolute, just return
             return filename
 
-        doc_path = os.path.dirname(FreeCAD.ActiveDocument.FileName)
+        document = document or FreeCAD.ActiveDocument
+        if document is None:
+            return None
+        doc_path = os.path.dirname(document.FileName)
         prospective_path = os.path.join(doc_path, filename)
 
         if os.path.exists(prospective_path):
@@ -188,7 +191,10 @@ class ObjectCustom(PathOp.ObjectOp):
                 )
 
         elif obj.Source == "File" and len(obj.GcodeFile) > 0:
-            gcode_file = self.findGcodeFile(obj.GcodeFile)
+            gcode_file = self.findGcodeFile(
+                obj.GcodeFile,
+                document=obj.Document,
+            )
 
             # could not determine the path
             if not gcode_file:
@@ -233,7 +239,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Custom operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectCustom(obj, name, parentJob)
     return obj

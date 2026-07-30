@@ -60,9 +60,9 @@ TaskActiveView::TaskActiveView(TechDraw::DrawPage* pageFeat)
     , m_pageFeat(pageFeat)
     , m_imageFeat(nullptr)
     , m_previewImageFeat(nullptr)
+    , m_pageIdentity(pageFeat)
     , m_btnOK(nullptr)
     , m_btnCancel(nullptr)
-    , m_tid(0)
 {
     ui->setupUi(this);
 
@@ -71,15 +71,32 @@ TaskActiveView::TaskActiveView(TechDraw::DrawPage* pageFeat)
 
     setUiPrimary();
 
-    // For live preview
-    m_tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create ActiveView"));
+    if (!pageFeat || !pageFeat->getDocument()) {
+        throw Base::RuntimeError(
+            "The active-view task requires a live drawing page"
+        );
+    }
+
+    // Command activation opens the exact transaction before this constructor
+    // creates provisional geometry. TaskView adopts that same transaction
+    // when the panel is attached to the page document.
+    if (pageFeat->getDocument()->getBookedTransactionID()
+        == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The active-view task has no owning transaction"
+        );
+    }
 
     m_previewImageFeat = createActiveView();
     if (!m_previewImageFeat) {
-        Gui::Command::abortCommand(m_tid);
-        this->setEnabled(false);
-        return;
+        throw Base::RuntimeError(
+            "The active-view image could not be created"
+        );
     }
+    m_previewIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewImage>(
+            m_previewImageFeat
+        );
 
     connect(ui->gbFraming, &QGroupBox::toggled, this, &TaskActiveView::onCropChanged);
 
@@ -95,42 +112,40 @@ TaskActiveView::TaskActiveView(TechDraw::DrawPage* pageFeat)
 
 TaskActiveView::~TaskActiveView()
 {
-    if (m_previewImageFeat) {
-        Gui::Command::abortCommand(m_tid);
-    }
 }
 
 bool TaskActiveView::accept()
 {
-    if (m_previewImageFeat) {
-        Gui::Command::commitCommand(m_tid);
-        m_imageFeat = m_previewImageFeat;
-        m_previewImageFeat = nullptr;
+    auto* preview = m_previewIdentity.resolve();
+    if (!preview) {
+        return false;
     }
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    preview->recomputeFeature();
+    if (preview->isError()) {
+        return false;
+    }
+    m_imageFeat = preview;
     return true;
 }
 
 bool TaskActiveView::reject()
 {
-    if (m_previewImageFeat) {
-        Gui::Command::abortCommand(m_tid);
-        m_previewImageFeat = nullptr;
-    }
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    // TaskView performs the exact rollback after this widget is torn down.
     return true;
 }
 
 void TaskActiveView::updatePreview()
 {
-    if (!m_previewImageFeat) {
+    auto* page = m_pageIdentity.resolve();
+    auto* preview = m_previewIdentity.resolve();
+    if (!page || !preview) {
         return;
     }
 
     View3DInventor* view3d = qobject_cast<View3DInventor*>(Gui::getMainWindow()->activeWindow());
     if (!view3d) {
         Gui::Document* pageGuiDocument =
-            Gui::Application::Instance->getDocument(m_pageFeat->getDocument()->getName());
+            Gui::Application::Instance->getDocument(page->getDocument());
         auto views3dAll = pageGuiDocument->getMDIViewsOfType(Gui::View3DInventor::getClassTypeId());
         if (!views3dAll.empty()) {
             view3d = qobject_cast<View3DInventor*>(views3dAll.front());
@@ -150,9 +165,9 @@ void TaskActiveView::updatePreview()
         return;
     }
 
-    App::Document* doc = m_previewImageFeat->getDocument();
-    std::string pageName = m_pageFeat->getNameInDocument();
-    std::string imageName = m_previewImageFeat->getNameInDocument();
+    App::Document* doc = preview->getDocument();
+    std::string pageName = page->getNameInDocument();
+    std::string imageName = preview->getNameInDocument();
 
     std::string baseName = pageName + imageName;
     std::string tempName =
@@ -188,19 +203,19 @@ void TaskActiveView::updatePreview()
     }
 
     tempName = DU::cleanFilespecBackslash(tempName);
-    m_previewImageFeat->ImageFile.setValue(tempName);
-    m_previewImageFeat->Width.setValue(ui->qsbWidth->rawValue());
-    m_previewImageFeat->Height.setValue(ui->qsbHeight->rawValue());
+    preview->ImageFile.setValue(tempName);
+    preview->Width.setValue(ui->qsbWidth->rawValue());
+    preview->Height.setValue(ui->qsbHeight->rawValue());
 
     if (auto* guiDoc = Gui::Application::Instance->getDocument(doc)) {
-        if (auto* vp = guiDoc->getViewProvider(m_previewImageFeat)) {
+        if (auto* vp = guiDoc->getViewProvider(preview)) {
             if (auto* vpImage = freecad_cast<ViewProviderImage*>(vp)) {
                 vpImage->Crop.setValue(ui->gbFraming->isChecked());
             }
         }
     }
 
-    m_previewImageFeat->recomputeFeature();
+    preview->recomputeFeature();
 }
 
 void TaskActiveView::saveButtons(QPushButton* btnOK, QPushButton* btnCancel)
@@ -257,11 +272,15 @@ void TaskActiveView::enableCrop(bool state)
 
 TechDraw::DrawViewImage* TaskActiveView::createActiveView()
 {
+    auto* page = m_pageIdentity.resolve();
+    if (!page) {
+        return nullptr;
+    }
     View3DInventor* view3d = qobject_cast<View3DInventor*>(Gui::getMainWindow()->activeWindow());
     if (!view3d) {
         // Fallback 1: Try to find a 3D view in the page's document
         Gui::Document* pageGuiDocument =
-            Gui::Application::Instance->getDocument(m_pageFeat->getDocument()->getName());
+            Gui::Application::Instance->getDocument(page->getDocument());
         if (pageGuiDocument) {
             auto views3dAll = pageGuiDocument->getMDIViewsOfType(Gui::View3DInventor::getClassTypeId());
             if (!views3dAll.empty()) {
@@ -276,16 +295,26 @@ TechDraw::DrawViewImage* TaskActiveView::createActiveView()
         return nullptr;
     }
 
-    App::Document* pageDocument = m_pageFeat->getDocument();
+    App::Document* pageDocument = page->getDocument();
     const std::string objectName{"ActiveView"};
     const std::string imageType = "TechDraw::DrawViewImage";
 
     std::string sObjName = pageDocument->getUniqueObjectName(objectName.c_str());
 
-    pageDocument->addObject(imageType.c_str(), sObjName.c_str());
-    App::DocumentObject* newObj = pageDocument->getObject(sObjName.c_str());
+    auto* newObj = pageDocument->addObject(
+        imageType.c_str(),
+        sObjName.c_str()
+    );
+    if (!newObj
+        || !newObj->isDerivedFrom<TechDraw::DrawViewImage>()
+        || newObj->getDocument() != pageDocument
+        || !pageDocument->containsObject(newObj)) {
+        throw Base::RuntimeError(
+            "The active-view image factory returned an invalid object"
+        );
+    }
 
-    m_pageFeat->addView(newObj);
+    page->addView(newObj);
     newObj->Label.setValue("ActiveView");
 
     return static_cast<TechDraw::DrawViewImage*>(newObj);
@@ -315,8 +344,7 @@ TaskDlgActiveView::~TaskDlgActiveView() {}
 
 bool TaskDlgActiveView::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgActiveView::reject()

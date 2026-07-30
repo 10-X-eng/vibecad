@@ -94,35 +94,19 @@ class TestCommandInsertLink(unittest.TestCase):
         """
         App.closeDocument(self.doc.Name)
 
-    @patch("FreeCADGui.PySideUic.loadUi")
-    @patch("CommandInsertLink.TaskAssemblyInsertLink.adjustTreeWidgetSize")
-    def test_mixed_valid_and_invalid_objects(self, _mock_adjustTreeSize, _mock_loadUi):
-        """Test that accept() handles a mix of valid and invalid objects correctly."""
-        operation = "Handle mixed valid/invalid objects"
+    def test_mixed_valid_and_invalid_objects_are_rejected_atomically(self):
+        """A replay batch never accepts fake or stale occurrence identities."""
+        operation = "Reject mixed valid/invalid objects atomically"
         _msg(f"  Test '{operation}'")
 
-        mock_view = MagicMock()
-        mock_view.getSize = MagicMock(return_value=(800, 600))
-        task = CommandInsertLink.TaskAssemblyInsertLink(self.assembly, mock_view)
-
-        # Create a mix of valid and invalid objects
-        test_objects = [
-            # Valid object (would work in real scenario)
+        source = self.doc.addObject("App::Part", "ValidLinkedObject")
+        occurrence = self.assembly.newObject("App::Link", "ValidObject")
+        occurrence.LinkedObject = source
+        insertion_stack = [
             {
-                "addedObject": type(
-                    "ValidObject",
-                    (),
-                    {
-                        "Name": "ValidObject",
-                        "Label": "Valid Object",
-                        "LinkedObject": type(
-                            "ValidLinkedObject", (), {"Name": "ValidLinkedObjectName"}
-                        )(),
-                    },
-                )(),
+                "addedObject": occurrence,
                 "translation": App.Vector(1, 1, 1),
             },
-            # Invalid: LinkedObject is None
             {
                 "addedObject": type(
                     "InvalidObject1",
@@ -165,14 +149,25 @@ class TestCommandInsertLink(unittest.TestCase):
             },
         ]
 
-        # Add all objects to insertion stack
-        for obj_data in test_objects:
-            task.insertionStack.append(obj_data)
+        objects_before = tuple(self.doc.Objects)
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires App::Link or Assembly::AssemblyLink",
+        ):
+            CommandInsertLink.buildInsertedComponentReplayTrace(
+                self.doc,
+                self.assembly,
+                insertion_stack,
+            )
+        self.assertEqual(tuple(self.doc.Objects), objects_before)
 
-        # Should handle the mix gracefully - invalid objects skipped, valid ones processed
-        result = task.accept()
-        self.assertTrue(result, "accept() should return True even with mixed valid/invalid objects")
-        _msg("  Successfully handled mixed valid/invalid objects")
+        valid_trace = CommandInsertLink.buildInsertedComponentReplayTrace(
+            self.doc,
+            self.assembly,
+            insertion_stack[:1],
+        )
+        self.assertIn("assembly.newObject('App::Link'", valid_trace)
+        _msg("  Rejected the invalid batch before replay")
 
     @patch("FreeCADGui.PySideUic.loadUi")
     @patch("CommandInsertLink.TaskAssemblyInsertLink.adjustTreeWidgetSize")

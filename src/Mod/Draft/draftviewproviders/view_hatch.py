@@ -31,6 +31,7 @@ import PySide.QtGui as QtGui
 import FreeCADGui as Gui
 
 from draftguitools.gui_hatch import Draft_Hatch_TaskPanel
+from draftutils.transaction import start_object_edit
 from draftutils.translate import translate
 
 
@@ -71,7 +72,7 @@ class ViewProviderDraftHatch:
         self.taskd.form.Scale.setValue(vobj.Object.Scale)
         self.taskd.form.Rotation.setValue(vobj.Object.Rotation)
         self.taskd.form.Translate.setChecked(vobj.Object.Translate)
-        Gui.Control.showDialog(self.taskd)
+        Gui.Control.showDialog(self.taskd, vobj.Document)
         return True
 
     def unsetEdit(self, vobj, mode):
@@ -92,4 +93,4 @@ class ViewProviderDraftHatch:
         # Part::FeaturePython context menu. See view_base.py.
 
     def edit(self):
-        Gui.ActiveDocument.setEdit(self.Object, 0)
+        start_object_edit(self.Object, 0)

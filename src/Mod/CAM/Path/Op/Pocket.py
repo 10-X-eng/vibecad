@@ -277,6 +277,7 @@ class ObjectPocket(PathPocketBase.ObjectPocket):
         Attempt to separate unconnected edges into top and bottom loops of the pocket.
         Trim the top and bottom of the pocket if available and requested.
         return: tuple with pocket shape information"""
+        document = obj.Document
         low = []
         high = []
         removeList = []
@@ -339,8 +340,7 @@ class ObjectPocket(PathPocketBase.ObjectPocket):
                     makeHighFace = 2
 
             if makeHighFace > 0:
-                FreeCAD.ActiveDocument.addObject("Part::Feature", "topEdgeFace")
-                highFace = FreeCAD.ActiveDocument.ActiveObject
+                highFace = document.addObject("Part::Feature", "topEdgeFace")
                 highFace.Shape = highFaceShape
                 removeList.append(highFace.Name)
 
@@ -380,8 +380,7 @@ class ObjectPocket(PathPocketBase.ObjectPocket):
                 Path.Log.error("An adaptive finish is unavailable.")
                 isLowFacePlanar = False
             else:
-                FreeCAD.ActiveDocument.addObject("Part::Feature", "bottomEdgeFace")
-                lowFace = FreeCAD.ActiveDocument.ActiveObject
+                lowFace = document.addObject("Part::Feature", "bottomEdgeFace")
                 lowFace.Shape = lowFaceShape
                 removeList.append(lowFace.Name)
         else:
@@ -472,11 +471,12 @@ class ObjectPocket(PathPocketBase.ObjectPocket):
         if FreeCAD.GuiUp:
             import FreeCADGui
 
+            gui_document = FreeCADGui.getDocument(document.Name)
             for rn in removeList:
-                FreeCADGui.ActiveDocument.getObject(rn).Visibility = False
+                gui_document.getObject(rn).Visibility = False
 
         for rn in removeList:
-            FreeCAD.ActiveDocument.getObject(rn).purgeTouched()
+            document.getObject(rn).purgeTouched()
             self.tempObjectNames.append(rn)
         return pocket
 
@@ -892,7 +892,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Pocket operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectPocket(obj, name, parentJob)
     return obj

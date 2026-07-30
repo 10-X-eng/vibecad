@@ -45,6 +45,7 @@ public:
 
     /// Is called by the tree if the user double click on the object
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override;
     void setupContextMenu(QMenu*, QObject*, const char*) override;
     void updateData(const App::Property*) override;
     void updateIcon();
@@ -53,6 +54,7 @@ public:
     TechDraw::DrawProjGroupItem* getObject() const;
     void unsetEdit(int ModNum) override;
     bool onDelete(const std::vector<std::string>& subNames) override;
+    bool onDeleteOwnedTimelineResource(App::DocumentObject*) override;
     bool canDelete(App::DocumentObject* obj) const override;
 
 protected:

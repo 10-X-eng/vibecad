@@ -54,6 +54,8 @@ public:
     short mustExecute() const override;
 
     std::vector<App::DocumentObject*> getViews() const;
+    /// Clipped views which are active at the current document timeline marker.
+    std::vector<App::DocumentObject*> getActiveViews() const;
 
     /** @name methods override Feature */
     //@{
@@ -69,6 +71,7 @@ public:
     PyObject *getPyObject() override;
 
     std::vector<std::string> getChildViewNames();
+    std::vector<std::string> getActiveChildViewNames();
     bool isViewInClip(App::DocumentObject* view);
     QRectF getRect() const override { return { 0, 0, Width.getValue(), Height.getValue() };  }
 

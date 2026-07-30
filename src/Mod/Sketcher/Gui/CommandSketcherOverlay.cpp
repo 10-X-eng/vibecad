@@ -260,14 +260,29 @@ Gui::Action* CmdSketcherCompBSplineShowHideGeometryInformation::createAction()
     applyCommandData(this->className(), pcAction);
 
     QAction* c1 = pcAction->addAction(QString());
+    c1->setObjectName(QStringLiteral("Sketcher_BSplineDegree"));
+    c1->setProperty("CommandName", c1->objectName());
+    c1->setProperty("FreeCADCommandGroupSynthetic", false);
     c1->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplineDegree"));
     QAction* c2 = pcAction->addAction(QString());
+    c2->setObjectName(QStringLiteral("Sketcher_BSplinePolygon"));
+    c2->setProperty("CommandName", c2->objectName());
+    c2->setProperty("FreeCADCommandGroupSynthetic", false);
     c2->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplinePolygon"));
     QAction* c3 = pcAction->addAction(QString());
+    c3->setObjectName(QStringLiteral("Sketcher_BSplineComb"));
+    c3->setProperty("CommandName", c3->objectName());
+    c3->setProperty("FreeCADCommandGroupSynthetic", false);
     c3->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplineComb"));
     QAction* c4 = pcAction->addAction(QString());
+    c4->setObjectName(QStringLiteral("Sketcher_BSplineKnotMultiplicity"));
+    c4->setProperty("CommandName", c4->objectName());
+    c4->setProperty("FreeCADCommandGroupSynthetic", false);
     c4->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplineKnotMultiplicity"));
     QAction* c5 = pcAction->addAction(QString());
+    c5->setObjectName(QStringLiteral("Sketcher_BSplinePoleWeight"));
+    c5->setProperty("CommandName", c5->objectName());
+    c5->setProperty("FreeCADCommandGroupSynthetic", false);
     c5->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplinePoleWeight"));
 
     _pcAction = pcAction;

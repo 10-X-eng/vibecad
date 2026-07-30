@@ -24,6 +24,7 @@
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 import Path.Base.Generator.dogboneII as dogboneII
 import Path.Base.Language as PathLanguage
 import Path.Dressup.Utils as PathDressup
@@ -419,6 +420,12 @@ class Proxy(object):
         Path.Log.track(obj.Label)
         maneuver = PathLanguage.Maneuver()
         bones = []
+        if not PathUtil.activeForOp(obj):
+            self.maneuver = maneuver
+            self.bones = bones
+            self.boneTips = None
+            obj.Path = Path.Path()
+            return
         lastMove = None
         moveAfterPlunge = None
         dressingUpDogbone = hasattr(obj.Base, "BoneBlacklist")
@@ -501,7 +508,7 @@ class Proxy(object):
 
 
 def Create(base, name="DressupDogbone"):
-    obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = base.Document.addObject("Path::FeaturePython", name)
     pxy = Proxy(obj, base)
 
     obj.Proxy = pxy

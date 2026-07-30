@@ -29,10 +29,12 @@
 #include <sstream>
 
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Tools.h>
@@ -90,10 +92,17 @@ void TaskFemConstraint::keyPressEvent(QKeyEvent* ke)
 
 const std::string TaskFemConstraint::getReferences(const std::vector<std::string>& items) const
 {
+    const App::DocumentObject* constraint = ConstraintView->getObject();
+    const App::Document* document = constraint ? constraint->getDocument() : nullptr;
+    if (!document) {
+        return {};
+    }
+
     std::string result;
     for (std::vector<std::string>::const_iterator i = items.begin(); i != items.end(); i++) {
         int pos = i->find_last_of(":");
-        std::string objStr = "App.ActiveDocument." + i->substr(0, pos);
+        std::string objStr = "App.getDocument('" + std::string(document->getName())
+            + "').getObject('" + i->substr(0, pos) + "')";
         std::string refStr = "\"" + i->substr(pos + 1) + "\"";
         result = result + (i != items.begin() ? ", " : "") + "(" + objStr + "," + refStr + ")";
     }
@@ -106,6 +115,21 @@ const std::string TaskFemConstraint::getScale() const
     Fem::Constraint* pcConstraint = ConstraintView->getObject<Fem::Constraint>();
 
     return std::to_string(pcConstraint->Scale.getValue());
+}
+
+std::string TaskDlgFemConstraint::constraintReference(
+    const std::string& objectName,
+    const std::string& subElement
+) const
+{
+    auto* constraint = ConstraintView ? ConstraintView->getObject() : nullptr;
+    auto* document = constraint ? constraint->getDocument() : nullptr;
+    if (!document) {
+        throw Base::RuntimeError("The FEM constraint document is no longer available");
+    }
+
+    return "(" + Gui::Command::getObjectCmd(objectName.c_str(), document) + ",[\"" + subElement
+        + "\"])";
 }
 
 void TaskFemConstraint::setSelection(QListWidgetItem* item)
@@ -209,27 +233,31 @@ void TaskFemConstraint::createDeleteAction(QListWidget* parentList)
 
 void TaskDlgFemConstraint::open()
 {
-    if (!ConstraintView->getDocument()->hasPendingCommand()) {
+    Gui::Document* guiDocument = ConstraintView->getDocument();
+    if (!guiDocument->hasPendingCommand()) {
         const auto typeName = ConstraintView->getObject()->getTypeId().getName();
-        ConstraintView->getDocument()->openCommand(std::string {typeName}.c_str());
+        const int transactionId = guiDocument->openCommand(std::string {typeName}.c_str());
+        if (transactionId == App::NullTransaction
+            || !guiDocument->adoptOwnedEditTransaction(transactionId)) {
+            if (transactionId != App::NullTransaction) {
+                App::GetApplication().abortTransaction(transactionId);
+            }
+            throw Base::RuntimeError("Could not establish ownership of the FEM constraint edit");
+        }
         ConstraintView->setVisible(true);
     }
 }
 
 bool TaskDlgFemConstraint::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
+    App::DocumentObject* constraint = ConstraintView->getObject();
+    App::Document* document = constraint->getDocument();
 
     try {
         std::string refs = parameter->getReferences();
 
         if (!refs.empty()) {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.References = [%s]",
-                name.c_str(),
-                refs.c_str()
-            );
+            Gui::cmdAppObject(constraint, std::ostringstream() << "References = [" << refs << "]");
         }
         else {
             QMessageBox::warning(
@@ -241,21 +269,18 @@ bool TaskDlgFemConstraint::accept()
         }
 
         std::string scale = parameter->getScale();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Scale = %s",
-            name.c_str(),
-            scale.c_str()
-        );
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        if (!ConstraintView->getObject()->isValid()) {
-            throw Base::RuntimeError(ConstraintView->getObject()->getStatusString());
+        Gui::cmdAppObject(constraint, std::ostringstream() << "Scale = " << scale);
+        Gui::cmdAppDocument(document, "recompute()");
+        if (!constraint->isValid()) {
+            throw Base::RuntimeError(constraint->getStatusString());
         }
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-        ConstraintView->getDocument()->commitCommand();
+        // The common task boundary owns durability. This reset tears down the
+        // captured editor and commits only its exact transaction.
+        Gui::cmdGuiDocument(document, "resetEdit()");
     }
     catch (const Base::Exception& e) {
-        ConstraintView->getDocument()->abortCommand();
+        // Preserve the correctable task and transaction. An explicit Cancel
+        // is the sole rollback boundary.
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }
@@ -265,9 +290,10 @@ bool TaskDlgFemConstraint::accept()
 
 bool TaskDlgFemConstraint::reject()
 {
-    // roll back the changes
-    ConstraintView->getDocument()->abortCommand();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
+    App::Document* document = ConstraintView->getObject()->getDocument();
+    // TaskView has marked the exact transaction for rollback. Reset the
+    // owning editor first; rollback may delete a newly-created constraint.
+    Gui::cmdGuiDocument(document, "resetEdit()");
     Gui::Command::updateActive();
 
     return true;

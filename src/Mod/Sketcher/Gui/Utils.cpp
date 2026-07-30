@@ -544,6 +544,29 @@ bool SketcherGui::isCommandActive(Gui::Document* doc)
     return false;
 }
 
+namespace
+{
+Sketcher::SketchObject* editingSketch(Gui::Document* document)
+{
+    auto* view = document
+        ? dynamic_cast<SketcherGui::ViewProviderSketch*>(
+              document->getInEdit()
+          )
+        : nullptr;
+    return view ? view->getSketchObject() : nullptr;
+}
+
+bool isExactEditingSketchSelection(
+    Gui::Document* document,
+    const std::vector<Gui::SelectionObject>& selection
+)
+{
+    auto* sketch = editingSketch(document);
+    return sketch && selection.size() == 1
+        && selection.front().getObject() == sketch;
+}
+}
+
 bool SketcherGui::isCommandNeedingConstraintActive(Gui::Document* doc)
 {
     if (!isCommandActive(doc)) {
@@ -551,10 +574,9 @@ bool SketcherGui::isCommandNeedingConstraintActive(Gui::Document* doc)
     }
 
     std::vector<Gui::SelectionObject> sel = Gui::Selection().getSelectionEx(
-        doc->getDocument()->getName(),
-        Sketcher::SketchObject::getClassTypeId()
+        doc->getDocument()->getName()
     );
-    if (sel.size() == 1) {
+    if (isExactEditingSketchSelection(doc, sel)) {
         for (const std::string& name : sel[0].getSubNames()) {
             if (name.starts_with("Constraint")) {
                 return true;
@@ -571,10 +593,9 @@ bool SketcherGui::isCommandNeedingGeometryActive(Gui::Document* doc)
     }
 
     std::vector<Gui::SelectionObject> sel = Gui::Selection().getSelectionEx(
-        doc->getDocument()->getName(),
-        Sketcher::SketchObject::getClassTypeId()
+        doc->getDocument()->getName()
     );
-    if (sel.size() == 1) {
+    if (isExactEditingSketchSelection(doc, sel)) {
         auto* Obj = static_cast<Sketcher::SketchObject*>(sel[0].getObject());
         for (const std::string& name : sel[0].getSubNames()) {
             int geoId {GeoEnum::GeoUndef};
@@ -596,10 +617,9 @@ bool SketcherGui::isCommandNeedingBSplineActive(Gui::Document* doc)
     }
 
     std::vector<Gui::SelectionObject> sel = Gui::Selection().getSelectionEx(
-        doc->getDocument()->getName(),
-        Sketcher::SketchObject::getClassTypeId()
+        doc->getDocument()->getName()
     );
-    if (sel.size() == 1) {
+    if (isExactEditingSketchSelection(doc, sel)) {
         auto* Obj = static_cast<Sketcher::SketchObject*>(sel[0].getObject());
         for (const std::string& name : sel[0].getSubNames()) {
 

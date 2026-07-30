@@ -35,6 +35,11 @@ import FreeCAD
 import FreeCADGui
 import Path
 import Path.Log
+from Path.CommandBoundary import (
+    ExactDocumentObjectIdentity,
+    can_start_document_command,
+    is_job,
+)
 import os
 import webbrowser
 
@@ -57,15 +62,24 @@ class CommandCAMSanity:
         }
 
     def IsActive(self):
+        if not can_start_document_command():
+            return False
         selection = FreeCADGui.Selection.getSelectionEx()
-        if len(selection) == 0:
+        if len(selection) != 1:
             return False
         obj = selection[0].Object
-        return isinstance(obj.Proxy, Path.Main.Job.ObjectJob)
+        return is_job(obj)
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         FreeCADGui.addIconPath(":/icons")
         obj = FreeCADGui.Selection.getSelectionEx()[0].Object
+        identity = ExactDocumentObjectIdentity(
+            obj,
+            FreeCAD.ActiveDocument,
+        )
 
         # Ask the user for a filename to save the report to
 
@@ -84,6 +98,7 @@ class CommandCAMSanity:
         if file_location == "":
             return
 
+        obj = identity.resolve(require_timeline=True)
         sanity_checker = Sanity.CAMSanity(obj, file_location)
         html = sanity_checker.get_output_report()
 
@@ -114,13 +129,17 @@ class CommandCAMQuickValidate:
         }
 
     def IsActive(self):
+        if not can_start_document_command():
+            return False
         selection = FreeCADGui.Selection.getSelectionEx()
-        if len(selection) == 0:
+        if len(selection) != 1:
             return False
         obj = selection[0].Object
-        return isinstance(obj.Proxy, Path.Main.Job.ObjectJob)
+        return is_job(obj)
 
     def Activated(self):
+        if not self.IsActive():
+            return
         obj = FreeCADGui.Selection.getSelectionEx()[0].Object
 
         try:

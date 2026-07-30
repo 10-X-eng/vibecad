@@ -48,7 +48,6 @@ from draftguitools import gui_tool_utils
 from draftguitools import gui_trackers as trackers
 from draftutils import gui_utils
 from draftutils import params
-from draftutils import todo
 from draftutils import utils
 from draftutils.messages import _err, _toolmsg
 from draftutils.translate import translate
@@ -112,11 +111,8 @@ class BezCurve(gui_lines.Line):
         if arg["Type"] != "SoMouseButtonEvent":
             return
         if arg["State"] == "UP":
-            self.obj.ViewObject.Selectable = True
             return
         if arg["State"] == "DOWN" and arg["Button"] == "BUTTON1":
-            # Stop self.obj from being selected to avoid its display in the tree:
-            self.obj.ViewObject.Selectable = False
             if arg["Position"] == self.pos:
                 self.finish(cont=None)
                 return
@@ -146,7 +142,11 @@ class BezCurve(gui_lines.Line):
         if len(self.node) > 1:
             self.node.pop()
             self.bezcurvetrack.update(self.node, degree=self.degree)
-            self.obj.Shape = self.updateShape(self.node)
+            self.preview_shape = (
+                self.updateShape(self.node)
+                if len(self.node) > 1
+                else None
+            )
             self.update_hints()
 
     def drawUpdate(self, point):
@@ -157,9 +157,12 @@ class BezCurve(gui_lines.Line):
                 self.planetrack.set(self.node[0])
             _toolmsg(translate("draft", "Pick next point"))
         else:
-            self.obj.Shape = self.updateShape(self.node)
+            self.preview_shape = self.updateShape(self.node)
             _toolmsg(translate("draft", "Pick next point"))
         self.update_hints()
+
+    def _reset_curve_preview(self):
+        self.bezcurvetrack.update(self.node, degree=self.degree)
 
     def updateShape(self, pts):
         """Create shape for display during creation process."""
@@ -200,10 +203,7 @@ class BezCurve(gui_lines.Line):
         self.end_callbacks(self.call)
         if self.ui and hasattr(self, "bezcurvetrack"):
             self.bezcurvetrack.finalize()
-        if self.obj:
-            # remove temporary object, if any
-            old = self.obj.Name
-            todo.ToDo.delay(self.doc.removeObject, old)
+        self.removeTemporaryObject()
         if len(self.node) > 1:
             # The command to run is built as a series of text strings
             # to be committed through the `draftutils.todo.ToDo` class.
@@ -223,7 +223,11 @@ class BezCurve(gui_lines.Line):
                     "Draft.autogroup(bez)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Bézier Curve"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Bézier Curve"),
+                    _cmd_list,
+                    inputs=self.getSupportInputs(),
+                )
             except Exception:
                 _err("Draft: error delaying commit")
 
@@ -391,7 +395,11 @@ class CubicBezCurve(gui_lines.Line):
         if len(self.node) > 1:
             self.node.pop()
             self.bezcurvetrack.update(self.node, degree=self.degree)
-            self.obj.Shape = self.updateShape(self.node)
+            self.preview_shape = (
+                self.updateShape(self.node)
+                if len(self.node) > 1
+                else None
+            )
             self.update_hints()
 
     def drawUpdate(self, point):
@@ -403,7 +411,7 @@ class CubicBezCurve(gui_lines.Line):
             _toolmsg(translate("draft", "Click and drag to define next knot"))
         elif (len(self.node) - 1) % self.degree == 1 and len(self.node) > 2:
             # is a knot
-            self.obj.Shape = self.updateShape(self.node[:-1])
+            self.preview_shape = self.updateShape(self.node[:-1])
             _toolmsg(translate("draft", "Click and drag to define next knot"))
         self.update_hints()
 
@@ -453,10 +461,7 @@ class CubicBezCurve(gui_lines.Line):
         self.end_callbacks(self.call)
         if self.ui and hasattr(self, "bezcurvetrack"):
             self.bezcurvetrack.finalize()
-        if self.obj:
-            # remove temporary object, if any
-            old = self.obj.Name
-            todo.ToDo.delay(self.doc.removeObject, old)
+        self.removeTemporaryObject()
         if closed is False:
             cleannd = (len(self.node) - 1) % self.degree
             if cleannd == 0:
@@ -482,7 +487,11 @@ class CubicBezCurve(gui_lines.Line):
                     "Draft.autogroup(bez)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Bézier Curve"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Bézier Curve"),
+                    _cmd_list,
+                    inputs=self.getSupportInputs(),
+                )
             except Exception:
                 _err("Draft: error delaying commit")
 

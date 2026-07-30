@@ -126,15 +126,18 @@ def test_partdesign_uses_the_exact_common_v2_lifecycle() -> None:
     pack = _pack()
     assert pack.production_ready is True
     assert pack.surface_id == "vibescript:partdesign:v2"
-    assert pack.tool_names == tuple(
-        f"vibescript.partdesign.{operation}"
-        for operation in domains.LIFECYCLE_OPERATIONS
+    assert pack.tool_names == (
+        *(
+            f"vibescript.{operation}"
+            for operation in domains.UNIVERSAL_SOURCE_OPERATIONS
+        ),
+        *(
+            f"vibescript.partdesign.{operation}"
+            for operation in domains.PROVIDER_DOMAIN_OPERATIONS
+        ),
     )
-    assert domains.LIFECYCLE_OPERATIONS == (
-        "describe_api",
-        "inspect_program",
+    assert domains.PROVIDER_DOMAIN_OPERATIONS == (
         "create_program",
-        "edit_source",
         "set_inputs",
         "reconfigure_program",
         "delete_program",
@@ -175,7 +178,8 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "0-255" in description["operation_selection"]["visible_appearance"]
     priority = description["authoring_priority"]
     assert "api.sketch plus native feature operations" in priority["default"]
-    assert "offset loft section" in priority["planar_profile_rule"]
+    assert "Every planar feature profile" in priority["planar_profile_rule"]
+    assert "offset loft section" not in priority["planar_profile_rule"]
     assert "nonplanar, imported, repair" in priority["direct_topology_exception"]
     assert "Do not replace valid native history" in priority["do_not_regress"]
     assert "empty sketch list" in priority["verification"]
@@ -195,6 +199,19 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "Use api.sketch sections for planar profiles" in exports["loft"][
         "description"
     ]
+    assert "cross-section stays constant" in exports["extrude"]["description"]
+    assert "only when the intended cross-section genuinely changes" in exports[
+        "loft"
+    ]["description"]
+    assert "constant cross-section, use api.extrude" in exports["loft"][
+        "description"
+    ]
+    operation_selection = description["operation_selection"]["redundancy_contract"]
+    assert "api.extrude for straight constant-cross-section" in operation_selection
+    assert "api.loft only when the cross-section itself genuinely changes" in (
+        operation_selection
+    )
+    assert "Do not use api.loft as a shortcut" in operation_selection
     assert "subtractive" not in exports["loft"]["signature"]
     assert "standalone solid is accepted only" in exports["body"]["description"]
 
@@ -584,7 +601,7 @@ def test_edited_partdesign_source_must_finish_compatibility_migration(
         arguments={
             "program_id": PROGRAM_ID,
             "expected_revision": revision,
-            "replacements": [{"old": "label='Original'", "new": "label='Edited'"}],
+            "source": source.replace("label='Original'", "label='Edited'"),
         },
     )
 
@@ -771,7 +788,7 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
     for operation, extra in (
         (
             "edit_source",
-            {"replacements": [{"old": "output('Part')", "new": "output('Other')"}]},
+            {"source": "result = {'Part': output('Other')}"},
         ),
         ("set_inputs", {"patch": {"radius": 5.0}}),
     ):

@@ -108,8 +108,8 @@ class CalculiXTools(ObjectTools):
         self.input_deck = os.path.splitext(os.path.basename(self.model_file))[0]
 
     def compute(self):
+        ccx_bin = settings.require_binary("Calculix")
         self._clear_results()
-        ccx_bin = settings.get_binary("Calculix")
         env = QProcessEnvironment.systemEnvironment()
         num_cpu = self.fem_param.GetGroup("Ccx").GetInt(
             "AnalysisNumCPUs", QThread.idealThreadCount()
@@ -128,9 +128,43 @@ class CalculiXTools(ObjectTools):
         return self.process
 
     def update_properties(self):
+        keep_results = self.fem_param.GetGroup("General").GetBool(
+            "KeepResultsOnReRun",
+            False,
+        )
+        retained_pipeline = None
+        if not keep_results:
+            for result in self.obj.Results:
+                if result.isDerivedFrom("Fem::FemPostPipeline"):
+                    retained_pipeline = result
+        reconciliation = None
+        if retained_pipeline is not None:
+            from femcommands.manager import (
+                _stage_timeline_result_graph,
+            )
+
+            reconciliation = _stage_timeline_result_graph(
+                retained_pipeline
+            )
         # TODO at the moment, only one .vtm file is assumed
-        self._load_vtk_results()
-        self._load_dat_results()
+        pipeline, pipeline_created = self._load_vtk_results()
+        dat, dat_created = self._load_dat_results()
+        if pipeline is not None:
+            resources = tuple(
+                resource
+                for resource in (dat,)
+                if resource is not None and dat_created
+            )
+            if pipeline_created or resources or reconciliation is not None:
+                return (
+                    pipeline,
+                    resources,
+                    pipeline_created,
+                    reconciliation,
+                )
+        if dat is not None and dat_created:
+            return dat, (), True
+        return None
 
     def _clear_results(self):
         # result is a 'Result.vtm' file and a 'Result' directory
@@ -152,6 +186,7 @@ class CalculiXTools(ObjectTools):
         # search dat output
         keep_result = self.fem_param.GetGroup("General").GetBool("KeepResultsOnReRun", False)
         dat = None
+        create = False
         for res in self.obj.Results:
             if res.isDerivedFrom("App::TextDocument"):
                 dat = res
@@ -163,6 +198,7 @@ class CalculiXTools(ObjectTools):
             tmp = self.obj.Results
             tmp.append(dat)
             self.obj.Results = tmp
+            create = True
 
         files = os.listdir(self.obj.WorkingDirectory)
         for f in files:
@@ -171,6 +207,7 @@ class CalculiXTools(ObjectTools):
                 with open(dat_file, "r") as file:
                     dat.Text = file.read()
                 break
+        return dat, create
 
     def _load_vtk_results(self):
         # search current pipeline
@@ -219,6 +256,7 @@ class CalculiXTools(ObjectTools):
             default_field = self._get_default_field()
             if default_field in enum_field:
                 view_obj.Field = default_field
+        return pipeline, create
 
     def frd_var_conversion(self, analysis_type):
         common = {
@@ -372,7 +410,7 @@ class CalculiXTools(ObjectTools):
 
     def version(self):
         p = QProcess()
-        ccx_bin = settings.get_binary("Calculix")
+        ccx_bin = settings.require_binary("Calculix")
         p.start(ccx_bin, ["-v"])
         p.waitForFinished()
         info = p.readAll().data().decode()

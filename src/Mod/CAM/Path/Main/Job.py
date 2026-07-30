@@ -28,16 +28,11 @@ import FreeCAD
 import Path
 import Path.Base.SetupSheet as PathSetupSheet
 import Path.Base.Util as PathUtil
+from Path.CommandBoundary import is_timeline_input_usable
 import Path.Main.Stock as PathStock
 import Path.Tool.Controller as PathToolController
 import json
 import time
-
-# lazily loaded modules
-from lazy_loader.lazy_loader import LazyLoader
-
-Draft = LazyLoader("Draft", globals(), "Draft")
-
 
 if False:
     Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
@@ -78,7 +73,41 @@ def isResourceClone(obj, propLink, resourceName):
 
 
 def createResourceClone(obj, orig, name, icon):
-    clone = Draft.clone(orig)
+    from draftobjects.clone import Clone
+    from draftutils import utils as DraftUtils
+
+    document = obj.Document
+    if getattr(orig, "Document", None) is not document:
+        raise RuntimeError(
+            "A CAM Job resource cannot reference another document"
+        )
+    # Draft.make_clone() always creates in ActiveDocument.  Build the same
+    # Draft clone object in the Job's captured document so a background-tab
+    # task cannot leak its model resource into the foreground document.
+    if (
+        orig.isDerivedFrom("Part::Part2DObject")
+        and DraftUtils.get_type(orig)
+        not in ["BezCurve", "BSpline", "Wire"]
+    ):
+        clone = document.addObject(
+            "Part::Part2DObjectPython",
+            "Clone2D",
+        )
+        PathUtil.markTimelineResource(clone, obj)
+    else:
+        clone = document.addObject("Part::FeaturePython", "Clone")
+        PathUtil.markTimelineResource(clone, obj)
+        clone.addExtension("Part::AttachExtensionPython")
+    Clone(clone)
+    clone.Objects = [orig]
+    if hasattr(orig, "Placement"):
+        clone.Placement = orig.Placement
+    if hasattr(clone, "LongName") and hasattr(orig, "LongName"):
+        clone.LongName = orig.LongName
+    if FreeCAD.GuiUp:
+        from draftviewproviders.view_clone import ViewProviderClone
+
+        ViewProviderClone(clone.ViewObject)
     clone.Label = "%s-%s" % (name, orig.Label)
     clone.addProperty("App::PropertyString", "PathResource")
     clone.PathResource = name
@@ -115,11 +144,17 @@ class ObjectJob:
         templateFile=None,
         createDefaultToolController=True,
         createDefaultStock=True,
+        deferTimelinePublication=False,
     ):
         self.obj = obj
         self.tooltip = None
         self.tooltipArgs = None
+        self._deferTimelinePublication = bool(
+            deferTimelinePublication
+        )
+        self._initialTimelineResources = []
         obj.Proxy = self
+        PathUtil.markTimelineOperation(obj)
 
         obj.addProperty(
             "App::PropertyFile",
@@ -271,6 +306,85 @@ class ObjectJob:
         )
         if createDefaultStock:
             self.setupStock(obj)
+        self.setupTimelineTracking(obj)
+
+    def _captureInitialTimelineOperation(self, operation):
+        """Defer initial Job role mutation to the atomic core publisher."""
+
+        if not getattr(
+            self,
+            "_deferTimelinePublication",
+            False,
+        ):
+            return False
+        if operation is not self.obj:
+            raise RuntimeError(
+                "A CAM Job cannot capture another initial operation root"
+            )
+        return True
+
+    def _captureInitialTimelineResource(self, resource):
+        """Record one exact initial Job resource without mutating metadata."""
+
+        if not getattr(
+            self,
+            "_deferTimelinePublication",
+            False,
+        ):
+            return False
+        document = self.obj.Document
+        if (
+            resource is self.obj
+            or getattr(resource, "Document", None) is not document
+            or document.getObject(resource.Name) is not resource
+        ):
+            raise RuntimeError(
+                "A captured CAM Job resource must be one distinct live "
+                "object in the Job document"
+            )
+        if not any(
+            resource is existing
+            for existing in self._initialTimelineResources
+        ):
+            self._initialTimelineResources.append(resource)
+        return True
+
+    def initialTimelineResources(self):
+        """Return the exact authored resource order for initial publication."""
+
+        if not getattr(
+            self,
+            "_deferTimelinePublication",
+            False,
+        ):
+            return ()
+        document = self.obj.Document
+        resources = tuple(self._initialTimelineResources)
+        if any(
+            getattr(resource, "Document", None) is not document
+            or document.getObject(resource.Name) is not resource
+            for resource in resources
+        ):
+            raise RuntimeError(
+                "A captured CAM Job resource changed before publication"
+            )
+        return resources
+
+    def _releaseInitialTimelineResource(self, resource):
+        """Forget an explicitly deleted resource before publication."""
+
+        if not getattr(
+            self,
+            "_deferTimelinePublication",
+            False,
+        ):
+            return False
+        self._initialTimelineResources = [
+            existing
+            for existing in self._initialTimelineResources
+            if existing is not resource
+        ]
+        return True
 
     @classmethod
     def propertyEnumerations(self, dataType="data"):
@@ -316,7 +430,11 @@ class ObjectJob:
         # ops = FreeCAD.ActiveDocument.addObject(
         #     "Path::FeatureCompoundPython", "Operations"
         # )
-        ops = FreeCAD.ActiveDocument.addObject("App::DocumentObjectGroup", "Operations")
+        ops = obj.Document.addObject(
+            "App::DocumentObjectGroup",
+            "Operations",
+        )
+        PathUtil.markTimelineResource(ops, obj)
         if ops.ViewObject:
             # ops.ViewObject.Proxy = 0
             ops.ViewObject.Visibility = True
@@ -336,12 +454,16 @@ class ObjectJob:
                         "App::Property", "SetupSheet holding the settings for this job"
                     ),
                 )
-            obj.SetupSheet = PathSetupSheet.Create()
+            obj.SetupSheet = PathSetupSheet.Create(
+                document=obj.Document,
+                timelineOwner=obj,
+            )
             if obj.SetupSheet.ViewObject:
                 import Path.Base.Gui.IconViewProvider
 
                 Path.Base.Gui.IconViewProvider.Attach(obj.SetupSheet.ViewObject, "SetupSheet")
             obj.SetupSheet.Label = "SetupSheet"
+        PathUtil.markTimelineResource(obj.SetupSheet, obj)
         self.setupSheet = obj.SetupSheet.Proxy
 
     def setupBaseModel(self, obj, models=None):
@@ -360,13 +482,20 @@ class ObjectJob:
             addModels = True
 
         if addModels:
-            model = FreeCAD.ActiveDocument.addObject("App::DocumentObjectGroup", "Model")
+            model = obj.Document.addObject(
+                "App::DocumentObjectGroup",
+                "Model",
+            )
+            PathUtil.markTimelineResource(model, obj)
             if model.ViewObject:
                 model.ViewObject.Visibility = False
             if models:
                 model.addObjects([createModelResourceClone(obj, base) for base in models])
             obj.Model = model
             obj.Model.Label = "Model"
+        PathUtil.markTimelineResource(obj.Model, obj)
+        for model in obj.Model.Group:
+            PathUtil.markTimelineResource(model, obj)
 
         if hasattr(obj, "Base"):
             Path.Log.info("Converting Job.Base to new Job.Model for {}".format(obj.Label))
@@ -390,7 +519,11 @@ class ObjectJob:
             addTable = True
 
         if addTable:
-            toolTable = FreeCAD.ActiveDocument.addObject("App::DocumentObjectGroup", "Tools")
+            toolTable = obj.Document.addObject(
+                "App::DocumentObjectGroup",
+                "Tools",
+            )
+            PathUtil.markTimelineResource(toolTable, obj)
             toolTable.Label = "Tools"
             if toolTable.ViewObject:
                 toolTable.ViewObject.Visibility = False
@@ -398,6 +531,9 @@ class ObjectJob:
                 toolTable.addObjects(obj.ToolController)
                 obj.removeProperty("ToolController")
             obj.Tools = toolTable
+        PathUtil.markTimelineResource(obj.Tools, obj)
+        for controller in obj.Tools.Group:
+            self.markToolControllerResource(controller)
 
     def setupStock(self, obj):
         """setupStock(obj)... setup the Stock for the Job object."""
@@ -407,6 +543,7 @@ class ObjectJob:
                 obj.Stock = PathStock.CreateFromTemplate(obj, json.loads(stockTemplate))
             if not obj.Stock:
                 obj.Stock = PathStock.CreateFromBase(obj)
+        PathUtil.markTimelineResource(obj.Stock, obj)
         PathStock.ApplyStockViewDefaults(obj.Stock)
         if obj.Stock and obj.Stock.ViewObject:
             obj.Stock.ViewObject.Visibility = True
@@ -488,14 +625,15 @@ class ObjectJob:
             try:
                 obj.Operations.ViewObject.DisplayMode
             except Exception:
+                document = obj.Document
                 name = obj.Operations.Name
                 label = obj.Operations.Label
-                ops = FreeCAD.ActiveDocument.addObject("Path::FeatureCompoundPython", "Operations")
+                ops = document.addObject("Path::FeatureCompoundPython", "Operations")
                 ops.ViewObject.Proxy = 0
                 ops.Group = obj.Operations.Group
                 obj.Operations.Group = []
                 obj.Operations = ops
-                FreeCAD.ActiveDocument.removeObject(name)
+                document.removeObject(name)
                 if label == "Unnamed":
                     ops.Label = "Operations"
                 else:
@@ -523,6 +661,13 @@ class ObjectJob:
             obj.Machine = current_value
 
     def onDocumentRestored(self, obj):
+        self.obj = obj
+        # Initial publication capture exists only while constructing a new
+        # Job inside its owning transaction.  Restored proxies bypass
+        # __init__, so establish the non-capturing durable state before any
+        # setup helper restores resource metadata.
+        self._deferTimelinePublication = False
+        self._initialTimelineResources = []
         self.setupBaseModel(obj)
         self.fixupOperations(obj)
         self.setupSetupSheet(obj)
@@ -539,6 +684,7 @@ class ObjectJob:
 
         self.setupToolTable(obj)
         self.integrityCheck(obj)
+        self.setupTimelineTracking(obj)
 
         obj.setEditorMode("Operations", 2)  # hide
         obj.setEditorMode("Placement", 2)
@@ -682,7 +828,11 @@ class ObjectJob:
 
                 if attrs.get(JobTemplate.ToolController):
                     for tc in attrs.get(JobTemplate.ToolController):
-                        ctrl = PathToolController.FromTemplate(tc)
+                        ctrl = PathToolController.FromTemplate(
+                            tc,
+                            document=obj.Document,
+                            timelineOwner=obj,
+                        )
                         if ctrl:
                             tcs.append(ctrl)
                         else:
@@ -708,7 +858,12 @@ class ObjectJob:
                 )
 
         if not tcs and createDefaultToolController:
-            self.addToolController(PathToolController.Create())
+            self.addToolController(
+                PathToolController.Create(
+                    document=obj.Document,
+                    timelineOwner=obj,
+                )
+            )
 
     def templateAttrs(self, obj):
         """templateAttrs(obj) ... answer a dictionary with all properties of the receiver that should be stored in a template file."""
@@ -789,11 +944,19 @@ class ObjectJob:
         self.obj.CycleTime = cycleTimeString
 
     def addOperation(self, op, before=None, removeBefore=False):
+        PathUtil.restoreTimelineOperation(op)
+        PathUtil.markTimelineParentJob(op, self.obj)
         group = self.obj.Operations.Group
         if op not in group:
             if before:
                 try:
-                    group.insert(group.index(before), op)
+                    before_index = group.index(before)
+                    if removeBefore:
+                        PathUtil.markTimelineParentJob(
+                            before,
+                            self.obj,
+                        )
+                    group.insert(before_index, op)
                     if removeBefore:
                         group.remove(before)
                 except Exception as e:
@@ -834,6 +997,7 @@ class ObjectJob:
             return 1
 
     def addToolController(self, tc):
+        self.markToolControllerResource(tc)
         group = self.obj.Tools.Group
         Path.Log.debug("addToolController(%s): %s" % (tc.Label, [t.Label for t in group]))
         if tc.Name not in [str(t.Name) for t in group]:
@@ -855,6 +1019,43 @@ class ObjectJob:
             )
             self.obj.Tools.addObject(tc)
             Notification.updateTC.emit(self.obj, tc)
+
+    def markToolControllerResource(self, controller):
+        """Attach a controller and its visual tool representation to this Job."""
+        if controller is None:
+            return
+        PathUtil.markTimelineResource(controller, self.obj)
+        tool = getattr(controller, "Tool", None)
+        if tool is not None:
+            PathUtil.markTimelineResourceTree(tool, self.obj)
+
+    def setupTimelineTracking(self, obj):
+        """Restore explicit history roles for a Job and all of its resources."""
+        PathUtil.markTimelineOperation(obj)
+        for resource in (
+            getattr(obj, "Operations", None),
+            getattr(obj, "SetupSheet", None),
+            getattr(obj, "Model", None),
+            getattr(obj, "Tools", None),
+            getattr(obj, "Stock", None),
+        ):
+            if resource is not None:
+                PathUtil.markTimelineResource(resource, obj)
+
+        model = getattr(obj, "Model", None)
+        for resource in getattr(model, "Group", ()):
+            PathUtil.markTimelineResource(resource, obj)
+
+        tools = getattr(obj, "Tools", None)
+        for controller in getattr(tools, "Group", ()):
+            self.markToolControllerResource(controller)
+
+        operations = getattr(obj, "Operations", None)
+        for operation in (
+            *getattr(operations, "Group", ()),
+            *self.allOperations(),
+        ):
+            PathUtil.restoreTimelineOperation(operation)
 
     def allOperations(self):
         ops = []
@@ -926,8 +1127,16 @@ class ObjectJob:
     @classmethod
     def baseCandidates(cls):
         """Answer all objects in the current document which could serve as a Base for a job."""
+        document = FreeCAD.ActiveDocument
+        if document is None:
+            return []
         return sorted(
-            [obj for obj in FreeCAD.ActiveDocument.Objects if cls.isBaseCandidate(obj)],
+            [
+                obj
+                for obj in document.Objects
+                if cls.isBaseCandidate(obj)
+                and is_timeline_input_usable(obj, document)
+            ],
             key=lambda o: o.Label,
         )
 
@@ -958,18 +1167,61 @@ def Create(
     """Create(name, base, templateFile=None) ... creates a new job and all it's resources.
     If a template file is specified the new job is initialized with the values from the template."""
     if isinstance(base[0], str):
+        document = FreeCAD.ActiveDocument
+        if document is None:
+            raise RuntimeError("A CAM Job requires a document")
         models = []
         for baseName in base:
-            models.append(FreeCAD.ActiveDocument.getObject(baseName))
+            models.append(document.getObject(baseName))
     else:
         models = base
-    obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
-    obj.addExtension("App::GroupExtensionPython")
-    obj.Proxy = ObjectJob(
-        obj,
-        models,
-        templateFile,
-        createDefaultToolController=createDefaultToolController,
-        createDefaultStock=createDefaultStock,
+        document = base[0].Document
+        if any(model.Document is not document for model in models):
+            raise RuntimeError("A CAM Job cannot span multiple documents")
+
+    atomic_publication = (
+        document.getBookedTransactionID() != 0
+        and hasattr(
+            document,
+            "publishProvisionalTimelineOperationBlock",
+        )
     )
+    obj = document.addObject("Path::FeaturePython", name)
+    proxy = None
+    try:
+        obj.addExtension("App::GroupExtensionPython")
+        proxy = ObjectJob(
+            obj,
+            models,
+            templateFile,
+            createDefaultToolController=createDefaultToolController,
+            createDefaultStock=createDefaultStock,
+            deferTimelinePublication=atomic_publication,
+        )
+        obj.Proxy = proxy
+    except BaseException as creation_error:
+        if atomic_publication and document.getObject(obj.Name) is obj:
+            try:
+                captured_proxy = proxy or getattr(obj, "Proxy", None)
+                resources = (
+                    captured_proxy.initialTimelineResources()
+                    if isinstance(captured_proxy, ObjectJob)
+                    else ()
+                )
+                document.publishProvisionalTimelineOperationBlock(
+                    obj,
+                    resources,
+                )
+                if isinstance(captured_proxy, ObjectJob):
+                    captured_proxy._deferTimelinePublication = False
+            except BaseException as tracking_error:
+                raise tracking_error from creation_error
+        raise
+
+    if atomic_publication:
+        document.publishProvisionalTimelineOperationBlock(
+            obj,
+            proxy.initialTimelineResources(),
+        )
+        proxy._deferTimelinePublication = False
     return obj

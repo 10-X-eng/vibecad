@@ -74,6 +74,40 @@ _machines = {}
 _dirTypes = {}
 
 
+def _required_solver_binaries(solver):
+    """Return every executable needed by the selected native solver."""
+
+    proxy_type = str(getattr(getattr(solver, "Proxy", None), "Type", ""))
+    if proxy_type in {"Fem::SolverCalculiX", "Fem::SolverCcxTools"}:
+        return ("Calculix",)
+    if proxy_type == "Fem::SolverElmer":
+        requirements = ["ElmerGrid", "ElmerSolver"]
+        number_of_tasks = App.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Fem/Elmer"
+        ).GetInt("NumberOfTasks", 1)
+        if number_of_tasks > 1:
+            requirements.append("MPIElmer")
+        return tuple(requirements)
+    if proxy_type == "Fem::SolverMystran":
+        return ("Mystran",)
+    if proxy_type == "Fem::SolverZ88":
+        return ("Z88",)
+    return ()
+
+
+def _report_solver_start_failure(message):
+    """Present one solver start failure through both native error surfaces."""
+
+    clean_message = str(message or "The solver could not be started.")
+    App.Console.PrintError(clean_message + "\n")
+    if App.GuiUp:
+        QtGui.QMessageBox.critical(
+            FreeCADGui.getMainWindow(),
+            "Can't start Solver",
+            clean_message,
+        )
+
+
 def run_fem_solver(solver, working_dir=None, blocking=False):
     """Execute *solver* of the solver framework.
 
@@ -105,6 +139,16 @@ def run_fem_solver(solver, working_dir=None, blocking=False):
         use a :class:`Machine`.
     """
 
+    if membertools._is_suppressed(solver):
+        raise ValueError("A suppressed FEM solver cannot be run")
+
+    try:
+        for binary_name in _required_solver_binaries(solver):
+            settings.require_binary(binary_name)
+    except (FileNotFoundError, ValueError) as exc:
+        _report_solver_start_failure(exc)
+        return
+
     tool = None
     if working_dir:
         solver.WorkingDirectory = working_dir
@@ -131,7 +175,9 @@ def run_fem_solver(solver, working_dir=None, blocking=False):
         except Exception as e:
             if App.GuiUp:
                 QtGui.QApplication.restoreOverrideCursor()
-            App.Console.PrintError("".join(format_exception_only(e)))
+            _report_solver_start_failure(
+                "".join(format_exception_only(e)).strip()
+            )
         return
 
     # code for old solver implementations
@@ -218,6 +264,9 @@ def getMachine(solver, path=None):
     :param path:
         A valid filesystem path which shall be associetad with the machine.
     """
+    if membertools._is_suppressed(solver):
+        raise ValueError("A suppressed FEM solver has no execution machine")
+
     # print(path)
     _DocObserver.attach()
     m = _machines.get(solver)
@@ -524,7 +573,7 @@ class Check(BaseTask):
         return True
 
     def checkSupported(self, allSupported):
-        for m in self.analysis.Group:
+        for m in membertools._active_group_members(self.analysis):
             if femutils.is_of_type(m, "Fem::Constraint"):
                 supported = False
                 for sc in allSupported:

@@ -767,6 +767,95 @@ def _assembly_worker_validation(
     }
 
 
+def _validate_and_build_mesh_workbench(
+    result: dict[str, Any],
+    expected_outputs: list[dict[str, Any]],
+    root: Path,
+    *,
+    max_shape_subelements: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+    """Run native Mesh graphs and MeshPart conversions under one Mesh surface."""
+
+    from vibescript_mesh_worker import validate_and_build_meshes
+    from vibescript_meshpart_worker import validate_and_convert_meshpart
+
+    native_operations = {
+        "mesh",
+        "from_object",
+        "transform",
+        "union",
+        "difference",
+        "intersection",
+        "repair",
+        "diagnostics",
+    }
+    conversion_operations = {"mesh_from_shape", "shape_from_mesh"}
+    native_indices: list[int] = []
+    conversion_indices: list[int] = []
+    for index, declaration in enumerate(expected_outputs):
+        name = str(declaration.get("name") or "")
+        value = result.get(name)
+        if not isinstance(value, DomainValue):
+            raise TypeError(
+                f"Mesh result {name!r} must be returned by the active Mesh api."
+            )
+        payload = value.to_payload()
+        operation = str(payload.get("operation") or "")
+        if payload.get("domain") != "mesh":
+            raise ValueError(
+                f"Mesh result {name!r} belongs to domain "
+                f"{payload.get('domain')!r}, not 'mesh'."
+            )
+        if operation in native_operations:
+            native_indices.append(index)
+        elif operation in conversion_operations:
+            conversion_indices.append(index)
+        else:
+            raise ValueError(
+                f"Mesh result {name!r} uses unsupported operation {operation!r}."
+            )
+
+    outputs_by_name: dict[str, dict[str, Any]] = {}
+    mesh_validation = None
+    if native_indices:
+        declarations = [expected_outputs[index] for index in native_indices]
+        names = [str(item["name"]) for item in declarations]
+        native_outputs, mesh_validation = validate_and_build_meshes(
+            {name: result[name] for name in names},
+            declarations,
+            root,
+            output_indices=native_indices,
+        )
+        outputs_by_name.update(
+            (str(item["name"]), item) for item in native_outputs
+        )
+
+    meshpart_validation = None
+    if conversion_indices:
+        declarations = [expected_outputs[index] for index in conversion_indices]
+        names = [str(item["name"]) for item in declarations]
+        converted_outputs, meshpart_validation = validate_and_convert_meshpart(
+            {name: result[name] for name in names},
+            declarations,
+            root,
+            max_shape_subelements=max_shape_subelements,
+            definition_domain="mesh",
+            output_indices=conversion_indices,
+        )
+        outputs_by_name.update(
+            (str(item["name"]), item) for item in converted_outputs
+        )
+
+    expected_names = [str(item["name"]) for item in expected_outputs]
+    if set(outputs_by_name) != set(expected_names):
+        raise RuntimeError("Mesh validation did not produce every declared output.")
+    return (
+        [outputs_by_name[name] for name in expected_names],
+        mesh_validation,
+        meshpart_validation,
+    )
+
+
 def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
     import FreeCAD as App
 
@@ -836,8 +925,17 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             configure_surface_references(root, references)
         elif domain == "mesh":
             from vibescript_mesh_worker import configure_mesh_references
+            from vibescript_meshpart_worker import configure_meshpart_references
 
-            configure_mesh_references(root, references)
+            configure_mesh_references(
+                root,
+                [
+                    item
+                    for item in references
+                    if str(item.get("artifact_kind") or "") == "mesh_bms"
+                ],
+            )
+            configure_meshpart_references(root, references)
         elif domain == "meshpart":
             from vibescript_meshpart_worker import configure_meshpart_references
 
@@ -987,12 +1085,15 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 material_targets=targets,
             )
         elif domain == "mesh":
-            from vibescript_mesh_worker import validate_and_build_meshes
-
-            outputs, mesh_validation = validate_and_build_meshes(
+            (
+                outputs,
+                mesh_validation,
+                meshpart_validation,
+            ) = _validate_and_build_mesh_workbench(
                 result,
                 [dict(item) for item in expected_outputs],
                 root,
+                max_shape_subelements=shape_detail_limit,
             )
         elif domain == "meshpart":
             from vibescript_meshpart_worker import validate_and_convert_meshpart
@@ -1119,7 +1220,10 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         elif domain == "material":
             response["material_validation"] = material_validation
         elif domain == "mesh":
-            response["mesh_validation"] = mesh_validation
+            if mesh_validation is not None:
+                response["mesh_validation"] = mesh_validation
+            if meshpart_validation is not None:
+                response["meshpart_validation"] = meshpart_validation
         elif domain == "meshpart":
             response["meshpart_validation"] = meshpart_validation
         elif domain == "points":

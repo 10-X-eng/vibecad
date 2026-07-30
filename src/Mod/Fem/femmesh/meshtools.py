@@ -32,6 +32,7 @@ import numpy as np
 import FreeCAD
 
 from femtools import geomtools
+from femtools import membertools
 
 
 # ************************************************************************************************
@@ -1676,7 +1677,7 @@ def get_analysis_group_elements(aAnalysis, aPart):
     # face meshes: materials, ShellThickness
     # edge meshes: material, BeamSection/FluidSection
     # BTW: some constraints do have empty references in any case (ex. constraint self weight)
-    for m in aAnalysis.Group:
+    for m in membertools._active_group_members(aAnalysis):
         if hasattr(m, "References"):
             if len(m.References) > 0:
                 grp_ele = get_reference_group_elements(m, aPart)
@@ -1806,7 +1807,7 @@ def get_anlysis_empty_references_group_elements(group_elements, aAnalysis, aShap
     material_shape_type = ""
     missed_material_refshapes = []
     empty_reference_material = None
-    for m in aAnalysis.Group:
+    for m in membertools._active_group_members(aAnalysis):
         if m.isDerivedFrom("App::MaterialObjectPython"):
             if hasattr(m, "References") and not m.References:
                 if not empty_reference_material:

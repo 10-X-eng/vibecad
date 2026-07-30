@@ -506,7 +506,7 @@ Driver_Mesh::Status DriverUNV_R_SMDS_Mesh::Perform()
   catch(...){
     INFOS("Unknown exception was cought !!!");
   }
-  if (myMesh)
+  if (myMesh && myCompactAfterRead)
     myMesh->compactMesh();
   return aResult;
 }

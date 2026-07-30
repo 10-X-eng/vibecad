@@ -79,6 +79,29 @@ class PathNoTCException(Exception):
         super().__init__("No Tool Controller found")
 
 
+def createOperationObject(name, obj=None, parentJob=None):
+    """Return an operation object in its explicit parent Job document."""
+
+    if obj is not None:
+        if (
+            parentJob is not None
+            and obj.Document is not parentJob.Document
+        ):
+            raise RuntimeError(
+                "A CAM operation and its parent Job must share a document"
+            )
+        return obj
+
+    document = (
+        parentJob.Document
+        if parentJob is not None
+        else FreeCAD.ActiveDocument
+    )
+    if document is None:
+        raise RuntimeError("A CAM operation requires a document")
+    return document.addObject("Path::FeaturePython", name)
+
+
 class _TransformedShapeProxy:
     """Lightweight proxy that wraps a FreeCAD document object and intercepts
     ``.Shape`` access to return a pre-transformed copy.
@@ -285,6 +308,7 @@ class ObjectOp(object):
 
     def __init__(self, obj, name, parentJob=None):
         Path.Log.track()
+        PathUtil.markTimelineOperation(obj)
 
         obj.addProperty(
             "App::PropertyBool",
@@ -487,10 +511,14 @@ class ObjectOp(object):
 
         if not hasattr(obj, "DoNotSetDefaultValues") or not obj.DoNotSetDefaultValues:
             if parentJob:
+                if parentJob.Document is not obj.Document:
+                    raise RuntimeError(
+                        "A CAM operation and its parent Job must share a document"
+                    )
                 self.job = parentJob
                 self.model = parentJob.Model.Group if parentJob.Model else []
                 self.stock = parentJob.Stock if hasattr(parentJob, "Stock") else None
-                PathUtils.addToJob(obj, jobname=parentJob.Name)
+                parentJob.Proxy.addOperation(obj)
             job = self.setDefaultValues(obj)
             if job:
                 job.SetupSheet.Proxy.setOperationProperties(obj, name)
@@ -599,6 +627,12 @@ class ObjectOp(object):
 
     def onDocumentRestored(self, obj):
         Path.Log.track()
+        # Generation diagnostics are intentionally transient Python state and
+        # are not serialized by dumps(). Recreate their baseline before a
+        # restored operation can be recomputed by document-history navigation.
+        self._generation_sequence = 0
+        self._generation_diagnostics = None
+        PathUtil.restoreTimelineOperation(obj)
         self.checkBase(obj)
         features = self.opFeatures(obj)
         if (
@@ -1168,6 +1202,21 @@ class ObjectOp(object):
         """
         Path.Log.track()
         self._beginGenerationDiagnostics(obj)
+
+        if getattr(obj, "Suppressed", False):
+            path = Path.Path("(suppressed operation)")
+            obj.Path = path
+            self._updateGenerationDiagnostics(
+                "operation_state",
+                status="skipped",
+                error={
+                    "code": "operation_suppressed",
+                    "message": "The CAM operation is suppressed by document history.",
+                },
+                command_count=len(path.Commands),
+                command_types={command.Name: 1 for command in path.Commands},
+            )
+            return
 
         job = getattr(self, "job", None) or PathUtils.findParentJob(obj)
         if job and "freezed" in job.getStatusString().casefold():

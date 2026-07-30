@@ -275,6 +275,7 @@ class Stretch(gui_base_original.Modifier):
     def doStretch(self):
         """Do the actual stretching once the points are selected."""
         commitops = []
+        replacement_outputs = False
         if self.displacement:
             if self.displacement.Length > 0:
                 _doc = "FreeCAD.ActiveDocument."
@@ -463,6 +464,11 @@ class Stretch(gui_base_original.Modifier):
                         if not done:
                             # otherwise create a wire copy and stretch it instead
                             _msg(translate("draft", "Turning a rectangle into a wire"))
+                            if not replacement_outputs:
+                                Gui.addModule("draftutils.timeline")
+                                commitops.insert(0, "_vibecad_stretch_inputs = []")
+                                commitops.insert(1, "_vibecad_stretch_outputs = []")
+                                replacement_outputs = True
                             pts = []
                             vts = ops[0].Shape.Vertexes
                             for i in range(4):
@@ -479,19 +485,31 @@ class Stretch(gui_base_original.Modifier):
                             _format += "(w, "
                             _format += _doc + ops[0].Name
                             _format += ")"
-                            _hide = _doc + ops[0].Name + ".ViewObject.hide()"
+                            _capture = "_vibecad_stretch_inputs.extend("
+                            _capture += "draftutils.timeline.visible_inputs(["
+                            _capture += _doc + ops[0].Name + "]))"
                             commitops.append("w = " + _cmd)
                             commitops.append(_format)
-                            commitops.append(_hide)
+                            commitops.insert(-2, _capture)
+                            commitops.append("_vibecad_stretch_outputs.append(w)")
                     else:
                         _pl = _doc + ops[0].Name
                         _pl += ".Placement.Base=FreeCAD."
                         _pl += str(ops[0].Placement.Base.add(self.displacement))
                         commitops.append(_pl)
         if commitops:
+            if replacement_outputs:
+                commitops.append(
+                    "draftutils.timeline.accept_outputs("
+                    "_vibecad_stretch_outputs, _vibecad_stretch_inputs)"
+                )
             commitops.append("FreeCAD.ActiveDocument.recompute()")
             Gui.addModule("Draft")
-            self.commit(translate("draft", "Stretch"), commitops)
+            self.commit(
+                translate("draft", "Stretch"),
+                commitops,
+                inputs=(operation[0] for operation in self.ops),
+            )
         self.finish()
 
     def get_action_hints(self):

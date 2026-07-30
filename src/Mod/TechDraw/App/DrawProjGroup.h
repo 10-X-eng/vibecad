@@ -135,6 +135,7 @@ public:
     void setAnchorDirection(Base::Vector3d dir);
     Base::Vector3d getAnchorDirection();
     TechDraw::DrawProjGroupItem* getAnchor();
+    TechDraw::DrawProjGroupItem* getActiveAnchor();
     std::pair<Base::Vector3d, Base::Vector3d> getDirsFromFront(DrawProjGroupItem* view);
     std::pair<Base::Vector3d, Base::Vector3d> getDirsFromFront(TechDraw::ProjDirection viewType);
 
@@ -146,6 +147,8 @@ public:
 
     void dumpISO(const char * title);
     std::vector<DrawProjGroupItem*> getViewsAsDPGI();
+    /// Projection items active at the current document timeline marker.
+    std::vector<DrawProjGroupItem*> getActiveViewsAsDPGI();
 
     void recomputeChildren();
     void updateChildrenScale();

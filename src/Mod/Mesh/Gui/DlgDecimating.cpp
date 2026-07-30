@@ -22,13 +22,20 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
 
 #include <Gui/CommandT.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/WaitCursor.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "DlgDecimating.h"
+#include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ui_DlgDecimating.h"
 
 
@@ -147,21 +154,35 @@ TaskDecimating::TaskDecimating()
     addTaskBox(widget, false, nullptr);
 
     std::vector<Mesh::Feature*> meshes = Gui::Selection().getObjectsOfType<Mesh::Feature>();
+    targetMeshes.reserve(meshes.size());
+    for (auto* mesh : meshes) {
+        targetMeshes.emplace_back(mesh);
+    }
     if (meshes.size() == 1) {
         Mesh::Feature* mesh = meshes.front();
         const Mesh::MeshObject& mm = mesh->Mesh.getValue();
         widget->setNumberOfTriangles(static_cast<int>(mm.countFacets()));
     }
+    if (!meshes.empty() && meshes.front()->getDocument()) {
+        setDocumentName(meshes.front()->getDocument()->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
 }
 
 bool TaskDecimating::accept()
 {
-    std::vector<Mesh::Feature*> meshes = Gui::Selection().getObjectsOfType<Mesh::Feature>();
-    if (meshes.empty()) {
-        return true;
+    std::vector<Mesh::Feature*> meshes;
+    meshes.reserve(targetMeshes.size());
+    for (const auto& target : targetMeshes) {
+        auto* mesh = target.get<Mesh::Feature>();
+        if (!mesh) {
+            return false;
+        }
+        meshes.push_back(mesh);
     }
-    Gui::Selection().clearSelection();
-
+    if (meshes.empty()) {
+        return false;
+    }
     Gui::WaitCursor wc;
 
 
@@ -173,22 +194,51 @@ bool TaskDecimating::accept()
         targetSize = widget->targetNumberOfTriangles();
     }
 
-    // Here we assume that all meshes are in the same document
-    // if it turns out to not be the case then the transaction can be
-    // opened in the loop with the tid as an argument - theo-vt
-    int tid = meshes[0]->getDocument()->openTransaction(
-        QT_TRANSLATE_NOOP("Command", "Mesh Decimating")
-    );
-    for (auto mesh : meshes) {
-        if (absolute) {
-            Gui::cmdAppObjectArgs(mesh, "decimate(%i)", targetSize);
-        }
-        else {
-            Gui::cmdAppObjectArgs(mesh, "decimate(%f, %f)", tolerance, reduction);
-        }
+    App::Document* document = meshes.front()->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)
+        || std::ranges::any_of(meshes, [document](const Mesh::Feature* mesh) {
+               return !mesh || mesh->getDocument() != document
+                   || !MeshGui::isNativeMeshInputActive(mesh);
+           })) {
+        return false;
     }
-    App::GetApplication().commitTransaction(tid);
-    return true;
+    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    operations.reserve(meshes.size());
+    for (auto* feature : meshes) {
+        if (feature->Mesh.getValue().countFacets() == 0) {
+            return false;
+        }
+        operations.push_back(
+            MeshGui::ParametricMeshFilterTarget {
+                feature,
+                [absolute, targetSize, tolerance, reduction](App::DocumentObject& object) {
+                    auto& decimation = static_cast<Mesh::Decimation&>(object);
+                    decimation.UseTargetFacetCount.setValue(absolute);
+                    decimation.TargetFacetCount.setValue(targetSize);
+                    decimation.Tolerance.setValue(tolerance);
+                    decimation.Reduction.setValue(reduction * 100.0F);
+                },
+            }
+        );
+    }
+
+    try {
+        MeshGui::createParametricMeshFilters(
+            *document,
+            operations,
+            MeshGui::ParametricMeshFilterSpec {
+                "Mesh::Decimation",
+                "Decimation",
+                "Decimate Mesh",
+                QT_TRANSLATE_NOOP("Command", "Mesh Decimating"),
+            }
+        );
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh decimation failed: %s\n", error.what());
+        return false;
+    }
 }
 
 #include "moc_DlgDecimating.cpp"

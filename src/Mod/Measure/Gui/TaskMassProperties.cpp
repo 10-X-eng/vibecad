@@ -20,8 +20,10 @@
  ******************************************************************************/
 
 #include "TaskMassProperties.h"
+#include "Mod/Measure/App/MassPropertiesOccurrence.h"
 #include "Mod/Measure/App/MassPropertiesResult.h"
 #include "Mod/Measure/App/MassPropertiesObject.h"
+#include "TimelineSelection.h"
 #include "ViewProviderMassPropertiesResult.h"
 #include "ui_TaskMassProperties.h"
 
@@ -30,6 +32,7 @@
 #include <QTimer>
 
 #include <QtWidgets>
+#include <algorithm>
 #include <unordered_set>
 #include <sstream>
 #include <tuple>
@@ -40,6 +43,7 @@
 #include <Gui/Control.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Application.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Document.h>
 #include <Gui/ViewProviderDocumentObject.h>
 
@@ -56,6 +60,7 @@
 #include <Base/Vector3D.h>
 
 
+#include <App/Application.h>
 #include <App/DocumentObject.h>
 #include <App/Document.h>
 #include <App/Datums.h>
@@ -77,9 +82,46 @@
 #include <BRep_Builder.hxx>
 
 using namespace MassPropertiesGui;
+using MeasureGui::isTimelineSelectionActive;
 
 namespace MassPropertiesGui
 {
+
+class OwnedMassPropertiesTransaction
+{
+public:
+    OwnedMassPropertiesTransaction(
+        App::Document& targetDocument,
+        const char* name
+    )
+        : transaction(targetDocument, name ? name : "")
+    {}
+
+    OwnedMassPropertiesTransaction(
+        const OwnedMassPropertiesTransaction&
+    ) = delete;
+    OwnedMassPropertiesTransaction& operator=(
+        const OwnedMassPropertiesTransaction&
+    ) = delete;
+
+    bool commit()
+    {
+        return transaction.commit();
+    }
+
+    bool abort()
+    {
+        return transaction.abort();
+    }
+
+    bool ownsCurrentTransaction() const
+    {
+        return transaction.ownsCurrentTransaction();
+    }
+
+private:
+    Gui::ExactTransaction transaction;
+};
 
 class TaskMassPropertiesWidget: public QWidget
 {
@@ -115,11 +157,6 @@ public:
 
 }  // namespace MassPropertiesGui
 
-MassPropertiesData currentInfo;
-MassPropertiesMode currentMode = MassPropertiesMode::CenterOfGravity;
-App::DocumentObject* currentDatum = nullptr;
-std::vector<std::tuple<std::string, std::string, std::string>> savedSelection;
-
 enum UnitsComboIndex
 {
     UnitsInternal = 0,
@@ -128,7 +165,7 @@ enum UnitsComboIndex
     UnitsImperialCivil = 3
 };
 
-static int getPreferredUnitsSchemaIndex()
+static int getPreferredUnitsSchemaIndex(const App::Document* document)
 {
     auto params = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Units"
@@ -136,10 +173,8 @@ static int getPreferredUnitsSchemaIndex()
     const bool ignoreProjectSchema = params->GetBool("IgnoreProjectSchema", false);
     int schemaIndex = params->GetInt("UserSchema", 0);
 
-    if (!ignoreProjectSchema) {
-        if (App::Document* doc = App::GetApplication().getActiveDocument()) {
-            schemaIndex = doc->UnitSystem.getValue();
-        }
+    if (!ignoreProjectSchema && document) {
+        schemaIndex = document->UnitSystem.getValue();
     }
 
     const int schemaCount = static_cast<int>(Base::UnitsApi::count());
@@ -202,9 +237,25 @@ TaskMassProperties::TaskMassProperties()
     , panel(new TaskMassPropertiesWidget)
     , selectingCustomCoordSystem(false)
 {
+    auto* document = App::GetApplication().getActiveDocument();
+    if (!document) {
+        throw Base::RuntimeError(
+            "Mass properties requires an active document"
+        );
+    }
+    targetDocumentName = document->getName();
+    targetDocumentUid = document->Uid.getValueStr();
+    targetDocumentAddress = document;
+    setAutoCloseOnDeletedDocument(true);
+    if (!startPreviewTransaction()) {
+        throw Base::RuntimeError(
+            "Could not establish the mass-properties preview transaction"
+        );
+    }
+
     currentInfo = MassPropertiesData {};
     currentMode = MassPropertiesMode::CenterOfGravity;
-    currentDatum = nullptr;
+    clearCurrentDatumObject();
     hasCurrentDatumPlacement = false;
 
     qApp->installEventFilter(this);
@@ -254,7 +305,7 @@ TaskMassProperties::TaskMassProperties()
         &TaskMassProperties::onLcsButtonPressed
     );
 
-    const int preferredSchemaIndex = getPreferredUnitsSchemaIndex();
+    const int preferredSchemaIndex = getPreferredUnitsSchemaIndex(document);
 
     panel->ui.unitsComboBox->setCurrentIndex(getUnitsComboIndex(preferredSchemaIndex));
     unitsSchemaIndex
@@ -293,11 +344,278 @@ TaskMassProperties::TaskMassProperties()
 
 TaskMassProperties::~TaskMassProperties()
 {
+    abortPreviewTransaction();
     qApp->removeEventFilter(this);
     if (deleteAction) {
         deleteAction->setEnabled(deleteActivated);
     }
     delete panel;
+}
+
+App::Document* TaskMassProperties::targetDocument() const
+{
+    if (targetDocumentName.empty()) {
+        return nullptr;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(
+            targetDocumentName.c_str()
+        );
+        return document && document == targetDocumentAddress
+                && !targetDocumentUid.empty()
+                && document->Uid.getValueStr() == targetDocumentUid
+            ? document
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+App::DocumentObject* TaskMassProperties::currentDatumObject() const
+{
+    if (currentDatumDocumentName.empty() || currentDatumName.empty()
+        || currentDatumId < 0) {
+        return nullptr;
+    }
+
+    try {
+        auto* document = App::GetApplication().getDocument(
+            currentDatumDocumentName.c_str()
+        );
+        if (!document || document != currentDatumDocumentAddress
+            || currentDatumDocumentUid.empty()
+            || document->Uid.getValueStr() != currentDatumDocumentUid) {
+            return nullptr;
+        }
+        auto* object = document->getObjectByID(currentDatumId);
+        if (!object || object->getDocument() != targetDocument()
+            || currentDatumName != object->getNameInDocument()
+            || !document->containsObject(object)
+            || document->getObject(currentDatumName.c_str()) != object
+            || !isTimelineSelectionActive(object)) {
+            return nullptr;
+        }
+        return object;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+void TaskMassProperties::setCurrentDatumObject(App::DocumentObject* object)
+{
+    clearCurrentDatumObject();
+    auto* document = targetDocument();
+    if (!document || !isTimelineSelectionActive(object)
+        || object->getDocument() != document
+        || !object->getNameInDocument()
+        || !document->containsObject(object)
+        || document->getObject(object->getNameInDocument()) != object
+        || document->getObjectByID(object->getID()) != object) {
+        return;
+    }
+
+    currentDatumDocumentName = object->getDocument()->getName();
+    currentDatumDocumentUid =
+        object->getDocument()->Uid.getValueStr();
+    currentDatumDocumentAddress = object->getDocument();
+    currentDatumName = object->getNameInDocument();
+    currentDatumId = object->getID();
+}
+
+void TaskMassProperties::clearCurrentDatumObject()
+{
+    clearCurrentDatumOccurrence();
+    currentDatumDocumentName.clear();
+    currentDatumDocumentUid.clear();
+    currentDatumDocumentAddress = nullptr;
+    currentDatumName.clear();
+    currentDatumId = -1;
+}
+
+App::DocumentObject*
+TaskMassProperties::currentDatumOccurrenceRoot() const
+{
+    auto* document = targetDocument();
+    if (!document || currentDatumOccurrenceRootName.empty()
+        || currentDatumOccurrenceRootId < 0) {
+        return nullptr;
+    }
+
+    try {
+        auto* root =
+            document->getObjectByID(currentDatumOccurrenceRootId);
+        if (!root || !root->getNameInDocument()
+            || currentDatumOccurrenceRootName
+                != root->getNameInDocument()
+            || !document->containsObject(root)
+            || document->getObject(
+                   currentDatumOccurrenceRootName.c_str()
+               )
+                != root
+            || !isTimelineSelectionActive(root)) {
+            return nullptr;
+        }
+        return root;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+void TaskMassProperties::setCurrentDatumOccurrence(
+    App::DocumentObject* root,
+    const std::string& subName
+)
+{
+    clearCurrentDatumOccurrence();
+    auto* document = targetDocument();
+    auto* datum = currentDatumObject();
+    if (!document || !datum || !root
+        || root->getDocument() != document
+        || !root->getNameInDocument()
+        || !document->containsObject(root)
+        || document->getObject(root->getNameInDocument()) != root
+        || document->getObjectByID(root->getID()) != root
+        || !isTimelineSelectionActive(root)) {
+        return;
+    }
+
+    std::string normalizedPath;
+    if (!Measure::Internal::normalizeObjectPath(
+            root,
+            subName.c_str(),
+            normalizedPath
+        )) {
+        return;
+    }
+
+    auto members =
+        root->getSubObjectList(normalizedPath.c_str(), nullptr, false);
+    if (members.empty()
+        || !Measure::Internal::endpointRepresentsSource(
+            members.back(),
+            datum
+        )) {
+        return;
+    }
+
+    currentDatumOccurrenceRootName = root->getNameInDocument();
+    currentDatumOccurrenceRootId = root->getID();
+    currentDatumOccurrenceSubName = std::move(normalizedPath);
+}
+
+void TaskMassProperties::clearCurrentDatumOccurrence()
+{
+    currentDatumOccurrenceRootName.clear();
+    currentDatumOccurrenceRootId = -1;
+    currentDatumOccurrenceSubName.clear();
+}
+
+App::DocumentObject* TaskMassProperties::previewObject() const
+{
+    auto* document = targetDocument();
+    if (!document || previewObjectName.empty() || previewObjectId < 0) {
+        return nullptr;
+    }
+
+    auto* object = document->getObjectByID(previewObjectId);
+    if (!object || previewObjectName != object->getNameInDocument()
+        || !document->containsObject(object)
+        || document->getObject(previewObjectName.c_str()) != object) {
+        return nullptr;
+    }
+    return object;
+}
+
+void TaskMassProperties::clearPreviewObjectIdentity()
+{
+    previewObjectName.clear();
+    previewObjectId = -1;
+}
+
+bool TaskMassProperties::startPreviewTransaction()
+{
+    if (previewTransaction) {
+        return previewTransaction->ownsCurrentTransaction();
+    }
+    auto* document = targetDocument();
+    if (!document) {
+        return false;
+    }
+    clearPreviewObjectIdentity();
+    try {
+        previewTransaction =
+            std::make_unique<OwnedMassPropertiesTransaction>(
+                *document,
+                "Preview Mass Properties"
+            );
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not start mass-properties preview: %s\n",
+            error.what()
+        );
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Could not start mass-properties preview: %s\n",
+            error.what()
+        );
+    }
+    return false;
+}
+
+bool TaskMassProperties::abortPreviewTransaction()
+{
+    ++previewGeneration;
+    if (!previewTransaction) {
+        clearPreviewObjectIdentity();
+        return true;
+    }
+    if (!previewTransaction->abort()) {
+        return false;
+    }
+    previewTransaction.reset();
+    clearPreviewObjectIdentity();
+    return true;
+}
+
+bool TaskMassProperties::finishDurableResult(
+    std::unique_ptr<OwnedMassPropertiesTransaction> transaction
+)
+{
+    if (!transaction || !transaction->commit()) {
+        return false;
+    }
+    transaction.reset();
+
+    try {
+        // The durable object was created at document root by the exact
+        // transaction above. This advances the task checkpoint without
+        // re-parenting it into an active modeling Body.
+        markCommandInteractionStateDurable();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Mass-properties result was saved, but task finalization "
+            "failed: %s\n",
+            error.what()
+        );
+        return false;
+    }
+
+    if (!startPreviewTransaction()) {
+        Base::Console().error(
+            "Mass-properties result was saved, but a new preview "
+            "transaction could not be opened.\n"
+        );
+        return false;
+    }
+    update(Gui::SelectionChanges());
+    return true;
 }
 
 bool TaskMassProperties::eventFilter(QObject* watched, QEvent* event)
@@ -307,6 +625,9 @@ bool TaskMassProperties::eventFilter(QObject* watched, QEvent* event)
     if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Delete) {
+            if (!targetDocument()) {
+                return false;
+            }
             if (event->type() == QEvent::ShortcutOverride) {
                 event->accept();
                 return true;
@@ -325,7 +646,9 @@ bool TaskMassProperties::eventFilter(QObject* watched, QEvent* event)
                 }
 
                 if (toRemove.size() == static_cast<std::size_t>(panel->ui.objectList->count())) {
-                    Gui::Selection().clearSelection();
+                    Gui::Selection().clearSelection(
+                        targetDocumentName.c_str()
+                    );
                 }
 
                 for (const auto& userData : toRemove) {
@@ -366,7 +689,10 @@ void TaskMassProperties::modifyStandardButtons(QDialogButtonBox* box)
     QPushButton* resetButton = box->button(QDialogButtonBox::Reset);
     resetButton->setText(tr("Reset"));
     QObject::connect(resetButton, &QPushButton::released, [this]() {
-        Gui::Selection().clearSelection();
+        if (!targetDocument()) {
+            return;
+        }
+        Gui::Selection().clearSelection(targetDocumentName.c_str());
         removeTemporaryObjects();
         clearUiFields();
         panel->ui.objectList->clear();
@@ -378,30 +704,36 @@ void TaskMassProperties::invoke()
 
 bool TaskMassProperties::accept()
 {
-    return true;
+    return false;
 }
 
 bool TaskMassProperties::reject()
 {
-    removeTemporaryObjects();
-    Gui::Control().closeDialog();
-    return true;
+    return abortPreviewTransaction();
 }
 
 void TaskMassProperties::escape()
 {
-    if (Gui::Selection().getSelection().empty()) {
-        this->reject();
+    if (!targetDocument()) {
+        return;
+    }
+    if (Gui::Selection()
+            .getSelection(
+                targetDocumentName.c_str(),
+                Gui::ResolveMode::NoResolve
+            )
+            .empty()) {
+        Gui::Control().reject(targetDocument());
         return;
     }
 
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(targetDocumentName.c_str());
     this->removeTemporaryObjects();
     this->clearUiFields();
     panel->ui.objectList->clear();
 
     selectingCustomCoordSystem = false;
-    currentDatum = nullptr;
+    clearCurrentDatumObject();
     hasCurrentDatumPlacement = false;
     panel->ui.customEdit->clear();
 
@@ -410,26 +742,22 @@ void TaskMassProperties::escape()
 
 void TaskMassProperties::removeTemporaryObjects()
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    if (!doc) {
-        return;
+    ++previewGeneration;
+    App::Document* document = targetDocument();
+    App::DocumentObject* object = previewObject();
+    if (document && object) {
+        document->removeObject(object->getNameInDocument());
     }
-
-    if (!doc->getObject("MassPropertiesPreview")) {
-        return;
-    }
-
-    doc->openTransaction("Remove temporary mass properties object");
-    if (doc->getObject("MassPropertiesPreview")) {
-        doc->removeObject("MassPropertiesPreview");
-    }
-
-    doc->commitTransaction();
+    clearPreviewObjectIdentity();
 }
 
 
 void TaskMassProperties::clearUiFields()
 {
+    currentInfo = MassPropertiesData {};
+    objectsToMeasure.clear();
+    objectOccurrences.clear();
+
     panel->ui.volumeEdit->clear();
     panel->ui.massEdit->clear();
     panel->ui.densityEdit->clear();
@@ -459,7 +787,8 @@ void TaskMassProperties::clearUiFields()
 
 void TaskMassProperties::onSelectionChanged(const Gui::SelectionChanges& msg)
 {
-    if (isUpdating) {
+    if (isUpdating || !targetDocument() || !previewTransaction
+        || !previewTransaction->ownsCurrentTransaction()) {
         return;
     }
 
@@ -468,6 +797,10 @@ void TaskMassProperties::onSelectionChanged(const Gui::SelectionChanges& msg)
         && msg.Type != Gui::SelectionChanges::SetSelection
         && msg.Type != Gui::SelectionChanges::ClrSelection) {
 
+        return;
+    }
+    if (msg.pDocName && *msg.pDocName
+        && targetDocumentName != msg.pDocName) {
         return;
     }
 
@@ -537,8 +870,15 @@ void TaskMassProperties::tryUpdate()
     }
 
     QScopedValueRollback<bool> updatingGuard(isUpdating, true);
+    if (!targetDocument() || !previewTransaction
+        || !previewTransaction->ownsCurrentTransaction()) {
+        return;
+    }
 
-    auto guiSelection = Gui::Selection().getSelection(nullptr, Gui::ResolveMode::NoResolve);
+    auto guiSelection = Gui::Selection().getSelection(
+        targetDocumentName.c_str(),
+        Gui::ResolveMode::NoResolve
+    );
 
     if (guiSelection.empty()) {
         clearUiFields();
@@ -614,7 +954,8 @@ void TaskMassProperties::tryUpdate()
                 }
             }
 
-            bool isVisible = true;
+            bool isVisible = isTimelineSelectionActive(sel.pObject)
+                && isTimelineSelectionActive(pickedObject);
             Gui::Document* guiDoc = Gui::Application::Instance->getDocument(
                 pickedObject->getDocument()
             );
@@ -642,7 +983,7 @@ void TaskMassProperties::tryUpdate()
         if (hasInvisibleSelection) {
             std::unordered_set<std::string> seen;
             isUpdating = true;
-            Gui::Selection().clearSelection();
+            Gui::Selection().clearSelection(targetDocumentName.c_str());
 
             for (const auto& selected : selectedObjects) {
                 bool isVisible = std::get<2>(selected);
@@ -689,6 +1030,7 @@ void TaskMassProperties::tryUpdate()
     }
 
     objectsToMeasure.clear();
+    objectOccurrences.clear();
     App::DocumentObject const* referenceDatum = nullptr;
 
     panel->ui.objectList->clear();
@@ -742,136 +1084,232 @@ void TaskMassProperties::tryUpdate()
     };
 
     auto getGlobalPlacement = [&](App::DocumentObject* root,
-                                  const char* subname,
+                                  const char* subName,
                                   App::DocumentObject* resolvedObject = nullptr) {
-        if (!root) {
-            return Base::Placement();
+        std::string normalizedPath;
+        if (!Measure::Internal::normalizeObjectPath(
+                root,
+                subName,
+                normalizedPath
+            )) {
+            throw Base::ValueError(
+                "The selected occurrence path is no longer valid"
+            );
         }
 
-        if (!subname || !subname[0]) {
-            if (resolvedObject && resolvedObject != root) {
-                return App::GeoFeature::getGlobalPlacement(resolvedObject);
-            }
-            return App::GeoFeature::getGlobalPlacement(root);
+        const auto members =
+            root->getSubObjectList(normalizedPath.c_str(), nullptr, false);
+        if (members.empty()) {
+            throw Base::ValueError(
+                "The selected occurrence has no resolvable object"
+            );
         }
 
-        App::SubObjectT sub(root, subname);
-        std::string subNoElement = sub.getSubNameNoElement();
-
-        if (subNoElement.empty()) {
-            if (resolvedObject && resolvedObject != root) {
-                return App::GeoFeature::getGlobalPlacement(resolvedObject);
-            }
-            return App::GeoFeature::getGlobalPlacement(root);
-        }
-
-        App::DocumentObject* target = sub.getSubObject();
-        if (!target) {
-            target = resolvedObject;
-        }
-        if (!target) {
-            target = root->getSubObject(subNoElement.c_str());
-        }
-
-        if (!target) {
-            return App::GeoFeature::getGlobalPlacement(root);
-        }
-
-        return App::GeoFeature::getGlobalPlacement(target, root, subNoElement);
+        auto* endpoint = members.back();
+        auto* target = resolvedObject
+                && Measure::Internal::endpointRepresentsSource(
+                    endpoint,
+                    resolvedObject
+                )
+            ? resolvedObject
+            : endpoint;
+        return App::GeoFeature::getGlobalPlacement(
+            target,
+            root,
+            normalizedPath
+        );
     };
 
-    auto addObject = [&](App::DocumentObject* obj,
-                         const char* elementName,
-                         const Base::Placement& placement,
-                         std::unordered_set<std::string>& objectKeys) {
-        if (!obj) {
-            return false;
-        }
-
-        App::DocumentObject* object = nullptr;
-        Part::ShapeOptions options = Part::ShapeOption::ResolveLink;
-
-        if (elementName && elementName[0]) {
-            options |= Part::ShapeOption::NeedSubElement;
-        }
-
-        TopoDS_Shape shape = Part::Feature::getShape(obj, options, elementName, nullptr, &object);
-
-        if (shape.IsNull()) {
-            return false;
-        }
-
-        TopAbs_ShapeEnum shapeType = shape.ShapeType();
-        if (shapeType != TopAbs_SOLID && shapeType != TopAbs_COMPSOLID && shapeType != TopAbs_SHELL
-            && shapeType != TopAbs_FACE && shapeType != TopAbs_COMPOUND) {
-            return false;
-        }
-
-        App::DocumentObject* materialObj = object ? object : obj;
-
+    auto occurrenceIdentity = [](
+                                  App::DocumentObject* root,
+                                  const std::string& subName,
+                                  App::DocumentObject* endpoint
+                              ) {
+        std::vector<int> pathEnds;
+        const auto members =
+            root->getSubObjectList(subName.c_str(), &pathEnds, false);
         std::ostringstream key;
-        key << materialObj->getDocument()->getName() << '|' << materialObj->getNameInDocument()
-            << '|' << placement.toMatrix().toString();
 
-        std::string objectKey = key.str();
+        std::size_t firstOccurrence = members.size();
+        for (std::size_t index = 0; index < members.size(); ++index) {
+            if (members[index]
+                && members[index]->hasExtension(
+                    App::LinkBaseExtension::getExtensionClassTypeId()
+                )) {
+                firstOccurrence = index;
+                break;
+            }
+        }
+
+        if (firstOccurrence == members.size()) {
+            key << "object|"
+                << endpoint->getDocument()->getName() << '|'
+                << endpoint->getID();
+            return key.str();
+        }
+
+        auto* occurrence = members[firstOccurrence];
+        const auto suffixOffset =
+            firstOccurrence < pathEnds.size()
+            ? static_cast<std::size_t>(pathEnds[firstOccurrence])
+            : std::size_t {0};
+        key << "occurrence|"
+            << occurrence->getDocument()->getName() << '|'
+            << occurrence->getID() << '|'
+            << subName.substr(
+                   std::min(suffixOffset, subName.size())
+               )
+            << '|'
+            << endpoint->getDocument()->getName() << '|'
+            << endpoint->getID();
+        return key.str();
+    };
+
+    std::unordered_set<std::string> objectKeys;
+    auto addObject = [&](
+                         App::DocumentObject* occurrenceRoot,
+                         const std::string& occurrenceSubName,
+                         App::DocumentObject* sourceObject
+                     ) {
+        if (!isTimelineSelectionActive(occurrenceRoot)
+            || !isTimelineSelectionActive(sourceObject)) {
+            return false;
+        }
+
+        std::string normalizedPath;
+        if (!Measure::Internal::normalizeObjectPath(
+                occurrenceRoot,
+                occurrenceSubName.c_str(),
+                normalizedPath
+            )) {
+            return false;
+        }
+
+        Measure::Internal::ResolvedOccurrence occurrence;
+        if (!Measure::Internal::resolveShapeOccurrence(
+                occurrenceRoot,
+                normalizedPath,
+                occurrence
+            )
+            || !Measure::Internal::endpointRepresentsSource(
+                occurrence.endpoint,
+                sourceObject
+            )
+            || !isTimelineSelectionActive(
+                occurrence.materialOwner
+            )) {
+            return false;
+        }
+
+        const TopAbs_ShapeEnum shapeType =
+            occurrence.shape.ShapeType();
+        if (shapeType != TopAbs_SOLID
+            && shapeType != TopAbs_COMPSOLID
+            && shapeType != TopAbs_SHELL
+            && shapeType != TopAbs_FACE
+            && shapeType != TopAbs_COMPOUND) {
+            return false;
+        }
+
+        const std::string objectKey = occurrenceIdentity(
+            occurrenceRoot,
+            normalizedPath,
+            occurrence.endpoint
+        );
         if (!objectKeys.insert(objectKey).second) {
             return true;
         }
 
-        objectsToMeasure.push_back({materialObj, shape, placement});
+        const Base::Placement sourceParentPlacement =
+            occurrence.placement
+            * getPlacementFromObject(sourceObject).inverse();
+        objectsToMeasure.push_back({
+            occurrence.materialOwner,
+            occurrence.shape,
+            Base::Placement(),
+            sourceObject,
+            "",
+            sourceParentPlacement,
+        });
+        objectOccurrences.push_back({
+            occurrenceRoot,
+            normalizedPath,
+        });
         return true;
     };
 
-    std::unordered_set<std::string> objectKeys;
-    std::unordered_set<App::DocumentObject*> visited;
-
+    std::unordered_set<App::DocumentObject*> activeDefinitions;
     auto collectBodies =
-        [&](auto&& self, App::DocumentObject* obj, const Base::Placement& parentPlacement) -> void {
-        if (!obj) {
+        [&](auto&& self,
+            App::DocumentObject* occurrenceRoot,
+            const std::string& occurrenceSubName,
+            App::DocumentObject* object) -> void {
+        if (!isTimelineSelectionActive(object)) {
             return;
         }
 
-        App::DocumentObject* resolved;
-        if (obj->isLink()) {
-            resolved = obj->getLinkedObject(true);
-        }
-        else {
-            resolved = obj;
-        }
-
+        auto* resolved = object->getLinkedObject(true);
         if (!resolved) {
-            return;
+            resolved = object;
         }
-        if (!visited.insert(obj).second) {
+        if (!isTimelineSelectionActive(resolved)
+            || !activeDefinitions.insert(resolved).second) {
             return;
         }
 
-        Base::Placement currentPlacement = parentPlacement * getPlacementFromObject(obj);
-        if (resolved != obj) {
-            currentPlacement = currentPlacement * getPlacementFromObject(resolved);
-        }
-
-        if (resolved->getTypeId().getName() == std::string("PartDesign::Body")) {
-            auto* tipProp = freecad_cast<App::PropertyLink*>(resolved->getPropertyByName("Tip"));
-            if (tipProp) {
-                if (auto* tip = tipProp->getValue()) {
-                    Base::Placement tipPlacement = currentPlacement * getPlacementFromObject(tip);
-                    addObject(tip, nullptr, tipPlacement, objectKeys);
+        bool handled = false;
+        if (resolved->getTypeId().getName()
+            == std::string("PartDesign::Body")) {
+            auto* tipProperty = freecad_cast<App::PropertyLink*>(
+                resolved->getPropertyByName("Tip")
+            );
+            auto* tip = tipProperty ? tipProperty->getValue() : nullptr;
+            if (tip) {
+                if (object->hasExtension(
+                        App::LinkBaseExtension::getExtensionClassTypeId()
+                    )) {
+                    addObject(
+                        occurrenceRoot,
+                        occurrenceSubName,
+                        object
+                    );
                 }
-                return;
+                else {
+                    std::string tipPath = occurrenceSubName;
+                    tipPath += tip->getNameInDocument();
+                    tipPath += '.';
+                    addObject(occurrenceRoot, tipPath, tip);
+                }
             }
+            handled = true;
+        }
+        else if (resolved->getExtensionByType<App::GroupExtension>(
+                     true
+                 )) {
+            for (const auto& relativePath : object->getSubObjects()) {
+                std::string childPath = occurrenceSubName;
+                childPath += relativePath;
+                App::SubObjectT childOccurrence(
+                    occurrenceRoot,
+                    childPath.c_str()
+                );
+                auto* child = childOccurrence.getSubObject();
+                if (child) {
+                    self(
+                        self,
+                        occurrenceRoot,
+                        childPath,
+                        child
+                    );
+                }
+            }
+            handled = true;
         }
 
-        if (auto* group = resolved->getExtensionByType<App::GroupExtension>(true)) {
-            for (auto* child : group->getObjects()) {
-                self(self, child, currentPlacement);
-            }
-            return;
+        if (!handled) {
+            addObject(occurrenceRoot, occurrenceSubName, object);
         }
-
-        if (addObject(resolved, nullptr, currentPlacement, objectKeys)) {
-            return;
-        }
+        activeDefinitions.erase(resolved);
     };
 
     hasCurrentDatumPlacement = false;
@@ -894,15 +1332,24 @@ void TaskMassProperties::tryUpdate()
             }
 
             if (isReferenceObject(coordSystem)) {
+                if (!isTimelineSelectionActive(coordSystem)) {
+                    continue;
+                }
                 panel->ui.customEdit->setText(QString::fromStdString(coordLabel(coordSystem)));
-                currentDatum = coordSystem;
+                setCurrentDatumObject(coordSystem);
+                setCurrentDatumOccurrence(
+                    selObj.pObject,
+                    selObj.SubName ? selObj.SubName : ""
+                );
                 currentDatumPlacement
                     = getGlobalPlacement(selObj.pObject, selObj.SubName, selObj.pResolvedObject);
                 hasCurrentDatumPlacement = true;
                 selectingCustomCoordSystem = false;
 
                 isUpdating = true;
-                Gui::Selection().clearSelection();
+                Gui::Selection().clearSelection(
+                    targetDocumentName.c_str()
+                );
                 for (const auto& sel : savedSelection) {
                     if (std::get<2>(sel).empty()) {
                         Gui::Selection().addSelection(
@@ -943,6 +1390,11 @@ void TaskMassProperties::tryUpdate()
             }
         }
 
+        if (!isTimelineSelectionActive(selObj.pObject)
+            || !isTimelineSelectionActive(displayObject)) {
+            continue;
+        }
+
         bool shouldAddToList = false;
         if (!isReferenceObject(displayObject)) {
             if (displayObject->isDerivedFrom(Base::Type::fromName("Sketcher::SketchObject"))) {
@@ -979,38 +1431,52 @@ void TaskMassProperties::tryUpdate()
         }
 
         if (isReferenceObject(coordSystem)) {
+            if (!isTimelineSelectionActive(coordSystem)) {
+                continue;
+            }
             if (currentMode == MassPropertiesMode::Custom && !selectingCustomCoordSystem) {
-                currentDatum = coordSystem;
+                setCurrentDatumObject(coordSystem);
+                setCurrentDatumOccurrence(
+                    selObj.pObject,
+                    selObj.SubName ? selObj.SubName : ""
+                );
                 currentDatumPlacement
                     = getGlobalPlacement(selObj.pObject, selObj.SubName, selObj.pResolvedObject);
                 hasCurrentDatumPlacement = true;
                 panel->ui.customEdit->setText(QString::fromStdString(coordLabel(coordSystem)));
-                referenceDatum = currentDatum;
+                referenceDatum = currentDatumObject();
                 break;
             }
             continue;
         }
 
-        App::DocumentObject* leaf = nullptr;
-        if (selObj.SubName && selObj.SubName[0]) {
-            App::SubObjectT sub(selObj.pObject, selObj.SubName);
-            if (selObj.pResolvedObject && selObj.pResolvedObject != selObj.pObject) {
-                leaf = selObj.pResolvedObject;
-            }
-            if (!leaf) {
-                leaf = sub.getSubObject();
-            }
+        std::string occurrencePath;
+        if (!Measure::Internal::normalizeObjectPath(
+                selObj.pObject,
+                selObj.SubName,
+                occurrencePath
+            )) {
+            continue;
         }
-        if (!leaf) {
-            leaf = selObj.pObject;
+        const auto occurrenceMembers =
+            selObj.pObject->getSubObjectList(
+                occurrencePath.c_str(),
+                nullptr,
+                false
+            );
+        if (occurrenceMembers.empty()) {
+            continue;
         }
+        auto* leaf = occurrenceMembers.back();
 
-        Base::Placement rootPlacement
-            = getGlobalPlacement(selObj.pObject, selObj.SubName, selObj.pResolvedObject);
-        Base::Placement parentPlacement = rootPlacement * getPlacementFromObject(leaf).inverse();
-        visited.clear();
+        activeDefinitions.clear();
         size_t objectsBefore = objectsToMeasure.size();
-        collectBodies(collectBodies, leaf, parentPlacement);
+        collectBodies(
+            collectBodies,
+            selObj.pObject,
+            occurrencePath,
+            leaf
+        );
 
         if (shouldAddToList && objectsToMeasure.size() > objectsBefore) {
             auto* item = new QListWidgetItem(QString::fromStdString(displayObject->getFullLabel()));
@@ -1029,7 +1495,7 @@ void TaskMassProperties::tryUpdate()
     }
 
     if (currentMode == MassPropertiesMode::Custom) {
-        referenceDatum = currentDatum;
+        referenceDatum = currentDatumObject();
     }
     else {
         panel->ui.customEdit->clear();
@@ -1146,20 +1612,29 @@ void TaskMassProperties::tryUpdate()
         && referenceDatum->isDerivedFrom<App::Line>();
 
     const auto infoSnapshot = currentInfo;
-    QTimer::singleShot(0, this, [infoSnapshot, hasAxisSelection]() {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (!doc) {
+    const auto generation = ++previewGeneration;
+    QTimer::singleShot(0, this, [this, infoSnapshot, hasAxisSelection, generation]() {
+        App::Document* doc = targetDocument();
+        if (generation != previewGeneration || !doc || !previewTransaction
+            || !previewTransaction->ownsCurrentTransaction()) {
             return;
         }
 
-        App::DocumentObject* obj = doc->getObject("MassPropertiesPreview");
+        App::DocumentObject* obj = previewObject();
         if (!obj) {
             obj = doc->addObject("Measure::Result", "MassPropertiesPreview");
+            if (!obj) {
+                return;
+            }
+            previewObjectName = obj->getNameInDocument();
+            previewObjectId = obj->getID();
         }
 
         obj->Visibility.setValue(true);
 
-        auto* guiDoc = Gui::Application::Instance->activeDocument();
+        auto* guiDoc = Gui::Application::Instance
+            ? Gui::Application::Instance->getDocument(doc)
+            : nullptr;
         if (!guiDoc) {
             return;
         }
@@ -1188,8 +1663,9 @@ void TaskMassProperties::tryUpdate()
 
 void TaskMassProperties::updateInertiaVisibility()
 {
-    const bool hasAxisSelection = currentMode == MassPropertiesMode::Custom && currentDatum
-        && currentDatum->isDerivedFrom<App::Line>();
+    auto* datum = currentDatumObject();
+    const bool hasAxisSelection = currentMode == MassPropertiesMode::Custom && datum
+        && datum->isDerivedFrom<App::Line>();
 
     panel->ui.inertiaMatrixWidget->setVisible(!hasAxisSelection);
     panel->ui.inertiaDiagWidget->setVisible(!hasAxisSelection);
@@ -1213,9 +1689,28 @@ void TaskMassProperties::createDatum(
         return;
     }
 
+    std::unique_ptr<OwnedMassPropertiesTransaction> transaction;
     try {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        doc->openTransaction("Create Datum Point");
+        tryUpdate();
+        if (objectsToMeasure.empty()
+            || panel->ui.objectList->count() == 0
+            || (currentInfo.volume.getValue() == 0.0
+                && currentInfo.mass.getValue() == 0.0)
+            || !previewTransaction
+            || !previewTransaction->ownsCurrentTransaction()) {
+            return;
+        }
+        if (!abortPreviewTransaction()) {
+            return;
+        }
+        App::Document* doc = targetDocument();
+        if (!doc) {
+            return;
+        }
+        transaction = std::make_unique<OwnedMassPropertiesTransaction>(
+            *doc,
+            "Create Datum Point"
+        );
 
         App::DocumentObject* datum = doc->getObject(name.c_str());
 
@@ -1224,21 +1719,40 @@ void TaskMassProperties::createDatum(
         }
 
         datum = doc->addObject("Part::DatumPoint", name.c_str());
+        if (!datum) {
+            throw Base::RuntimeError(
+                "The datum-point object could not be created"
+            );
+        }
 
         App::Property* baseProp = datum->getPropertyByName("Placement");
         App::PropertyPlacement* prop = freecad_cast<App::PropertyPlacement*>(baseProp);
+        if (!prop) {
+            throw Base::RuntimeError(
+                "The datum-point object has no Placement property"
+            );
+        }
         Base::Placement plm;
         plm.setPosition(position);
         prop->setValue(plm);
 
-        doc->commitTransaction();
         doc->recompute();
+        if (!finishDurableResult(std::move(transaction))) {
+            startPreviewTransaction();
+            update(Gui::SelectionChanges());
+        }
     }
     catch (const Base::Exception& e) {
         Base::Console().error("Datum Creation failed: %s\n", e.what());
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
     }
     catch (const std::exception& e) {
         Base::Console().error("Datum Creation failed: %s", e.what());
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
     }
 }
 
@@ -1248,9 +1762,28 @@ void TaskMassProperties::createLCS(std::string name, bool removeExisting)
         return;
     }
 
+    std::unique_ptr<OwnedMassPropertiesTransaction> transaction;
     try {
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        doc->openTransaction("Create LCS");
+        tryUpdate();
+        if (objectsToMeasure.empty()
+            || panel->ui.objectList->count() == 0
+            || (currentInfo.volume.getValue() == 0.0
+                && currentInfo.mass.getValue() == 0.0)
+            || !previewTransaction
+            || !previewTransaction->ownsCurrentTransaction()) {
+            return;
+        }
+        if (!abortPreviewTransaction()) {
+            return;
+        }
+        App::Document* doc = targetDocument();
+        if (!doc) {
+            return;
+        }
+        transaction = std::make_unique<OwnedMassPropertiesTransaction>(
+            *doc,
+            "Create LCS"
+        );
 
         App::DocumentObject* LCS = doc->getObject(name.c_str());
 
@@ -1258,9 +1791,19 @@ void TaskMassProperties::createLCS(std::string name, bool removeExisting)
             doc->removeObject(name.c_str());
         }
         LCS = doc->addObject("Part::LocalCoordinateSystem", name.c_str());
+        if (!LCS) {
+            throw Base::RuntimeError(
+                "The local coordinate system could not be created"
+            );
+        }
 
         App::Property* baseProp = LCS->getPropertyByName("Placement");
         App::PropertyPlacement* prop = freecad_cast<App::PropertyPlacement*>(baseProp);
+        if (!prop) {
+            throw Base::RuntimeError(
+                "The local coordinate system has no Placement property"
+            );
+        }
         Base::Placement plm;
         plm.setPosition(currentInfo.cog);
 
@@ -1292,14 +1835,23 @@ void TaskMassProperties::createLCS(std::string name, bool removeExisting)
             }
         }
 
-        doc->commitTransaction();
         doc->recompute();
+        if (!finishDurableResult(std::move(transaction))) {
+            startPreviewTransaction();
+            update(Gui::SelectionChanges());
+        }
     }
     catch (const Base::Exception& e) {
         Base::Console().error("LCS Creation failed: %s\n", e.what());
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
     }
     catch (const std::exception& e) {
         Base::Console().error("LCS Creation failed: %s", e.what());
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
     }
 }
 
@@ -1315,8 +1867,9 @@ void TaskMassProperties::onCovDatumButtonPressed()
 
 void TaskMassProperties::onLcsButtonPressed()
 {
-    const bool hasAxisSelection = currentMode == MassPropertiesMode::Custom && currentDatum
-        && currentDatum->isDerivedFrom<App::Line>();
+    auto* datum = currentDatumObject();
+    const bool hasAxisSelection = currentMode == MassPropertiesMode::Custom && datum
+        && datum->isDerivedFrom<App::Line>();
     if (!hasAxisSelection) {
         createLCS("Principal_Axes_LCS", false);
     }
@@ -1324,10 +1877,17 @@ void TaskMassProperties::onLcsButtonPressed()
 
 void TaskMassProperties::onSelectCustomCoordinateSystem()
 {
+    if (!targetDocument() || !previewTransaction
+        || !previewTransaction->ownsCurrentTransaction()) {
+        return;
+    }
     selectingCustomCoordSystem = true;
     savedSelection.clear();
 
-    auto guiSelection = Gui::Selection().getSelection(nullptr, Gui::ResolveMode::NoResolve);
+    auto guiSelection = Gui::Selection().getSelection(
+        targetDocumentName.c_str(),
+        Gui::ResolveMode::NoResolve
+    );
     for (const auto& sel : guiSelection) {
         if (!sel.pObject || !sel.pObject->getDocument()) {
             continue;
@@ -1341,14 +1901,23 @@ void TaskMassProperties::onSelectCustomCoordinateSystem()
 
 void TaskMassProperties::onCoordinateSystemChanged(MassPropertiesMode coordSystemMode)
 {
+    if (!targetDocument() || !previewTransaction
+        || !previewTransaction->ownsCurrentTransaction()) {
+        return;
+    }
     currentMode = coordSystemMode;
     if (currentMode != MassPropertiesMode::Custom) {
         selectingCustomCoordSystem = false;
-        currentDatum = nullptr;
+        clearCurrentDatumObject();
         hasCurrentDatumPlacement = false;
         panel->ui.customEdit->clear();
     }
-    if (Gui::Selection().getSelection().empty()) {
+    if (Gui::Selection()
+            .getSelection(
+                targetDocumentName.c_str(),
+                Gui::ResolveMode::NoResolve
+            )
+            .empty()) {
         clearUiFields();
         panel->ui.objectList->clear();
         removeTemporaryObjects();
@@ -1361,14 +1930,47 @@ void TaskMassProperties::onCoordinateSystemChanged(MassPropertiesMode coordSyste
 
 void TaskMassProperties::saveResult()
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
+    App::Document* doc = targetDocument();
+    if (!doc || !previewTransaction
+        || !previewTransaction->ownsCurrentTransaction()) {
+        return;
+    }
+    try {
+        // Re-read every selected source immediately before the durable
+        // transaction. Geometry, placements, material density, and History
+        // position may all have changed while the modeless preview was open.
+        tryUpdate();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Mass properties could not refresh its sources: %s\n",
+            error.what()
+        );
+        return;
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Mass properties could not refresh its sources: %s\n",
+            error.what()
+        );
+        return;
+    }
+    auto* datum = currentDatumObject();
 
-    if (!doc || panel->ui.objectList->count() == 0
-        || (currentMode == MassPropertiesMode::Custom && !currentDatum)) {
+    if (panel->ui.objectList->count() == 0
+        || (currentMode == MassPropertiesMode::Custom && !datum)) {
         return;
     }
 
-    doc->openTransaction("Add Mass Properties");
+    std::unique_ptr<OwnedMassPropertiesTransaction> transaction;
+    try {
+    if (!abortPreviewTransaction()) {
+        return;
+    }
+    transaction = std::make_unique<OwnedMassPropertiesTransaction>(
+        *doc,
+        "Add Mass Properties"
+    );
 
     auto group = freecad_cast<App::DocumentObjectGroup*>(doc->getObject("Measurements"));
 
@@ -1378,11 +1980,281 @@ void TaskMassProperties::saveResult()
 
     auto* obj = doc->addObject("Measure::Result", "MassProperties");
     if (!obj) {
-        doc->abortTransaction();
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
         return;
     }
 
     obj->Visibility.setValue(true);
+
+    std::vector<App::DocumentObject*> sourceObjects;
+    std::vector<std::string> sourceSubNames;
+    std::vector<Base::Placement> sourceParentPlacements;
+    std::vector<App::DocumentObject*> occurrenceRoots;
+    std::vector<std::string> occurrenceSubNames;
+    std::vector<App::DocumentObject*> occurrenceDependencies;
+    std::unordered_set<App::DocumentObject*> dependencySet;
+    if (objectsToMeasure.size() != objectOccurrences.size()) {
+        throw Base::RuntimeError(
+            "Mass-properties sources lost their occurrence identity"
+        );
+    }
+    sourceObjects.reserve(objectsToMeasure.size());
+    sourceSubNames.reserve(objectsToMeasure.size());
+    sourceParentPlacements.reserve(objectsToMeasure.size());
+    occurrenceRoots.reserve(objectsToMeasure.size());
+    occurrenceSubNames.reserve(objectsToMeasure.size());
+    auto addDependency = [&](App::DocumentObject* dependency) {
+        if (dependency && dependency->getDocument() == doc
+            && dependencySet.insert(dependency).second) {
+            occurrenceDependencies.push_back(dependency);
+        }
+    };
+    for (std::size_t index = 0;
+         index < objectsToMeasure.size();
+         ++index) {
+        const auto& input = objectsToMeasure[index];
+        const auto& tracked = objectOccurrences[index];
+        auto* source = input.source ? input.source : input.object;
+        if (!source || source->getDocument() != doc
+            || !source->getNameInDocument()
+            || !doc->containsObject(source)
+            || doc->getObject(source->getNameInDocument()) != source
+            || doc->getObjectByID(source->getID()) != source
+            || !isTimelineSelectionActive(source)) {
+            throw Base::ValueError(
+                "Mass properties can only save exact current sources "
+                "from the result document"
+            );
+        }
+
+        if (!tracked.root || tracked.root->getDocument() != doc
+            || !tracked.root->getNameInDocument()
+            || !doc->containsObject(tracked.root)
+            || doc->getObject(tracked.root->getNameInDocument())
+                != tracked.root
+            || doc->getObjectByID(tracked.root->getID())
+                != tracked.root
+            || !isTimelineSelectionActive(tracked.root)) {
+            throw Base::ValueError(
+                "A mass-properties occurrence root changed identity"
+            );
+        }
+
+        Measure::Internal::ResolvedOccurrence resolvedOccurrence;
+        if (!Measure::Internal::resolveShapeOccurrence(
+                tracked.root,
+                tracked.subName,
+                resolvedOccurrence
+            )
+            || !Measure::Internal::endpointRepresentsSource(
+                resolvedOccurrence.endpoint,
+                source
+            )) {
+            throw Base::ValueError(
+                "A mass-properties occurrence no longer resolves to "
+                "its selected source"
+            );
+        }
+
+        sourceObjects.push_back(source);
+        sourceSubNames.push_back(input.sourceSubName);
+        sourceParentPlacements.push_back(
+            input.sourceParentPlacement
+        );
+        occurrenceRoots.push_back(tracked.root);
+        occurrenceSubNames.push_back(tracked.subName);
+        for (auto* dependency : resolvedOccurrence.members) {
+            addDependency(dependency);
+        }
+        addDependency(source);
+    }
+    if (sourceObjects.empty()) {
+        throw Base::ValueError(
+            "Mass properties require at least one persistent source"
+        );
+    }
+
+    auto* sourceProperty =
+        dynamic_cast<App::PropertyLinkSubList*>(
+            obj->addDynamicProperty(
+                "App::PropertyLinkSubListGlobal",
+                "MassPropertySources",
+                "Sources",
+                "Exact geometry occurrences used by this result"
+            )
+        );
+    auto* parentProperty =
+        dynamic_cast<App::PropertyPlacementList*>(
+            obj->addDynamicProperty(
+                "App::PropertyPlacementList",
+                "MassPropertySourceParents",
+                "Sources",
+                "Occurrence transforms relative to each source",
+                App::Prop_None,
+                true
+            )
+        );
+    auto* occurrenceProperty =
+        dynamic_cast<App::PropertyLinkSubList*>(
+            obj->addDynamicProperty(
+                "App::PropertyLinkSubListGlobal",
+                "MassPropertyOccurrences",
+                "Sources",
+                "Live root and subobject paths for measured occurrences",
+                App::Prop_Hidden,
+                true,
+                true
+            )
+        );
+    auto* dependencyProperty =
+        dynamic_cast<App::PropertyLinkList*>(
+            obj->addDynamicProperty(
+                "App::PropertyLinkListGlobal",
+                "MassPropertyOccurrenceDependencies",
+                "Sources",
+                "Objects whose transforms affect measured occurrences",
+                App::Prop_Hidden,
+                true,
+                true
+            )
+        );
+    auto* unitsProperty = dynamic_cast<App::PropertyInteger*>(
+        obj->addDynamicProperty(
+            "App::PropertyInteger",
+            "MassPropertyUnitsSchema",
+            "Sources",
+            "Units schema used to format calculated outputs",
+            App::Prop_None,
+            true
+        )
+    );
+    if (!sourceProperty || !parentProperty
+        || !occurrenceProperty || !dependencyProperty
+        || !unitsProperty) {
+        throw Base::TypeError(
+            "Could not establish the parametric mass-properties inputs"
+        );
+    }
+    sourceProperty->setValues(sourceObjects, sourceSubNames);
+    parentProperty->setValues(sourceParentPlacements);
+    occurrenceProperty->setValues(
+        occurrenceRoots,
+        occurrenceSubNames
+    );
+    unitsProperty->setValue(unitsSchemaIndex);
+
+    if (currentMode == MassPropertiesMode::Custom) {
+        if (!datum || datum->getDocument() != doc
+            || !datum->getNameInDocument()
+            || !doc->containsObject(datum)
+            || doc->getObject(datum->getNameInDocument()) != datum
+            || doc->getObjectByID(datum->getID()) != datum
+            || !isTimelineSelectionActive(datum)) {
+            throw Base::ValueError(
+                "The custom mass-properties reference changed identity"
+            );
+        }
+        auto* referenceOccurrenceRoot =
+            currentDatumOccurrenceRoot();
+        const auto referenceMembers =
+            referenceOccurrenceRoot
+            ? referenceOccurrenceRoot->getSubObjectList(
+                  currentDatumOccurrenceSubName.c_str(),
+                  nullptr,
+                  false
+              )
+            : std::vector<App::DocumentObject*> {};
+        if (!referenceOccurrenceRoot || referenceMembers.empty()
+            || !Measure::Internal::endpointRepresentsSource(
+                referenceMembers.back(),
+                datum
+            )) {
+            throw Base::ValueError(
+                "The custom mass-properties reference occurrence "
+                "changed identity"
+            );
+        }
+        auto* referenceProperty =
+            dynamic_cast<App::PropertyLink*>(
+                obj->addDynamicProperty(
+                    "App::PropertyLinkGlobal",
+                    "MassPropertyReference",
+                    "Sources",
+                    "Coordinate-system or axis reference"
+                )
+            );
+        auto* referenceOccurrence =
+            dynamic_cast<App::PropertyLinkSub*>(
+                obj->addDynamicProperty(
+                    "App::PropertyLinkSubGlobal",
+                    "MassPropertyReferenceOccurrence",
+                    "Sources",
+                    "Live root and subobject path for the reference",
+                    App::Prop_Hidden,
+                    true,
+                    true
+                )
+            );
+        auto* referenceParent =
+            dynamic_cast<App::PropertyPlacement*>(
+                obj->addDynamicProperty(
+                    "App::PropertyPlacement",
+                    "MassPropertyReferenceParent",
+                    "Sources",
+                    "Occurrence transform relative to the reference",
+                    App::Prop_None,
+                    true
+                )
+            );
+        auto* hasReference = dynamic_cast<App::PropertyBool*>(
+            obj->addDynamicProperty(
+                "App::PropertyBool",
+                "MassPropertyHasReference",
+                "Sources",
+                "Whether the saved reference placement is authoritative",
+                App::Prop_None,
+                true
+            )
+        );
+        if (!referenceProperty || !referenceOccurrence
+            || !referenceParent
+            || !hasReference) {
+            throw Base::TypeError(
+                "Could not establish the mass-properties reference"
+            );
+        }
+        Base::Placement datumPlacement;
+        if (const auto* placement =
+                dynamic_cast<const App::PropertyPlacement*>(
+                    datum->getPropertyByName("Placement")
+                )) {
+            datumPlacement = placement->getValue();
+        }
+        const Base::Placement liveDatumPlacement =
+            App::GeoFeature::getGlobalPlacement(
+                datum,
+                referenceOccurrenceRoot,
+                currentDatumOccurrenceSubName
+            );
+        referenceProperty->setValue(datum);
+        referenceOccurrence->setValue(
+            referenceOccurrenceRoot,
+            std::vector<std::string> {
+                currentDatumOccurrenceSubName,
+            }
+        );
+        referenceParent->setValue(
+            liveDatumPlacement * datumPlacement.inverse()
+        );
+        hasReference->setValue(hasCurrentDatumPlacement);
+        for (auto* dependency : referenceMembers) {
+            addDependency(dependency);
+        }
+        addDependency(datum);
+    }
+    dependencyProperty->setValues(occurrenceDependencies);
 
     auto setQuantity = [&](const char* name, const char* group, const Base::Quantity& quantity) {
         Base::Quantity q(quantity);
@@ -1390,7 +2262,13 @@ void TaskMassProperties::saveResult()
             q.setValue(0.0);
         }
         auto* prop = freecad_cast<App::PropertyString*>(
-            obj->addDynamicProperty("App::PropertyString", name, group)
+            obj->addDynamicProperty(
+                "App::PropertyString",
+                name,
+                group,
+                "Calculated mass-property value",
+                App::Prop_Output
+            )
         );
         if (prop) {
             std::string text;
@@ -1414,7 +2292,13 @@ void TaskMassProperties::saveResult()
             }
         }
         auto* prop = freecad_cast<App::PropertyVector*>(
-            obj->addDynamicProperty("App::PropertyVector", name, group)
+            obj->addDynamicProperty(
+                "App::PropertyVector",
+                name,
+                group,
+                "Calculated mass-property direction",
+                App::Prop_Output
+            )
         );
         if (prop) {
             prop->setValue(value);
@@ -1424,8 +2308,17 @@ void TaskMassProperties::saveResult()
 
     auto setString = [&](const char* name, const char* group, const std::string& value) {
         auto* prop = freecad_cast<App::PropertyString*>(
-            obj->addDynamicProperty("App::PropertyString", name, group)
+            obj->getPropertyByName(name)
         );
+        if (!prop) {
+            prop = freecad_cast<App::PropertyString*>(
+                obj->addDynamicProperty(
+                    "App::PropertyString",
+                    name,
+                    group
+                )
+            );
+        }
         if (prop) {
             prop->setValue(value);
             prop->setReadOnly(true);
@@ -1474,8 +2367,8 @@ void TaskMassProperties::saveResult()
         Base::Quantity(currentInfo.cov.z, Base::Unit::Length)
     );
 
-    const bool hasAxisSelection = currentMode == MassPropertiesMode::Custom && currentDatum
-        && currentDatum->isDerivedFrom<App::Line>();
+    const bool hasAxisSelection = currentMode == MassPropertiesMode::Custom && datum
+        && datum->isDerivedFrom<App::Line>();
 
     if (hasAxisSelection) {
         setQuantity(
@@ -1529,7 +2422,9 @@ void TaskMassProperties::saveResult()
         group->purgeTouched();
     }
 
-    if (auto* guiDoc = Gui::Application::Instance->activeDocument()) {
+    if (auto* guiDoc = Gui::Application::Instance
+            ? Gui::Application::Instance->getDocument(doc)
+            : nullptr) {
         if (auto* view = dynamic_cast<Gui::ViewProviderDocumentObject*>(guiDoc->getViewProvider(obj))) {
             if (auto* resultView = dynamic_cast<ViewProviderMassPropertiesResult*>(view)) {
                 resultView->setCenters(currentInfo.cog, currentInfo.cov);
@@ -1546,5 +2441,28 @@ void TaskMassProperties::saveResult()
         }
     }
 
-    doc->commitTransaction();
+    doc->recompute();
+    if (!finishDurableResult(std::move(transaction))) {
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
+    }
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Saving mass properties failed: %s\n",
+            error.what()
+        );
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Saving mass properties failed: %s\n",
+            error.what()
+        );
+        transaction.reset();
+        startPreviewTransaction();
+        update(Gui::SelectionChanges());
+    }
 }

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 from jsonschema import Draft202012Validator
 
@@ -201,20 +201,6 @@ def _review_prompt(
     )
 
 
-def _parse_tool_arguments(raw: Any, provider: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(str(raw or "{}"))
-    except ValueError as exc:
-        raise RuntimeError(
-            f"{provider} design reviewer returned invalid JSON arguments."
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError(
-            f"{provider} design reviewer returned a non-object result."
-        )
-    return parsed
-
-
 def _validate_review(review: dict[str, Any]) -> dict[str, Any]:
     errors = sorted(
         Draft202012Validator(REVIEW_RESULT_SCHEMA).iter_errors(review),
@@ -234,84 +220,6 @@ def _validate_review(review: dict[str, Any]) -> dict[str, Any]:
             "Design review marked a blocking or major finding but returned ready."
         )
     return _json_safe(review)
-
-
-def _openai_review_child_main(
-    conn,
-    prompt: str,
-    context: dict[str, Any],
-    model: str,
-    api_key: str | None,
-    reasoning_effort: str | None,
-    timeout_seconds: float | None,
-    _max_turns: int | None,
-    clear_inherited_modules: bool,
-    base_url: str | None = None,
-) -> None:
-    try:
-        if clear_inherited_modules:
-            _clear_inherited_sdk_modules()
-        from openai import OpenAI
-
-        if not api_key and not base_url:
-            raise ProviderUnavailable("No OpenAI-compatible API key is configured.")
-        schema = _review_tool_schema()
-        request: dict[str, Any] = {
-            "model": model,
-            "instructions": REVIEW_INSTRUCTIONS,
-            "input": prompt,
-            "tools": [
-                {
-                    "type": "function",
-                    "name": schema["name"],
-                    "description": schema["description"],
-                    "parameters": schema["parameters"],
-                    "strict": True,
-                }
-            ],
-            "tool_choice": {"type": "function", "name": schema["name"]},
-            "parallel_tool_calls": False,
-            "stream": False,
-        }
-        effort = _provider_reasoning_effort(reasoning_effort)
-        if effort:
-            request["reasoning"] = {"effort": effort}
-        client_kwargs: dict[str, Any] = {
-            "api_key": api_key or "vibecad-local",
-            "max_retries": 2,
-        }
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        if timeout_seconds is not None and timeout_seconds > 0:
-            client_kwargs["timeout"] = timeout_seconds
-        _capture_outbound_request(
-            context,
-            provider="openai",
-            sdk_call="OpenAI.responses.create.design_review",
-            turn=1,
-            request=request,
-            base_url=base_url,
-        )
-        response = OpenAI(**client_kwargs).responses.create(**request)
-        calls = [
-            item
-            for item in list(getattr(response, "output", []) or [])
-            if str(getattr(item, "type", "") or "") == "function_call"
-        ]
-        if len(calls) != 1 or str(getattr(calls[0], "name", "")) != REVIEW_TOOL_NAME:
-            raise RuntimeError(
-                "OpenAI-compatible design reviewer did not submit exactly one review."
-            )
-        review = _validate_review(
-            _parse_tool_arguments(
-                getattr(calls[0], "arguments", "{}"), "OpenAI-compatible"
-            )
-        )
-        conn.send({"type": "done", "final_output": "", "raw": review})
-    except Exception as exc:
-        conn.send({"type": "error", "error": str(exc)})
-    finally:
-        conn.close()
 
 
 def _anthropic_review_child_main(
@@ -385,21 +293,32 @@ def _anthropic_review_child_main(
         conn.close()
 
 
-def _chatgpt_review(
+def _codex_review(
     *,
+    provider: str,
     prompt: str,
     context: dict[str, Any],
     model: str,
+    api_key: str | None,
+    base_url: str | None,
     reasoning_effort: str | None,
     cancellation_check: CancellationCheck | None,
     timeout_seconds: float | None,
 ) -> dict[str, Any]:
     from VibeCADCodex import (
+        CODEX_OPENAI_API_KEY_ENV,
+        CODEX_OPENAI_PROVIDER_ID,
         CodexAppServerClient,
         CodexAppServerError,
         codex_workspace,
         vibecad_thread_config,
     )
+
+    clean_provider = str(provider or "").strip().lower()
+    if clean_provider not in {"openai", "chatgpt"}:
+        raise ValueError(f"Unsupported Codex auth provider: {provider!r}.")
+    if clean_provider == "openai" and not str(api_key or "").strip():
+        raise ProviderUnavailable("No OpenAI API key is configured.")
 
     schema = _review_tool_schema()
     state_lock = threading.RLock()
@@ -458,23 +377,29 @@ def _chatgpt_review(
     client = CodexAppServerClient(
         notification_handler=notification,
         server_request_handler=server_request,
+        environment=(
+            {CODEX_OPENAI_API_KEY_ENV: str(api_key)}
+            if clean_provider == "openai"
+            else None
+        ),
     )
     timeout = timeout_seconds if timeout_seconds and timeout_seconds > 0 else 300.0
     deadline = time.monotonic() + timeout
     try:
         client.start()
-        account_result = client.request(
-            "account/read", {"refreshToken": False}, timeout=30.0
-        )
-        account = (
-            account_result.get("account")
-            if isinstance(account_result, dict)
-            else None
-        )
-        if not isinstance(account, dict) or account.get("type") != "chatgpt":
-            raise ProviderUnavailable(
-                "No ChatGPT subscription is signed in for design review."
+        if clean_provider == "chatgpt":
+            account_result = client.request(
+                "account/read", {"refreshToken": False}, timeout=30.0
             )
+            account = (
+                account_result.get("account")
+                if isinstance(account_result, dict)
+                else None
+            )
+            if not isinstance(account, dict) or account.get("type") != "chatgpt":
+                raise ProviderUnavailable(
+                    "No ChatGPT subscription is signed in for design review."
+                )
         thread_request: dict[str, Any] = {
             "cwd": str(codex_workspace()),
             "approvalPolicy": "never",
@@ -496,18 +421,24 @@ def _chatgpt_review(
                     "inputSchema": schema["parameters"],
                 }
             ],
-            "config": vibecad_thread_config(),
+            "config": vibecad_thread_config(
+                openai_base_url=(
+                    str(base_url or "") if clean_provider == "openai" else None
+                )
+            ),
             "serviceName": "vibecad-design-review",
         }
+        if clean_provider == "openai":
+            thread_request["modelProvider"] = CODEX_OPENAI_PROVIDER_ID
         if str(model or "").strip():
             thread_request["model"] = str(model).strip()
         _capture_outbound_request(
             context,
-            provider="chatgpt",
+            provider=clean_provider,
             sdk_call="codex-app-server.thread/start.design_review",
             turn=1,
             request=thread_request,
-            base_url=None,
+            base_url=base_url if clean_provider == "openai" else None,
         )
         thread_result = client.request("thread/start", thread_request, timeout=30.0)
         thread = (
@@ -528,11 +459,11 @@ def _chatgpt_review(
         }
         _capture_outbound_request(
             context,
-            provider="chatgpt",
+            provider=clean_provider,
             sdk_call="codex-app-server.turn/start.design_review",
             turn=1,
             request=turn_request,
-            base_url=None,
+            base_url=base_url if clean_provider == "openai" else None,
         )
         turn_result = client.request("turn/start", turn_request, timeout=30.0)
         turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
@@ -553,7 +484,7 @@ def _chatgpt_review(
                     {"threadId": thread_id, "turnId": turn_id},
                     timeout=5.0,
                 )
-                raise TimeoutError("ChatGPT design review timed out.")
+                raise TimeoutError("Codex design review timed out.")
             if not client.alive:
                 raise ProviderUnavailable(
                     "Codex app-server stopped during design review."
@@ -569,7 +500,7 @@ def _chatgpt_review(
             )
         if structured_call_count != 1 or structured_review is None:
             raise RuntimeError(
-                "ChatGPT design reviewer did not submit exactly one review."
+                "Codex design reviewer did not submit exactly one review."
             )
         return structured_review
     except CodexAppServerError as exc:
@@ -601,20 +532,18 @@ def run_design_review(
     if clean_provider not in {"openai", "anthropic", "chatgpt"}:
         raise ValueError(f"Unsupported design-review provider: {provider!r}.")
     prompt = _review_prompt(customer_intent, design_draft, context)
-    if clean_provider == "chatgpt":
-        return _chatgpt_review(
+    if clean_provider in {"openai", "chatgpt"}:
+        return _codex_review(
+            provider=clean_provider,
             prompt=prompt,
             context=context,
             model=model,
+            api_key=api_key,
+            base_url=base_url,
             reasoning_effort=reasoning_effort,
             cancellation_check=cancellation_check,
             timeout_seconds=timeout_seconds,
         )
-    child_main: Callable[..., None] = (
-        _anthropic_review_child_main
-        if clean_provider == "anthropic"
-        else _openai_review_child_main
-    )
     result = _run_provider_subprocess(
         prompt=prompt,
         context=context,
@@ -627,7 +556,7 @@ def run_design_review(
         base_url=base_url,
         cancellation_check=cancellation_check,
         progress_callback=progress_callback,
-        child_main=child_main,
+        child_main=_anthropic_review_child_main,
         provider_label="VibeCAD design reviewer",
     )
     if not isinstance(result.raw, dict):

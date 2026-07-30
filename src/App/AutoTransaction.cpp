@@ -185,21 +185,39 @@ bool Application::closeActiveTransaction(TransactionCloseMode mode, int id)
     currentlyClosingID = id;
 
     std::vector<Document*> docsToPoke;
-    for (auto& docNameAndDoc : DocMap) {
-        if (docNameAndDoc.second->getBookedTransactionID() != id) {
-            continue;
+    const auto collectParticipants = [&]() {
+        docsToPoke.clear();
+        for (auto& docNameAndDoc : DocMap) {
+            auto* document = docNameAndDoc.second;
+            if (document->getBookedTransactionID() != id) {
+                continue;
+            }
+            if (document->isTransactionLocked() || document->transacting()) {
+                FC_LOG("pending " << (abort ? "abort" : "close") << " transaction");
+                return false;
+            }
+            docsToPoke.push_back(document);
         }
-        if(docNameAndDoc.second->isTransactionLocked() || docNameAndDoc.second->transacting()) {
-            FC_LOG("pending " << (abort ? "abort" : "close") << " transaction");
-            currentlyClosingID = 0;
-            return false;
-        }
-        if(docNameAndDoc.second->transacting()) {
-            FC_LOG("pending " << (abort ? "abort" : "close") << " transaction");
-            currentlyClosingID = 0;
-            return false;
-        }
-        docsToPoke.push_back(docNameAndDoc.second);
+        return true;
+    };
+    if (!collectParticipants()) {
+        currentlyClosingID = 0;
+        return false;
+    }
+
+    try {
+        signalBeforeExactTransactionClose(id, abort, docsToPoke);
+    }
+    catch (...) {
+        currentlyClosingID = 0;
+        throw;
+    }
+    // Commit observers are allowed to atomically join dependent documents to
+    // this exact identity. Rebuild and revalidate the participant set before
+    // any journal is closed.
+    if (!collectParticipants()) {
+        currentlyClosingID = 0;
+        return false;
     }
 
     FC_LOG("close transaction '" << _activeTransactionDescriptions[id].name.name << "' " << abort);
@@ -208,7 +226,12 @@ bool Application::closeActiveTransaction(TransactionCloseMode mode, int id)
         _globalTransactionID = 0;
     }
 
-    TransactionSignaller signaller(abort, false);
+    // Own the legacy before/after close notification at the application
+    // boundary. Per-document signallers nest beneath this one when an undo
+    // journal exists; when Undo is disabled, this outer signaller still gives
+    // observers one complete close event for the accepted or rejected
+    // transaction.
+    TransactionSignaller signaller(abort, true);
 
     for (auto& doc : docsToPoke) {
         if (abort) {
@@ -219,6 +242,11 @@ bool Application::closeActiveTransaction(TransactionCloseMode mode, int id)
         }
     }
     currentlyClosingID = 0;
+    // Publish the completed identity while the outer TransactionSignaller is
+    // still alive. Its destructor emits the legacy signalCloseTransaction,
+    // whose observers are allowed to synchronously open successor S. Exact
+    // owners must learn that T completed before S can become observable.
+    signalExactTransactionClosed(id, abort, docsToPoke);
 
     return true;
 }

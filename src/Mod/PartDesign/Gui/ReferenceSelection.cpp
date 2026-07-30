@@ -29,6 +29,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <QDialog>
+#include <QMessageBox>
 
 
 #include <App/Document.h>
@@ -340,13 +341,24 @@ bool getReferencedSelection(
             }
 
             if (!dlg.radioXRef->isChecked()) {
-                App::Document* document = thisObj->getDocument();
-                document->openTransaction("Make copy");
                 auto copy = PartDesignGui::TaskFeaturePick::makeCopy(
                     selObj,
                     subname,
-                    dlg.radioIndependent->isChecked()
+                    dlg.radioIndependent->isChecked(),
+                    thisObj->getDocument()
                 );
+                if (!copy) {
+                    QMessageBox::warning(
+                        Gui::getMainWindow(),
+                        QObject::tr("Copy failed"),
+                        QObject::tr(
+                            "The selected reference could not be copied "
+                            "into this body."
+                        )
+                    );
+                    selObj = nullptr;
+                    return false;
+                }
                 body->addObject(copy);
 
                 selObj = copy;

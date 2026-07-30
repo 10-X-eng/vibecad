@@ -1,10 +1,11 @@
 /***************************************************************************
+ *   Copyright (c) 2026 VibeCAD contributors                               *
  *   Copyright (c) 2023 Peter McB                                          *
- *   Copyright (c) 2013 Jürgen Riegel (FreeCAD@juergen-riegel.net)         *
+ *   Copyright (c) 2013 Jürgen Riegel <juergen.riegel@web.de>              *
  *                                                                         *
  *   This file is part of FreeCAD.                                         *
  *                                                                         *
- *   FreeCAD is free software: you can redistribute it and/or modify it    *
+ *   FreeCAD is free software: you can redistribute it and/or modify it     *
  *   under the terms of the GNU Lesser General Public License as           *
  *   published by the Free Software Foundation, either version 2.1 of the  *
  *   License, or (at your option) any later version.                       *
@@ -20,848 +21,923 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <fstream>
-
-#include <boost/algorithm/string.hpp>
-#include <fmt/ostream.h>
+#include <algorithm>
+#include <cstdio>
+#include <exception>
+#include <memory>
+#include <set>
+#include <string>
 
 #include <Inventor/events/SoMouseButtonEvent.h>
 #include <Inventor/nodes/SoCamera.h>
 #include <Inventor/nodes/SoEventCallback.h>
 
-#include <QAction>
 #include <QApplication>
 #include <QMessageBox>
-#include <SMESH_Mesh.hxx>
-#include <SMESHDS_Mesh.hxx>
-#include <SMESH_MeshEditor.hxx>
 
+#include <SMDSAbs_ElementType.hxx>
+#include <SMDS_MeshElement.hxx>
+#include <SMDS_MeshNode.hxx>
+#include <SMESHDS_Mesh.hxx>
+#include <SMESH_Mesh.hxx>
+
+#include <App/Document.h>
+#include <App/DocumentTimeline.h>
+#include <App/DocumentObject.h>
+#include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
+#include <Base/Tools2D.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
-#include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
+#include <Gui/Selection/Selection.h>
 #include <Gui/Utilities.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
-#include <Gui/ViewProvider.h>
 #include <Gui/WaitCursor.h>
-
+#include <Mod/Fem/App/FemMesh.h>
 #include <Mod/Fem/App/FemMeshObject.h>
-#include <Mod/Fem/App/FemSetElementNodesObject.h>
 
-#include "FemSelectionGate.h"
 #include "TaskCreateElementSet.h"
 #include "ViewProviderFemMesh.h"
 #include "ui_TaskCreateElementSet.h"
 
-#include <Gui/CommandT.h>
-#include <Gui/MainWindow.h>
 
-
-using namespace Gui;
-// using namespace Fem;
 using namespace FemGui;
-using namespace std;
 
-std::string TaskCreateElementSet::currentProject = "";
+
+std::string TaskCreateElementSet::currentProject;
 
 namespace
 {
-std::string inp_file = "abaqusOutputFileEraseElements.inp";
 
-std::string createdMesh = "cDUMMY";
-std::string startResultMesh = "StartResultMesh";  // StartResultMesh";
-std::string newResultMesh = "NewResultMesh";
-std::string newFemMesh = "NewFemMesh";
-
-std::string uniqueMesh = "";
-std::string newProject = "";
-std::string resultMesh = "Result";
-std::string actualResultMesh = "XXXXXX";
-std::string lastName = "";
-std::string highLightMesh;  //  name of highlighted mesh
-std::string meshType;       // type of - either 'result' or 'femmesh'
-int passResult = 0;
-int passFemMesh = 0;
-double** nodeCoords;  // these are node coords
-int* nodeNumbers;     // these are node numbers - probably not required[100];
-
-void addFaceToMesh(const std::vector<const SMDS_MeshNode*> nodes, SMESHDS_Mesh* MeshDS, int EID)
+SMDSAbs_ElementType primaryElementType(const Fem::FemMesh& mesh)
 {
-    int nbNodes = nodes.size();
-    switch (nbNodes) {
-        case 3:  // 3 node triangle
-            MeshDS->AddFaceWithID(nodes[0], nodes[1], nodes[2], EID);
-            break;
-        case 4:  // 4 node quadrilateral
-            MeshDS->AddFaceWithID(nodes[0], nodes[1], nodes[2], nodes[3], EID);
-            break;
-        case 6:  // 6 node triangle
-            MeshDS->AddFaceWithID(nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], nodes[5], EID);
-            break;
-        case 8:  // 8 node quadrilateral
-            MeshDS->AddFaceWithID(
-                nodes[0],
-                nodes[1],
-                nodes[2],
-                nodes[3],
-                nodes[4],
-                nodes[5],
-                nodes[6],
-                nodes[7],
-                EID
-            );
-            break;
-    }
-}  // addFaceToMesh
+    const SMESHDS_Mesh* data = mesh.getSMesh()->GetMeshDS();
+    constexpr SMDSAbs_ElementType orderedTypes[] {
+        SMDSAbs_Volume,
+        SMDSAbs_Face,
+        SMDSAbs_Edge,
+        SMDSAbs_0DElement,
+        SMDSAbs_Ball,
+    };
 
-void addVolumeToMesh(const std::vector<const SMDS_MeshNode*> nodes, SMESHDS_Mesh* MeshDS, int EID)
-{
-
-    int nbNodes = nodes.size();
-
-    switch (nbNodes) {
-        case 4:  // 4 node tetrahedron
-            MeshDS->AddVolumeWithID(nodes[0], nodes[1], nodes[2], nodes[3], EID);
-            break;
-        case 5:  // 5 node pyramid
-            MeshDS->AddVolumeWithID(nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], EID);
-            break;
-        case 6:  // 6 node pentahedron
-            MeshDS->AddVolumeWithID(nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], nodes[5], EID);
-            break;
-        case 8:  // 8 node hexahedron
-            MeshDS->AddVolumeWithID(
-                nodes[0],
-                nodes[1],
-                nodes[2],
-                nodes[3],
-                nodes[4],
-                nodes[5],
-                nodes[6],
-                nodes[7],
-                EID
-            );
-            break;
-        case 10:  // 10 node tetrahedron
-            MeshDS->AddVolumeWithID(
-                nodes[0],
-                nodes[1],
-                nodes[2],
-                nodes[3],
-                nodes[4],
-                nodes[5],
-                nodes[6],
-                nodes[7],
-                nodes[8],
-                nodes[9],
-                EID
-            );
-            break;
-        case 13:  // 13 node pyramid
-            MeshDS->AddVolumeWithID(
-                nodes[0],
-                nodes[1],
-                nodes[2],
-                nodes[3],
-                nodes[4],
-                nodes[5],
-                nodes[6],
-                nodes[7],
-                nodes[8],
-                nodes[9],
-                nodes[10],
-                nodes[11],
-                nodes[12],
-                EID
-            );
-            break;
-        case 15:  // 15 node pentahedron
-            MeshDS->AddVolumeWithID(
-                nodes[0],
-                nodes[1],
-                nodes[2],
-                nodes[3],
-                nodes[4],
-                nodes[5],
-                nodes[6],
-                nodes[7],
-                nodes[8],
-                nodes[9],
-                nodes[10],
-                nodes[11],
-                nodes[12],
-                nodes[13],
-                nodes[14],
-                EID
-            );
-            break;
-        case 20:  // 20 node hexahedron
-            MeshDS->AddVolumeWithID(
-                nodes[0],
-                nodes[1],
-                nodes[2],
-                nodes[3],
-                nodes[4],
-                nodes[5],
-                nodes[6],
-                nodes[7],
-                nodes[8],
-                nodes[9],
-                nodes[10],
-                nodes[11],
-                nodes[12],
-                nodes[13],
-                nodes[14],
-                nodes[15],
-                nodes[16],
-                nodes[17],
-                nodes[18],
-                nodes[19],
-                EID
-            );
-            break;
-    }  // default: {}
-
-}  // addVolumeToMesh
-
-void myCopyResultsMesh(std::string oldName, std::string newName)
-{
-    int error = 0;
-
-    Base::Console().warning("copy: %s and %s\n", oldName.c_str(), newName.c_str());
-    if (oldName.compare(newName) == 0 && error == 0) {
-        error = 1;
-        Base::Console().warning(
-            "Cannot copy ResultMesh to ResultMesh: %s and %s\n",
-            oldName.c_str(),
-            newName.c_str()
-        );
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            //        QMessageBox::warning(Gui::MainWindow(),
-            qApp->translate("CmdFemCreateElementsSet", "Wrong selection"),
-            qApp->translate("CmdFemCreateElementsSet", "Cannot copy ResultMesh to ResultMesh")
-        );
-    }
-    if ((oldName.find("Result") == std::string::npos || newName.find("Result") == std::string::npos)
-        && error == 0) {
-        error = 1;
-        Base::Console().warning("Mesh must be results: %s\n", oldName.c_str());
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            //        QMessageBox::warning(Gui::MainWindow(),
-            qApp->translate("CmdFemCreateElementsSet", "Wrong selection"),
-            qApp->translate("CmdFemCreateElementsSet", "Mesh must be a ResultMesh")
-        );
-    }
-    if (error == 0) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "c = FreeCADGui.ActiveDocument.getObject(\'%s\')",
-            oldName.c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.%s.FemMesh = c.Object.FemMesh",
-            newName.c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "Gui.ActiveDocument.getObject(\'%s\').BackfaceCulling = False",
-            newName.c_str()
-        );
-    }
-}  // copyresultsmesh
-
-void generateMesh(std::string meshType)
-{
-    if (passResult + passFemMesh == 0) {
-        Gui::Command::doCommand(Gui::Command::Doc, "import Fem,os");
-    }
-
-    if (strcmp(meshType.c_str(), "result") == 0) {
-        if (passResult == 0) {
-            string xstr(startResultMesh.c_str());
-            createdMesh = newResultMesh.c_str();
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "obj1 = App.ActiveDocument.addObject('Fem::FemMeshObject', \'%s\')",
-                startResultMesh.c_str()
-            );
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "Gui.ActiveDocument.getObject(\'%s\').Visibility = False",
-                startResultMesh.c_str()
-            );
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "ne = Gui.ActiveDocument.getObject(\'%s\')",
-                actualResultMesh.c_str()
-            );
-            Gui::Command::doCommand(Gui::Command::Doc, "obj1.FemMesh = ne.Object.FemMesh");
-        }
-        else if (passResult > 0) {
-            createdMesh = newResultMesh.c_str();
-        }
-        passResult += 1;
-    }
-    else if (strcmp(meshType.c_str(), "femmesh") == 0) {
-        if (passFemMesh == 0) {
-            string xstr("no rename required");
-            createdMesh = newFemMesh.c_str();
-        }
-        else if (passFemMesh > 0) {
-            createdMesh = newFemMesh.c_str();
-        }
-        passFemMesh += 1;
-    }
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    uniqueMesh = doc->getUniqueObjectName(createdMesh.c_str());
-
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "Gui.ActiveDocument.getObject(\'%s\').Visibility = False",
-        highLightMesh.c_str()
-    );
-    Gui::Command::doCommand(Gui::Command::Doc, "newermesh = Fem.read(\'%s\')", inp_file.c_str());
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "obj = App.ActiveDocument.addObject('Fem::FemMeshObject', \'%s\')",
-        uniqueMesh.c_str()
-    );
-    Gui::Command::doCommand(Gui::Command::Doc, "obj.FemMesh = newermesh");
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "Gui.ActiveDocument.getObject(\'%s\').BackfaceCulling = False",
-        uniqueMesh.c_str()
-    );
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "Gui.ActiveDocument.getObject(\'%s\').Visibility = True",
-        uniqueMesh.c_str()
-    );
-    Gui::Command::doCommand(Gui::Command::Doc, "os.remove(\'%s\')", inp_file.c_str());
-
-    if (strcmp(meshType.c_str(), "result") == 0) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "c = FreeCADGui.ActiveDocument.getObject(\'%s\')",
-            uniqueMesh.c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "FreeCAD.ActiveDocument.%s.FemMesh = c.Object.FemMesh",
-            actualResultMesh.c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "Gui.ActiveDocument.getObject(\'%s\').BackfaceCulling = False",
-            actualResultMesh.c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "Gui.ActiveDocument.getObject(\'%s\').Visibility = True",
-            actualResultMesh.c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "Gui.ActiveDocument.getObject(\'%s\').Visibility = False",
-            uniqueMesh.c_str()
-        );
-    }
-}  // generate mesh
-
-void writeToFile(
-    std::string fileName,
-    SMESHDS_Mesh* newMesh,
-    int* nodeNumbers,
-    double** nodeCoords,
-    int rows,
-    int requiredType
-)
-{
-    std::map<int, std::string> elType2D;
-    std::map<int, std::string> elType3D;
-
-    elType2D[3] = "S3";  // 3 node triangle
-    elType2D[6] = "S6";  // 4 node quadrilateral
-    elType2D[4] = "S4";  // 6 node triangle
-    elType2D[8] = "S8";  // 8 node quadrilateral
-
-    elType3D[4] = "C3D4";    // 4 node tetrahedron
-    elType3D[6] = "C3D6";    // 6 node pentahedron
-    elType3D[8] = "C3D8";    // 8 node hexahedron
-    elType3D[10] = "C3D10";  // 10 node tetrahedron
-    elType3D[15] = "C3D15";  // 15 node pentahedron
-    elType3D[20] = "C3D20";  // 20 node hexahedron
-                             // no pyramid elements
-    std::ofstream out(fileName);
-    if (!out) {
-        return;
-    }
-    fmt::print(out, "** written by Erase Elements inp file writer for CalculiX,Abaqus meshes\n");
-    fmt::print(out, "** all mesh elements.\n");
-
-    fmt::print(out, "\n");
-    fmt::print(out, "\n");
-    fmt::print(out, "** Nodes\n");
-    fmt::print(out, "*Node, NSET=Nall\n");
-
-    for (int i = 1; i < rows + 1; i++) {
-        if (nodeNumbers[i] > 0) {
-            fmt::print(
-                out,
-                "{}, {:e}, {:e}, {:e}\n",
-                nodeNumbers[i],
-                nodeCoords[i][0],
-                nodeCoords[i][1],
-                nodeCoords[i][2]
-            );
+    for (SMDSAbs_ElementType type : orderedTypes) {
+        if (data->GetMeshInfo().NbElements(type) > 0) {
+            return type;
         }
     }
-
-    SMDS_ElemIteratorPtr srcElemIt;
-    SMDS_NodeIteratorPtr srcNodeIt;
-    srcElemIt = newMesh->elementsIterator();
-    srcNodeIt = newMesh->nodesIterator();
-    const SMDS_MeshNode* nSrc;
-    int NID, EID;
-    while (srcNodeIt->more()) {
-        const SMDS_MeshNode* node = srcNodeIt->next();
-        NID = node->GetID();
-    }
-    int numberNodes = -1;
-    while (srcElemIt->more()) {
-        const SMDS_MeshElement* elem = srcElemIt->next();
-        EID = elem->GetID();
-        if (elem->GetType() != requiredType) {
-            continue;
-        }
-
-        if (numberNodes != elem->NbNodes()) {
-            if (requiredType == 4) {
-                fmt::print(out, "\n");
-                fmt::print(out, "\n");
-                fmt::print(out, "** Volume elements\n");
-                fmt::print(out, "*Element, TYPE={}, ELSET=Evolumes\n", elType3D[elem->NbNodes()]);
-            }
-            else if (requiredType == 3) {
-                fmt::print(out, "** Face elements\n");
-                fmt::print(out, "*Element, TYPE={}, ELSET=Efaces\n", elType2D[elem->NbNodes()]);
-            }
-            numberNodes = elem->NbNodes();
-        }
-        SMDS_ElemIteratorPtr nIt = elem->nodesIterator();
-        fmt::print(out, "{}", EID);
-        while (nIt->more()) {
-            nSrc = static_cast<const SMDS_MeshNode*>(nIt->next());
-            NID = nSrc->GetID();
-            fmt::print(out, ", {}", NID);
-        }
-        fmt::print(out, "\n");
-    }  // while print
-    if (requiredType == 4) {
-        fmt::print(out, "\n");
-        fmt::print(out, "\n");
-        fmt::print(out, "** Define element set Eall\n");
-        fmt::print(out, "*ELSET, ELSET=Eall\n");
-        fmt::print(out, "Evolumes\n");
-    }
-    else if (requiredType == 3) {
-        fmt::print(out, "** Define element set Eall\n");
-        fmt::print(out, "*ELSET, ELSET=Eall\n");
-        fmt::print(out, "Efaces\n");
-    }
+    return SMDSAbs_All;
 }
+
+std::set<int> elementIds(const Fem::FemMesh& mesh, SMDSAbs_ElementType type)
+{
+    std::set<int> ids;
+    if (type == SMDSAbs_All) {
+        return ids;
+    }
+
+    SMDS_ElemIteratorPtr elements = mesh.getSMesh()->GetMeshDS()->elementsIterator(type);
+    while (elements->more()) {
+        ids.insert(elements->next()->GetID());
+    }
+    return ids;
+}
+
+Base::Vector3f projectedCenter(const SMDS_MeshElement& element, const Gui::ViewVolumeProjection& projection)
+{
+    int nodeCount = element.NbCornerNodes();
+    if (nodeCount <= 0) {
+        nodeCount = element.NbNodes();
+    }
+
+    Base::Vector3f center;
+    for (int index = 0; index < nodeCount; ++index) {
+        const SMDS_MeshNode* node = element.GetNode(index);
+        center.x += static_cast<float>(node->X());
+        center.y += static_cast<float>(node->Y());
+        center.z += static_cast<float>(node->Z());
+    }
+
+    if (nodeCount > 0) {
+        center /= static_cast<float>(nodeCount);
+    }
+    return projection(center);
+}
+
+void markTimelineResource(App::DocumentObject* resource, App::DocumentObject* owner)
+{
+    if (!resource || !owner || resource == owner) {
+        throw Base::ValueError("A filtered FEM mesh timeline resource requires a distinct owner");
+    }
+    if (!resource->getDocument() || resource->getDocument() != owner->getDocument()) {
+        throw Base::ValueError("A filtered FEM mesh and its owner must share a document");
+    }
+
+    const auto ensureProperty =
+        [](App::DocumentObject* object, const char* type, const char* name, const char* description) {
+            auto* property = object->getPropertyByName(name);
+            if (!property) {
+                property = object->addDynamicProperty(
+                    type,
+                    name,
+                    "Timeline",
+                    description,
+                    App::Prop_NoRecompute,
+                    true,
+                    true
+                );
+            }
+            property->setStatus(App::Property::Hidden, true);
+            property->setStatus(App::Property::LockDynamic, true);
+            property->setStatus(App::Property::NoRecompute, true);
+            return property;
+        };
+    auto* role = dynamic_cast<App::PropertyString*>(ensureProperty(
+        resource,
+        "App::PropertyString",
+        App::DocumentTimeline::RolePropertyName,
+        "Document timeline classification"
+    ));
+    auto* ownerProperty = dynamic_cast<App::PropertyLinkHidden*>(ensureProperty(
+        resource,
+        "App::PropertyLinkHidden",
+        App::DocumentTimeline::OwnerPropertyName,
+        "Erase Elements operation which owns this filtered mesh"
+    ));
+    if (!role || !ownerProperty) {
+        throw Base::TypeError("Filtered FEM mesh timeline metadata properties have incompatible types");
+    }
+
+    ownerProperty->setValue(owner);
+    role->setValue(App::DocumentTimeline::ResourceRole);
+}
+
+void markTimelineOperation(App::DocumentObject* operation)
+{
+    if (!operation || !operation->getDocument()
+        || !operation->getDocument()->containsObject(operation)) {
+        throw Base::ValueError("Erase Elements requires one live operation");
+    }
+    App::Property* property = operation->getPropertyByName(App::DocumentTimeline::RolePropertyName);
+    if (!property) {
+        property = operation->addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Timeline",
+            "Document timeline classification",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    property->setStatus(App::Property::Hidden, true);
+    property->setStatus(App::Property::LockDynamic, true);
+    property->setStatus(App::Property::NoRecompute, true);
+    auto* role = dynamic_cast<App::PropertyString*>(property);
+    if (!role) {
+        throw Base::TypeError("Erase Elements timeline role metadata has an incompatible type");
+    }
+    role->setValue(App::DocumentTimeline::OperationRole);
+}
+
+void markTimelineReplacedInput(App::DocumentObject* operation, App::DocumentObject* input)
+{
+    if (!operation || !input || operation == input) {
+        throw Base::ValueError("Erase Elements requires a distinct replaced timeline input");
+    }
+    auto* document = operation->getDocument();
+    if (!document || input->getDocument() != document || !document->containsObject(operation)
+        || !document->containsObject(input)) {
+        throw Base::ValueError(
+            "An Erase Elements replaced input must be live in the operation document"
+        );
+    }
+
+    App::Property* property = operation->getPropertyByName(
+        App::DocumentTimeline::ReplacedInputsPropertyName
+    );
+    if (!property) {
+        property = operation->addDynamicProperty(
+            "App::PropertyLinkListHidden",
+            App::DocumentTimeline::ReplacedInputsPropertyName,
+            "Timeline",
+            "Visible source mesh hidden by Erase Elements",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    property->setStatus(App::Property::Hidden, true);
+    property->setStatus(App::Property::LockDynamic, true);
+    property->setStatus(App::Property::NoRecompute, true);
+    auto* replacedInputs = dynamic_cast<App::PropertyLinkListHidden*>(property);
+    if (!replacedInputs) {
+        throw Base::TypeError("Erase Elements replaced-input metadata has an incompatible type");
+    }
+
+    App::Property* roleProperty = operation->getPropertyByName(App::DocumentTimeline::RolePropertyName);
+    if (!roleProperty) {
+        roleProperty = operation->addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Timeline",
+            "Document timeline classification",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    roleProperty->setStatus(App::Property::Hidden, true);
+    roleProperty->setStatus(App::Property::LockDynamic, true);
+    roleProperty->setStatus(App::Property::NoRecompute, true);
+    auto* role = dynamic_cast<App::PropertyString*>(roleProperty);
+    if (!role) {
+        throw Base::TypeError("Erase Elements timeline role metadata has an incompatible type");
+    }
+
+    replacedInputs->setValues({input});
+    role->setValue(App::DocumentTimeline::OperationRole);
+}
+
 }  // namespace
 
-TaskCreateElementSet::TaskCreateElementSet(Fem::FemSetElementNodesObject* pcObject, QWidget* parent)
-    : TaskBox(Gui::BitmapFactory().pixmap("FEM_CreateElementsSet"), tr("Elements set"), true, parent)
-    , pcObject(pcObject)
+
+TaskCreateElementSet::TaskCreateElementSet(Fem::FemSetElementNodesObject* object, QWidget* parent)
+    : TaskBox(Gui::BitmapFactory().pixmap("FEM_CreateElementsSet"), tr("Erase mesh elements"), true, parent)
+    , MeshViewProvider(nullptr)
+    , pcObject(object)
     , selectionMode(none)
+    , proxy(new QWidget(this))
+    , ui(std::make_unique<Ui_TaskCreateElementSet>())
+    , document(object ? object->getDocument() : nullptr)
+    , sourceMeshObject(nullptr)
+    , previewMeshObject(nullptr)
+    , sourceMeshViewProvider(nullptr)
+    , polygonViewer(nullptr)
+    , sourceWasVisible(false)
+    , operationWasTimelineOperation(App::DocumentTimeline::hasTimelineOperationRole(object))
 {
-    proxy = new QWidget(this);
-    ui = new Ui_TaskCreateElementSet();
+    if (!pcObject || !document || !pcObject->getNameInDocument()) {
+        throw Base::RuntimeError("Erase Elements requires a document-owned element-set object");
+    }
+
+    operationObjectName = pcObject->getNameInDocument();
+    sourceMeshObject = pcObject->FemMesh.getValue<Fem::FemMeshObject*>();
+    if (!sourceMeshObject || sourceMeshObject->getDocument() != document
+        || !sourceMeshObject->getNameInDocument()) {
+        throw Base::RuntimeError("Erase Elements requires a FEM mesh in the same document");
+    }
+    sourceMeshName = sourceMeshObject->getNameInDocument();
+
+    sourceMeshViewProvider = Gui::Application::Instance->getViewProvider<ViewProviderFemMesh>(
+        sourceMeshObject
+    );
+    if (!sourceMeshViewProvider) {
+        throw Base::RuntimeError("Erase Elements could not find the source mesh view");
+    }
+
+    MeshViewProvider = sourceMeshViewProvider;
+    sourceWasVisible = sourceMeshViewProvider->Visibility.getValue();
+    sourceMeshSnapshot = std::make_unique<Fem::FemMesh>(sourceMeshObject->FemMesh.getValue());
+    workingMesh = std::make_unique<Fem::FemMesh>(*sourceMeshSnapshot);
+    elementTempSet = pcObject->Elements.getValues();
+
+    if (operationWasTimelineOperation) {
+        auto* timeline = App::DocumentTimeline::get(document);
+        if (!timeline) {
+            throw Base::RuntimeError("Erase Elements has no native document timeline");
+        }
+        std::vector<App::DocumentObject*> directRoots;
+        for (auto* candidate : timeline->Operations.getValues()) {
+            if (!candidate || candidate == pcObject) {
+                continue;
+            }
+            auto* current = candidate;
+            std::set<App::DocumentObject*> visited;
+            while (auto* owner = App::DocumentTimeline::timelineOwner(current)) {
+                if (!visited.insert(current).second) {
+                    throw Base::RuntimeError("Erase Elements has a cyclic timeline resource graph");
+                }
+                current = owner;
+            }
+            if (current != pcObject) {
+                continue;
+            }
+            oldTimelineResources.emplace_back(candidate->getNameInDocument(), candidate->getID());
+            if (App::DocumentTimeline::timelineOwner(candidate) == pcObject) {
+                directRoots.push_back(candidate);
+            }
+        }
+        document->stageTimelineOperationResourceReconciliation(pcObject, directRoots);
+    }
+
     ui->setupUi(proxy);
     QMetaObject::connectSlotsByName(this);
-    this->groupLayout()->addWidget(proxy);
-    QObject::connect(ui->toolButton_Poly, &QToolButton::clicked, this, &TaskCreateElementSet::Poly);
+    groupLayout()->addWidget(proxy);
+    QObject::connect(ui->toolButton_Select, &QToolButton::clicked, this, &TaskCreateElementSet::Poly);
     QObject::connect(ui->toolButton_Restore, &QToolButton::clicked, this, &TaskCreateElementSet::Restore);
     QObject::connect(
-        ui->toolButton_Rename,
+        ui->toolButton_Copy,
         &QToolButton::clicked,
         this,
         &TaskCreateElementSet::CopyResultsMesh
     );
-    // check if the Link to the FemMesh is defined
-    assert(pcObject->FemMesh.getValue<Fem::FemMeshObject*>());
-    MeshViewProvider = freecad_cast<ViewProviderFemMesh*>(
-        Gui::Application::Instance->getViewProvider(pcObject->FemMesh.getValue<Fem::FemMeshObject*>())
-    );
-    assert(MeshViewProvider);
+}
 
-    elementTempSet = pcObject->Elements.getValues();
-    std::set<long int>::iterator it;
-    std::string info;
-    info = "Delete the generated data in the other project: " + std::string(currentProject);
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    newProject = doc->Label.getValue();
-    if (strcmp(currentProject.c_str(), newProject.c_str()) != 0 && (passResult + passFemMesh != 0)) {
+bool TaskCreateElementSet::ownsObject(const App::DocumentObject* object, const std::string& name) const
+{
+    return document && object && !name.empty() && document->getObject(name.c_str()) == object;
+}
+
+void TaskCreateElementSet::Poly()
+{
+    stopPolygonSelection();
+
+    if (!ownsObject(pcObject, operationObjectName) || !ownsObject(sourceMeshObject, sourceMeshName)) {
         QMessageBox::warning(
             Gui::getMainWindow(),
-            //        QMessageBox::warning(Gui::MainWindow(),
-            qApp->translate("CmdFemCreateElementsSet", "Wrong selection"),
-            qApp->translate("CmdFemCreateElementsSet", info.c_str())
+            tr("Erase Elements"),
+            tr("The source mesh or operation is no longer available.")
         );
         return;
     }
-}
 
-void TaskCreateElementSet::Poly(void)
-{
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    Gui::MDIView* view = doc->getActiveView();
-    if (view->isDerivedFrom<Gui::View3DInventor>()) {
-        Gui::View3DInventorViewer* viewer = ((Gui::View3DInventor*)view)->getViewer();
-        viewer->setEditing(true);
-        viewer->startSelection(Gui::View3DInventorViewer::Clip);
-        viewer->addEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineElementsCallback, this);
-    }
-}
-
-void TaskCreateElementSet::CopyResultsMesh(void)
-{
-    std::vector<Gui::SelectionSingleton::SelObj> selection = Gui::Selection().getSelection();  // [0];
-    highLightMesh = selection[0].FeatName;
-    myCopyResultsMesh(highLightMesh, actualResultMesh);
-    Gui::Command::doCommand(Gui::Command::Doc, "Gui.activeDocument().resetEdit()");
-}
-
-void TaskCreateElementSet::Restore(void)
-{
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    const std::vector<App::DocumentObject*>& all = doc->getObjects();
-    int number = 0, xpos = 0;
-    int elList = 0;
-    // put reverse here
-
-    std::vector<string> STR;
-    for (std::vector<App::DocumentObject*>::const_iterator it = all.begin(); it != all.end(); ++it) {
-        std::string objectN = all[xpos]->getNameInDocument();
-        STR.push_back(objectN);
-        xpos++;
-    }
-
-    // iterate through in reverse order
-    for (std::vector<string>::reverse_iterator it = STR.rbegin(); it != STR.rend(); ++it) {
-        std::string objectN = (*it);
-        if (objectN.find(startResultMesh) != std::string::npos) {
-            number++;
-            myCopyResultsMesh(objectN, actualResultMesh);
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.removeObject(\'%s\')",
-                objectN.c_str()
-            );
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        }
-        else if (objectN.find(newResultMesh) != std::string::npos) {
-            number++;
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.removeObject(\'%s\')",
-                objectN.c_str()
-            );
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        }
-        else if (objectN.find(actualResultMesh) != std::string::npos) {
-        }
-        else if (objectN.find(newFemMesh) != std::string::npos) {
-            number++;
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.removeObject(\'%s\')",
-                objectN.c_str()
-            );
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        }
-        else if (objectN.find(Fem::FemSetElementNodesObject::getElementName()) != std::string::npos) {
-            if (elList > 0) {
-                Gui::Command::doCommand(
-                    Gui::Command::Doc,
-                    "App.ActiveDocument.removeObject(\'%s\')",
-                    objectN.c_str()
-                );
-                Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-            }
-            else if (elList == 0) {
-                elList++;
-                lastName = objectN;
-            }
-        }
-    }  // for
-    if (strcmp(lastName.c_str(), "") != 0) {
-        // blank last name - no action
-    }
-    else if (number == 0) {
+    Gui::Document* guiDocument = Gui::Application::Instance->getDocument(document);
+    if (!guiDocument) {
         QMessageBox::warning(
             Gui::getMainWindow(),
-            //        QMessageBox::warning(Gui::MainWindow(),
-            qApp->translate("CmdFemCreateElementsSet", "Wrong selection"),
-            qApp->translate("CmdFemCreateElementsSet", "No Data To Restore\n")
+            tr("Erase Elements"),
+            tr("The owning document no longer has a GUI view.")
         );
         return;
     }
-    passResult = 0;
-    passFemMesh = 0;
-    currentProject = "";
-    Gui::Command::doCommand(Gui::Command::Doc, "Gui.activeDocument().resetEdit()");
-    return;
-}  // restore
 
-void TaskCreateElementSet::DefineElementsCallback(void* ud, SoEventCallback* n)
+    Gui::MDIView* mdiView = guiDocument->getActiveView();
+    if (!mdiView || !mdiView->isDerivedFrom<Gui::View3DInventor>()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("Open a 3D view for this document before drawing a polygon.")
+        );
+        return;
+    }
+
+    polygonViewer = static_cast<Gui::View3DInventor*>(mdiView)->getViewer();
+    if (!polygonViewer) {
+        return;
+    }
+
+    polygonViewer->setEditing(true);
+    polygonViewer->startSelection(Gui::View3DInventorViewer::Clip);
+    polygonViewer->addEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineElementsCallback, this);
+}
+
+void TaskCreateElementSet::stopPolygonSelection()
 {
-    Gui::WaitCursor wc;
-    TaskCreateElementSet* taskBox = static_cast<TaskCreateElementSet*>(ud);
-    // When this callback function is invoked we must in either case leave the edit mode
-    Gui::View3DInventorViewer* view = reinterpret_cast<Gui::View3DInventorViewer*>(n->getUserData());
-    view->setEditing(false);
-    view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineElementsCallback, ud);
-    n->setHandled();
+    if (!polygonViewer) {
+        return;
+    }
+
+    polygonViewer->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineElementsCallback, this);
+    polygonViewer->setEditing(false);
+    polygonViewer = nullptr;
+}
+
+void TaskCreateElementSet::DefineElementsCallback(void* userData, SoEventCallback* callback)
+{
+    Gui::WaitCursor waitCursor;
+    auto* task = static_cast<TaskCreateElementSet*>(userData);
+    auto* viewer = static_cast<Gui::View3DInventorViewer*>(callback->getUserData());
+
+    viewer->setEditing(false);
+    viewer->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), DefineElementsCallback, userData);
+    if (task->polygonViewer == viewer) {
+        task->polygonViewer = nullptr;
+    }
+    callback->setHandled();
 
     Gui::SelectionRole role;
-    std::vector<SbVec2f> clPoly = view->getGLPolygon(&role);
-    if (clPoly.size() < 3) {
+    std::vector<SbVec2f> coordinates = viewer->getGLPolygon(&role);
+    if (coordinates.size() < 3) {
         return;
     }
-    if (clPoly.front() != clPoly.back()) {
-        clPoly.push_back(clPoly.front());
+    if (coordinates.front() != coordinates.back()) {
+        coordinates.push_back(coordinates.front());
     }
 
-    SoCamera* cam = view->getSoRenderManager()->getCamera();
-    SbViewVolume vv = cam->getViewVolume();
-    Gui::ViewVolumeProjection proj(vv);
+    SoCamera* camera = viewer->getSoRenderManager()->getCamera();
+    Gui::ViewVolumeProjection projection(camera->getViewVolume());
     Base::Polygon2d polygon;
-    for (std::vector<SbVec2f>::const_iterator it = clPoly.begin(); it != clPoly.end(); ++it) {
-        polygon.Add(Base::Vector2d((*it)[0], (*it)[1]));
+    for (const SbVec2f& coordinate : coordinates) {
+        polygon.Add(Base::Vector2d(coordinate[0], coordinate[1]));
     }
 
-    taskBox->DefineNodes(polygon, proj, role == Gui::SelectionRole::Inner ? true : false);
-}  // DefineElementsCallback
+    task->DefineNodes(polygon, projection, role == Gui::SelectionRole::Inner);
+}
 
 void TaskCreateElementSet::DefineNodes(
     const Base::Polygon2d& polygon,
-    const Gui::ViewVolumeProjection& proj,
+    const Gui::ViewVolumeProjection& projection,
     bool inner
 )
 {
-    const SMESHDS_Mesh* srcMeshDS
-        = const_cast<SMESH_Mesh*>(
-              pcObject->FemMesh.getValue<Fem::FemMeshObject*>()->FemMesh.getValue().getSMesh()
-        )
-              ->GetMeshDS();
-
-    std::vector<Gui::SelectionSingleton::SelObj> selection = Gui::Selection().getSelection();  // [0];
-    highLightMesh = selection[0].FeatName;
-
-    meshType = "NULL";
-    std::size_t found = boost::to_upper_copy(highLightMesh).find(boost::to_upper_copy(resultMesh));
-    actualResultMesh = highLightMesh;
-    // highLightMesh.find(myToUpper(resultMesh));
-
-    if (found != std::string::npos) {
-        meshType = "result";
-    }
-    else {
-        meshType = "femmesh";
-    }
-    //        std::string lightMesh = selection[0].FeatID;
-
-    elementTempSet.clear();
-    int nElements = srcMeshDS->GetMeshInfo().NbElements();
-    int nVolumes = srcMeshDS->GetMeshInfo().NbVolumes();
-    int requiredType = nVolumes > 0 ? 4 : 3;  // type = 4 - 3D, type = 3 - 2D
-
-    double cOfGX, cOfGY, cOfGZ;
-    const SMDS_MeshNode* nSrc;
-    int EID;
-    currentProject = newProject;
-
-    SMESHDS_Mesh* newMeshDS = new SMESHDS_Mesh(nElements, true);
-    //    FemMesh femMesh = FemMesh(); // *getFemMeshPtr();
-    Base::Vector3f pt2d;
-
-    SMDS_ElemIteratorPtr srcElemIt = srcMeshDS->elementsIterator();
-    SMDS_NodeIteratorPtr srcNode = srcMeshDS->nodesIterator();
-
-    const SMDS_MeshNode* nTgt;
-    std::vector<const SMDS_MeshNode*> nodes;
-    int keepElement = 0, maxNode = -1;
-    while (srcNode->more()) {
-        const SMDS_MeshNode* aNode = srcNode->next();
-        if (aNode->GetID() > maxNode) {
-            maxNode = aNode->GetID();
-        }
-    }
-
-    nodeNumbers = new int[maxNode + 2];
-    nodeCoords = new double*[maxNode + 2];  // these are node coords
-    for (int i = 0; i < maxNode + 2; i++) {
-        nodeCoords[i] = new double[3];  // x,y,z
-        nodeNumbers[i] = 0;
-    }
-
-    elementTempSet.insert(requiredType * -1);  // the type of elements
-    int pNodes;                                // the first pnodes are used in the cofg calc
-
-    while (srcElemIt->more()) {
-
-        pNodes = 4;  // the first pnodes are used in the cofg calc
-        const SMDS_MeshElement* elem = srcElemIt->next();
-        nodes.resize(elem->NbNodes());
-        EID = elem->GetID();
-        if (elem->GetType() != requiredType) {
-            continue;
-        }
-        SMDS_ElemIteratorPtr nIt = elem->nodesIterator();
-
-        if (requiredType == 4)  // 3D
-        {
-            if (elem->NbNodes() == 8 || elem->NbNodes() == 20) {  // 8 or 20 node brick
-                pNodes = 8;
-            }
-            if (elem->NbNodes() == 6 || elem->NbNodes() == 15) {  // 6 or 15 node penta
-                pNodes = 8;
-            }
-        }
-        else if (requiredType == 3)  // 2D
-        {
-            if (elem->NbNodes() == 3 || elem->NbNodes() == 6) {  // 3 or 6 node triangles
-                pNodes = 3;
-            }
-        }
-        cOfGX = 0.0;
-        cOfGY = 0.0;
-        cOfGZ = 0.0;
-        for (int iN = 0; nIt->more(); ++iN) {
-            nSrc = static_cast<const SMDS_MeshNode*>(nIt->next());
-            nTgt = srcMeshDS->FindNode(nSrc->GetID());
-            nodes[iN] = nTgt;
-            newMeshDS->AddNodeWithID(nSrc->X(), nSrc->Y(), nSrc->Z(), nSrc->GetID());
-            if (nodeNumbers[nSrc->GetID()] == 0) {
-                nodeCoords[nSrc->GetID()][0] = nSrc->X();
-                nodeCoords[nSrc->GetID()][1] = nSrc->Y();
-                nodeCoords[nSrc->GetID()][2] = nSrc->Z();
-                // write all nodes if result mesh
-                if (strcmp(meshType.c_str(), "result") == 0) {
-                    nodeNumbers[nSrc->GetID()] = nSrc->GetID();
-                }
-            }
-            if (iN < pNodes) {
-                cOfGX += nSrc->X() / pNodes;
-                cOfGY += nSrc->Y() / pNodes;
-                cOfGZ += nSrc->Z() / pNodes;
-            }
-        }  // for iN
-
-        SMESH_MeshEditor::ElemFeatures elemFeat(elem->GetType(), elem->IsPoly());
-        elemFeat.SetID(EID);
-
-        /* add the bit to determine which elements are outside the poly */
-        Base::Vector3f vec(cOfGX, cOfGY, cOfGZ);
-        pt2d = proj(vec);
-        if (polygon.Contains(Base::Vector2d(pt2d.x, pt2d.y)) != inner) {
-            if (strcmp(meshType.c_str(), "femmesh") == 0) {
-                for (long unsigned int i = 0; i < nodes.size(); i++) {
-                    nodeNumbers[nodes[i]->GetID()] = nodes[i]->GetID();
-                }
-            }
-
-            elementTempSet.insert(EID);
-            keepElement += 1;
-            if (requiredType == 4) {
-                addVolumeToMesh(nodes, newMeshDS, EID);
-            }
-            else if (requiredType == 3) {
-                addFaceToMesh(nodes, newMeshDS, EID);
-            }
-        }
-    }  // while
-    int erase;
-    if (nVolumes != 0) {
-        erase = nVolumes - keepElement;
-    }
-    else {
-        erase = nElements - keepElement;
-    }
-    if (keepElement > 0) {
-        Base::Console().warning(
-            "Number of Elements Kept: %d, Number of Elements Erased: %d\n",
-            keepElement,
-            erase
-        );
-        writeToFile(inp_file, newMeshDS, nodeNumbers, nodeCoords, maxNode, requiredType);
-        generateMesh(meshType);
-    }
-    else {
+    if (!workingMesh || !ownsObject(pcObject, operationObjectName)
+        || !ownsObject(sourceMeshObject, sourceMeshName)) {
         QMessageBox::warning(
             Gui::getMainWindow(),
-            //        QMessageBox::warning(Gui::MainWindow(),
-            qApp->translate("CmdFemCreateElementsSet", "Erased Elements"),
-            qApp->translate("CmdFemCreateElementsSet", "All Elements Erased - no mesh generated.")
+            tr("Erase Elements"),
+            tr("The working mesh is no longer available.")
         );
-    }
-    newMeshDS->Modified();
-    Gui::Command::doCommand(Gui::Command::Doc, "Gui.activeDocument().resetEdit()");
-
-}  // void TaskCreateElementSet::DefineNodes
-
-void TaskCreateElementSet::onSelectionChanged(const Gui::SelectionChanges& msg)
-{
-    if (selectionMode == none) {
         return;
     }
 
-    if (msg.Type == Gui::SelectionChanges::AddSelection) {
-        std::string subName(msg.pSubName);
-        unsigned int i = 0;
-        for (; i < subName.size(); i++) {
-            if (msg.pSubName[i] == 'F') {
-                break;
-            }
-        }
-        int elem = atoi(subName.substr(4).c_str());
-        int face = atoi(subName.substr(i + 1).c_str());
-        elementTempSet.clear();
-        std::set<long> tmp
-            = pcObject->FemMesh.getValue<Fem::FemMeshObject*>()->FemMesh.getValue().getSurfaceNodes(
-                elem,
-                face
-            );
-        elementTempSet.insert(tmp.begin(), tmp.end());
+    const SMDSAbs_ElementType type = primaryElementType(*workingMesh);
+    const std::set<int> allIds = elementIds(*workingMesh, type);
+    if (allIds.empty()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The working mesh has no erasable elements.")
+        );
+        return;
+    }
 
-        selectionMode = none;
-        Gui::Selection().rmvSelectionGate();
+    std::set<int> removeIds;
+    SMDS_ElemIteratorPtr elements = workingMesh->getSMesh()->GetMeshDS()->elementsIterator(type);
+    while (elements->more()) {
+        const SMDS_MeshElement* element = elements->next();
+        const Base::Vector3f center = projectedCenter(*element, projection);
+        const bool inside = polygon.Contains(Base::Vector2d(center.x, center.y));
+        if (inside == inner) {
+            removeIds.insert(element->GetID());
+        }
+    }
+
+    if (removeIds.empty()) {
+        QMessageBox::information(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The polygon did not select any mesh elements.")
+        );
+        return;
+    }
+    if (removeIds.size() == allIds.size()) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("That polygon would erase every element. Draw the polygon in the opposite direction "
+               "to keep its inside instead.")
+        );
+        return;
+    }
+
+    try {
+        Fem::FemMesh filtered(*workingMesh);
+        filtered.removeElements(removeIds, true);
+
+        if (publishWorkingMesh(filtered)) {
+            Base::Console().message(
+                "Erase Elements removed %zu elements; %zu remain in the working mesh.\n",
+                removeIds.size(),
+                allIds.size() - removeIds.size()
+            );
+        }
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The mesh could not be filtered: %1").arg(QString::fromUtf8(error.what()))
+        );
+        return;
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The mesh could not be filtered: %1").arg(QString::fromUtf8(error.what()))
+        );
+        return;
     }
 }
 
-/*********************************************************/
+void TaskCreateElementSet::ensurePreviewObject(const Fem::FemMesh& mesh)
+{
+    if (ownsObject(previewMeshObject, previewMeshName)) {
+        return;
+    }
+
+    // An externally removed preview must never leave a stale public view
+    // provider pointer behind.
+    previewMeshObject = nullptr;
+    previewMeshName.clear();
+    MeshViewProvider = sourceMeshViewProvider;
+
+    if (!ownsObject(pcObject, operationObjectName) || !ownsObject(sourceMeshObject, sourceMeshName)) {
+        throw Base::RuntimeError("The source mesh or Erase Elements operation was removed");
+    }
+
+    const std::string uniqueName = document->getUniqueObjectName("FilteredMesh");
+    auto* added = document->addObject("Fem::FemMeshObject", uniqueName.c_str());
+    auto* preview = freecad_cast<Fem::FemMeshObject*>(added);
+    if (!preview) {
+        if (added && added->getNameInDocument()) {
+            document->removeObject(added->getNameInDocument());
+        }
+        throw Base::RuntimeError("Could not create the filtered FEM mesh");
+    }
+    previewMeshObject = preview;
+    previewMeshName = preview->getNameInDocument();
+
+    try {
+        markTimelineOperation(pcObject);
+        markTimelineResource(previewMeshObject, pcObject);
+        if (sourceWasVisible) {
+            markTimelineReplacedInput(pcObject, sourceMeshObject);
+        }
+        const QString label
+            = tr("%1 (filtered)").arg(QString::fromUtf8(sourceMeshObject->Label.getValue()));
+        previewMeshObject->Label.setValue(label.toUtf8().constData());
+        previewMeshObject->FemMesh.setValue(mesh);
+
+        auto* previewViewProvider = Gui::Application::Instance->getViewProvider<ViewProviderFemMesh>(
+            previewMeshObject
+        );
+        if (!previewViewProvider) {
+            throw Base::RuntimeError("Could not create the filtered mesh view");
+        }
+
+        pcObject->FemMesh.setValue(previewMeshObject);
+        sourceMeshViewProvider->Visibility.setValue(false);
+        previewViewProvider->Visibility.setValue(true);
+        MeshViewProvider = previewViewProvider;
+    }
+    catch (...) {
+        const std::exception_ptr failure = std::current_exception();
+        try {
+            if (ownsObject(pcObject, operationObjectName)
+                && ownsObject(sourceMeshObject, sourceMeshName)) {
+                pcObject->FemMesh.setValue(sourceMeshObject);
+            }
+        }
+        catch (...) {
+        }
+        try {
+            if (ownsObject(sourceMeshObject, sourceMeshName)) {
+                sourceMeshViewProvider->Visibility.setValue(sourceWasVisible);
+            }
+        }
+        catch (...) {
+        }
+        try {
+            if (ownsObject(previewMeshObject, previewMeshName)) {
+                document->removeObject(previewMeshName.c_str());
+            }
+        }
+        catch (...) {
+        }
+        previewMeshObject = nullptr;
+        previewMeshName.clear();
+        MeshViewProvider = sourceMeshViewProvider;
+        std::rethrow_exception(failure);
+    }
+}
+
+void TaskCreateElementSet::finalizeTimelineBlock()
+{
+    if (!ownsObject(pcObject, operationObjectName) || !ownsObject(sourceMeshObject, sourceMeshName)
+        || !ownsObject(previewMeshObject, previewMeshName)) {
+        throw Base::RuntimeError("Erase Elements has no complete operation result to finalize");
+    }
+    const auto resolveMeshViewProvider = [this](Fem::FemMeshObject* object, const std::string& name) {
+        return ownsObject(object, name)
+            ? Gui::Application::Instance->getViewProvider<ViewProviderFemMesh>(object)
+            : nullptr;
+    };
+    auto* sourceViewProvider = resolveMeshViewProvider(sourceMeshObject, sourceMeshName);
+    auto* previewViewProvider = resolveMeshViewProvider(previewMeshObject, previewMeshName);
+    if (!sourceViewProvider || !previewViewProvider || !App::DocumentTimeline::get(document)) {
+        throw Base::RuntimeError("Erase Elements has no complete live result presentation");
+    }
+
+    // A new operation's semantic publication is allowed to classify its
+    // provisional outputs, but it must not observe a pre-existing operation
+    // in a state changed by this transaction.  The source mesh is hidden
+    // during the interactive preview, so briefly restore its exact launch
+    // visibility for publication and apply the accepted replacement state
+    // immediately afterward in the same transaction.
+    const bool restoreVisibleSource = sourceWasVisible && !sourceViewProvider->Visibility.getValue();
+    if (restoreVisibleSource) {
+        sourceViewProvider->Visibility.setValue(true);
+    }
+
+    try {
+        if (!ownsObject(pcObject, operationObjectName)
+            || !ownsObject(sourceMeshObject, sourceMeshName)
+            || !ownsObject(previewMeshObject, previewMeshName)) {
+            throw Base::RuntimeError("Erase Elements changed exact identity before publication");
+        }
+        auto* timeline = App::DocumentTimeline::get(document);
+        if (!timeline) {
+            throw Base::RuntimeError("Erase Elements has no native document timeline");
+        }
+        if (!operationWasTimelineOperation) {
+            timeline->publishProvisionalOperationBlock(pcObject, {previewMeshObject});
+        }
+        else {
+            App::TimelineResourceReconciliationMapping mapping;
+            mapping.owner = pcObject;
+            mapping.orderedFinalResources.reserve(oldTimelineResources.size() + 1);
+            mapping.stateSourceIndices.reserve(oldTimelineResources.size() + 1);
+            mapping.consumerReplacementIndices.reserve(oldTimelineResources.size());
+            for (std::size_t index = 0; index < oldTimelineResources.size(); ++index) {
+                const auto& [name, objectId] = oldTimelineResources[index];
+                auto* resource = document->getObject(name.c_str());
+                if (!resource || resource->getID() != objectId) {
+                    throw Base::RuntimeError(
+                        "An existing Erase Elements resource changed exact identity"
+                    );
+                }
+                mapping.orderedFinalResources.push_back(resource);
+                mapping.stateSourceIndices.push_back(static_cast<long>(index));
+                mapping.consumerReplacementIndices.push_back(static_cast<long>(index));
+            }
+            if (std::ranges::find(mapping.orderedFinalResources, previewMeshObject)
+                == mapping.orderedFinalResources.end()) {
+                mapping.orderedFinalResources.push_back(previewMeshObject);
+                mapping.stateSourceIndices.push_back(-1);
+            }
+            document->finalizeProvisionalTimelineOperationResourceReconciliation(mapping);
+        }
+    }
+    catch (...) {
+        sourceViewProvider = resolveMeshViewProvider(sourceMeshObject, sourceMeshName);
+        if (restoreVisibleSource && sourceViewProvider) {
+            sourceViewProvider->Visibility.setValue(false);
+        }
+        throw;
+    }
+
+    sourceViewProvider = resolveMeshViewProvider(sourceMeshObject, sourceMeshName);
+    previewViewProvider = resolveMeshViewProvider(previewMeshObject, previewMeshName);
+    if (!sourceViewProvider || !previewViewProvider) {
+        throw Base::RuntimeError("Erase Elements result presentation changed during publication");
+    }
+    if (sourceWasVisible) {
+        sourceViewProvider->Visibility.setValue(false);
+    }
+    previewViewProvider->Visibility.setValue(true);
+    sourceMeshViewProvider = sourceViewProvider;
+    MeshViewProvider = previewViewProvider;
+}
+
+bool TaskCreateElementSet::publishWorkingMesh(const Fem::FemMesh& mesh)
+{
+    const bool alreadyHadPreview = ownsObject(previewMeshObject, previewMeshName);
+    const auto rollbackFailedUpdate = [this, alreadyHadPreview]() {
+        try {
+            if (alreadyHadPreview && ownsObject(previewMeshObject, previewMeshName) && workingMesh) {
+                previewMeshObject->FemMesh.setValue(*workingMesh);
+                document->recompute();
+            }
+            else {
+                if (ownsObject(pcObject, operationObjectName)
+                    && ownsObject(sourceMeshObject, sourceMeshName)) {
+                    pcObject->FemMesh.setValue(sourceMeshObject);
+                    sourceMeshViewProvider->Visibility.setValue(sourceWasVisible);
+                }
+                if (ownsObject(previewMeshObject, previewMeshName)) {
+                    const std::string failedPreviewName = previewMeshName;
+                    document->removeObject(failedPreviewName.c_str());
+                }
+                previewMeshObject = nullptr;
+                previewMeshName.clear();
+                MeshViewProvider = sourceMeshViewProvider;
+            }
+        }
+        catch (const Base::Exception& rollbackError) {
+            Base::Console().warning(
+                "Erase Elements could not restore its failed preview update: %s\n",
+                rollbackError.what()
+            );
+        }
+        catch (const std::exception& rollbackError) {
+            Base::Console().warning(
+                "Erase Elements could not restore its failed preview update: %s\n",
+                rollbackError.what()
+            );
+        }
+        catch (...) {
+            Base::Console().warning("Erase Elements could not restore its failed preview update.\n");
+        }
+    };
+
+    try {
+        // Stage every allocation before touching the document.  This keeps
+        // the previous preview and element set intact if cloning fails.
+        auto nextWorkingMesh = std::make_unique<Fem::FemMesh>(mesh);
+        std::set<long> nextElementSet = elementSetForMesh(*nextWorkingMesh);
+
+        if (!ownsObject(pcObject, operationObjectName)
+            || !ownsObject(sourceMeshObject, sourceMeshName)) {
+            throw Base::RuntimeError("The source mesh or Erase Elements operation was removed");
+        }
+        ensurePreviewObject(mesh);
+        if (alreadyHadPreview) {
+            previewMeshObject->FemMesh.setValue(mesh);
+        }
+
+        pcObject->FemMesh.setValue(previewMeshObject);
+        sourceMeshViewProvider->Visibility.setValue(false);
+        MeshViewProvider->Visibility.setValue(true);
+        document->recompute();
+
+        workingMesh = std::move(nextWorkingMesh);
+        elementTempSet = std::move(nextElementSet);
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        rollbackFailedUpdate();
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The mesh preview could not be updated: %1").arg(QString::fromUtf8(error.what()))
+        );
+    }
+    catch (const std::exception& error) {
+        rollbackFailedUpdate();
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The mesh preview could not be updated: %1").arg(QString::fromUtf8(error.what()))
+        );
+    }
+    catch (...) {
+        rollbackFailedUpdate();
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The mesh preview could not be updated.")
+        );
+    }
+
+    return false;
+}
+
+std::set<long> TaskCreateElementSet::elementSetForMesh(const Fem::FemMesh& mesh) const
+{
+    std::set<long> elements;
+    const SMDSAbs_ElementType type = primaryElementType(mesh);
+    if (type == SMDSAbs_All) {
+        return elements;
+    }
+
+    // The negative type marker is part of the existing ElementsSet document
+    // contract.  Keep it while replacing the old file-based implementation.
+    elements.insert(-static_cast<long>(type));
+    const std::set<int> ids = elementIds(mesh, type);
+    elements.insert(ids.begin(), ids.end());
+    return elements;
+}
+
+void TaskCreateElementSet::Restore()
+{
+    stopPolygonSelection();
+    if (!sourceMeshSnapshot) {
+        return;
+    }
+
+    if (ownsObject(previewMeshObject, previewMeshName)) {
+        publishWorkingMesh(*sourceMeshSnapshot);
+        return;
+    }
+
+    try {
+        auto restoredMesh = std::make_unique<Fem::FemMesh>(*sourceMeshSnapshot);
+        std::set<long> restoredElementSet = elementSetForMesh(*restoredMesh);
+        workingMesh = std::move(restoredMesh);
+        elementTempSet = std::move(restoredElementSet);
+        MeshViewProvider = sourceMeshViewProvider;
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The source mesh could not be restored: %1").arg(QString::fromUtf8(error.what()))
+        );
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Erase Elements"),
+            tr("The source mesh could not be restored: %1").arg(QString::fromUtf8(error.what()))
+        );
+    }
+}
+
+void TaskCreateElementSet::CopyResultsMesh()
+{
+    stopPolygonSelection();
+    if (!document) {
+        return;
+    }
+
+    const auto selection
+        = Gui::Selection().getSelection(document->getName(), Gui::ResolveMode::NoResolve, true);
+    if (selection.size() != 1) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Copy FEM Mesh"),
+            tr("Select exactly one FEM mesh in this document.")
+        );
+        return;
+    }
+
+    auto* selectedMesh = freecad_cast<Fem::FemMeshObject*>(selection.front().pObject);
+    if (!selectedMesh || selectedMesh->getDocument() != document) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Copy FEM Mesh"),
+            tr("The selected object is not a FEM mesh from this document.")
+        );
+        return;
+    }
+
+    if (selectedMesh == previewMeshObject) {
+        QMessageBox::information(
+            Gui::getMainWindow(),
+            tr("Copy FEM Mesh"),
+            tr("The selected mesh is already the working preview.")
+        );
+        return;
+    }
+
+    try {
+        Fem::FemMesh copiedMesh(selectedMesh->FemMesh.getValue());
+        if (primaryElementType(copiedMesh) == SMDSAbs_All) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                tr("Copy FEM Mesh"),
+                tr("The selected FEM mesh contains no elements.")
+            );
+            return;
+        }
+
+        publishWorkingMesh(copiedMesh);
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Copy FEM Mesh"),
+            tr("The selected FEM mesh could not be copied: %1").arg(QString::fromUtf8(error.what()))
+        );
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            tr("Copy FEM Mesh"),
+            tr("The selected FEM mesh could not be copied: %1").arg(QString::fromUtf8(error.what()))
+        );
+    }
+}
+
+void TaskCreateElementSet::onSelectionChanged(const Gui::SelectionChanges& message)
+{
+    if (selectionMode != PickElement || !document || !message.pDocName
+        || std::string(message.pDocName) != document->getName() || !message.pObjectName
+        || !message.pSubName || message.Type != Gui::SelectionChanges::AddSelection) {
+        return;
+    }
+
+    if (!ownsObject(pcObject, operationObjectName)) {
+        return;
+    }
+
+    Fem::FemMeshObject* currentMesh = pcObject->FemMesh.getValue<Fem::FemMeshObject*>();
+    if (!currentMesh || document->getObject(message.pObjectName) != currentMesh) {
+        return;
+    }
+
+    long elementId = 0;
+    int faceId = 0;
+    if (std::sscanf(message.pSubName, "Elem%ldF%d", &elementId, &faceId) != 2 || elementId <= 0) {
+        return;
+    }
+
+    elementTempSet.clear();
+    elementTempSet.insert(elementId);
+    selectionMode = none;
+    Gui::Selection().rmvSelectionGate();
+}
 
 TaskCreateElementSet::~TaskCreateElementSet()
 {
-    // delete last elementsset
-    if (strcmp(lastName.c_str(), "") != 0) {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.removeObject(\'%s\')",
-            lastName.c_str()
-        );
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        lastName = "";
-    }
-    delete ui;
+    stopPolygonSelection();
+    Gui::Selection().rmvSelectionGate();
 }
 
 #include "moc_TaskCreateElementSet.cpp"

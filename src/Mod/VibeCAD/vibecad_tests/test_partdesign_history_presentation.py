@@ -1,35 +1,26 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Regression coverage for exclusive Part Design history previews."""
+"""Regression coverage for the native Part Design Body renderer contract."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from typing import Any
 
 import VibeCADScriptedPublication as scripted_publication
 import VibeCADVibeScriptDomainPublication as publication
 
 
+class _Shape:
+    def isNull(self) -> bool:
+        return False
+
+    def isValid(self) -> bool:
+        return True
+
+
 class _View:
     def __init__(self, visible: bool) -> None:
-        self.Visibility = visible
-
-
-class _BodyViewThatShowsTip:
-    def __init__(self, visible: bool, tip: "_Object") -> None:
-        self._visible = visible
-        self._tip = tip
-
-    @property
-    def Visibility(self) -> bool:
-        return self._visible
-
-    @Visibility.setter
-    def Visibility(self, visible: bool) -> None:
-        was_visible = self._visible
-        self._visible = bool(visible)
-        if self._visible and not was_visible:
-            self._tip.ViewObject.Visibility = True
+        self.Visibility = bool(visible)
 
 
 class _Object:
@@ -42,9 +33,16 @@ class _Object:
         result_feature: bool = False,
     ) -> None:
         self.Name = name
+        self.Label = name
         self.TypeId = type_id
         self.ViewObject = _View(visible)
         self.PropertiesList: list[str] = []
+        self.Group: list[_Object] = []
+        self.Tip: _Object | None = None
+        self.InList: list[_Object] = []
+        self.LinkedObject: Any = None
+        self.LinkTransform = False
+        self.Shape = _Shape()
         self._result_feature = result_feature
         self.hidden_properties: list[str] = []
 
@@ -55,7 +53,8 @@ class _Object:
         _group: str,
         _description: str = "",
     ) -> None:
-        self.PropertiesList.append(name)
+        if name not in self.PropertiesList:
+            self.PropertiesList.append(name)
         setattr(self, name, "")
 
     def setEditorMode(self, name: str, mode: int) -> None:
@@ -65,174 +64,360 @@ class _Object:
     def isDerivedFrom(self, type_id: str) -> bool:
         if not self._result_feature:
             return False
-        if self.TypeId.startswith("PartDesign::"):
-            return type_id in {"PartDesign::Feature", "Part::Feature"}
-        return self.TypeId.startswith("Part::") and type_id == "Part::Feature"
+        return type_id in {"PartDesign::Feature", "Part::Feature"}
+
+    def newObject(self, type_id: str, name: str) -> "_Object":
+        obj = _Object(
+            name,
+            type_id,
+            visible=True,
+            result_feature=type_id == "PartDesign::Feature",
+        )
+        self.Group.append(obj)
+        return obj
+
+
+class _Root(_Object):
+    def __init__(self, document: "_Document") -> None:
+        super().__init__("Program", "App::Part", visible=True)
+        self.Document = document
+
+    def addObject(self, obj: _Object) -> None:
+        if self not in obj.InList:
+            obj.InList.append(self)
+
+
+class _Document:
+    def __init__(self) -> None:
+        self.Objects: list[_Object] = []
+
+    def addObject(self, type_id: str, name: str) -> _Object:
+        obj = _Object(name, type_id, visible=True)
+        self.Objects.append(obj)
+        return obj
+
+    def getUniqueObjectName(self, name: str) -> str:
+        used = {obj.Name for obj in self.Objects}
+        if name not in used:
+            return name
+        index = 1
+        while f"{name}{index:03d}" in used:
+            index += 1
+        return f"{name}{index:03d}"
 
 
 def _tag(obj: _Object, *, role: str) -> None:
-    setattr(obj, scripted_publication.PROP_ROLE, role)
-    setattr(obj, scripted_publication.PROP_ENGINE, "vibescript:partdesign")
-    setattr(obj, scripted_publication.PROP_MODEL_ID, "blade-program")
-    setattr(obj, scripted_publication.PROP_OUTPUT_KEY, "Blade")
+    scripted_publication.tag_object(
+        obj,
+        role=role,
+        engine="vibescript:partdesign",
+        model_id="blade-program",
+        output_key="Blade",
+        revision="accepted",
+    )
 
 
-def _legacy_document(
+def _document_with_body(
     *,
     body_visible: bool,
     publication_visible: bool,
-) -> tuple[SimpleNamespace, _Object, _Object, _Object, _Object]:
-    body = _Object(
-        "BladeBody",
-        "PartDesign::Body",
-        visible=body_visible,
-    )
-    sketch = _Object(
-        "BladeSketch",
-        "Sketcher::SketchObject",
-        visible=True,
-    )
-    result = _Object(
-        "BladeResult",
-        "PartDesign::Pocket",
+    schema: str = "",
+) -> tuple[
+    _Document,
+    _Root,
+    _Object,
+    _Object,
+    _Object,
+    _Object,
+    _Object,
+]:
+    document = _Document()
+    root = _Root(document)
+    document.Objects.append(root)
+    _tag(root, role=scripted_publication.ROLE_MODEL)
+
+    body = _Object("BladeBody", "PartDesign::Body", visible=body_visible)
+    _tag(body, role=scripted_publication.ROLE_IMPLEMENTATION)
+    root.addObject(body)
+    document.Objects.append(body)
+
+    sketch = _Object("BladeSketch", "Sketcher::SketchObject", visible=True)
+    earlier = _Object(
+        "BladePad",
+        "PartDesign::Feature",
         visible=True,
         result_feature=True,
     )
-    body.Group = [sketch, result]
-    stable = _Object(
-        "Blade",
-        "App::Link",
-        visible=publication_visible,
+    tip = _Object(
+        "BladeResult",
+        "PartDesign::Feature",
+        visible=True,
+        result_feature=True,
     )
-    _tag(body, role=scripted_publication.ROLE_IMPLEMENTATION)
+    body.Group = [sketch, earlier, tip]
+    body.Tip = tip
+    document.Objects.extend((sketch, earlier, tip))
+
+    stable = _Object("Blade", "App::Link", visible=publication_visible)
     _tag(stable, role=scripted_publication.ROLE_PUBLICATION)
-    return SimpleNamespace(Objects=[body, sketch, result, stable]), body, sketch, result, stable
+    stable.LinkedObject = (root, "LegacySource.")
+    document.Objects.append(stable)
+
+    if schema:
+        body.addProperty(
+            "App::PropertyString",
+            publication.PROP_PARTDESIGN_HISTORY_PRESENTATION,
+            "VibeCAD",
+        )
+        setattr(
+            body,
+            publication.PROP_PARTDESIGN_HISTORY_PRESENTATION,
+            schema,
+        )
+    return document, root, body, sketch, earlier, tip, stable
 
 
-def test_legacy_hidden_body_becomes_a_visible_history_container() -> None:
-    document, body, sketch, result, stable = _legacy_document(
-        body_visible=False,
-        publication_visible=False,
+def test_configure_visible_body_renders_only_tip_and_preserves_sketch() -> None:
+    (
+        _document,
+        _root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        _stable,
+    ) = _document_with_body(body_visible=False, publication_visible=False)
+
+    changed = publication._configure_partdesign_history_presentation(
+        body,
+        visible=True,
     )
 
-    restored = publication.restore_partdesign_history_presentation(document)
-
+    assert changed is True
     assert body.ViewObject.Visibility is True
     assert sketch.ViewObject.Visibility is True
-    assert result.ViewObject.Visibility is False
-    assert stable.ViewObject.Visibility is False
-    assert restored["migrated_bodies"] == ["BladeBody"]
-    assert publication.PROP_PARTDESIGN_HISTORY_PRESENTATION in body.PropertiesList
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is True
     assert (
         getattr(body, publication.PROP_PARTDESIGN_HISTORY_PRESENTATION)
         == publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA
     )
 
 
-def test_migration_preserves_the_previously_visible_body_output() -> None:
-    document, body, _sketch, result, stable = _legacy_document(
-        body_visible=True,
-        publication_visible=False,
+def test_configure_hidden_body_hides_all_results_but_not_sketch() -> None:
+    (
+        _document,
+        _root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        _stable,
+    ) = _document_with_body(body_visible=True, publication_visible=False)
+
+    publication._configure_partdesign_history_presentation(
+        body,
+        visible=False,
     )
 
-    publication.restore_partdesign_history_presentation(document)
+    assert body.ViewObject.Visibility is False
+    assert sketch.ViewObject.Visibility is True
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is False
 
-    assert body.ViewObject.Visibility is True
-    assert result.ViewObject.Visibility is False
-    assert stable.ViewObject.Visibility is True
 
-
-def test_presentation_hides_retained_part_results_in_the_body() -> None:
-    document, body, sketch, result, stable = _legacy_document(
+def test_legacy_publication_visibility_moves_to_native_body() -> None:
+    (
+        document,
+        root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        stable,
+    ) = _document_with_body(
         body_visible=True,
         publication_visible=True,
+        schema=publication._LEGACY_PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
     )
-    retained_part_result = _Object(
-        "BooleanResult",
-        "Part::Feature",
-        visible=True,
-        result_feature=True,
-    )
-    body.Group.append(retained_part_result)
-    document.Objects.append(retained_part_result)
+    earlier.ViewObject.Visibility = False
+    tip.ViewObject.Visibility = False
 
-    publication.restore_partdesign_history_presentation(document)
+    restored = publication.restore_partdesign_history_presentation(document)
 
     assert body.ViewObject.Visibility is True
     assert sketch.ViewObject.Visibility is True
-    assert result.ViewObject.Visibility is False
-    assert retained_part_result.ViewObject.Visibility is False
-    assert stable.ViewObject.Visibility is True
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
+    assert stable.LinkedObject == (root, "BladeBody.")
+    assert stable.LinkTransform is True
+    assert restored["migrated_bodies"] == ["BladeBody"]
 
 
-def test_current_presentation_repairs_container_and_preserves_history() -> None:
-    document, body, sketch, result, stable = _legacy_document(
+def test_legacy_hidden_output_ignores_always_visible_container() -> None:
+    (
+        document,
+        root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        stable,
+    ) = _document_with_body(
         body_visible=True,
         publication_visible=False,
+        schema=publication._LEGACY_PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
     )
+    earlier.ViewObject.Visibility = False
+    tip.ViewObject.Visibility = False
+
     publication.restore_partdesign_history_presentation(document)
-    result.ViewObject.Visibility = True
-    sketch.ViewObject.Visibility = False
-    body.ViewObject.Visibility = False
+
+    assert body.ViewObject.Visibility is False
+    assert sketch.ViewObject.Visibility is True
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is False
+    assert stable.ViewObject.Visibility is False
+    assert stable.LinkedObject == (root, "BladeBody.")
+
+
+def test_current_contract_repairs_duplicate_results_and_hides_publication() -> None:
+    (
+        document,
+        root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        stable,
+    ) = _document_with_body(
+        body_visible=True,
+        publication_visible=True,
+        schema=publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+    )
 
     restored = publication.restore_partdesign_history_presentation(document)
 
     assert body.ViewObject.Visibility is True
-    assert sketch.ViewObject.Visibility is False
-    assert result.ViewObject.Visibility is True
-    assert stable.ViewObject.Visibility is True
+    assert sketch.ViewObject.Visibility is True
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
+    assert stable.LinkedObject == (root, "BladeBody.")
     assert restored["migrated_bodies"] == []
-    assert restored["changed_objects"] == ["BladeBody"]
+    assert restored["changed_objects"] == ["Blade", "BladeBody"]
 
 
-def test_current_presentation_keeps_only_latest_enabled_history_result() -> None:
-    document, body, _sketch, result, stable = _legacy_document(
+def test_current_contract_hides_private_publication_targets() -> None:
+    (
+        document,
+        root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        stable,
+    ) = _document_with_body(
         body_visible=True,
-        publication_visible=True,
+        publication_visible=False,
+        schema=publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
     )
-    publication.restore_partdesign_history_presentation(document)
-    retained_part_result = _Object(
-        "BooleanResult",
+    target = _Object(
+        "BladeDetachedPublicationTarget",
         "Part::Feature",
         visible=True,
-        result_feature=True,
     )
-    body.Group.append(retained_part_result)
-    document.Objects.append(retained_part_result)
-    result.ViewObject.Visibility = True
+    _tag(target, role=scripted_publication.ROLE_PUBLICATION_TARGET)
+    root.addObject(target)
+    document.Objects.append(target)
+    earlier.ViewObject.Visibility = False
+    stable.LinkedObject = (root, "BladeBody.")
+    stable.LinkTransform = True
 
     restored = publication.restore_partdesign_history_presentation(document)
 
     assert body.ViewObject.Visibility is True
-    assert result.ViewObject.Visibility is False
-    assert retained_part_result.ViewObject.Visibility is True
-    assert stable.ViewObject.Visibility is True
-    assert restored["changed_objects"] == ["BladeResult"]
+    assert sketch.ViewObject.Visibility is True
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
+    assert target.ViewObject.Visibility is False
+    assert target in document.Objects
+    assert target in root.Document.Objects
+    assert restored["changed_objects"] == [
+        "BladeDetachedPublicationTarget",
+    ]
 
 
-def test_body_repair_undoes_freecad_automatically_showing_the_tip() -> None:
-    document, body, _sketch, result, stable = _legacy_document(
-        body_visible=True,
-        publication_visible=True,
-    )
-    publication.restore_partdesign_history_presentation(document)
-    result.ViewObject.Visibility = False
-    body.ViewObject = _BodyViewThatShowsTip(False, result)
-
-    publication.restore_partdesign_history_presentation(document)
-
-    assert body.ViewObject.Visibility is True
-    assert result.ViewObject.Visibility is False
-    assert stable.ViewObject.Visibility is True
-
-
-def test_headless_publication_defers_presentation_marker_until_gui_restore() -> None:
-    _document, body, _sketch, result, _stable = _legacy_document(
+def test_current_hidden_body_remains_hidden_across_restore() -> None:
+    (
+        document,
+        _root,
+        body,
+        sketch,
+        earlier,
+        tip,
+        stable,
+    ) = _document_with_body(
         body_visible=False,
-        publication_visible=True,
+        publication_visible=False,
+        schema=publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
     )
-    body.ViewObject = None
-    result.ViewObject = None
 
-    assert publication._configure_partdesign_history_presentation(body) is False
-    assert publication.PROP_PARTDESIGN_HISTORY_PRESENTATION not in body.PropertiesList
+    publication.restore_partdesign_history_presentation(document)
+
+    assert body.ViewObject.Visibility is False
+    assert sketch.ViewObject.Visibility is True
+    assert earlier.ViewObject.Visibility is False
+    assert tip.ViewObject.Visibility is False
+    assert stable.ViewObject.Visibility is False
+
+
+def test_publication_without_body_is_migrated_to_native_result() -> None:
+    document = _Document()
+    root = _Root(document)
+    document.Objects.append(root)
+    _tag(root, role=scripted_publication.ROLE_MODEL)
+    stable = _Object("LegacyBlade", "App::Link", visible=True)
+    stable.Label = "Utility Blade"
+    stable.LinkedObject = (root, "LegacySource.")
+    _tag(stable, role=scripted_publication.ROLE_PUBLICATION)
+    document.Objects.append(stable)
+
+    restored = publication.restore_partdesign_history_presentation(document)
+
+    body = next(obj for obj in document.Objects if obj.TypeId == "PartDesign::Body")
+    assert body.Label == "Utility Blade"
+    assert body.ViewObject.Visibility is True
+    assert body.Tip is not None
+    assert body.Tip in body.Group
+    assert body.Tip.Label == "Result"
+    assert body.Tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
+    assert stable.LinkedObject == (root, f"{body.Name}.")
+    assert restored["migrated_bodies"] == [body.Name]
+
+
+def test_headless_body_defers_presentation_marker() -> None:
+    (
+        _document,
+        _root,
+        body,
+        _sketch,
+        earlier,
+        tip,
+        _stable,
+    ) = _document_with_body(body_visible=False, publication_visible=True)
+    body.ViewObject = None
+    earlier.ViewObject = None
+    tip.ViewObject = None
+
+    assert (
+        publication._configure_partdesign_history_presentation(body)
+        is False
+    )
+    assert (
+        publication.PROP_PARTDESIGN_HISTORY_PRESENTATION
+        not in body.PropertiesList
+    )

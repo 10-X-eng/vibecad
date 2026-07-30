@@ -167,6 +167,7 @@ TaskFemConstraintTransform::TaskFemConstraintTransform(
     Gui::Command::doCommand(
         Gui::Command::Doc,
         TaskFemConstraintTransform::getSurfaceReferences(
+            pcConstraint->getDocument()->getName(),
             (ConstraintView->getObject<Fem::Constraint>())->getNameInDocument()
         )
             .c_str()
@@ -267,13 +268,7 @@ void TaskFemConstraintTransform::angleChanged(double a)
 void TaskFemConstraintTransform::Rect()
 {
     ui->sw_transform->setCurrentIndex(0);
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.TransformType = %s",
-        name.c_str(),
-        get_transform_type().c_str()
-    );
+    runConstraintCommand("TransformType = %s", get_transform_type().c_str());
     Fem::ConstraintTransform* pcConstraint = ConstraintView->getObject<Fem::ConstraintTransform>();
     std::vector<App::DocumentObject*> Objects = pcConstraint->References.getValues();
     if (!Objects.empty()) {
@@ -285,13 +280,7 @@ void TaskFemConstraintTransform::Rect()
 void TaskFemConstraintTransform::Cyl()
 {
     ui->sw_transform->setCurrentIndex(1);
-    std::string name = ConstraintView->getObject()->getNameInDocument();
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "App.ActiveDocument.%s.TransformType = %s",
-        name.c_str(),
-        get_transform_type().c_str()
-    );
+    runConstraintCommand("TransformType = %s", get_transform_type().c_str());
     Fem::ConstraintTransform* pcConstraint = ConstraintView->getObject<Fem::ConstraintTransform>();
     std::vector<App::DocumentObject*> Objects = pcConstraint->References.getValues();
     if (!Objects.empty()) {
@@ -534,8 +523,20 @@ void TaskFemConstraintTransform::onReferenceDeleted()
 std::string TaskFemConstraintTransform::getSurfaceReferences(std::string showConstr = "")
 // https://forum.freecad.org/viewtopic.php?f=18&t=43650
 {
+    return getSurfaceReferences({}, showConstr);
+}
+
+std::string TaskFemConstraintTransform::getSurfaceReferences(
+    const std::string& documentName,
+    const std::string& showConstr
+)
+{
+    const std::string documentExpression = documentName.empty()
+        ? "FreeCAD.ActiveDocument"
+        : "FreeCAD.getDocument('" + documentName + "')";
     return "\n\
-doc = FreeCAD.ActiveDocument\n\
+doc = " + documentExpression
+        + "\n\
 for obj in doc.Objects:\n\
         if obj.isDerivedFrom(\"Fem::FemAnalysis\"):\n\
                 if doc."
@@ -605,8 +606,6 @@ TaskDlgFemConstraintTransform::TaskDlgFemConstraintTransform(
 
 bool TaskDlgFemConstraintTransform::accept()
 {
-    /* Note: */
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintTransform* parameters = static_cast<const TaskFemConstraintTransform*>(
         parameter
     );
@@ -616,28 +615,20 @@ bool TaskDlgFemConstraintTransform::accept()
         Base::Vector3d axis;
         double angle;
         rot.getValue(axis, angle);
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Rotation = App.Rotation(App.Vector(%f,% f, %f), Radian=%f)",
-            name.c_str(),
+        runConstraintCommand(
+            "Rotation = App.Rotation(App.Vector(%f, %f, %f), Radian=%f)",
             axis.x,
             axis.y,
             axis.z,
             angle
         );
 
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.TransformType = %s",
-            name.c_str(),
-            parameters->get_transform_type().c_str()
-        );
+        runConstraintCommand("TransformType = %s", parameters->get_transform_type().c_str());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }
-    /* */
     return TaskDlgFemConstraint::accept();
 }
 

@@ -28,6 +28,7 @@
 #include <Mod/TechDraw/App/CenterLine.h>
 #include <Mod/TechDraw/App/Cosmetic.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace TechDraw
 {
@@ -95,6 +96,8 @@ private:
 
     TechDraw::DrawViewPart* m_partFeat;
     TechDraw::DrawPage* m_basePage;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_partIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
     bool m_createMode;
 
     QPushButton* m_btnOK;
@@ -104,7 +107,6 @@ private:
     std::string m_edgeName;
     int m_geomIndex;
     TechDraw::CenterLine* m_cl;
-    TechDraw::CenterLine orig_cl;
     TechDraw::CenterLine::Type m_type;
     TechDraw::CenterLine::Mode m_mode;
     bool m_editMode;

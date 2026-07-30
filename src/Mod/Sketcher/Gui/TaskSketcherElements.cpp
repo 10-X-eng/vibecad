@@ -43,9 +43,11 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/Document.h>
 #include <Gui/Notifications.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Selection/SelectionObject.h>
@@ -631,57 +633,100 @@ ElementView::ElementView(QWidget* parent)
 ElementView::~ElementView()
 {}
 
+void ElementView::setSketchView(ViewProviderSketch* view)
+{
+    sketchView = view;
+}
+
+Sketcher::SketchObject* ElementView::getSketchObject() const
+{
+    return sketchView ? sketchView->getSketchObject() : nullptr;
+}
+
 void ElementView::changeLayer(int layer)
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
-
-    if (!doc)
+    auto* sketchObject = getSketchObject();
+    if (!sketchObject || !sketchObject->getDocument()) {
         return;
-
-    doc->openTransaction("Geometry Layer Change");
-    std::vector<Gui::SelectionObject> sel = Gui::Selection().getSelectionEx(doc->getName());
-    for (std::vector<Gui::SelectionObject>::iterator ft = sel.begin(); ft != sel.end(); ++ft) {
-        auto sketchobject = ft->getObject<Sketcher::SketchObject>();
-
-        auto geoids = getGeoIdsOfEdgesFromNames(sketchobject, ft->getSubNames());
-
-        auto geometry = sketchobject->Geometry.getValues();
-        auto newgeometry(geometry);
-
-        bool anychanged = false;
-        for (auto geoid : geoids) {
-            if (geoid
-                >= 0) {// currently only internal geometry can be changed from one layer to another
-                auto currentlayer = getSafeGeomLayerId(geometry[geoid]);
-                if (currentlayer != layer) {
-                    auto geo = geometry[geoid]->clone();
-                    setSafeGeomLayerId(geo, layer);
-                    newgeometry[geoid] = geo;
-                    anychanged = true;
-                }
-            }
-            else {
-                Gui::TranslatedUserWarning(
-                    sketchobject,
-                    QObject::tr("Unsupported visual layer operation"),
-                    QObject::tr("It is currently unsupported to move external geometry to another "
-                                "visual layer. External geometry will be omitted"));
-            }
-        }
-
-        if (anychanged) {
-            sketchobject->Geometry.setValues(std::move(newgeometry));
-            sketchobject->solve();
-        }
     }
-    doc->commitTransaction();
+
+    std::vector<int> geometryIds;
+    bool hasExternalGeometry = false;
+    for (auto* selectedItem : selectedItems()) {
+        auto* item = dynamic_cast<ElementItem*>(selectedItem);
+        if (!item || item->getSketchObject() != sketchObject) {
+            continue;
+        }
+        if (item->ElementNbr < 0) {
+            hasExternalGeometry = true;
+            continue;
+        }
+        geometryIds.push_back(item->ElementNbr);
+    }
+
+    if (hasExternalGeometry) {
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unsupported visual layer operation"),
+            tr("It is currently unsupported to move external geometry to another visual layer. "
+               "External geometry will be omitted"));
+    }
+
+    std::ranges::sort(geometryIds);
+    geometryIds.erase(std::unique(geometryIds.begin(), geometryIds.end()), geometryIds.end());
+
+    const auto geometry = sketchObject->Geometry.getValues();
+    geometryIds.erase(
+        std::remove_if(
+            geometryIds.begin(),
+            geometryIds.end(),
+            [&geometry, layer](int geometryId) {
+                return static_cast<std::size_t>(geometryId) >= geometry.size()
+                    || getSafeGeomLayerId(geometry[geometryId])
+                        == layer;
+            }),
+        geometryIds.end());
+    if (geometryIds.empty()) {
+        return;
+    }
+
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(sketchObject->getDocument());
+    if (!guiDocument
+        || guiDocument->openCommand("Geometry Layer Change") == App::NullTransaction) {
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to change the visual layer"),
+            tr("The sketch document is already owned by another modeling operation."));
+        return;
+    }
+
+    try {
+        auto newGeometry = geometry;
+        for (const int geometryId : geometryIds) {
+            auto* replacement = geometry[geometryId]->clone();
+            setSafeGeomLayerId(replacement, layer);
+            newGeometry[geometryId] = replacement;
+        }
+
+        sketchObject->Geometry.setValues(std::move(newGeometry));
+        sketchObject->solve();
+        guiDocument->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        guiDocument->abortCommand();
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to change the visual layer"),
+            QString::fromUtf8(error.what()));
+    }
 }
 
 void ElementView::changeLayer(ElementItem* item, int layer)
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
-
-    if (!doc) {
+    auto* sketchObject = getSketchObject();
+    if (!item || !sketchObject || item->getSketchObject() != sketchObject
+        || !sketchObject->getDocument()) {
         return;
     }
 
@@ -690,35 +735,48 @@ void ElementView::changeLayer(ElementItem* item, int layer)
     const int midVertex = item->MidVertex;
     const int endVertex = item->EndVertex;
 
-    doc->openTransaction("Geometry Layer Change");
-
-    auto sketchObject = item->getSketchObject();
-
-    auto geometry = sketchObject->Geometry.getValues();
-    auto newGeometry(geometry);
-
-    // currently only internal geometry can be changed from one layer to another
-    if (geoid >= 0) {
-        auto currentLayer = getSafeGeomLayerId(geometry[geoid]);
-
-        if (currentLayer != layer) {
-            auto geo = geometry[geoid]->clone();
-            setSafeGeomLayerId(geo, layer);
-            newGeometry[geoid] = geo;
-
-            sketchObject->Geometry.setValues(std::move(newGeometry));
-            sketchObject->solve();
-        }
-    }
-    else {
+    if (geoid < 0) {
         Gui::TranslatedUserWarning(
             sketchObject,
-            QObject::tr("Unsupported visual layer operation"),
-            QObject::tr("It is currently unsupported to move external geometry to another "
-                        "visual layer. External geometry will be omitted"));
+            tr("Unsupported visual layer operation"),
+            tr("It is currently unsupported to move external geometry to another visual layer."));
+        return;
     }
 
-    doc->commitTransaction();
+    const auto geometry = sketchObject->Geometry.getValues();
+    if (static_cast<std::size_t>(geoid) >= geometry.size()
+        || getSafeGeomLayerId(geometry[geoid]) == layer) {
+        return;
+    }
+
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(sketchObject->getDocument());
+    if (!guiDocument
+        || guiDocument->openCommand("Geometry Layer Change") == App::NullTransaction) {
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to change the visual layer"),
+            tr("The sketch document is already owned by another modeling operation."));
+        return;
+    }
+
+    try {
+        auto newGeometry = geometry;
+        auto* replacement = geometry[geoid]->clone();
+        setSafeGeomLayerId(replacement, layer);
+        newGeometry[geoid] = replacement;
+        sketchObject->Geometry.setValues(std::move(newGeometry));
+        sketchObject->solve();
+        guiDocument->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        guiDocument->abortCommand();
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to change the visual layer"),
+            QString::fromUtf8(error.what()));
+        return;
+    }
 
     if (layer == static_cast<int>(ElementItem::Layer::Hidden) && geoid >= 0) {
         const std::string docName = sketchObject->getDocument()->getName();
@@ -906,9 +964,13 @@ void ElementView::contextMenuEvent(QContextMenuEvent* event)
 void ElementView::mousePressEvent(QMouseEvent* event)
 {
     // If the click is on an empty area (not on an item), it should
-    // clear the global selection.
+    // clear this sketch's selection without disturbing another document.
     if (!itemAt(event->pos())) {
-        Gui::Selection().clearSelection();
+        if (auto* sketchObject = getSketchObject()) {
+            Gui::Selection().rmvSelection(
+                sketchObject->getDocument()->getName(),
+                sketchObject->getNameInDocument());
+        }
     }
 
     // Always call the base class implementation to ensure normal behavior
@@ -946,19 +1008,50 @@ CONTEXT_MEMBER_DEF("Sketcher_SelectVerticalAxis", doSelectVAxis)
 
 void ElementView::deleteSelectedItems()
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    if (!doc)
+    auto* sketchObject = getSketchObject();
+    if (!sketchObject || !sketchObject->getDocument() || selectedItems().isEmpty()) {
         return;
+    }
 
-    doc->openTransaction("Delete element");
-    std::vector<Gui::SelectionObject> sel = Gui::Selection().getSelectionEx(doc->getName());
-    for (std::vector<Gui::SelectionObject>::iterator ft = sel.begin(); ft != sel.end(); ++ft) {
-        Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(ft->getObject());
-        if (vp) {
-            vp->onDelete(ft->getSubNames());
+    std::vector<std::string> subNames;
+    for (const auto& selection :
+         Gui::Selection().getSelectionEx(sketchObject->getDocument()->getName())) {
+        if (selection.getObject() == sketchObject) {
+            subNames = selection.getSubNames();
+            break;
         }
     }
-    doc->commitTransaction();
+    if (subNames.empty()) {
+        return;
+    }
+
+    auto* viewProvider = Gui::Application::Instance->getViewProvider(sketchObject);
+    if (!viewProvider) {
+        return;
+    }
+
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(sketchObject->getDocument());
+    if (!guiDocument
+        || guiDocument->openCommand("Delete element") == App::NullTransaction) {
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to delete the selected element"),
+            tr("The sketch document is already owned by another modeling operation."));
+        return;
+    }
+
+    try {
+        viewProvider->onDelete(subNames);
+        guiDocument->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        guiDocument->abortCommand();
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to delete the selected element"),
+            QString::fromUtf8(error.what()));
+    }
 }
 
 void ElementView::onIndexHovered(QModelIndex index)
@@ -971,6 +1064,9 @@ void ElementView::onIndexHovered(QModelIndex index)
 void ElementView::onIndexChecked(QModelIndex index, Qt::CheckState state)
 {
     auto item = itemFromIndex(index);
+    if (!item) {
+        return;
+    }
 
     changeLayer(item, static_cast<int>(state == Qt::Checked ? ElementItem::Layer::Default : ElementItem::Layer::Hidden));
 }
@@ -991,12 +1087,41 @@ void ElementView::doConvertToGeometries()
         return;
 
     int geoId = item->ElementNbr;
-    Sketcher::SketchObject* sketch = item->getSketchObject();
+    Sketcher::SketchObject* sketch = getSketchObject();
+    if (!sketch || item->getSketchObject() != sketch || !sketch->getDocument()
+        || geoId < 0 || geoId >= sketch->Geometry.getSize()) {
+        return;
+    }
 
     // Deleting the handle geometry will automatically remove the Text constraint
     // (turning it to None), leaving the generated text geometries intact.
-    Gui::Selection().clearSelection();
-    sketch->delGeometry(geoId);
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(sketch->getDocument());
+    if (!guiDocument
+        || guiDocument->openCommand("Convert sketch text to geometry")
+            == App::NullTransaction) {
+        Gui::TranslatedUserWarning(
+            sketch,
+            tr("Unable to convert the sketch text"),
+            tr("The sketch document is already owned by another modeling operation."));
+        return;
+    }
+
+    try {
+        Gui::Selection().rmvSelection(
+            sketch->getDocument()->getName(),
+            sketch->getNameInDocument());
+        sketch->delGeometry(geoId);
+        sketch->solve();
+        guiDocument->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        guiDocument->abortCommand();
+        Gui::TranslatedUserWarning(
+            sketch,
+            tr("Unable to convert the sketch text"),
+            QString::fromUtf8(error.what()));
+    }
 }
 
 // clang-format on
@@ -1334,6 +1459,7 @@ TaskSketcherElements::TaskSketcherElements(ViewProviderSketch* sketchView)
     // we need a separate container widget to add all controls to
     proxy = new QWidget(this);
     ui->setupUi(proxy);
+    ui->listWidgetElements->setSketchView(sketchView);
 #ifdef Q_OS_MAC
     QString cmdKey = QStringLiteral("\xe2\x8c\x98");// U+2318
 #else
@@ -1567,7 +1693,16 @@ void TaskSketcherElements::updateVisibility()
 
 void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
 {
+    const auto* sketchObject = sketchView ? sketchView->getSketchObject() : nullptr;
+    if (!sketchObject || !sketchObject->getDocument()) {
+        return;
+    }
+
     if (msg.Type == Gui::SelectionChanges::ClrSelection) {
+        if (msg.pDocName
+            && strcmp(msg.pDocName, sketchObject->getDocument()->getName()) != 0) {
+            return;
+        }
         clearWidget();
         return;
     }
@@ -1578,8 +1713,9 @@ void TaskSketcherElements::onSelectionChanged(const Gui::SelectionChanges& msg)
     }
 
     // is it this object??
-    if (strcmp(msg.pDocName, sketchView->getSketchObject()->getDocument()->getName()) != 0
-        || strcmp(msg.pObjectName, sketchView->getSketchObject()->getNameInDocument()) != 0
+    if (!msg.pDocName || !msg.pObjectName
+        || strcmp(msg.pDocName, sketchObject->getDocument()->getName()) != 0
+        || strcmp(msg.pObjectName, sketchObject->getNameInDocument()) != 0
         || !msg.pSubName) {
         return;
     }
@@ -1717,7 +1853,7 @@ void TaskSketcherElements::onListWidgetElementsItemPressed(QListWidgetItem* it)
         std::string obj_name = sketchView->getSketchObject()->getNameInDocument();
 
         bool block = this->blockSelection(true);// avoid to be notified by itself
-        Gui::Selection().clearSelection();
+        Gui::Selection().rmvSelection(doc_name.c_str(), obj_name.c_str());
 
         for (int i = 0; i < ui->listWidgetElements->count(); i++) {
             auto* item = static_cast<ElementItem*>(ui->listWidgetElements->item(i));

@@ -37,6 +37,7 @@ import FreeCADGui
 import FemGui  # needed to display the icons in TreeView
 
 from femobjects.base_fempythonobject import _PropHelper
+from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
 
 False if FemGui.__name__ else True  # flake8, dummy FemGui usage
 
@@ -94,6 +95,8 @@ class VPBaseFemObject:
             # avoid edit mode by return False
             # https://forum.freecad.org/viewtopic.php?t=12139&start=10#p161062
             return False
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
         if hide_mesh:
             # hide all FEM meshes and FemPost function objects
             for obj in vobj.Object.Document.Objects:
@@ -105,15 +108,24 @@ class VPBaseFemObject:
                     obj.ViewObject.hide()
         # show task panel
         task = TaskPanel(vobj.Object)
-        FreeCADGui.Control.showDialog(task)
+        FreeCADGui.Control.showDialog(task, gui_document)
+        self._fem_edit_identity = identity
         return True
 
     def unsetEdit(self, vobj, mode=0):
-        FreeCADGui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        FreeCADGui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
         return True
 
     def doubleClicked(self, vobj):
-        guidoc = FreeCADGui.getDocument(vobj.Object.Document)
+        identity = _TaskTargetIdentity(vobj.Object)
+        guidoc = identity.resolve_gui_document()
         # check if another VP is in edit mode
         # https://forum.freecad.org/viewtopic.php?t=13077#p104702
         if not guidoc.getInEdit():

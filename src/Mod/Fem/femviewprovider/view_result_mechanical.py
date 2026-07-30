@@ -44,6 +44,9 @@ class VPResultMechanical(view_base_femconstraint.VPBaseFemConstraint):
     A View Provider for the ResultObject Python derived FemResult class
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         # is mesh visible
         self.visibility = self.Object.Mesh.ViewObject.Visibility
@@ -55,11 +58,10 @@ class VPResultMechanical(view_base_femconstraint.VPBaseFemConstraint):
         )
 
     def unsetEdit(self, vobj, mode=0):
-        FreeCADGui.Control.closeDialog()
         # hide the mesh if it was not visible
         if not self.visibility:
             self.Object.Mesh.ViewObject.hide()
-        return True
+        return super().unsetEdit(vobj, mode)
 
     def claimChildren(self):
         return [self.Object.Mesh]  # claimChildren needs to return a list !

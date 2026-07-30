@@ -34,6 +34,63 @@ import FreeCAD
 from femtools.femutils import is_of_type
 
 
+def purge_result_targets(analysis):
+    """Return the exact live result graph removed by ``Purge Results``.
+
+    The GUI command passes this complete set through the normal native delete
+    command so ViewProviders, document-history ownership, undo, and restored
+    replacement visibility all use the same deletion contract as every other
+    ribbon tool.
+    """
+
+    document = getattr(analysis, "Document", None)
+    if document is None:
+        return []
+
+    result = []
+    seen = set()
+    visited_groups = set()
+
+    def append(obj):
+        if (
+            obj is None
+            or getattr(obj, "Document", None) is not document
+            or document.getObject(getattr(obj, "Name", "")) is not obj
+        ):
+            return
+        identity = int(obj.ID)
+        if identity in seen:
+            return
+        seen.add(identity)
+        result.append(obj)
+
+    def append_post_group(group):
+        group_identity = int(group.ID)
+        if group_identity in visited_groups:
+            return
+        visited_groups.add(group_identity)
+        for child in list(getattr(group, "Group", []) or []):
+            append_post_group(child)
+            append(child)
+
+    for member in list(getattr(analysis, "Group", []) or []):
+        if member.isDerivedFrom("Fem::FemResultObject"):
+            mesh = getattr(member, "Mesh", None)
+            if mesh is not None and is_of_type(mesh, "Fem::MeshResult"):
+                append(mesh)
+            append(member)
+        elif (
+            is_of_type(member, "Fem::MeshResult")
+            or is_of_type(member, "App::TextDocument")
+            or is_of_type(member, "Fem::FemPostVisualization")
+        ):
+            append(member)
+        elif member.isDerivedFrom("Fem::FemPostPipeline"):
+            append_post_group(member)
+            append(member)
+    return result
+
+
 def purge_result_objects(analysis):
     """Removes all result objects and result meshes from an analysis group.
 

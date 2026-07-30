@@ -88,13 +88,19 @@ def run(service: Any, label: str, analysis_type: str) -> dict[str, Any]:
         active = App.ActiveDocument
         if active is None:
             raise RuntimeError("No active document.")
-        analysis = ObjectsFem.makeAnalysis(active, "Analysis")
-        analysis.Label = clean_label
-        solver = ObjectsFem.makeSolverCalculiXCcxTools(active, "CalculiXCcxTools")
-        solver.AnalysisType = clean_type
-        solver.WorkingDir = ""
-        solver.SplitInputWriter = False
-        analysis.addObject(solver)
+        with domain_runtime.NewTimelineOperation() as timeline:
+            analysis = ObjectsFem.makeAnalysis(active, "Analysis")
+            timeline.set_operation(analysis)
+            analysis.Label = clean_label
+            solver = ObjectsFem.makeSolverCalculiXCcxTools(
+                active,
+                "CalculiXCcxTools",
+            )
+            timeline.add_resource(solver)
+            solver.AnalysisType = clean_type
+            solver.WorkingDir = ""
+            solver.SplitInputWriter = False
+            analysis.addObject(solver)
         active.recompute()
         group_members = [obj.Name for obj in list(analysis.Group or [])]
         return {

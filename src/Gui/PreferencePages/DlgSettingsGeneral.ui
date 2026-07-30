@@ -243,10 +243,11 @@ dot/period will always be printed</string>
        <item row="3" column="1">
         <widget class="QComboBox" name="treeMode">
          <property name="toolTip">
-          <string>Customize how the tree view is shown in the panel (restart required).
+          <string>Choose the model-browser layout (restart required).
 
 'Combined': combine tree and property view into one panel.
-'Independent': split tree and property view into separate panels.</string>
+'Tree only': show the tree without a persistent property panel.
+'Tree and property': show the tree and property view in separate panels.</string>
          </property>
         </widget>
        </item>

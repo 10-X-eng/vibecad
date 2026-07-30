@@ -8,6 +8,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <Base/Interpreter.h>
 
@@ -153,6 +154,27 @@ TEST_F(DocumentObjectTest, getSubObjectList)
     EXPECT_EQ(sizesFlatten.size(), 2);
     EXPECT_EQ(sizesFlatten[0], 0);
     EXPECT_EQ(sizesFlatten[1], strlen(fuseName) + strlen(boxName) + 2);
+}
+
+TEST_F(DocumentObjectTest, timelineStructuralChildrenDistinguishContainmentFromDependencies)
+{
+    auto* group = dynamic_cast<App::DocumentObjectGroup*>(
+        _doc->addObject("App::DocumentObjectGroup", "TimelineContainer")
+    );
+    auto* child = _doc->addObject("App::FeaturePython", "TimelineChild");
+    auto* dependency = _doc->addObject("App::FeaturePython", "TimelineDependency");
+
+    ASSERT_NE(group, nullptr);
+    ASSERT_NE(child, nullptr);
+    ASSERT_NE(dependency, nullptr);
+    EXPECT_FALSE(group->isTimelineStructuralChild(child));
+    EXPECT_FALSE(group->isTimelineStructuralChild(dependency));
+
+    group->addObject(child);
+
+    EXPECT_TRUE(group->isTimelineStructuralChild(child));
+    EXPECT_FALSE(group->isTimelineStructuralChild(dependency));
+    EXPECT_FALSE(child->isTimelineStructuralChild(group));
 }
 
 // NOLINTEND(readability-magic-numbers, cppcoreguidelines-avoid-magic-numbers)

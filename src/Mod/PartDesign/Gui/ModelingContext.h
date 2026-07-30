@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <App/Application.h>
+#include <Gui/Application.h>
 #include <Mod/PartDesign/PartDesignGlobal.h>
 
 namespace App
@@ -61,9 +62,16 @@ private:
     );
 
     void queueResult(const App::DocumentObject& object);
+    void removePendingResult(const App::DocumentObject& object);
     void beforeCloseTransaction(bool abort);
+    void finalizeDurableResults(
+        const App::Document& document,
+        const std::vector<long>& acceptedObjectIds,
+        const std::vector<Gui::Application::DurableTaskResultIntent>& intents
+    );
     void clearDocument(const App::Document& document);
     void flushPending(const std::set<int>& transactionIds);
+    std::size_t adoptQueued(std::vector<PendingResult> queued);
 
     std::vector<PendingResult> pending;
     fastsignals::connection newObjectConnection;

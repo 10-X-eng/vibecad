@@ -30,6 +30,7 @@
 
 
 #include "FeatureProjection.h"
+#include "DrawUtil.h"
 #include "ProjectionAlgos.h"
 
 
@@ -54,6 +55,7 @@ FeatureProjection::FeatureProjection()
     ADD_PROPERTY_TYPE(RgNLineHCompound ,(true), group, App::Prop_None, "Projection parameter");
     ADD_PROPERTY_TYPE(OutLineHCompound ,(true), group, App::Prop_None, "Projection parameter");
     ADD_PROPERTY_TYPE(IsoLineHCompound ,(true), group, App::Prop_None, "Projection parameter");
+    suppressibleExtension.initExtension(this);
 }
 
 FeatureProjection::~FeatureProjection()
@@ -62,9 +64,19 @@ FeatureProjection::~FeatureProjection()
 
 App::DocumentObjectExecReturn *FeatureProjection::execute()
 {
+    if (suppressibleExtension.Suppressed.getValue()
+        || !DrawUtil::isActiveInDocumentTimeline(this)) {
+        Shape.setValue(TopoDS_Shape());
+        return App::DocumentObject::StdReturn;
+    }
+
     App::DocumentObject* link = Source.getValue();
     if (!link)
         return new App::DocumentObjectExecReturn("No object linked");
+    if (!DrawUtil::isActiveInDocumentTimeline(link)) {
+        Shape.setValue(TopoDS_Shape());
+        return App::DocumentObject::StdReturn;
+    }
     if (!link->isDerivedFrom<Part::Feature>())
         return new App::DocumentObjectExecReturn("Linked object is not a Part object");
     const TopoDS_Shape& shape = static_cast<Part::Feature*>(link)->Shape.getShape().getShape();
@@ -105,4 +117,12 @@ App::DocumentObjectExecReturn *FeatureProjection::execute()
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
     }
+}
+
+short FeatureProjection::mustExecute() const
+{
+    if (suppressibleExtension.Suppressed.isTouched()) {
+        return 1;
+    }
+    return Part::Feature::mustExecute();
 }

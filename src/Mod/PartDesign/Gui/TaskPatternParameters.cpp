@@ -260,7 +260,11 @@ void TaskPatternParameters::enterReferenceSelectionMode()
 
     hideObject();  // Hide the pattern feature itself
     showBase();    // Show the base features/body
-    Gui::Selection().clearSelection();
+    if (auto* object = getObject()) {
+        Gui::Selection().clearSelection(
+            object->getDocument()->getName()
+        );
+    }
     // Add selection gate (allow edges, faces, potentially datums)
     addReferenceSelectionGate(AllowSelection::EDGE | AllowSelection::FACE | AllowSelection::PLANAR);
     Gui::getMainWindow()->showMessage(

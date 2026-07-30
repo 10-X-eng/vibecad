@@ -27,6 +27,9 @@
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
 
+#include "FeatureMeshPartOperations.h"
+#include "MeshBoolean.h"
+
 
 namespace MeshPart
 {
@@ -38,6 +41,7 @@ PyMOD_INIT_FUNC(MeshPart)
 {
     // load dependent module
     try {
+        Base::Interpreter().loadModule("Mesh");
         Base::Interpreter().loadModule("Part");
     }
     catch (const Base::Exception& e) {
@@ -45,6 +49,12 @@ PyMOD_INIT_FUNC(MeshPart)
         PyMOD_Return(nullptr);
     }
     PyObject* mod = MeshPart::initModule();
+    MeshPart::Boolean::init();
+    MeshPart::MeshFromShape::init();
+    MeshPart::ShapeFromMesh::init();
+    MeshPart::SectionByPlane::init();
+    MeshPart::CrossSections::init();
+    MeshPart::CurveOnMesh::init();
     Base::Console().log("Loading MeshPart module… done\n");
     PyMOD_Return(mod);
 }

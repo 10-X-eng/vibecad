@@ -214,7 +214,7 @@ def _exercise_source_api() -> None:
     assert "operation_trace" in description["model_verification_contract"][
         "pipeline_evidence"
     ]
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, allow_nan=False).encode("utf-8")) < 32 * 1024
     assert description["execution_contract"]["no_synchronous_fallback"] is True
     validate_program_source(description["recommended_patterns"][0]["source"])
@@ -670,7 +670,7 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": accepted["working_revision"],
-                "replacements": [{"old": crop_bounds, "new": empty_bounds}],
+                "source": _source().replace(crop_bounds, empty_bounds),
             },
         )
         failed_prepared = prepare_candidate(failed_capture)
@@ -708,7 +708,7 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": failed_prepared["revision"],
-                "replacements": [{"old": empty_bounds, "new": crop_bounds}],
+                "source": _source(),
             },
         )
         _, _, _, recovery_publication, accepted = _run_candidate(

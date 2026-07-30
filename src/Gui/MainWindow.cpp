@@ -34,6 +34,9 @@
 #include <QHash>
 #include <QKeySequence>
 #include <QLabel>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMdiSubWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -52,6 +55,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QUrlQuery>
+#include <QVBoxLayout>
 #include <QWhatsThis>
 #include <QWindow>
 #include <QPushButton>
@@ -67,6 +71,8 @@
 #endif
 
 #include <algorithm>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -96,6 +102,8 @@
 #include "Command.h"
 #include "DockWindowManager.h"
 #include "DownloadManager.h"
+#include "ExactTransaction.h"
+#include "FeatureTimeline.h"
 #include "FileDialog.h"
 #include "InputHintWidget.h"
 #include "MenuManager.h"
@@ -114,10 +122,12 @@
 #include "Utilities.h"
 #include "Tree.h"
 #include "WaitCursor.h"
+#include "VibeCADRibbon.h"
 #include "WorkbenchManager.h"
 #include "Workbench.h"
 
 #include "MergeDocuments.h"
+#include "TimelineImport.h"
 #include "ViewProviderExtern.h"
 
 #include "SpaceballEvent.h"
@@ -380,6 +390,7 @@ struct MainWindowP
     QTimer saveStateTimer;
     QTimer restoreStateTimer;
     QMdiArea* mdiArea;
+    FeatureTimeline* featureTimeline;
     QPointer<MDIView> activeView;
     QSignalMapper* windowMapper;
     SplashScreen* splashscreen;
@@ -481,7 +492,20 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
     d->mdiArea->setActivationOrder(QMdiArea::ActivationHistoryOrder);
 #endif
     d->mdiArea->setBackground(QBrush(QColor(160, 160, 160)));
-    setCentralWidget(d->mdiArea);
+
+    // VibeCAD mirrors document tabs into the ribbon and collapses the original
+    // south MDI tab bar. Keep native feature history in that reclaimed edge of
+    // the central workspace. It is intentionally not a dock: workbench changes
+    // and Ctrl+0 bottom-panel toggles must never remove modeling history.
+    auto* workspace = new QWidget(this);
+    workspace->setObjectName(QStringLiteral("VibeCADWorkspace"));
+    auto* workspaceLayout = new QVBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0);
+    workspaceLayout->setSpacing(0);
+    workspaceLayout->addWidget(d->mdiArea, 1);
+    d->featureTimeline = new FeatureTimeline(workspace);
+    workspaceLayout->addWidget(d->featureTimeline);
+    setCentralWidget(workspace);
 
     statusBar()->setObjectName(QStringLiteral("statusBar"));
     connect(statusBar(), &QStatusBar::messageChanged, this, &MainWindow::statusMessageChanged);
@@ -672,6 +696,15 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
 
 MainWindow::~MainWindow()
 {
+    // The ribbon is an application-wide event filter and can receive events while
+    // QObject tears down MainWindow's children. Destroy the direct child before
+    // releasing MainWindow's private state that the filter reads.
+    QObject* ribbonController = findChild<QObject*>(
+        QStringLiteral("VibeCADRibbonController"),
+        Qt::FindDirectChildrenOnly
+    );
+    delete dynamic_cast<VibeCADRibbon*>(ribbonController);
+
     // QWidget teardown may still emit subWindowActivated while child MDI
     // windows are being destroyed. Disconnect first so shutdown cannot re-enter
     // MainWindow slots after derived destruction has started.
@@ -2056,16 +2089,21 @@ void MainWindow::updateActions(bool delay)
         return;
     }
 
+    // QTimer and the coalescing state below belong to the GUI thread. Route
+    // the complete update request there before reading or changing either;
+    // checking a timer from a worker thread is itself not thread-safe.
+    if (d->activityTimer->thread() != QThread::currentThread()) {
+        QMetaObject::invokeMethod(
+            d->activityTimer,
+            [this, delay]() { updateActions(delay); },
+            Qt::QueuedConnection
+        );
+        return;
+    }
+
+    const int interval = delay ? 150 : 0;
     if (!d->activityTimer->isActive()) {
-        // If for some reason updateActions() is called from a worker thread
-        // we must avoid to directly call QTimer::start() because this leaves
-        // the whole application in a weird state
-        if (d->activityTimer->thread() != QThread::currentThread()) {
-            QMetaObject::invokeMethod(d->activityTimer, "start", Qt::QueuedConnection, Q_ARG(int, 150));
-        }
-        else {
-            d->activityTimer->start(150);
-        }
+        d->activityTimer->start(interval);
     }
     else if (delay) {
         if (!d->actionUpdateDelay) {
@@ -2074,6 +2112,12 @@ void MainWindow::updateActions(bool delay)
     }
     else {
         d->actionUpdateDelay = -1;
+        // A direct interaction such as changing the selection must update the
+        // ribbon on the next event-loop turn. Do not leave it behind an older
+        // delayed refresh where a user can click a stale enabled action.
+        if (d->activityTimer->remainingTime() > 0) {
+            d->activityTimer->start(0);
+        }
     }
 }
 
@@ -2425,6 +2469,175 @@ static QLatin1String _MimeDocObj("application/x-documentobject");
 static QLatin1String _MimeDocObjX("application/x-documentobject-x");
 static QLatin1String _MimeDocObjFile("application/x-documentobject-file");
 static QLatin1String _MimeDocObjXFile("application/x-documentobject-x-file");
+static QLatin1String _MimeTimelineMetadata(
+    "application/x-vibecad-timeline-metadata-v1"
+);
+
+namespace
+{
+
+struct TimelineClipboardMetadata
+{
+    std::vector<std::string> selectedNames;
+    std::vector<std::string> sourceOrderNames;
+    std::vector<bool> sourceVisibility;
+    std::vector<bool> sourceSuppression;
+};
+
+QJsonArray timelineNamesToJson(
+    const std::vector<std::string>& names
+)
+{
+    QJsonArray result;
+    for (const auto& name : names) {
+        result.append(QString::fromUtf8(name.c_str()));
+    }
+    return result;
+}
+
+QJsonArray timelineStatesToJson(
+    const std::vector<bool>& states
+)
+{
+    QJsonArray result;
+    for (const bool state : states) {
+        result.append(state);
+    }
+    return result;
+}
+
+QByteArray serializeTimelineClipboardMetadata(
+    const TimelineExportPlan& plan
+)
+{
+    QJsonObject root;
+    root.insert("schema", "vibecad-timeline-clipboard-v1");
+    root.insert(
+        "selected_names",
+        timelineNamesToJson(plan.selectedNames)
+    );
+    root.insert(
+        "source_order_names",
+        timelineNamesToJson(plan.sourceOrderNames)
+    );
+    root.insert(
+        "source_visibility",
+        timelineStatesToJson(plan.sourceVisibility)
+    );
+    root.insert(
+        "source_suppression",
+        timelineStatesToJson(plan.sourceSuppression)
+    );
+    return QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+
+std::vector<std::string> timelineNamesFromJson(
+    const QJsonObject& root,
+    const char* field
+)
+{
+    const auto value = root.value(QLatin1String(field));
+    if (!value.isArray()) {
+        throw Base::ValueError(
+            "The clipboard timeline metadata has a missing name array"
+        );
+    }
+    std::vector<std::string> result;
+    std::unordered_set<std::string> seen;
+    const auto names = value.toArray();
+    result.reserve(static_cast<std::size_t>(names.size()));
+    for (const auto& nameValue : names) {
+        if (!nameValue.isString()) {
+            throw Base::ValueError(
+                "The clipboard timeline metadata contains a non-string name"
+            );
+        }
+        auto name = nameValue.toString().toUtf8().toStdString();
+        if (name.empty() || !seen.insert(name).second) {
+            throw Base::ValueError(
+                "The clipboard timeline metadata contains an empty or "
+                "duplicate name"
+            );
+        }
+        result.push_back(std::move(name));
+    }
+    return result;
+}
+
+std::vector<bool> timelineStatesFromJson(
+    const QJsonObject& root,
+    const char* field
+)
+{
+    const auto value = root.value(QLatin1String(field));
+    if (!value.isArray()) {
+        throw Base::ValueError(
+            "The clipboard timeline metadata has a missing state array"
+        );
+    }
+    std::vector<bool> result;
+    const auto states = value.toArray();
+    result.reserve(static_cast<std::size_t>(states.size()));
+    for (const auto& state : states) {
+        if (!state.isBool()) {
+            throw Base::ValueError(
+                "The clipboard timeline metadata contains a non-boolean "
+                "state"
+            );
+        }
+        result.push_back(state.toBool());
+    }
+    return result;
+}
+
+TimelineClipboardMetadata parseTimelineClipboardMetadata(
+    const QMimeData& mimeData
+)
+{
+    TimelineClipboardMetadata result;
+    if (!mimeData.hasFormat(_MimeTimelineMetadata)) {
+        return result;
+    }
+
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(
+        mimeData.data(_MimeTimelineMetadata),
+        &error
+    );
+    if (error.error != QJsonParseError::NoError
+        || !document.isObject()) {
+        throw Base::ValueError(
+            "The clipboard timeline metadata is not valid JSON"
+        );
+    }
+    const auto root = document.object();
+    if (root.value("schema").toString()
+        != QStringLiteral("vibecad-timeline-clipboard-v1")) {
+        throw Base::ValueError(
+            "The clipboard timeline metadata schema is unsupported"
+        );
+    }
+    result.selectedNames =
+        timelineNamesFromJson(root, "selected_names");
+    result.sourceOrderNames =
+        timelineNamesFromJson(root, "source_order_names");
+    result.sourceVisibility =
+        timelineStatesFromJson(root, "source_visibility");
+    result.sourceSuppression =
+        timelineStatesFromJson(root, "source_suppression");
+    if (result.sourceVisibility.size()
+            != result.sourceOrderNames.size()
+        || result.sourceSuppression.size()
+            != result.sourceOrderNames.size()) {
+        throw Base::ValueError(
+            "The clipboard timeline state does not match its source "
+            "chronology"
+        );
+    }
+    return result;
+}
+
+}  // namespace
 
 QMimeData* MainWindow::createMimeDataFromSelection() const
 {
@@ -2451,8 +2664,20 @@ QMimeData* MainWindow::createMimeDataFromSelection() const
         }
     }
 
+    TimelineExportPlan exportPlan;
+    try {
+        // The dialog already produced the caller-approved ordinary object
+        // set. A complete timeline semantic block is never optional.
+        exportPlan = prepareTimelineExport(sel, false);
+    }
+    catch (const Base::Exception& error) {
+        error.reportException();
+        return nullptr;
+    }
+
     std::vector<App::Document*> unsaved;
-    bool hasXLink = App::PropertyXLink::hasXLink(sel, &unsaved);
+    bool hasXLink =
+        App::PropertyXLink::hasXLink(exportPlan.objects, &unsaved);
     if (!unsaved.empty()) {
         QMessageBox::critical(
             getMainWindow(),
@@ -2464,7 +2689,7 @@ QMimeData* MainWindow::createMimeDataFromSelection() const
     }
 
     unsigned int memsize = 1000;  // ~ for the meta-information
-    for (const auto& it : sel) {
+    for (const auto& it : exportPlan.objects) {
         memsize += it->getMemSize();
     }
 
@@ -2488,9 +2713,10 @@ QMimeData* MainWindow::createMimeDataFromSelection() const
         Base::StringOStreambuf sbuf(buffer);
         std::ostream str(&sbuf);
         // need this instance to call MergeDocuments::Save()
-        App::Document* doc = sel.front()->getDocument();
+        App::Document* doc =
+            exportPlan.objects.front()->getDocument();
         MergeDocuments mimeView(doc);
-        doc->exportObjects(sel, str);
+        doc->exportObjects(exportPlan.objects, str);
         res = QByteArray(buffer.data(), static_cast<int>(buffer.size()));
     }
     else {
@@ -2498,9 +2724,10 @@ QMimeData* MainWindow::createMimeDataFromSelection() const
         static Base::FileInfo fi(App::Application::getTempFileName());
         Base::ofstream str(fi, std::ios::out | std::ios::binary);
         // need this instance to call MergeDocuments::Save()
-        App::Document* doc = sel.front()->getDocument();
+        App::Document* doc =
+            exportPlan.objects.front()->getDocument();
         MergeDocuments mimeView(doc);
-        doc->exportObjects(sel, str);
+        doc->exportObjects(exportPlan.objects, str);
         str.close();
         res = fi.filePath().c_str();
 
@@ -2511,6 +2738,10 @@ QMimeData* MainWindow::createMimeDataFromSelection() const
 
     auto mimeData = new QMimeData();
     mimeData->setData(mime, res);
+    mimeData->setData(
+        _MimeTimelineMetadata,
+        serializeTimelineClipboardMetadata(exportPlan)
+    );
     return mimeData;
 }
 
@@ -2606,6 +2837,9 @@ void MainWindow::insertFromMimeData(const QMimeData* mimeData)
     if (!doc) {
         doc = App::GetApplication().newDocument();
     }
+    if (!doc) {
+        return;
+    }
 
     if (hasXLink && !doc->isSaved()) {
         int ret = QMessageBox::question(
@@ -2620,44 +2854,76 @@ void MainWindow::insertFromMimeData(const QMimeData* mimeData)
             return;
         }
     }
-    if (!fromDoc) {
-        QByteArray res = mimeData->data(format);
-        std::string buffer(res.constData(), static_cast<std::size_t>(res.size()));
+    try {
+        const auto metadata =
+            parseTimelineClipboardMetadata(*mimeData);
+        ExactTransaction transaction(*doc, "Paste");
+        TimelineImportResult imported;
+        const QByteArray data = mimeData->data(format);
+        if (!fromDoc) {
+            const std::string buffer(
+                data.constData(),
+                static_cast<std::size_t>(data.size())
+            );
+            Base::StringIStreambuf streamBuffer(buffer);
+            std::istream stream(&streamBuffer);
+            imported = restoreTimelineImport(
+                *doc,
+                stream,
+                metadata.selectedNames,
+                metadata.sourceOrderNames,
+                metadata.sourceVisibility,
+                metadata.sourceSuppression
+            );
+        }
+        else {
+            Base::FileInfo fileInfo(data.constData());
+            Base::ifstream stream(
+                fileInfo,
+                std::ios::in | std::ios::binary
+            );
+            imported = restoreTimelineImport(
+                *doc,
+                stream,
+                metadata.selectedNames,
+                metadata.sourceOrderNames,
+                metadata.sourceVisibility,
+                metadata.sourceSuppression
+            );
+            stream.close();
+        }
 
-        doc->openTransaction("Paste");
-        Base::StringIStreambuf buf(buffer);
-        std::istream in(nullptr);
-        in.rdbuf(&buf);
-        MergeDocuments mimeView(doc);
-        std::vector<App::DocumentObject*> newObj = mimeView.importObjects(in);
-        std::vector<App::DocumentObjectGroup*> grp
-            = Gui::Selection().getObjectsOfType<App::DocumentObjectGroup>();
-        if (grp.size() == 1) {
-            Gui::Document* gui = Application::Instance->getDocument(doc);
-            if (gui) {
-                gui->addRootObjectsToGroup(newObj, grp.front());
+        const auto groups =
+            Gui::Selection()
+                .getObjectsOfType<App::DocumentObjectGroup>();
+        if (groups.size() == 1) {
+            if (auto* gui =
+                    Application::Instance->getDocument(doc)) {
+                const auto& groupObjects =
+                    imported.selectedObjects.empty()
+                    ? imported.objects
+                    : imported.selectedObjects;
+                gui->addRootObjectsToGroup(
+                    groupObjects,
+                    groups.front()
+                );
             }
         }
-        doc->commitTransaction();
+        adoptTimelineImport(imported);
+        if (!transaction.commit()) {
+            throw Base::RuntimeError(
+                "The exact paste transaction could not be committed"
+            );
+        }
     }
-    else {
-        QByteArray res = mimeData->data(format);
-
-        doc->openTransaction("Paste");
-        Base::FileInfo fi((const char*)res);
-        Base::ifstream str(fi, std::ios::in | std::ios::binary);
-        MergeDocuments mimeView(doc);
-        std::vector<App::DocumentObject*> newObj = mimeView.importObjects(str);
-        str.close();
-        std::vector<App::DocumentObjectGroup*> grp
-            = Gui::Selection().getObjectsOfType<App::DocumentObjectGroup>();
-        if (grp.size() == 1) {
-            Gui::Document* gui = Application::Instance->getDocument(doc);
-            if (gui) {
-                gui->addRootObjectsToGroup(newObj, grp.front());
-            }
-        }
-        doc->commitTransaction();
+    catch (const Base::Exception& error) {
+        error.reportException();
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Paste failed: %s\n",
+            error.what()
+        );
     }
 }
 

@@ -95,6 +95,9 @@ class Writer:
     def getHandledConstraints(self):
         return self._handledObjects
 
+    def _get_active_equations(self):
+        return membertools._active_group_members(self.solver)
+
     def _writeBlocks(self):
         self._handleRedifinedConstants()
         self._handleSimulation()
@@ -260,7 +263,7 @@ class Writer:
     def _handleDeformation(self):
         DEFW = DEF_writer.DeformationWriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerDeformation"):
                 if not self._haveMaterialSolid():
                     raise WriteError(
@@ -288,7 +291,7 @@ class Writer:
     def _handleElasticity(self):
         ELW = EL_writer.ElasticityWriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerElasticity"):
                 if not self._haveMaterialSolid():
                     raise WriteError(
@@ -316,7 +319,7 @@ class Writer:
     def _handleElectrostatic(self):
         ESW = ES_writer.ESwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerElectrostatic"):
                 if equation.References:
                     activeIn = equation.References[0][1]
@@ -337,7 +340,7 @@ class Writer:
     def _handleElectricforce(self):
         EFW = EF_writer.EFwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerElectricforce"):
                 if equation.References:
                     activeIn = equation.References[0][1]
@@ -353,7 +356,7 @@ class Writer:
     def _handleFlow(self):
         FlowW = flow_writer.Flowwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerFlow"):
                 if not self._haveMaterialFluid():
                     raise WriteError(
@@ -381,7 +384,7 @@ class Writer:
     def _handleFlux(self):
         FluxW = flux_writer.Fluxwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerFlux"):
                 if equation.References:
                     activeIn = equation.References[0][1]
@@ -397,7 +400,7 @@ class Writer:
     def _handleHeat(self):
         HeatW = heat_writer.Heatwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerHeat"):
                 if equation.References:
                     activeIn = equation.References[0][1]
@@ -420,7 +423,7 @@ class Writer:
     def _handleMagnetodynamic(self):
         MgDyn = MgDyn_writer.MgDynwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerMagnetodynamic"):
                 if equation.References:
                     activeIn = equation.References[0][1]
@@ -444,7 +447,7 @@ class Writer:
     def _handleMagnetodynamic2D(self):
         MgDyn2D = MgDyn2D_writer.MgDyn2Dwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerMagnetodynamic2D"):
                 if equation.References:
                     activeIn = equation.References[0][1]
@@ -478,7 +481,7 @@ class Writer:
     def _handleStaticCurrent(self):
         SCW = SC_writer.SCwriter(self, self.solver)
         activeIn = []
-        for equation in self.solver.Group:
+        for equation in self._get_active_equations():
             if femutils.is_of_type(equation, "Fem::EquationElmerStaticCurrent"):
                 if equation.References:
                     activeIn = equation.References[0][1]

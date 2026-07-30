@@ -205,8 +205,6 @@ class VibeCADService:
         self._provider_working_object_names: list[str] = []
         self._provider_working_document_uid: str | None = None
         self._project_store = VibeCADProjectStore(self._local_session_id)
-        self._modeling_engine_cache_key: tuple[str, str] | None = None
-        self._modeling_engine_cache_value: str | None = None
         self._steering_messages: list[dict[str, Any]] = []
         self._steering_sequence = 0
         self._register_core_tools()
@@ -262,286 +260,10 @@ class VibeCADService:
         settings = load_settings()
         return settings.intent_memory_model_for(self.provider_name())
 
-    def build123d_enabled(self) -> bool:
-        return bool(load_settings().build123d_enabled)
-
-    def openscad_enabled(self) -> bool:
-        return bool(load_settings().openscad_enabled)
-
-    def vibescript_enabled(self) -> bool:
-        return bool(load_settings().vibescript_enabled)
-
-    def scripted_engine_preflight_settings(self) -> dict[str, Any]:
-        """Capture preference-only engine settings without runtime probes."""
-
-        settings = load_settings()
-        return {
-            "build123d_enabled": bool(settings.build123d_enabled),
-            "openscad_enabled": bool(settings.openscad_enabled),
-            "openscad_executable": str(settings.openscad_executable or ""),
-        }
-
     def modeling_engine(self) -> str:
-        """Return the active engine without rereading its manifest every tool call."""
+        """The assistant always authors through VibeScript."""
 
-        scope = self._project_store.project_scope()
-        key = (
-            str(self._active_document_uid() or ""),
-            str(scope.get("manifest_path") or ""),
-        )
-        if key == self._modeling_engine_cache_key and self._modeling_engine_cache_value:
-            return self._modeling_engine_cache_value
-        engine = self._project_store.modeling_engine()
-        self._modeling_engine_cache_key = key
-        self._modeling_engine_cache_value = engine
-        return engine
-
-    def prepare_modeling_engine_read(self) -> dict[str, Any]:
-        """Capture the active project key without reading its manifest."""
-
-        scope = self._project_store.project_scope()
-        key = (
-            str(self._active_document_uid() or ""),
-            str(scope.get("manifest_path") or ""),
-        )
-        cached = (
-            self._modeling_engine_cache_value
-            if key == self._modeling_engine_cache_key
-            else None
-        )
-        return {
-            "document_uid": key[0],
-            "manifest_path": key[1],
-            "cached_engine": cached,
-        }
-
-    @staticmethod
-    def complete_modeling_engine_read(prepared: dict[str, Any]) -> str:
-        """Read a captured manifest path without consulting the live document."""
-
-        cached = str(prepared.get("cached_engine") or "").strip().lower()
-        if cached:
-            return cached
-        return VibeCADProjectStore.read_modeling_engine_manifest(
-            str(prepared.get("manifest_path") or "")
-        )
-
-    def accept_modeling_engine_read(
-        self,
-        prepared: dict[str, Any],
-        engine: str,
-    ) -> dict[str, Any]:
-        """Cache an off-thread manifest read only if the project is still active."""
-
-        scope = self._project_store.project_scope()
-        current_key = (
-            str(self._active_document_uid() or ""),
-            str(scope.get("manifest_path") or ""),
-        )
-        expected_key = (
-            str(prepared.get("document_uid") or ""),
-            str(prepared.get("manifest_path") or ""),
-        )
-        if current_key != expected_key:
-            return {"accepted": False, "reason": "active_project_changed"}
-        clean = str(engine or "").strip().lower()
-        if clean not in {"native", "build123d", "openscad", "vibescript"}:
-            raise RuntimeError(f"VibeCAD project returned invalid modeling engine {clean!r}.")
-        self._modeling_engine_cache_key = current_key
-        self._modeling_engine_cache_value = clean
-        return {"accepted": True, "engine": clean}
-
-    def _cache_modeling_engine(self, engine: str) -> None:
-        scope = self._project_store.project_scope()
-        self._modeling_engine_cache_key = (
-            str(self._active_document_uid() or ""),
-            str(scope.get("manifest_path") or ""),
-        )
-        self._modeling_engine_cache_value = str(engine)
-
-    def modeling_engine_state(self, workbench: str | None = None) -> dict[str, Any]:
-        from VibeCADBuild123d import BUILD123D_VERSION, runtime_health
-        from VibeCADOpenSCAD import OPENSCAD_VERSION, runtime_health as openscad_health
-        from VibeCADVibeScriptDomains import VIBESCRIPT_VERSION
-
-        active_workbench = workbench or self.active_workbench_name()
-        partdesign_active = active_workbench == "PartDesignWorkbench"
-        build123d_enabled = self.build123d_enabled()
-        build123d_state = (
-            runtime_health()
-            if partdesign_active and build123d_enabled
-            else {
-                "ready": False,
-                "version": BUILD123D_VERSION,
-                "error": (
-                    "build123d is available only in Part Design."
-                    if build123d_enabled
-                    else "build123d is disabled in VibeCAD Preferences."
-                ),
-            }
-        )
-        openscad_enabled = self.openscad_enabled()
-        openscad_state = (
-            openscad_health()
-            if partdesign_active and openscad_enabled
-            else {
-                "ready": False,
-                "version": OPENSCAD_VERSION,
-                "error": (
-                    "OpenSCAD is available only in Part Design."
-                    if openscad_enabled
-                    else "OpenSCAD is disabled in VibeCAD Preferences."
-                ),
-            }
-        )
-        vibescript_enabled = self.vibescript_enabled()
-        if vibescript_enabled:
-            vibescript_state = {
-                "ready": True,
-                "version": VIBESCRIPT_VERSION,
-                "error": "",
-            }
-        else:
-            vibescript_state = {
-                "ready": False,
-                "version": VIBESCRIPT_VERSION,
-                "error": "VibeScript is disabled in VibeCAD Preferences.",
-            }
-        return {
-            "selected": self.modeling_engine(),
-            "global": True,
-            "workbench": active_workbench,
-            "build123d_preference_enabled": build123d_enabled,
-            "openscad_preference_enabled": openscad_enabled,
-            "vibescript_preference_enabled": vibescript_enabled,
-            "available_engines": [
-                "native",
-                *(
-                    ["build123d"]
-                    if partdesign_active and build123d_enabled and build123d_state.get("ready")
-                    else []
-                ),
-                *(
-                    ["openscad"]
-                    if partdesign_active and openscad_enabled and openscad_state.get("ready")
-                    else []
-                ),
-                *(["vibescript"] if vibescript_enabled else []),
-            ],
-            "build123d": build123d_state,
-            "openscad": openscad_state,
-            "vibescript": vibescript_state,
-        }
-
-    def set_modeling_engine(self, engine: str) -> dict[str, Any]:
-        clean = str(engine or "").strip().lower()
-        if clean not in {"native", "build123d", "openscad", "vibescript"}:
-            raise ValueError("Modeling engine must be native, build123d, OpenSCAD, or VibeScript.")
-        persistence = self.document_persistence_state()
-        if not persistence.get("enabled"):
-            raise RuntimeError(
-                str(
-                    persistence.get("message")
-                    or "Save the active document before selecting a modeling engine."
-                )
-            )
-        self._ensure_modeling_engine_change_allowed()
-        active_workbench = self.active_workbench_name()
-        if clean in {"build123d", "openscad"} and active_workbench != "PartDesignWorkbench":
-            raise RuntimeError(
-                f"{clean} is available only while Part Design is active. Select "
-                "VibeScript or Native for this workbench."
-            )
-        if clean == "build123d":
-            if not self.build123d_enabled():
-                raise RuntimeError(
-                    "Enable build123d in VibeCAD Preferences before selecting it."
-                )
-            from VibeCADBuild123d import runtime_health
-
-            health = runtime_health(refresh=True)
-            if not health.get("ready"):
-                raise RuntimeError(
-                    f"build123d runtime is unavailable: {health.get('error')}"
-                )
-        if clean == "openscad":
-            if not self.openscad_enabled():
-                raise RuntimeError(
-                    "Enable OpenSCAD in VibeCAD Preferences before selecting it."
-                )
-            from VibeCADOpenSCAD import runtime_health as openscad_health
-
-            health = openscad_health(refresh=True)
-            if not health.get("ready"):
-                raise RuntimeError(
-                    f"OpenSCAD runtime is unavailable: {health.get('error')}"
-                )
-        if clean == "vibescript" and not self.vibescript_enabled():
-            raise RuntimeError("Enable VibeScript in VibeCAD Preferences before selecting it.")
-        result = self._project_store.set_modeling_engine(clean)
-        self._cache_modeling_engine(clean)
-        self._provider_working_object_names = []
-        return {"ok": True, **result, "state": self.modeling_engine_state()}
-
-    @staticmethod
-    def _ensure_modeling_engine_change_allowed() -> None:
-        state = active_edit_state()
-        if state.active:
-            raise RuntimeError(
-                "Close the active edit session before changing the modeling engine."
-            )
-        if state.error:
-            raise RuntimeError(
-                f"FreeCAD edit state could not be verified: {state.error}"
-            )
-
-    def coerce_modeling_engine_for_workbench(self, workbench: str | None) -> dict[str, Any]:
-        """Persist the required Part Design-only engine transition."""
-
-        selected = self.modeling_engine()
-        if str(workbench or "") != "PartDesignWorkbench" and selected in {"build123d", "openscad"}:
-            self._ensure_modeling_engine_change_allowed()
-            result = self._project_store.set_modeling_engine("vibescript")
-            self._cache_modeling_engine("vibescript")
-            self._provider_working_object_names = []
-            return {
-                "ok": True,
-                "changed": True,
-                "previous_engine": selected,
-                "engine": "vibescript",
-                "reason": f"{selected} is Part Design-only.",
-                **result,
-            }
-        return {"ok": True, "changed": False, "engine": selected}
-
-    def build123d_context(self) -> dict[str, Any]:
-        from VibeCADBuild123d import model_summaries
-
-        doc = self._active_document()
-        project_root = str(self.project_context().get("root") or "").strip()
-        models = (
-            model_summaries(doc, project_root)
-            if doc is not None and project_root
-            else []
-        )
-        return {
-            "models": [
-                {key: value for key, value in model.items() if key != "runtime_version"}
-                for model in models
-            ]
-        }
-
-    def openscad_context(self) -> dict[str, Any]:
-        from VibeCADOpenSCAD import model_summaries
-
-        doc = self._active_document()
-        project_root = str(self.project_context().get("root") or "").strip()
-        models = (
-            model_summaries(doc, project_root)
-            if doc is not None and project_root
-            else []
-        )
-        return {"models": models}
+        return "vibescript"
 
     def provider_debug_config(self) -> dict[str, Any]:
         settings = load_debug_settings()
@@ -659,8 +381,8 @@ class VibeCADService:
                 "subelement_limit_per_item": MAX_PROVIDER_SELECTION_SUBELEMENTS,
                 "selection_json_byte_limit": MAX_PROVIDER_SELECTION_BYTES,
                 "reason": (
-                    f"{reason} Inspect the exact selection with "
-                    "core.inspect scope='selection'."
+                    f"{reason} Reduce the explicit selection and retry so its "
+                    "exact objects and subelements fit in turn-start context."
                 ),
             }
 
@@ -1770,7 +1492,7 @@ class VibeCADService:
 
         This intentionally does not load the persisted reference manifest. A UI
         attachment populates the in-memory queue, while old project images stay
-        available through ``core.inspect`` without being resent automatically.
+        stored with the project without being resent automatically.
         """
 
         if self._reference_cache_document_uid != self._active_document_uid():

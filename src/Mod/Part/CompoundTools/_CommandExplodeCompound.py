@@ -28,12 +28,11 @@ __doc__ = (
     "ExplodeCompound: create a bunch of CompoundFilter objects to split a compound into pieces."
 )
 
-from .Explode import explodeCompound
-
 import FreeCAD
 
 if FreeCAD.GuiUp:
     import FreeCADGui
+    import PartGui
     from PySide import QtGui
     from PySide import QtCore
 
@@ -49,6 +48,60 @@ if FreeCAD.GuiUp:
 
 
 # command class
+def _selected_modeling_objects():
+    objects = []
+    for raw in FreeCADGui.Selection.getSelection():
+        if not PartGui.isModelingObjectActive(raw):
+            continue
+        obj = PartGui.resolveModelingObject(raw)
+        if obj is not None and obj not in objects:
+            objects.append(obj)
+    return objects
+
+
+def _selected_presentation_objects():
+    """Return the viewport object represented by each modeling operand."""
+
+    objects = []
+    for selected in FreeCADGui.Selection.getSelection():
+        if not PartGui.isModelingObjectActive(selected):
+            continue
+        resolved = PartGui.resolveModelingObject(selected)
+        if resolved is None:
+            continue
+
+        presentation = selected
+        if not selected.isDerivedFrom("PartDesign::Body"):
+            owner = resolved.getParentGeoFeatureGroup()
+            if owner is not None and owner.isDerivedFrom("PartDesign::Body"):
+                presentation = owner
+
+        if presentation not in objects:
+            objects.append(presentation)
+    return objects
+
+
+def _has_compound_operand():
+    selection = _selected_modeling_objects()
+    if len(selection) != 1:
+        return False
+    shape = getattr(selection[0], "Shape", None)
+    return (
+        shape is not None
+        and not shape.isNull()
+        and shape.ShapeType in ("Compound", "CompSolid")
+    )
+
+
+def _object_expression(obj):
+    """Return a recorded command expression for one exact document object."""
+
+    return (
+        f"App.getDocument({obj.Document.Name!r})"
+        f".getObject({obj.Name!r})"
+    )
+
+
 class _CommandExplodeCompound:
     "Command to explode a compound"
 
@@ -59,12 +112,12 @@ class _CommandExplodeCompound:
             "Accel": "",
             "ToolTip": QtCore.QT_TRANSLATE_NOOP(
                 "Part_ExplodeCompound",
-                "Splits up a compound of shapes into separate objects, creating a compound filter for each shape",
+                "Splits a compound into separate, independently editable Bodies",
             ),
         }
 
     def Activated(self):
-        if len(FreeCADGui.Selection.getSelection()) == 1:
+        if _has_compound_operand():
             cmdExplode()
         else:
             mb = QtGui.QMessageBox()
@@ -76,10 +129,11 @@ class _CommandExplodeCompound:
             mb.exec_()
 
     def IsActive(self):
-        if FreeCAD.ActiveDocument:
-            return True
-        else:
-            return False
+        return (
+            FreeCAD.ActiveDocument is not None
+            and PartGui.canStartRetainedModelingTask()
+            and _has_compound_operand()
+        )
 
 
 if FreeCAD.GuiUp:
@@ -87,9 +141,10 @@ if FreeCAD.GuiUp:
 
 
 def cmdExplode():
-    FreeCAD.ActiveDocument.openTransaction("Explode")
+    document = FreeCAD.ActiveDocument
+    document.openTransaction("Explode")
     try:
-        sel = FreeCADGui.Selection.getSelectionEx()
+        sel = _selected_modeling_objects()
         if len(sel) != 1:
             raise ValueError(
                 "Bad selection",
@@ -97,14 +152,51 @@ def cmdExplode():
                     num=len(sel)
                 ),
             )
-        obj = sel[0].Object
+        obj = sel[0]
+        presentation = _selected_presentation_objects()
+        if len(presentation) != 1:
+            raise RuntimeError(
+                "Explode Compound could not resolve one visible source object."
+            )
+        presentation_obj = presentation[0]
+        replace_input = (
+            presentation_obj.ViewObject is not None
+            and presentation_obj.ViewObject.Visibility
+        )
         FreeCADGui.addModule("CompoundTools.Explode")
-        FreeCADGui.doCommand("input_obj = App.ActiveDocument." + obj.Name)
-        FreeCADGui.doCommand("CompoundTools.Explode.explodeCompound(input_obj)")
-        FreeCADGui.doCommand("input_obj.ViewObject.hide()")
+        source_expression = _object_expression(obj)
+        replaced_expression = (
+            _object_expression(presentation_obj)
+            if replace_input
+            else ""
+        )
+        output_component = FreeCADGui.runDocumentObjectCommand(
+            document,
+            "CompoundTools.Explode.makeBodyOutputOperation("
+            f"{source_expression}, "
+            "label='Explode Compound', "
+            f"replaced_inputs=[{replaced_expression}])",
+            "App::Part",
+        )
+        if (
+            output_component.Document is not document
+            or document.getObject(output_component.Name)
+            is not output_component
+            or getattr(
+                output_component,
+                "VibeCADTimelineRole",
+                None,
+            )
+            != "operation"
+        ):
+            raise RuntimeError(
+                "Explode Compound did not return its exact History operation."
+            )
     except Exception as ex:
-        FreeCAD.ActiveDocument.abortTransaction()
+        if document.HasPendingTransaction:
+            document.abortTransaction()
         FreeCAD.Console.PrintError("{}\n".format(ex))
+        return
 
-    FreeCAD.ActiveDocument.commitTransaction()
-    FreeCADGui.doCommand("App.ActiveDocument.recompute()")
+    if document.HasPendingTransaction:
+        document.commitTransaction()

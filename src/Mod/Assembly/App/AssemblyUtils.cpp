@@ -29,10 +29,15 @@
 #include <gp_Cylinder.hxx>
 #include <gp_Sphere.hxx>
 
+#include <optional>
+#include <string>
+#include <unordered_set>
+
 
 #include <App/Application.h>
 #include <App/Datums.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
 #include <App/PropertyStandard.h>
 #include <App/Link.h>
@@ -54,9 +59,162 @@
 
 namespace PartApp = Part;
 
+namespace
+{
+struct ManagedAssemblySourceIdentity
+{
+    std::string documentUid;
+    long objectId {-1};
+    std::string objectName;
+};
+
+std::optional<ManagedAssemblySourceIdentity>
+managedAssemblySourceIdentity(
+    const App::DocumentObject* object
+)
+{
+    if (!object) {
+        return std::nullopt;
+    }
+    const auto* documentProperty = object->PropertyContainer::getDynamicPropertyByName(
+        Assembly::AssemblyLink::SourceDocumentPropertyName
+    );
+    const auto* idProperty = object->PropertyContainer::getDynamicPropertyByName(
+        Assembly::AssemblyLink::SourceObjectIdPropertyName
+    );
+    const auto* nameProperty = object->PropertyContainer::getDynamicPropertyByName(
+        Assembly::AssemblyLink::SourceObjectNamePropertyName
+    );
+    if (!documentProperty && !idProperty && !nameProperty) {
+        return std::nullopt;
+    }
+
+    const auto* sourceDocument =
+        dynamic_cast<const App::PropertyString*>(
+            documentProperty
+        );
+    const auto* sourceId =
+        dynamic_cast<const App::PropertyInteger*>(idProperty);
+    const auto* sourceName =
+        dynamic_cast<const App::PropertyString*>(nameProperty);
+    if (!sourceDocument || !sourceId || !sourceName
+        || sourceDocument->getStrValue().empty()
+        || sourceId->getValue() < 0
+        || sourceName->getStrValue().empty()) {
+        throw Base::RuntimeError(
+            "AssemblyLink managed-source metadata is incomplete"
+        );
+    }
+    return ManagedAssemblySourceIdentity {
+        .documentUid = sourceDocument->getStrValue(),
+        .objectId = sourceId->getValue(),
+        .objectName = sourceName->getStrValue(),
+    };
+}
+
+const App::DocumentObject* resolveManagedAssemblySource(
+    const ManagedAssemblySourceIdentity& identity
+) noexcept
+{
+    try {
+        App::Document* sourceDocument = nullptr;
+        for (auto* candidate :
+             App::GetApplication().getDocuments()) {
+            if (!candidate
+                || candidate->Uid.getValueStr()
+                    != identity.documentUid) {
+                continue;
+            }
+            if (sourceDocument
+                && sourceDocument != candidate) {
+                return nullptr;
+            }
+            sourceDocument = candidate;
+        }
+        if (!sourceDocument) {
+            return nullptr;
+        }
+
+        auto* source =
+            sourceDocument->getObjectByID(identity.objectId);
+        const char* sourceName =
+            source ? source->getNameInDocument() : nullptr;
+        return source && sourceName
+                && identity.objectName == sourceName
+                && source->getDocument() == sourceDocument
+                && sourceDocument->containsObject(source)
+            ? source
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+bool isAssemblyObjectActive(
+    const App::DocumentObject* object,
+    std::unordered_set<const App::DocumentObject*>& visiting
+)
+{
+    if (!App::DocumentTimeline::isObjectUsableAtCurrentPosition(
+            object
+        )
+        || !visiting.insert(object).second) {
+        return false;
+    }
+
+    bool active = true;
+    if (const auto sourceIdentity =
+            managedAssemblySourceIdentity(object)) {
+        const auto* source =
+            resolveManagedAssemblySource(*sourceIdentity);
+        active = source
+            && isAssemblyObjectActive(source, visiting);
+    }
+
+    if (active && object->isLink()) {
+        const auto* linkedObject =
+            object->getLinkedObject(false);
+        active = linkedObject && linkedObject != object
+            && isAssemblyObjectActive(
+                linkedObject,
+                visiting
+            );
+    }
+    else if (active) {
+        if (const auto* assemblyLink =
+                freecad_cast<const Assembly::AssemblyLink*>(
+                    object
+                )) {
+            const auto* linkedObject =
+                assemblyLink->getLinkedObject2(false);
+            active = linkedObject
+                && isAssemblyObjectActive(
+                    linkedObject,
+                    visiting
+                );
+        }
+    }
+
+    visiting.erase(object);
+    return active;
+}
+}  // namespace
+
 // ======================================= Utils ======================================
 namespace Assembly
 {
+
+bool isTimelineOperationActive(const App::DocumentObject* object)
+{
+    try {
+        std::unordered_set<const App::DocumentObject*> visiting;
+        return isAssemblyObjectActive(object, visiting);
+    }
+    catch (...) {
+        return false;
+    }
+}
 
 void swapJCS(const App::DocumentObject* joint)
 {
@@ -568,7 +726,7 @@ App::DocumentObject* getObjFromRef(App::DocumentObject* comp, const std::string&
                 }
             }
         }
-        return obj;
+        return isTimelineOperationActive(obj) ? obj : nullptr;
     };
 
 
@@ -709,7 +867,7 @@ App::DocumentObject* getMovingPartFromSel(
             }
         }
 
-        return obj;
+        return isTimelineOperationActive(obj) ? obj : nullptr;
     }
     return nullptr;
 }
@@ -720,12 +878,13 @@ App::DocumentObject* getMovingPartFromRef(App::PropertyXLinkSub* prop)
         return nullptr;
     }
 
-    return prop->getValue();
+    auto* object = prop->getValue();
+    return isTimelineOperationActive(object) ? object : nullptr;
 }
 
 App::DocumentObject* getMovingPartFromRef(App::DocumentObject* joint, const char* pName)
 {
-    if (!joint) {
+    if (!isTimelineOperationActive(joint)) {
         return nullptr;
     }
 
@@ -750,11 +909,12 @@ namespace
 // namespace as it's an implementation detail of getAssemblyComponents.
 void collectComponentsRecursively(
     const std::vector<App::DocumentObject*>& objects,
-    std::vector<App::DocumentObject*>& results
+    std::vector<App::DocumentObject*>& results,
+    bool includeInactive
 )
 {
     for (auto* obj : objects) {
-        if (!obj) {
+        if (!obj || (!includeInactive && !isTimelineOperationActive(obj))) {
             continue;
         }
 
@@ -765,24 +925,27 @@ void collectComponentsRecursively(
                 results.push_back(asmLink);
             }
             else {
-                collectComponentsRecursively(asmLink->Group.getValues(), results);
+                collectComponentsRecursively(asmLink->Group.getValues(), results, includeInactive);
             }
             continue;
         }
         else if (obj->isLinkGroup()) {
             auto* linkGroup = static_cast<App::Link*>(obj);
             for (auto* elt : linkGroup->ElementList.getValues()) {
-                results.push_back(elt);
+                if (elt && (includeInactive || isTimelineOperationActive(elt))) {
+                    results.push_back(elt);
+                }
             }
             continue;
         }
         else if (auto* group = freecad_cast<App::DocumentObjectGroup*>(obj)) {
-            collectComponentsRecursively(group->Group.getValues(), results);
+            collectComponentsRecursively(group->Group.getValues(), results, includeInactive);
             continue;
         }
         else if (auto* link = freecad_cast<App::Link*>(obj)) {
             obj = link->getLinkedObject();
-            if (obj->isDerivedFrom<App::GeoFeature>()
+            if (obj && (includeInactive || isTimelineOperationActive(obj))
+                && obj->isDerivedFrom<App::GeoFeature>()
                 && !obj->isDerivedFrom<App::LocalCoordinateSystem>()) {
                 results.push_back(link);
             }
@@ -804,7 +967,18 @@ std::vector<App::DocumentObject*> getAssemblyComponents(const AssemblyObject* as
     }
 
     std::vector<App::DocumentObject*> components;
-    collectComponentsRecursively(assembly->Group.getValues(), components);
+    collectComponentsRecursively(assembly->Group.getValues(), components, false);
+    return components;
+}
+
+std::vector<App::DocumentObject*> getAssemblyComponentsIncludingInactive(const AssemblyObject* assembly)
+{
+    if (!assembly) {
+        return {};
+    }
+
+    std::vector<App::DocumentObject*> components;
+    collectComponentsRecursively(assembly->Group.getValues(), components, true);
     return components;
 }
 

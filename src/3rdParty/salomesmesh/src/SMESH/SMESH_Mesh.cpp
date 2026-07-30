@@ -474,6 +474,26 @@ void SMESH_Mesh::ClearSubMesh(const int theShapeId)
 
 int SMESH_Mesh::UNVToMesh(const char* theFileName)
 {
+  return readUNV(theFileName, true);
+}
+
+//=======================================================================
+//function : UNVToMeshPreservingIds
+//purpose  : Load persisted mesh data without renumbering stable IDs
+//=======================================================================
+
+int SMESH_Mesh::UNVToMeshPreservingIds(const char* theFileName)
+{
+  return readUNV(theFileName, false);
+}
+
+//=======================================================================
+//function : readUNV
+//purpose  :
+//=======================================================================
+
+int SMESH_Mesh::readUNV(const char* theFileName, bool compactAfterRead)
+{
   if(MYDEBUG) MESSAGE("UNVToMesh - theFileName = "<<theFileName);
   if(_isShapeToMesh)
     throw SALOME_Exception(LOCALIZED("a shape to mesh has already been defined"));
@@ -482,6 +502,7 @@ int SMESH_Mesh::UNVToMesh(const char* theFileName)
   myReader.SetMesh(_myMeshDS);
   myReader.SetFile(theFileName);
   myReader.SetMeshId(-1);
+  myReader.SetCompactAfterRead(compactAfterRead);
   myReader.Perform();
   if(MYDEBUG){
     MESSAGE("UNVToMesh - _myMeshDS->NbNodes() = "<<_myMeshDS->NbNodes());

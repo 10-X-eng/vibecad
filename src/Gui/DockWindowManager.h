@@ -118,6 +118,10 @@ public:
     void retranslate();
 
     bool isOverlayActivated() const;
+    /// Return whether \a dock was created and is owned by this manager.
+    bool managesDockWidget(const QDockWidget* dock) const;
+    /// Return the explicit user/workbench visibility request for \a dock.
+    bool isVisibilityRequested(const QDockWidget* dock) const;
 
     /**
      * Repair duplicate dock records left in a QMainWindow state by late-created docks.
@@ -137,6 +141,7 @@ private Q_SLOTS:
 
 private:
     QDockWidget* findDockWidget(const QList<QDockWidget*>&, const QString&) const;
+    void applyRequestedVisibility(QDockWidget* dock, bool visible);
     void tabifyDockWidgets(DockWindowItems*);
     void setupOverlayManagement();
 

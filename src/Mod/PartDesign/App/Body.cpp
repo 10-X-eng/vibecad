@@ -24,8 +24,10 @@
 
 
 #include <App/Document.h>
+#include <App/GeoFeature.h>
 #include <App/VarSet.h>
 #include <App/Origin.h>
+#include <Base/Console.h>
 #include <Base/Placement.h>
 
 #include "Body.h"
@@ -266,6 +268,14 @@ Body* Body::findBodyOf(const App::DocumentObject* feature)
 std::vector<App::DocumentObject*> Body::addObject(App::DocumentObject* feature)
 {
     if (!isAllowed(feature)) {
+        Base::Console().error(
+            "Body '%s' rejected object '%s' of type '%s'\n",
+            getNameInDocument() ? getNameInDocument() : "<detached>",
+            feature && feature->getNameInDocument()
+                ? feature->getNameInDocument()
+                : "<detached>",
+            feature ? feature->getTypeId().getName() : "<null>"
+        );
         throw Base::ValueError("Body: object is not allowed");
     }
 
@@ -499,7 +509,13 @@ void Body::onChanged(const App::Property* prop)
             }
 
             if (bf && (bf->BaseFeature.getValue() != BaseFeature.getValue())) {
-                bf->BaseFeature.setValue(BaseFeature.getValue());
+                auto* source = BaseFeature.getValue();
+                bf->BaseFeature.setValue(source);
+                if (source) {
+                    const auto bodyGlobal = App::GeoFeature::getGlobalPlacement(this);
+                    const auto sourceGlobal = App::GeoFeature::getGlobalPlacement(source);
+                    bf->Placement.setValue(bodyGlobal.inverse() * sourceGlobal);
+                }
             }
         }
         else if (prop == &Group) {

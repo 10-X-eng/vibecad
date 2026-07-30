@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
+import VibeCADCodex as codex
 import VibeCADDesignReview as design_review
+import VibeCADIntentMemoryCompiler as intent_compiler
 import VibeCADProvider as provider
 
 
@@ -34,13 +37,57 @@ def _review(*, verdict: str = "ready", severity: str | None = None) -> dict:
     }
 
 
-def test_openai_compatible_web_search_uses_the_hosted_responses_tool() -> None:
-    cad_tool = {"type": "function", "name": "vibecad_test"}
-    assert provider._openai_request_tools([cad_tool], False) == [cad_tool]
-    assert provider._openai_request_tools([cad_tool], True) == [
-        cad_tool,
-        {"type": "web_search"},
-    ]
+class _StructuredCodexClient:
+    payload: dict = {}
+    instance = None
+
+    def __init__(
+        self,
+        *,
+        notification_handler,
+        server_request_handler,
+        environment=None,
+    ) -> None:
+        self.notification_handler = notification_handler
+        self.server_request_handler = server_request_handler
+        self.environment = dict(environment or {})
+        self.requests: list[tuple[str, dict]] = []
+        self.tool_name = ""
+        self.alive = True
+        _StructuredCodexClient.instance = self
+
+    def start(self) -> None:
+        return None
+
+    def request(self, method: str, params: dict, timeout: float) -> dict:
+        self.requests.append((method, dict(params)))
+        if method == "thread/start":
+            self.tool_name = params["dynamicTools"][0]["name"]
+            return {"thread": {"id": "thread-1"}, "model": "gpt-test"}
+        if method == "turn/start":
+            result = self.server_request_handler(
+                "item/tool/call",
+                {
+                    "namespace": None,
+                    "tool": self.tool_name,
+                    "arguments": dict(self.payload),
+                },
+            )
+            assert result["success"] is True
+            self.notification_handler(
+                "turn/completed",
+                {
+                    "threadId": "thread-1",
+                    "turn": {"id": "turn-1", "status": "completed"},
+                },
+            )
+            return {"turn": {"id": "turn-1"}}
+        if method == "thread/delete":
+            return {}
+        raise AssertionError(method)
+
+    def close(self) -> None:
+        self.alive = False
 
 
 def test_anthropic_web_search_uses_direct_current_server_tool() -> None:
@@ -55,41 +102,6 @@ def test_anthropic_web_search_uses_direct_current_server_tool() -> None:
             "allowed_callers": ["direct"],
         },
     ]
-
-
-def test_openai_citations_are_rendered_as_clickable_markdown_sources() -> None:
-    annotation = {
-        "type": "url_citation",
-        "url": "https://example.com/bearing",
-        "title": "Bearing catalog",
-    }
-    content = SimpleNamespace(
-        model_dump=lambda **_kwargs: {
-            "type": "message",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": "Use the current catalog load rating.",
-                    "annotations": [annotation],
-                }
-            ],
-        }
-    )
-    response = SimpleNamespace(
-        output_text="Use the current catalog load rating.", output=[content]
-    )
-    text = provider._openai_final_text(response)
-    assert "[Bearing catalog](https://example.com/bearing)" in text
-
-
-def test_xai_response_level_citations_are_rendered_without_special_includes() -> None:
-    response = SimpleNamespace(
-        output_text="Use the current catalog load rating.",
-        output=[],
-        citations=["https://example.com/xai-bearing"],
-    )
-    text = provider._openai_final_text(response)
-    assert "[https://example.com/xai-bearing]" in text
 
 
 def test_anthropic_citations_are_rendered_as_clickable_markdown_sources() -> None:
@@ -176,3 +188,79 @@ def test_design_review_prompt_contains_only_review_inputs_and_live_facts() -> No
     assert '"design_draft"' in prompt
     assert '"cad_state"' in prompt
     assert "not duplicated" not in prompt
+
+
+def test_openai_design_review_runs_through_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _StructuredCodexClient.payload = _review()
+    monkeypatch.setattr(codex, "CodexAppServerClient", _StructuredCodexClient)
+
+    result = design_review.run_design_review(
+        provider="openai",
+        model="gpt-test",
+        api_key="selected-key",
+        base_url="https://api.example.test/v1",
+        reasoning_effort="high",
+        customer_intent="Make a bracket.",
+        design_draft="Use a bent plate with two mounting holes.",
+        context={},
+    )
+
+    client = _StructuredCodexClient.instance
+    assert result == _review()
+    assert client.environment == {
+        codex.CODEX_OPENAI_API_KEY_ENV: "selected-key"
+    }
+    assert all(method != "account/read" for method, _params in client.requests)
+    request = next(
+        params for method, params in client.requests if method == "thread/start"
+    )
+    assert request["modelProvider"] == codex.CODEX_OPENAI_PROVIDER_ID
+    assert "selected-key" not in json.dumps(request)
+
+
+def test_openai_intent_memory_compiler_runs_through_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = {
+        "base_revision": "0" * 64,
+        "turn_dispositions": [
+            {
+                "turn_id": "turn-1",
+                "durable": False,
+                "entry_ids": [],
+            }
+        ],
+        "upserts": [],
+        "supersessions": [],
+    }
+    _StructuredCodexClient.payload = update
+    monkeypatch.setattr(codex, "CodexAppServerClient", _StructuredCodexClient)
+
+    result = intent_compiler.compile_intent_memory_update(
+        provider="openai",
+        model="gpt-test",
+        api_key="selected-key",
+        base_url="https://api.example.test/v1",
+        memory={"exists": False, "revision": "0" * 64, "entries": []},
+        uncovered_turns=[
+            {
+                "turn_id": "turn-1",
+                "role": "user",
+                "content": "That was just a status question.",
+            }
+        ],
+    )
+
+    client = _StructuredCodexClient.instance
+    assert result == update
+    assert client.environment == {
+        codex.CODEX_OPENAI_API_KEY_ENV: "selected-key"
+    }
+    assert all(method != "account/read" for method, _params in client.requests)
+    request = next(
+        params for method, params in client.requests if method == "thread/start"
+    )
+    assert request["modelProvider"] == codex.CODEX_OPENAI_PROVIDER_ID
+    assert "selected-key" not in json.dumps(request)

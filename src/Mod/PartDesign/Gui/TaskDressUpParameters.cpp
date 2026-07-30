@@ -105,7 +105,9 @@ void TaskDressUpParameters::referenceSelected(const Gui::SelectionChanges& msg, 
         return;
     }
 
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(
+        DressUpView->getObject()->getDocument()->getName()
+    );
 
     PartDesign::DressUp* pcDressUp = DressUpView->getObject<PartDesign::DressUp>();
     App::DocumentObject* base = this->getBase();
@@ -172,7 +174,9 @@ void TaskDressUpParameters::addAllEdges(QListWidget* widget)
 void TaskDressUpParameters::deleteRef(QListWidget* widget)
 {
     // delete any selections since the reference(s) being deleted might be highlighted
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(
+        DressUpView->getObject()->getDocument()->getName()
+    );
 
     // get the list of items to be deleted
     QList<QListWidgetItem*> selectedList = widget->selectedItems();
@@ -269,7 +273,7 @@ void TaskDressUpParameters::setSelection(QListWidgetItem* current)
                 setSelectionMode(refSel);
             }
             else {
-                Gui::Selection().clearSelection();
+                Gui::Selection().clearSelection(docName.c_str());
             }
 
             // highlight the selected item
@@ -476,7 +480,9 @@ void TaskDressUpParameters::setSelectionMode(selectionModes mode)
         DressUpView->showPreviousFeature(true);
     }
     setSelectionGate();
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(
+        DressUpView->getObject()->getDocument()->getName()
+    );
 }
 void TaskDressUpParameters::setSelectionGate()
 {

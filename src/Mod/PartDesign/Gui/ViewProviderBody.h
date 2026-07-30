@@ -41,9 +41,10 @@ namespace PartDesignGui
 {
 
 /** ViewProvider of the Body feature
- *  This class manages the visual appearance of the features in the
- *  Body feature. That means while editing all visible features are shown.
- *  If the Body is not active it shows only the result shape (tip).
+ *  This class manages the visual appearance of the features in the Body.
+ *  Outside a native task preview, the Body row controls only its final result
+ *  (Tip); sketches and reference geometry retain independent visibility.
+ *  Native feature and Sketcher editors temporarily own preview presentation.
  * \author jriegel
  */
 class PartDesignGuiExport ViewProviderBody: public PartGui::ViewProviderPart,
@@ -63,6 +64,10 @@ public:
     void attach(App::DocumentObject*) override;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return false;
+    }
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
     bool isActiveBody();
     void toggleActiveBody();
@@ -103,13 +108,25 @@ public:
     /// Override to return the color of the tip instead of the body, which doesn't really have color
     std::map<std::string, Base::Color> getElementColors(const char* element) const override;
 
+    /**
+     * Body visibility controls the final result, not the Body's scene container.
+     *
+     * The container must stay mounted so sketches and reference geometry can
+     * remain independently visible while the result solid is hidden.
+     */
+    bool isShow() const override;
     void show() override;
+    void hide() override;
 
 protected:
     /// Copy over all visual properties to the child features
     void unifyVisualProperty(const App::Property* prop);
     /// Set Feature viewprovider into visual body mode
     void setVisualBodyMode(bool bodymode);
+    /// Keep the Body's permanent scene branch on its children, never its copied Shape.
+    void useChildSceneMode();
+    /// Show only the current Tip, or hide every result feature.
+    void setResultVisibility(bool visible);
 
 private:
     static const char* BodyModeEnum[];
@@ -118,6 +135,10 @@ private:
     fastsignals::scoped_connection m_RecomputedConn;
     void onChangedObject(const Gui::ViewProvider& vp, const App::Property& prop);
     fastsignals::scoped_connection m_ChangedConn;
+    void normalizeResultPresentation(
+        const App::Document& document,
+        bool documentRestoreFinished
+    );
     void refreshOverlays();
 };
 

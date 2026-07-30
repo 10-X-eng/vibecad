@@ -84,11 +84,6 @@ class VibeCADSettings:
     openai_intent_memory_model: str = ""
     anthropic_intent_memory_model: str = ""
     chatgpt_intent_memory_model: str = ""
-    build123d_enabled: bool = False
-    openscad_enabled: bool = False
-    vibescript_enabled: bool = True
-    openscad_executable: str = ""
-    openscad_library_paths: str = ""
     scripted_timeout_seconds: float = DEFAULT_SCRIPTED_TIMEOUT_SECONDS
     scripted_memory_limit_mb: int = DEFAULT_SCRIPTED_MEMORY_LIMIT_MB
 
@@ -209,11 +204,6 @@ def load_settings() -> VibeCADSettings:
         openai_intent_memory_model=pref.GetString("OpenAIIntentMemoryModel", ""),
         anthropic_intent_memory_model=pref.GetString("AnthropicIntentMemoryModel", ""),
         chatgpt_intent_memory_model=pref.GetString("ChatGPTIntentMemoryModel", ""),
-        build123d_enabled=pref.GetBool("Build123dEnabled", False),
-        openscad_enabled=pref.GetBool("OpenSCADEnabled", False),
-        vibescript_enabled=pref.GetBool("VibeScriptEnabled", True),
-        openscad_executable=pref.GetString("OpenSCADExecutable", ""),
-        openscad_library_paths=pref.GetString("OpenSCADLibraryPaths", ""),
         scripted_timeout_seconds=_positive_float(
             pref.GetFloat("ScriptedTimeoutSeconds", DEFAULT_SCRIPTED_TIMEOUT_SECONDS),
             DEFAULT_SCRIPTED_TIMEOUT_SECONDS,
@@ -261,11 +251,6 @@ def save_settings(settings: VibeCADSettings) -> None:
     pref.SetString(
         "ChatGPTIntentMemoryModel", settings.chatgpt_intent_memory_model.strip()
     )
-    pref.SetBool("Build123dEnabled", bool(settings.build123d_enabled))
-    pref.SetBool("OpenSCADEnabled", bool(settings.openscad_enabled))
-    pref.SetBool("VibeScriptEnabled", bool(settings.vibescript_enabled))
-    pref.SetString("OpenSCADExecutable", settings.openscad_executable.strip())
-    pref.SetString("OpenSCADLibraryPaths", settings.openscad_library_paths.strip())
     pref.SetFloat(
         "ScriptedTimeoutSeconds",
         _positive_float(
@@ -304,11 +289,6 @@ def reset_settings() -> None:
     pref.RemString("OpenAIIntentMemoryModel")
     pref.RemString("AnthropicIntentMemoryModel")
     pref.RemString("ChatGPTIntentMemoryModel")
-    pref.RemBool("Build123dEnabled")
-    pref.RemBool("OpenSCADEnabled")
-    pref.RemBool("VibeScriptEnabled")
-    pref.RemString("OpenSCADExecutable")
-    pref.RemString("OpenSCADLibraryPaths")
     pref.RemFloat("ScriptedTimeoutSeconds")
     pref.RemInt("ScriptedMemoryLimitMB")
     pref.RemBool("ContextDebugEnabled")
@@ -451,76 +431,6 @@ class VibeCADPreferencesPage:
         self.reasoning_effort.setObjectName("VibeCADPrefReasoningEffort")
         self.reasoning_effort.addItems(REASONING_EFFORTS)
         layout.addRow("Reasoning effort", self.reasoning_effort)
-
-        self.build123d_enabled = QtWidgets.QCheckBox(self.form)
-        self.build123d_enabled.setObjectName("VibeCADPrefBuild123dEnabled")
-        self.build123d_enabled.setToolTip(
-            "Make the isolated build123d modeling engine available in the "
-            "PartDesign VibeCAD panel. Model-generated code never runs in "
-            "FreeCAD's Python process."
-        )
-        self.build123d_enabled.toggled.connect(self._refresh_build123d_status)
-        layout.addRow("Enable build123d", self.build123d_enabled)
-
-        self.build123d_status = QtWidgets.QLabel(self.form)
-        self.build123d_status.setObjectName("VibeCADPrefBuild123dStatus")
-        self.build123d_status.setWordWrap(True)
-        self.build123d_status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        layout.addRow("build123d status", self.build123d_status)
-
-        self.openscad_enabled = QtWidgets.QCheckBox(self.form)
-        self.openscad_enabled.setObjectName("VibeCADPrefOpenSCADEnabled")
-        self.openscad_enabled.setToolTip(
-            "Make the isolated OpenSCAD source engine available in PartDesign. "
-            "Compilation and CSG conversion run outside the FreeCAD GUI process."
-        )
-        self.openscad_enabled.toggled.connect(self._refresh_openscad_status)
-        layout.addRow("Enable OpenSCAD", self.openscad_enabled)
-
-        openscad_executable_row = QtWidgets.QHBoxLayout()
-        self.openscad_executable = QtWidgets.QLineEdit(self.form)
-        self.openscad_executable.setObjectName("VibeCADPrefOpenSCADExecutable")
-        self.openscad_executable.setPlaceholderText("Use bundled OpenSCAD")
-        self.openscad_executable.setToolTip(
-            "Optional explicit OpenSCAD CLI override. Leave blank to use the "
-            "runtime bundled with VibeCAD. VibeCAD does not search PATH."
-        )
-        self.openscad_executable.textChanged.connect(self._refresh_openscad_status)
-        browse_openscad = QtWidgets.QPushButton("Browse", self.form)
-        browse_openscad.setObjectName("VibeCADPrefBrowseOpenSCADExecutable")
-        browse_openscad.clicked.connect(self._browse_openscad_executable)
-        openscad_executable_row.addWidget(self.openscad_executable, 1)
-        openscad_executable_row.addWidget(browse_openscad)
-        layout.addRow("OpenSCAD executable", openscad_executable_row)
-
-        self.openscad_library_paths = QtWidgets.QPlainTextEdit(self.form)
-        self.openscad_library_paths.setObjectName("VibeCADPrefOpenSCADLibraryPaths")
-        self.openscad_library_paths.setPlaceholderText(
-            "One additional OpenSCAD library directory per line"
-        )
-        self.openscad_library_paths.setMaximumHeight(72)
-        self.openscad_library_paths.setToolTip(
-            "Explicit user library directories. Project libraries and bundled "
-            "BOSL2/MCAD are always available."
-        )
-        layout.addRow("OpenSCAD libraries", self.openscad_library_paths)
-
-        self.openscad_status = QtWidgets.QLabel(self.form)
-        self.openscad_status.setObjectName("VibeCADPrefOpenSCADStatus")
-        self.openscad_status.setWordWrap(True)
-        self.openscad_status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        layout.addRow("OpenSCAD status", self.openscad_status)
-
-        self.vibescript_enabled = QtWidgets.QCheckBox(self.form)
-        self.vibescript_enabled.setObjectName("VibeCADPrefVibeScriptEnabled")
-        self.vibescript_enabled.setToolTip(
-            "Make the source-parametric VibeScript engine available (enabled by "
-            "default). The selected global engine exposes only the active "
-            "workbench's VibeScript domain. Candidates run in an isolated headless "
-            "worker, and only validated typed outputs are published into the live "
-            "document."
-        )
-        layout.addRow("Enable VibeScript", self.vibescript_enabled)
 
         self.intent_memory_enabled = QtWidgets.QCheckBox(self.form)
         self.intent_memory_enabled.setObjectName("VibeCADPrefIntentMemoryEnabled")
@@ -858,63 +768,6 @@ class VibeCADPreferencesPage:
         self.status.setText("sign_out_pending | Signing out of ChatGPT...")
         self._run_chatgpt_task("logout", logout_account)
 
-    def _refresh_build123d_status(self, _enabled: bool | None = None) -> None:
-        if not self.build123d_enabled.isChecked():
-            self.build123d_status.setText("disabled")
-            return
-        try:
-            from VibeCADBuild123d import runtime_health
-
-            health = runtime_health(refresh=True)
-        except Exception as exc:
-            self.build123d_status.setText(f"unavailable | {exc}")
-            return
-        if health.get("ready"):
-            self.build123d_status.setText(
-                f"ready | build123d {health.get('version')} | isolated process"
-            )
-        else:
-            self.build123d_status.setText(
-                f"unavailable | {health.get('error') or 'runtime check failed'}"
-            )
-
-    def _browse_openscad_executable(self) -> None:
-        from PySide import QtWidgets
-
-        selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
-            self.form,
-            "Select OpenSCAD executable",
-            self.openscad_executable.text() or str(Path.home()),
-            "Executables (*.exe);;All files (*)",
-        )
-        if selected:
-            self.openscad_executable.setText(selected)
-            self._refresh_openscad_status()
-
-    def _refresh_openscad_status(self, _enabled: bool | None = None) -> None:
-        if not self.openscad_enabled.isChecked():
-            self.openscad_status.setText("disabled")
-            return
-        try:
-            from VibeCADOpenSCAD import runtime_health
-
-            health = runtime_health(
-                executable_override=self.openscad_executable.text().strip(),
-                refresh=True,
-            )
-        except Exception as exc:
-            self.openscad_status.setText(f"unavailable | {exc}")
-            return
-        if health.get("ready"):
-            source = "override" if health.get("source") == "preference" else "bundled"
-            self.openscad_status.setText(
-                f"ready | {health.get('version')} | {source} | isolated process"
-            )
-        else:
-            self.openscad_status.setText(
-                f"unavailable | {health.get('error') or 'runtime check failed'}"
-            )
-
     def _set_combo_text(self, combo, text: str) -> None:
         index = combo.findText(text)
         if index >= 0:
@@ -1122,11 +975,6 @@ class VibeCADPreferencesPage:
             chatgpt_intent_memory_model=(
                 self._memory_model_value(self.chatgpt_intent_memory_model)
             ),
-            build123d_enabled=self.build123d_enabled.isChecked(),
-            openscad_enabled=self.openscad_enabled.isChecked(),
-            vibescript_enabled=self.vibescript_enabled.isChecked(),
-            openscad_executable=self.openscad_executable.text().strip(),
-            openscad_library_paths=self.openscad_library_paths.toPlainText().strip(),
             scripted_timeout_seconds=persisted.scripted_timeout_seconds,
             scripted_memory_limit_mb=persisted.scripted_memory_limit_mb,
         )
@@ -1207,13 +1055,6 @@ class VibeCADPreferencesPage:
             settings.chatgpt_intent_memory_model,
             "Use active ChatGPT model",
         )
-        self.build123d_enabled.setChecked(settings.build123d_enabled)
-        self._refresh_build123d_status()
-        self.openscad_enabled.setChecked(settings.openscad_enabled)
-        self.vibescript_enabled.setChecked(settings.vibescript_enabled)
-        self.openscad_executable.setText(settings.openscad_executable)
-        self.openscad_library_paths.setPlainText(settings.openscad_library_paths)
-        self._refresh_openscad_status()
         self.api_key.clear()
         self._update_provider_visibility()
         self._refresh_status()

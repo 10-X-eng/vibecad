@@ -148,19 +148,27 @@ public:
     TechDraw::DrawViewPart* getBaseDVP() const;
 
     //section face related methods
-    std::vector<TechDraw::FacePtr> getTDFaceGeometry() { return m_tdSectionFaces; }
+    std::vector<TechDraw::FacePtr> getTDFaceGeometry()
+    {
+        return sectionIntermediateStateIsCurrent()
+            ? m_tdSectionFaces
+            : std::vector<TechDraw::FacePtr> {};
+    }
     TopoDS_Face getSectionTopoDSFace(int i);
     virtual TopoDS_Compound alignSectionFaces(const TopoDS_Shape& faceIntersections);
     TopoDS_Compound mapToPage(const TopoDS_Shape& shapeToAlign);
     virtual std::vector<TechDraw::FacePtr> makeTDSectionFaces(const TopoDS_Compound& topoDSFaces);
-    virtual TopoDS_Shape getShapeToIntersect() { return m_cutPieces; }
+    virtual TopoDS_Shape getShapeToIntersect()
+    {
+        return sectionIntermediateStateIsCurrent() ? m_cutPieces : TopoDS_Shape();
+    }
 
     void makeLineSets();
     std::vector<LineSet> getDrawableLines(int i = 0);
     std::vector<PATLineSpec> getDecodedSpecsFromFile(std::string fileSpec, std::string myPattern);
 
-    TopoDS_Shape getCutShape() const { return m_cutShape; }
-    TopoDS_Shape getCutShapeRaw() const { return m_cutShapeRaw; }
+    TopoDS_Shape getCutShape() const;
+    TopoDS_Shape getCutShapeRaw() const;
 
     TopoDS_Shape getShapeForDetail() const override;
 
@@ -182,6 +190,11 @@ public Q_SLOTS:
     virtual void onSectionCutFinished();
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+    std::string geometrySourceStateSignature() const override;
+    bool sectionIntermediateStateIsCurrent() const;
+
     TopoDS_Compound m_sectionTopoDSFaces;//needed for hatching
     std::vector<LineSet> m_lineSets;
     std::vector<TechDraw::FacePtr> m_tdSectionFaces;
@@ -210,6 +223,8 @@ protected:
     QFutureWatcher<void> m_cutWatcher;
     QFuture<void> m_cutFuture;
     bool m_waitingForCut;
+    std::string m_cutDependencyState;
+    std::string m_cutAcceptedState;
     TopoDS_Shape m_cuttingTool;
     double m_shapeSize;
 

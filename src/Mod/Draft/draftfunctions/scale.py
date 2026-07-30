@@ -46,8 +46,17 @@ from draftutils import params
 from draftutils import utils
 
 
-def scale(selection, scale, center=App.Vector(0, 0, 0), copy=False, clone=False, subelements=False):
-    """scale(selection, scale, [center], [copy], [clone], [subelements])
+def scale(
+    selection,
+    scale,
+    center=App.Vector(0, 0, 0),
+    copy=False,
+    clone=False,
+    subelements=False,
+    preserve_replaced=False,
+):
+    """scale(selection, scale, [center], [copy], [clone], [subelements],
+    [preserve_replaced])
 
     Scales or copies selected objects.
 
@@ -79,6 +88,11 @@ def scale(selection, scale, center=App.Vector(0, 0, 0), copy=False, clone=False,
         If `True` subelements instead of whole objects are processed.
         Only used if selection is a selection set.
 
+    preserve_replaced: bool, optional
+        Defaults to `False`, preserving the public API's historical behavior.
+        If `True`, a non-parametric replacement is returned without deleting
+        its source so a GUI history operation can retain that source.
+
     Returns
     -------
     single object / list with 2 or more objects / empty list
@@ -91,6 +105,7 @@ def scale(selection, scale, center=App.Vector(0, 0, 0), copy=False, clone=False,
             (copy, bool),
             (clone, bool),
             (subelements, bool),
+            (preserve_replaced, bool),
         ],
         "scale",
     )
@@ -265,7 +280,7 @@ def scale(selection, scale, center=App.Vector(0, 0, 0), copy=False, clone=False,
             else:
                 newobj = make_wire.make_wire(pts, closed=True, placement=pla, face=obj.MakeFace)
                 gui_utils.format_object(newobj, obj)
-                if not copy:
+                if not copy and not preserve_replaced:
                     obj.Document.removeObject(obj.Name)
 
         elif utils.get_type(obj) in ("Wire", "BSpline"):
@@ -312,7 +327,7 @@ def scale(selection, scale, center=App.Vector(0, 0, 0), copy=False, clone=False,
                 else:
                     newobj.ViewObject.Proxy = 0
             gui_utils.format_object(newobj, obj)
-            if not copy:
+            if not copy and not preserve_replaced:
                 obj.Document.removeObject(obj.Name)
 
         if newobj is not None:

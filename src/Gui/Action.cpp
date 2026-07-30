@@ -532,17 +532,54 @@ bool ActionGroup::doesRememberLast() const
 
 QAction* ActionGroup::addAction(QAction* action)
 {
-    return groupAction()->addAction(action);
+    QAction* child = groupAction()->addAction(action);
+    const bool hasCommandIdentity =
+        !child->property("CommandName").toString().trimmed().isEmpty()
+        || !child->objectName().trimmed().isEmpty();
+    child->setProperty("FreeCADCommandGroupSynthetic", !hasCommandIdentity);
+    actions();
+    return child;
 }
 
 QAction* ActionGroup::addAction(const QString& text)
 {
-    return groupAction()->addAction(text);
+    QAction* child = groupAction()->addAction(text);
+    child->setProperty("FreeCADCommandGroupSynthetic", true);
+    actions();
+    return child;
 }
 
 QList<QAction*> ActionGroup::actions() const
 {
-    return groupAction()->actions();
+    QList<QAction*> children = groupAction()->actions();
+    const QString parentId = QString::fromLatin1(command()->getName());
+    for (int index = 0; index < children.size(); ++index) {
+        QAction* child = children.at(index);
+        if (!child) {
+            continue;
+        }
+        QString childId = child->property("CommandName").toString().trimmed();
+        if (childId.isEmpty()) {
+            childId = child->objectName().trimmed();
+        }
+        if (childId.isEmpty()) {
+            childId =
+                QStringLiteral("%1/child-%2").arg(parentId).arg(index + 1);
+        }
+        if (!child->property("FreeCADCommandGroupSynthetic").isValid()) {
+            const bool hasCommandIdentity =
+                !child->property("CommandName").toString().trimmed().isEmpty()
+                || !child->objectName().trimmed().isEmpty();
+            child->setProperty(
+                "FreeCADCommandGroupSynthetic",
+                !hasCommandIdentity
+            );
+        }
+        child->setProperty("FreeCADCommandGroupParentId", parentId);
+        child->setProperty("FreeCADCommandGroupChildIndex", index);
+        child->setProperty("FreeCADCommandGroupChildId", childId);
+    }
+    return children;
 }
 
 int ActionGroup::checkedAction() const
@@ -1348,13 +1385,24 @@ UndoAction::~UndoAction()
 void UndoAction::addTo(QWidget* widget)
 {
     if (widget->inherits("QToolBar")) {
-        actionChanged();
-        connect(action(), &QAction::changed, this, &UndoAction::actionChanged);
-        widget->addAction(_toolAction);
+        widget->addAction(toolBarAction());
     }
     else {
         widget->addAction(action());
     }
+}
+
+QAction* UndoAction::toolBarAction()
+{
+    actionChanged();
+    connect(
+        action(),
+        &QAction::changed,
+        this,
+        &UndoAction::actionChanged,
+        Qt::UniqueConnection
+    );
+    return _toolAction;
 }
 
 void UndoAction::actionChanged()
@@ -1367,6 +1415,11 @@ void UndoAction::actionChanged()
     _toolAction->setStatusTip(action()->statusTip());
     _toolAction->setWhatsThis(action()->whatsThis());
     _toolAction->setIcon(action()->icon());
+    _toolAction->setObjectName(action()->objectName());
+    _toolAction->setEnabled(action()->isEnabled());
+    _toolAction->setVisible(action()->isVisible());
+    _toolAction->setCheckable(action()->isCheckable());
+    _toolAction->setChecked(action()->isChecked());
 }
 
 void UndoAction::setEnabled(bool check)
@@ -1401,13 +1454,24 @@ RedoAction::~RedoAction()
 void RedoAction::addTo(QWidget* widget)
 {
     if (widget->inherits("QToolBar")) {
-        actionChanged();
-        connect(action(), &QAction::changed, this, &RedoAction::actionChanged);
-        widget->addAction(_toolAction);
+        widget->addAction(toolBarAction());
     }
     else {
         widget->addAction(action());
     }
+}
+
+QAction* RedoAction::toolBarAction()
+{
+    actionChanged();
+    connect(
+        action(),
+        &QAction::changed,
+        this,
+        &RedoAction::actionChanged,
+        Qt::UniqueConnection
+    );
+    return _toolAction;
 }
 
 void RedoAction::actionChanged()
@@ -1420,6 +1484,11 @@ void RedoAction::actionChanged()
     _toolAction->setStatusTip(action()->statusTip());
     _toolAction->setWhatsThis(action()->whatsThis());
     _toolAction->setIcon(action()->icon());
+    _toolAction->setObjectName(action()->objectName());
+    _toolAction->setEnabled(action()->isEnabled());
+    _toolAction->setVisible(action()->isVisible());
+    _toolAction->setCheckable(action()->isCheckable());
+    _toolAction->setChecked(action()->isChecked());
 }
 
 void RedoAction::setEnabled(bool check)

@@ -40,6 +40,11 @@ public:
     ViewProviderShapeBinder();
     ~ViewProviderShapeBinder() override;
 
+    bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     void setupContextMenu(QMenu*, QObject*, const char*) override;
     void highlightReferences(bool on);
 
@@ -98,6 +103,16 @@ public:
     std::vector<App::DocumentObject*> claimChildren() const override;
 
     bool doubleClicked() override;
+    const char* getTransactionText() const override
+    {
+        // Synchronize owns its exact transaction. The tree must not open an
+        // enclosing legacy "Edit" transaction before calling doubleClicked().
+        return nullptr;
+    }
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return false;
+    }
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
     bool setEdit(int ModNum) override;
     void attach(App::DocumentObject* obj) override;

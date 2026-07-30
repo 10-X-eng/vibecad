@@ -44,6 +44,7 @@ public:
     ~ViewProviderCompound() override;
     std::vector<App::DocumentObject*> claimChildren() const override;
     bool onDelete(const std::vector<std::string>&) override;
+    bool onDeleteOwnedTimelineResource(App::DocumentObject*) override;
 
     /// drag and drop
     bool canDragObjects() const override;

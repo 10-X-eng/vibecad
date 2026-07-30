@@ -320,6 +320,8 @@ set(MaterialTest_Files
     materialtests/TestMaterialCreation.py
     materialtests/TestMaterialDocument.py
     materialtests/TestMaterialFilter.py
+    materialtests/TestMaterialGuiTimeline.py
+    materialtests/TestMaterialTrackingSource.py
 )
 
 ADD_CUSTOM_TARGET(MaterialTest ALL
@@ -356,6 +358,17 @@ fc_target_copy_resource(MaterialScripts
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/Mod/Material
     ${MaterialScripts_Files})
+
+if(TARGET MatGui)
+    # A targeted Material GUI build must stage both its runtime entry points
+    # and the modules/data imported by TestMaterialsGui.
+    add_dependencies(
+        MatGui
+        MaterialScripts
+        MaterialTest
+        MaterialPythonTestData
+    )
+endif()
 
 INSTALL(FILES ${MaterialScripts_Files} DESTINATION Mod/Material)
 

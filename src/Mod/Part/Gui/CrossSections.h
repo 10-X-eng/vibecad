@@ -24,10 +24,14 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
+
 #include <QDialog>
 #include <QPointer>
 
 #include <Base/BoundBox.h>
+#include <Gui/Selection/SelectionObject.h>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 
@@ -35,6 +39,11 @@
 namespace Gui
 {
 class View3DInventor;
+}
+
+namespace App
+{
+class DocumentObject;
 }
 
 namespace PartGui
@@ -59,9 +68,16 @@ public:
         QWidget* parent = nullptr,
         Qt::WindowFlags fl = Qt::WindowFlags()
     );
+    CrossSections(
+        const Base::BoundBox3d& bb,
+        std::vector<Gui::SelectionObject> sources,
+        QWidget* parent = nullptr,
+        Qt::WindowFlags fl = Qt::WindowFlags()
+    );
     ~CrossSections() override;
     void accept() override;
     bool apply();
+    const std::vector<App::DocumentObject*>& lastAppliedResults() const;
 
 protected:
     void changeEvent(QEvent* e) override;
@@ -98,6 +114,10 @@ class TaskCrossSections: public Gui::TaskView::TaskDialog
 
 public:
     explicit TaskCrossSections(const Base::BoundBox3d& bb);
+    TaskCrossSections(
+        const Base::BoundBox3d& bb,
+        std::vector<Gui::SelectionObject> sources
+    );
 
 public:
     bool accept() override;

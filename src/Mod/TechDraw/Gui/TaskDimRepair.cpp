@@ -20,6 +20,7 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,17 @@ TaskDimRepair::TaskDimRepair(TechDraw::DrawViewDimension* inDvd)
     : ui(new Ui_TaskDimRepair),
       m_dim(inDvd)
 {
+    if (!m_dim || !m_dim->getDocument()) {
+        throw Base::TypeError(
+            "The dimension-repair task requires a live dimension"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(m_dim->getDocument());
+    m_dimensionIdentity =
+        TaskInternal::ObjectIdentity<
+            TechDraw::DrawViewDimension
+        >(m_dim);
     ui->setupUi(this);
 
     connect(ui->pbSelection, &QPushButton::clicked, this, &TaskDimRepair::slotUseSelection);
@@ -57,6 +69,12 @@ TaskDimRepair::TaskDimRepair(TechDraw::DrawViewDimension* inDvd)
 
 TaskDimRepair::~TaskDimRepair()
 {}
+
+TechDraw::DrawViewDimension*
+TaskDimRepair::resolveDimension() const
+{
+    return m_dimensionIdentity.resolve();
+}
 
 void TaskDimRepair::setUiPrimary()
 {
@@ -95,9 +113,9 @@ void TaskDimRepair::saveDimState()
 //restore the start conditions
 void TaskDimRepair::restoreDimState()
 {
-    if (m_dim) {
-        m_dim->setReferences2d(m_saveRefs2d);
-        m_dim->setReferences3d(m_saveRefs3d);
+    if (auto* dimension = resolveDimension()) {
+        dimension->setReferences2d(m_saveRefs2d);
+        dimension->setReferences3d(m_saveRefs3d);
     }
 }
 
@@ -105,8 +123,13 @@ void TaskDimRepair::restoreDimState()
 //use the current selection to replace the references in dim
 void TaskDimRepair::slotUseSelection()
 {
+    m_dim = resolveDimension();
+    if (!m_dim) {
+        return;
+    }
     const std::vector<App::DocumentObject*> dimObjects =
         Gui::Selection().getObjectsOfType(TechDraw::DrawViewDimension::getClassTypeId());
+    const bool addedDimension = dimObjects.empty();
     if (dimObjects.empty()) {
         //selection does not include a dimension, so we need to add our dimension to keep the
         //validators happy
@@ -117,6 +140,12 @@ void TaskDimRepair::slotUseSelection()
     ReferenceVector references2d;
     ReferenceVector references3d;
     TechDraw::DrawViewPart* dvp = TechDraw::getReferencesFromSelection(references2d, references3d);
+    if (addedDimension) {
+        Gui::Selection().rmvSelection(
+            m_dim->getDocument()->getName(),
+            m_dim->getNameInDocument()
+        );
+    }
      if (dvp != m_saveDvp) {
         int ret = QMessageBox::warning(Gui::getMainWindow(),
                                        QObject::tr("Incorrect Selection?"),
@@ -162,6 +191,10 @@ void TaskDimRepair::slotUseSelection()
 
 void TaskDimRepair::updateUi()
 {
+    m_dim = resolveDimension();
+    if (!m_dim) {
+        return;
+    }
     // if the dimension is very broken, it may not have a valid 2d view reference.  This can happen if the
     // restore process breaks and the reference target object does not get properly loaded.
 
@@ -190,6 +223,9 @@ void TaskDimRepair::loadTableWidget(QTableWidget* tw, ReferenceVector refs)
     tw->setRowCount(refs.size() + 1);
     size_t iRow = 0;
     for (auto& ref : refs) {
+        if (!ref.getObject()) {
+            continue;
+        }
         QString qName = QString::fromStdString(ref.getObject()->getNameInDocument());
         QTableWidgetItem* itemName = new QTableWidgetItem(qName);
         itemName->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -213,7 +249,7 @@ void TaskDimRepair::fillList(QListWidget* lwItems, std::vector<std::string> labe
     QString qLabel;
     QString qName;
     QString qText;
-    int labelCount = labels.size();
+    int labelCount = std::min(labels.size(), names.size());
     int i = 0;
     lwItems->clear();
     for (; i < labelCount; i++) {
@@ -227,36 +263,58 @@ void TaskDimRepair::fillList(QListWidget* lwItems, std::vector<std::string> labe
 }
 void TaskDimRepair::replaceReferences()
 {
+    m_dim = resolveDimension();
     if (!m_dim || m_toApply2d.empty()) {
         return;
     }
 
     m_dim->setReferences2d(m_toApply2d);
 
-    if (!m_toApply3d.empty()) {
-        m_dim->setReferences3d(m_toApply3d);
-    }
+    m_dim->setReferences3d(m_toApply3d);
 }
 
 bool TaskDimRepair::accept()
 {
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-
-    int tid = Gui::Command::openActiveDocumentCommand(tr("Repair dimension").toStdString().c_str());
-    replaceReferences();
-    Gui::Command::commitCommand(tid);
-
-    m_dim->recomputeFeature();
+    m_dim = resolveDimension();
+    if (!m_dim) {
+        return false;
+    }
+    if (!m_toApply2d.empty()) {
+        try {
+            TaskInternal::OwnedDocumentTransaction transaction(
+                m_documentIdentity.resolve(),
+                tr("Repair dimension").toStdString()
+            );
+            replaceReferences();
+            m_dim->recomputeFeature();
+            if (m_dim->isError()) {
+                throw Base::RuntimeError(
+                    "The selected references did not produce a valid "
+                    "dimension"
+                );
+            }
+            transaction.commit();
+        }
+        catch (const Base::Exception& error) {
+            QMessageBox::critical(
+                Gui::getMainWindow(),
+                tr("Repair Failed"),
+                QString::fromUtf8(error.what())
+            );
+            return false;
+        }
+    }
+    TaskInternal::updateExactDocument(
+        m_documentIdentity.resolve()
+    );
     Gui::Selection().clearSelection();
     return true;
 }
 
 bool TaskDimRepair::reject()
 {
-    restoreDimState();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
     Gui::Selection().clearSelection();
-    return false;
+    return true;
 }
 
 void TaskDimRepair::changeEvent(QEvent* e)
@@ -275,6 +333,7 @@ TaskDlgDimReference::TaskDlgDimReference(TechDraw::DrawViewDimension* inDvd)
         Gui::BitmapFactory().pixmap("TechDraw_DimensionRepair"), widget->windowTitle(), true, 0);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 
@@ -297,14 +356,12 @@ void TaskDlgDimReference::clicked(int i)
 
 bool TaskDlgDimReference::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgDimReference::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskDimRepair.cpp>

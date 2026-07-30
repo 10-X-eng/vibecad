@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Managed Codex app-server transport for ChatGPT subscription accounts.
+"""Managed Codex app-server transport for VibeCAD's OpenAI execution paths.
 
-VibeCAD never reads or handles ChatGPT OAuth tokens.  The pinned Codex
-app-server owns login, credential storage, refresh, account selection, and the
-ChatGPT backend protocol.  This module owns only the local JSON-RPC connection.
+API-key authentication is supplied through VibeCAD's existing key lookup, while
+ChatGPT OAuth remains wholly owned by the pinned Codex app-server. This module
+owns the local JSON-RPC connection and its deliberately narrow capabilities.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 
 CODEX_APP_SERVER_VERSION = "0.144.5"
@@ -30,6 +30,9 @@ CODEX_RUNTIME_MANIFEST = "runtime.json"
 DEFAULT_RPC_TIMEOUT_SECONDS = 30.0
 LOGIN_TIMEOUT_SECONDS = 15.0 * 60.0
 MAX_SKILL_RESOURCE_BYTES = 256 * 1024
+CODEX_OPENAI_PROVIDER_ID = "vibecad_openai"
+CODEX_OPENAI_API_KEY_ENV = "VIBECAD_CODEX_OPENAI_API_KEY"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DISABLED_CODEX_FEATURES = (
     "apps",
     "browser_use",
@@ -104,12 +107,16 @@ def vibecad_thread_config(
     *,
     web_search_enabled: bool = False,
     skills_enabled: bool = False,
+    collaboration_mode_enabled: bool = False,
+    openai_base_url: str | None = None,
 ) -> dict[str, Any]:
     """Build the narrow Codex capability configuration for one VibeCAD turn."""
     config: dict[str, Any] = {
         "web_search": "live" if web_search_enabled else "disabled",
         "include_apps_instructions": False,
-        "include_collaboration_mode_instructions": False,
+        "include_collaboration_mode_instructions": bool(
+            collaboration_mode_enabled
+        ),
         "include_environment_context": False,
         "include_permissions_instructions": False,
         "orchestrator.mcp.enabled": False,
@@ -122,7 +129,36 @@ def vibecad_thread_config(
     }
     for feature in DISABLED_CODEX_FEATURES:
         config[f"features.{feature}"] = False
+    # Current Codex model catalogs can select code-mode-only tool dispatch even
+    # when the local feature toggle is false.  Core tools must remain direct:
+    # in particular, wrapping capture_view_screenshot in exec makes the model
+    # forward the whole dynamic-tool result through image(), which produces an
+    # invalid outer image_url instead of forwarding the valid inline image.
+    config["features.code_mode"] = {
+        "enabled": False,
+        "direct_only_tool_namespaces": ["core"],
+    }
+    if openai_base_url is not None:
+        config.update(codex_openai_provider_config(openai_base_url))
     return config
+
+
+def codex_openai_provider_config(base_url: str | None = None) -> dict[str, Any]:
+    """Return secret-free Codex configuration for VibeCAD's OpenAI API key."""
+
+    clean_base_url = str(base_url or "").strip().rstrip("/")
+    return {
+        "model_provider": CODEX_OPENAI_PROVIDER_ID,
+        f"model_providers.{CODEX_OPENAI_PROVIDER_ID}.name": "OpenAI via VibeCAD",
+        f"model_providers.{CODEX_OPENAI_PROVIDER_ID}.base_url": (
+            clean_base_url or DEFAULT_OPENAI_BASE_URL
+        ),
+        f"model_providers.{CODEX_OPENAI_PROVIDER_ID}.env_key": (
+            CODEX_OPENAI_API_KEY_ENV
+        ),
+        f"model_providers.{CODEX_OPENAI_PROVIDER_ID}.requires_openai_auth": False,
+        f"model_providers.{CODEX_OPENAI_PROVIDER_ID}.wire_api": "responses",
+    }
 
 
 def personal_codex_skills_root() -> Path:
@@ -177,7 +213,7 @@ def resolve_runtime_command() -> CodexRuntimeCommand:
     if not executable.is_file():
         raise CodexAppServerError(
             "The bundled Codex app-server runtime is missing. Reinstall VibeCAD "
-            "with ChatGPT subscription support."
+            "with OpenAI Codex support."
         )
     version = _manifest_version(root)
     if version != CODEX_APP_SERVER_VERSION:
@@ -212,7 +248,9 @@ def runtime_health() -> dict[str, Any]:
     }
 
 
-def _subprocess_environment() -> dict[str, str]:
+def _subprocess_environment(
+    overrides: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     environment = dict(os.environ)
     home = codex_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -223,7 +261,8 @@ def _subprocess_environment() -> dict[str, str]:
     environment["CODEX_HOME"] = str(home)
     environment.setdefault("RUST_LOG", "warn")
     environment.setdefault("LOG_FORMAT", "json")
-    # Subscription auth must never be silently replaced by an ambient API key.
+    # Never let ambient credentials select an unintended Codex identity. The
+    # chosen VibeCAD API key is reintroduced only under its dedicated variable.
     for name in (
         "OPENAI_API_KEY",
         "CODEX_API_KEY",
@@ -231,6 +270,11 @@ def _subprocess_environment() -> dict[str, str]:
         "CHATGPT_API_KEY",
     ):
         environment.pop(name, None)
+    for name, value in dict(overrides or {}).items():
+        clean_name = str(name or "").strip()
+        clean_value = str(value or "")
+        if clean_name and clean_value:
+            environment[clean_name] = clean_value
     return environment
 
 
@@ -249,10 +293,12 @@ class CodexAppServerClient:
         notification_handler: NotificationHandler | None = None,
         server_request_handler: ServerRequestHandler | None = None,
         command: CodexRuntimeCommand | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         self._notification_handler = notification_handler
         self._server_request_handler = server_request_handler
         self._command = command
+        self._environment = dict(environment or {})
         self._process: subprocess.Popen[str] | None = None
         self._reader_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
@@ -305,7 +351,7 @@ class CodexAppServerClient:
                     encoding="utf-8",
                     errors="replace",
                     bufsize=1,
-                    env=_subprocess_environment(),
+                    env=_subprocess_environment(self._environment),
                     creationflags=_creation_flags(),
                     startupinfo=startupinfo,
                 )

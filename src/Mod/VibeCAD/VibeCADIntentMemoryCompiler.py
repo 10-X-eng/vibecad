@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 from VibeCADIntentMemory import (
     active_memory_context,
@@ -66,97 +66,6 @@ def _compiler_prompt(
             "the supplied conversation provenance supports it."
         )
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-
-
-def _parse_json_arguments(raw: Any, *, provider: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(str(raw or "{}"))
-    except ValueError as exc:
-        raise RuntimeError(
-            f"{provider} Intent Memory tool arguments were not valid JSON."
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError(
-            f"{provider} Intent Memory tool arguments were not an object."
-        )
-    return parsed
-
-
-def _openai_compiler_child_main(
-    conn,
-    prompt: str,
-    context: dict[str, Any],
-    model: str,
-    api_key: str | None,
-    _reasoning_effort: str | None,
-    timeout_seconds: float | None,
-    _max_turns: int | None,
-    clear_inherited_modules: bool,
-    base_url: str | None = None,
-) -> None:
-    try:
-        if clear_inherited_modules:
-            _clear_inherited_sdk_modules()
-        from openai import OpenAI
-
-        schema = compiler_tool_schema()
-        tool_name = schema["name"]
-        request: dict[str, Any] = {
-            "model": model,
-            "instructions": COMPILER_INSTRUCTIONS,
-            "input": prompt,
-            "tools": [
-                {
-                    "type": "function",
-                    "name": tool_name,
-                    "description": schema["description"],
-                    "parameters": schema["parameters"],
-                }
-            ],
-            "tool_choice": {"type": "function", "name": tool_name},
-            "parallel_tool_calls": False,
-            "stream": False,
-        }
-        client_kwargs: dict[str, Any] = {
-            "api_key": api_key or ("vibecad-local" if base_url else None),
-            "max_retries": 2,
-        }
-        if not client_kwargs["api_key"]:
-            raise ProviderUnavailable("No OpenAI-compatible API key is configured.")
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        if timeout_seconds is not None and timeout_seconds > 0:
-            client_kwargs["timeout"] = timeout_seconds
-        _capture_outbound_request(
-            context,
-            provider="openai",
-            sdk_call="OpenAI.responses.create.intent_memory",
-            turn=1,
-            request=request,
-            base_url=base_url,
-        )
-        response = OpenAI(**client_kwargs).responses.create(**request)
-        calls = [
-            item
-            for item in list(getattr(response, "output", []) or [])
-            if str(getattr(item, "type", "") or "") == "function_call"
-        ]
-        if len(calls) != 1:
-            raise RuntimeError(
-                "OpenAI-compatible Intent Memory compiler did not return exactly "
-                "one structured tool call."
-            )
-        call = calls[0]
-        if str(getattr(call, "name", "") or "") != tool_name:
-            raise RuntimeError("OpenAI-compatible compiler called the wrong function.")
-        update = _parse_json_arguments(
-            getattr(call, "arguments", "{}"), provider="OpenAI-compatible"
-        )
-        conn.send({"type": "done", "final_output": "", "raw": _json_safe(update)})
-    except Exception as exc:
-        conn.send({"type": "error", "error": str(exc)})
-    finally:
-        conn.close()
 
 
 def _anthropic_compiler_child_main(
@@ -231,11 +140,14 @@ def _anthropic_compiler_child_main(
         conn.close()
 
 
-def _chatgpt_compiler(
+def _codex_compiler(
     *,
+    provider: str,
     prompt: str,
     context: dict[str, Any],
     model: str,
+    api_key: str | None,
+    base_url: str | None,
     cancellation_check: CancellationCheck | None,
     progress_callback: ProgressCallback | None,
     timeout_seconds: float | None,
@@ -243,11 +155,19 @@ def _chatgpt_compiler(
     """Compile Intent Memory through one Codex dynamic tool call."""
 
     from VibeCADCodex import (
+        CODEX_OPENAI_API_KEY_ENV,
+        CODEX_OPENAI_PROVIDER_ID,
         CodexAppServerClient,
         CodexAppServerError,
         codex_workspace,
         vibecad_thread_config,
     )
+
+    clean_provider = str(provider or "").strip().lower()
+    if clean_provider not in {"openai", "chatgpt"}:
+        raise ValueError(f"Unsupported Codex auth provider: {provider!r}.")
+    if clean_provider == "openai" and not str(api_key or "").strip():
+        raise ProviderUnavailable("No OpenAI API key is configured.")
 
     schema = compiler_tool_schema()
     tool_name = str(schema["name"])
@@ -313,21 +233,29 @@ def _chatgpt_compiler(
     client = CodexAppServerClient(
         notification_handler=notification,
         server_request_handler=server_request,
+        environment=(
+            {CODEX_OPENAI_API_KEY_ENV: str(api_key)}
+            if clean_provider == "openai"
+            else None
+        ),
     )
     timeout = timeout_seconds if timeout_seconds and timeout_seconds > 0 else 300.0
     deadline = time.monotonic() + timeout
     try:
         client.start()
-        account_result = client.request(
-            "account/read", {"refreshToken": False}, timeout=30.0
-        )
-        account = (
-            account_result.get("account") if isinstance(account_result, dict) else None
-        )
-        if not isinstance(account, dict) or account.get("type") != "chatgpt":
-            raise ProviderUnavailable(
-                "No ChatGPT subscription is signed in for Intent Memory."
+        if clean_provider == "chatgpt":
+            account_result = client.request(
+                "account/read", {"refreshToken": False}, timeout=30.0
             )
+            account = (
+                account_result.get("account")
+                if isinstance(account_result, dict)
+                else None
+            )
+            if not isinstance(account, dict) or account.get("type") != "chatgpt":
+                raise ProviderUnavailable(
+                    "No ChatGPT subscription is signed in for Intent Memory."
+                )
         thread_request: dict[str, Any] = {
             "cwd": str(codex_workspace()),
             "approvalPolicy": "never",
@@ -349,18 +277,24 @@ def _chatgpt_compiler(
                     "inputSchema": schema["parameters"],
                 }
             ],
-            "config": vibecad_thread_config(),
+            "config": vibecad_thread_config(
+                openai_base_url=(
+                    str(base_url or "") if clean_provider == "openai" else None
+                )
+            ),
             "serviceName": "vibecad-intent-memory",
         }
+        if clean_provider == "openai":
+            thread_request["modelProvider"] = CODEX_OPENAI_PROVIDER_ID
         if str(model or "").strip():
             thread_request["model"] = str(model).strip()
         _capture_outbound_request(
             context,
-            provider="chatgpt",
+            provider=clean_provider,
             sdk_call="codex-app-server.thread/start.intent_memory",
             turn=1,
             request=thread_request,
-            base_url=None,
+            base_url=base_url if clean_provider == "openai" else None,
         )
         thread_result = client.request("thread/start", thread_request, timeout=30.0)
         thread = (
@@ -378,11 +312,11 @@ def _chatgpt_compiler(
         }
         _capture_outbound_request(
             context,
-            provider="chatgpt",
+            provider=clean_provider,
             sdk_call="codex-app-server.turn/start.intent_memory",
             turn=1,
             request=turn_request,
-            base_url=None,
+            base_url=base_url if clean_provider == "openai" else None,
         )
         turn_result = client.request("turn/start", turn_request, timeout=30.0)
         turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
@@ -403,7 +337,7 @@ def _chatgpt_compiler(
                     {"threadId": thread_id, "turnId": turn_id},
                     timeout=5.0,
                 )
-                raise TimeoutError("ChatGPT Intent Memory update timed out.")
+                raise TimeoutError("Codex Intent Memory update timed out.")
             if not client.alive:
                 raise ProviderUnavailable(
                     "Codex app-server stopped during the Intent Memory update."
@@ -419,7 +353,7 @@ def _chatgpt_compiler(
             )
         if structured_call_count != 1 or structured_update is None:
             raise RuntimeError(
-                "ChatGPT Intent Memory compiler did not submit exactly one "
+                "Codex Intent Memory compiler did not submit exactly one "
                 "structured update."
             )
         return structured_update
@@ -462,20 +396,18 @@ def compile_intent_memory_update(
         "uncovered_turn_count": len(uncovered_turns),
     }
     prompt = _compiler_prompt(memory, uncovered_turns, legacy_design_markdown)
-    if clean_provider == "chatgpt":
-        return _chatgpt_compiler(
+    if clean_provider in {"openai", "chatgpt"}:
+        return _codex_compiler(
+            provider=clean_provider,
             prompt=prompt,
             context=context,
             model=model,
+            api_key=api_key,
+            base_url=base_url,
             cancellation_check=cancellation_check,
             progress_callback=progress_callback,
             timeout_seconds=timeout_seconds,
         )
-    child_main: Callable[..., None] = (
-        _anthropic_compiler_child_main
-        if clean_provider == "anthropic"
-        else _openai_compiler_child_main
-    )
     result = _run_provider_subprocess(
         prompt=prompt,
         context=context,
@@ -488,7 +420,7 @@ def compile_intent_memory_update(
         base_url=base_url,
         cancellation_check=cancellation_check,
         progress_callback=progress_callback,
-        child_main=child_main,
+        child_main=_anthropic_compiler_child_main,
         provider_label="VibeCAD Intent Memory compiler",
     )
     if not isinstance(result.raw, dict):

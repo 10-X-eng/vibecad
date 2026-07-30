@@ -86,6 +86,9 @@ SET(PartGui_SRCS
     Mirroring.cpp
     Mirroring.h
     Mirroring.ui
+    ModelingSelection.cpp
+    ModelingSelection.h
+    TaskResultValidation.h
     DlgBooleanOperation.cpp
     DlgBooleanOperation.h
     DlgBooleanOperation.ui

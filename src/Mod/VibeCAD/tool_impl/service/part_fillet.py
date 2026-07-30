@@ -153,7 +153,12 @@ def run_edge_finish(
                     "size_mm": size,
                 },
             )
-        domain_runtime.adopt_part_result(feature)
+        domain_runtime.adopt_part_result(
+            feature,
+            replaced_inputs=(
+                [base] if visibility_before.get("visible") is True else []
+            ),
+        )
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):

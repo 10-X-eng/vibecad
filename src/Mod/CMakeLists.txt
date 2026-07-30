@@ -101,10 +101,6 @@ if(BUILD_MESH_PART)
   add_subdirectory(MeshPart)
 endif(BUILD_MESH_PART)
 
-if(BUILD_OPENSCAD)
-  add_subdirectory(OpenSCAD)
-endif(BUILD_OPENSCAD)
-
 if(BUILD_PART)
   add_subdirectory(Part)
 endif(BUILD_PART)

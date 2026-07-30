@@ -45,6 +45,11 @@ namespace Gui
 class ViewProvider;
 }
 
+namespace Sketcher
+{
+class SketchObject;
+}
+
 namespace SketcherGui
 {
 
@@ -60,6 +65,7 @@ class ConstraintView: public QListWidget
 public:
     explicit ConstraintView(QWidget* parent = nullptr);
     ~ConstraintView() override;
+    void setSketchView(ViewProviderSketch* view);
 
 protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
@@ -86,6 +92,11 @@ protected Q_SLOTS:
     void swapNamedOfSelectedItems();
     void showConstraints();
     void hideConstraints();
+
+private:
+    Sketcher::SketchObject* getSketchObject() const;
+
+    ViewProviderSketch* sketchView {nullptr};
 };
 
 class ConstraintFilterList: public QListWidget

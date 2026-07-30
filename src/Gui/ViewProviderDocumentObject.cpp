@@ -46,6 +46,7 @@
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderExtension.h"
 #include "TaskView/TaskAppearance.h"
+#include "TaskView/TaskDialog.h"
 
 
 FC_LOG_LEVEL_INIT("Gui", true, true)
@@ -141,17 +142,21 @@ const char* ViewProviderDocumentObject::detachFromDocument()
 bool ViewProviderDocumentObject::removeDynamicProperty(const char* name)
 {
     App::Property* prop = getDynamicPropertyByName(name);
-    if (!prop || prop->testStatus(App::Property::LockDynamic)) {
-        return false;
-    }
-
     // transactions of view providers are also managed in App::Document.
     App::DocumentObject* docobject = getObject();
     App::Document* document = docobject ? docobject->getDocument() : nullptr;
+    const bool bypassLock = document && document->isPerformingTransaction();
+    if (!prop || (!bypassLock && prop->testStatus(App::Property::LockDynamic))) {
+        return false;
+    }
+
     if (document) {
         document->addOrRemovePropertyOfObject(this, prop, false);
     }
 
+    if (bypassLock) {
+        return ViewProvider::removeDynamicPropertyForTransaction(name);
+    }
     return ViewProvider::removeDynamicProperty(name);
 }
 
@@ -253,8 +258,7 @@ void ViewProviderDocumentObject::hide()
 {
     ViewProvider::hide();
     // use this bit to check whether 'Visibility' must be adjusted
-    if (!testStatus(ViewStatus::VisibilityGateTransition)
-        && !Visibility.testStatus(App::Property::User2)) {
+    if (!Visibility.testStatus(App::Property::User2)) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(false);
         Visibility.setStatus(App::Property::User2, false);
@@ -274,7 +278,7 @@ void ViewProviderDocumentObject::setShowable(bool enable)
 
     _Showable = enable;
     int which = getModeSwitch()->whichChild.getValue();
-    if (_Showable && isVisibilityGateOpen() && which == -1 && Visibility.getValue()) {
+    if (_Showable && which == -1 && Visibility.getValue()) {
         setModeSwitch();
     }
     else if (!_Showable) {
@@ -284,48 +288,72 @@ void ViewProviderDocumentObject::setShowable(bool enable)
     }
 }
 
-void ViewProviderDocumentObject::setVisibilityGate(bool enable)
+void ViewProviderDocumentObject::setVisibilityGate(bool /*enable*/)
 {
-    if (isVisibilityGateOpen() == enable) {
-        return;
-    }
-
-    setStatus(Gui::ViewStatus::VisibilityGateClosed, !enable);
-    if (!enable) {
-        // Run the complete view-provider hook chain (bounding boxes and other
-        // auxiliary rendering included). hide() changes only scene state; the
-        // persistent Visibility property remains the child's own intent.
-        Base::ObjectStatusLocker<ViewStatus, ViewProviderDocumentObject> lock(
-            ViewStatus::VisibilityGateTransition,
-            this
-        );
-        hide();
-    }
-    else if (_Showable && Visibility.getValue()) {
-        // Run derived show hooks while bypassing only the normal independent-
-        // child veto. The feature is not being shown independently here; its
-        // already-enabled rendering is being restored with its parent.
-        Base::ObjectStatusLocker<ViewStatus, ViewProviderDocumentObject> lock(
-            ViewStatus::VisibilityGateTransition,
-            this
-        );
-        show();
-    }
+    // Compatibility no-op. The parent/child presentation gate was retired;
+    // persistent native Visibility and the owning view provider now determine
+    // what is rendered.
 }
 
 bool ViewProviderDocumentObject::isVisibilityGateOpen() const
 {
-    return !testStatus(Gui::ViewStatus::VisibilityGateClosed);
+    // Compatibility callers must observe the retired gate as permanently open
+    // so stale state cannot suppress native rendering.
+    return true;
 }
 
 void ViewProviderDocumentObject::startDefaultEditMode()
 {
     Gui::Document* document = this->getDocument();
     if (document) {
-        QString text = QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()));
-        document->openCommand(text.toUtf8());  // Command is opened here and individual dialogs have
-                                               // to close it
-        document->setEdit(this, ViewProvider::Default);
+        auto* appDocument = document->getDocument();
+        if (appDocument
+            && appDocument->getBookedTransactionID()
+                != App::NullTransaction
+            && !Gui::TaskView::TaskDialog::
+                hasOwnedEnclosingTransaction(appDocument)) {
+            // Context-menu edit is a direct GUI entry point. It must not
+            // replace a transaction which existed before this interaction.
+            return;
+        }
+        Gui::TaskView::TaskDialog::beginCommandInvocation();
+        try {
+            QString text =
+                QObject::tr("Edit %1").arg(
+                    QString::fromUtf8(getObject()->Label.getValue())
+                );
+            // The command is opened here and the individual dialog closes it.
+            const int transactionId =
+                document->openCommand(text.toUtf8());
+            const bool editing =
+                document->setEdit(this, ViewProvider::Default);
+            bool editOwned = true;
+            if (editing
+                && transactionId != App::NullTransaction) {
+                editOwned = document->adoptOwnedEditTransaction(
+                    transactionId
+                );
+            }
+            if (editing && !editOwned) {
+                document->resetEdit();
+                if (App::GetApplication().abortTransaction(
+                        transactionId
+                    )) {
+                    Gui::TaskView::TaskDialog::
+                        recordCommandTransactionCompletion(
+                            appDocument,
+                            transactionId
+                        );
+                }
+            }
+            Gui::TaskView::TaskDialog::endCommandInvocation(
+                editing && editOwned
+            );
+        }
+        catch (...) {
+            Gui::TaskView::TaskDialog::endCommandInvocation(false);
+            throw;
+        }
     }
 }
 
@@ -339,21 +367,14 @@ void ViewProviderDocumentObject::addDefaultAction(QMenu* menu, const QString& te
 
 void ViewProviderDocumentObject::setModeSwitch()
 {
-    if (isShowable() && isVisibilityGateOpen()) {
+    if (isShowable()) {
         ViewProvider::setModeSwitch();
     }
 }
 
 void ViewProviderDocumentObject::show()
 {
-    if (!isVisibilityGateOpen()) {
-        // Keep Visibility enabled so reopening the parent gate restores this
-        // object exactly as the user left it.
-        ViewProvider::hide();
-        return;
-    }
-    if (testStatus(ViewStatus::VisibilityGateTransition)
-        || TreeWidget::isObjectShowable(getObject())) {
+    if (TreeWidget::isObjectShowable(getObject())) {
         ViewProvider::show();
     }
     else {

@@ -34,6 +34,7 @@
 #include <Gui/Selection/Selection.h>
 #include <Gui/Selection/SelectionObject.h>
 #include <Mod/TechDraw/App/DrawUtil.h>
+#include <Mod/TechDraw/App/DrawViewDimension.h>
 #include <Mod/TechDraw/App/DrawViewPart.h>
 
 #include "ui_TaskDimension.h"
@@ -51,6 +52,22 @@ TaskDimension::TaskDimension(QGIViewDimension *parent, ViewProviderDimension *di
     m_parent(parent),
     m_dimensionVP(dimensionVP)
 {
+    auto* dimension = parent ? parent->getDimFeat() : nullptr;
+    if (!dimension || !dimensionVP
+        || dimensionVP->getObject() != dimension
+        || dimension->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The dimension editor requires a live dimension and its owning "
+            "transaction"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(dimension->getDocument());
+    m_dimensionIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewDimension>(
+            dimension
+        );
     ui->setupUi(this);
 
     // Number of Decimals
@@ -183,8 +200,6 @@ TaskDimension::TaskDimension(QGIViewDimension *parent, ViewProviderDimension *di
     connect(ui->pbExtUseDefault, &QPushButton::clicked, this, &TaskDimension::onExtUseDefaultClicked);
     connect(ui->pbExtUseSelection, &QPushButton::clicked, this, &TaskDimension::onExtUseSelectionClicked);
 
-    Gui::Document* doc = m_dimensionVP->getDocument();
-    doc->openCommand("TaskDimension");
 }
 
 TaskDimension::~TaskDimension()
@@ -193,45 +208,58 @@ TaskDimension::~TaskDimension()
 
 bool TaskDimension::accept()
 {
-    if (m_dimensionVP.expired()) {
+    auto* dimension = resolveDimension();
+    if (!dimension || !resolveViewProvider()) {
         QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Missing Dimension"),
                                                QObject::tr("Dimension not found. Was it deleted? Cannot continue."));
-        return true;
+        return false;
     }
-    Gui::Document* doc = m_dimensionVP->getDocument();
-    m_dimensionVP->getObject()->purgeTouched();
-    doc->commitCommand();
-    doc->resetEdit();
+    dimension->purgeTouched();
+    TaskInternal::updateExactDocument(
+        m_documentIdentity.resolve()
+    );
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
 
     return true;
 }
 
 bool TaskDimension::reject()
 {
-    if (m_dimensionVP.expired()) {
-        QMessageBox::warning(Gui::getMainWindow(), QObject::tr("Missing Dimension"),
-                                               QObject::tr("Dimension not found. Was it deleted? Cannot continue."));
-        return true;
-    }
-    Gui::Document* doc = m_dimensionVP->getDocument();
-    doc->abortCommand();
-    recomputeFeature();
-    m_parent->updateView(true);
-    m_dimensionVP->getObject()->purgeTouched();
-    doc->resetEdit();
-
+    // TaskView rolls back the exact edit transaction after this panel is
+    // torn down.  Do not abort or commit a GUI document transaction here.
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
     return true;
+}
+
+TechDraw::DrawViewDimension*
+TaskDimension::resolveDimension() const
+{
+    return m_dimensionIdentity.resolve();
+}
+
+ViewProviderDimension*
+TaskDimension::resolveViewProvider() const
+{
+    auto* dimension = resolveDimension();
+    if (!dimension || m_dimensionVP.expired()) {
+        return nullptr;
+    }
+    auto* viewProvider = m_dimensionVP.operator->();
+    return viewProvider
+        && viewProvider->getObject() == dimension
+        ? viewProvider
+        : nullptr;
 }
 
 void TaskDimension::recomputeFeature()
 {
-    if (m_dimensionVP.expired()) {
-        // guard against deletion while this dialog is running
-        return;
+    if (auto* dimension = resolveDimension()) {
+        dimension->recomputeFeature();
     }
-    App::DocumentObject* objVP = m_dimensionVP->getObject();
-    assert(objVP);
-    objVP->recomputeFeature();
 }
 
 void TaskDimension::onNumDecChanged(int decimals)
@@ -294,7 +322,13 @@ void TaskDimension::onReferenceChanged()
 
 void TaskDimension::onTheoreticallyExactChanged()
 {
-    m_parent->getDimFeat()->TheoreticalExact.setValue(ui->cbTheoreticallyExact->isChecked());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->TheoreticalExact.setValue(
+        ui->cbTheoreticallyExact->isChecked()
+    );
     // if TheoreticalExact disable tolerances and set them to zero
     if (ui->cbTheoreticallyExact->isChecked()) {
         ui->qsbOvertolerance->setValue(0.0);
@@ -322,7 +356,13 @@ void TaskDimension::onTheoreticallyExactChanged()
 
 void TaskDimension::onEqualToleranceChanged()
 {
-    m_parent->getDimFeat()->EqualTolerance.setValue(ui->cbEqualTolerance->isChecked());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->EqualTolerance.setValue(
+        ui->cbEqualTolerance->isChecked()
+    );
     // if EqualTolerance set negated overtolerance for untertolerance
     // then also the OverTolerance must be positive
     if (ui->cbEqualTolerance->isChecked()) {
@@ -347,7 +387,13 @@ void TaskDimension::onEqualToleranceChanged()
 
 void TaskDimension::onOvertoleranceChanged()
 {
-    m_parent->getDimFeat()->OverTolerance.setValue(ui->qsbOvertolerance->value().getValue());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->OverTolerance.setValue(
+        ui->qsbOvertolerance->value().getValue()
+    );
     // if EqualTolerance set negated overtolerance for untertolerance
     if (ui->cbEqualTolerance->isChecked()) {
         ui->qsbUndertolerance->setValue(-1.0 * ui->qsbOvertolerance->value().getValue());
@@ -358,27 +404,53 @@ void TaskDimension::onOvertoleranceChanged()
 
 void TaskDimension::onUndertoleranceChanged()
 {
-    m_parent->getDimFeat()->UnderTolerance.setValue(ui->qsbUndertolerance->value().getValue());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->UnderTolerance.setValue(
+        ui->qsbUndertolerance->value().getValue()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onFormatSpecifierChanged()
 {
-    m_parent->getDimFeat()->FormatSpec.setValue(ui->leFormatSpecifier->text().toUtf8().constData());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->FormatSpec.setValue(
+        ui->leFormatSpecifier->text().toUtf8().constData()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onArbitraryChanged()
 {
-    m_parent->getDimFeat()->Arbitrary.setValue(ui->cbArbitrary->isChecked());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->Arbitrary.setValue(
+        ui->cbArbitrary->isChecked()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onFormatSpecifierOverToleranceChanged()
 {
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
 //    Base::Console().message("TD::onFormatSpecifierOverToleranceChanged()\n");
     // if (m_blockToleranceLoop) { return; }
-    m_parent->getDimFeat()->FormatSpecOverTolerance.setValue(ui->leFormatSpecifierOverTolerance->text().toUtf8().constData());
+    dimension->FormatSpecOverTolerance.setValue(
+        ui->leFormatSpecifierOverTolerance->text()
+            .toUtf8()
+            .constData()
+    );
     if (ui->cbArbitraryTolerances->isChecked() ) {
         // Don't do anything else if tolerance is Arbitrary
         recomputeFeature();
@@ -388,15 +460,27 @@ void TaskDimension::onFormatSpecifierOverToleranceChanged()
     if (ui->cbEqualTolerance->isChecked()) {
         // the under tolerance has to match this one
         ui->leFormatSpecifierUnderTolerance->setText(ui->leFormatSpecifierOverTolerance->text());
-        m_parent->getDimFeat()->FormatSpecUnderTolerance.setValue(ui->leFormatSpecifierUnderTolerance->text().toUtf8().constData());
+        dimension->FormatSpecUnderTolerance.setValue(
+            ui->leFormatSpecifierUnderTolerance->text()
+                .toUtf8()
+                .constData()
+        );
     }
     recomputeFeature();
 }
 
 void TaskDimension::onFormatSpecifierUnderToleranceChanged()
 {
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
 //    Base::Console().message("TD::onFormatSpecifierUnderToleranceChanged()\n");
-    m_parent->getDimFeat()->FormatSpecUnderTolerance.setValue(ui->leFormatSpecifierUnderTolerance->text().toUtf8().constData());
+    dimension->FormatSpecUnderTolerance.setValue(
+        ui->leFormatSpecifierUnderTolerance->text()
+            .toUtf8()
+            .constData()
+    );
     if (ui->cbArbitraryTolerances->isChecked() ) {
         // Don't do anything else if tolerance is Arbitrary
         recomputeFeature();
@@ -406,77 +490,117 @@ void TaskDimension::onFormatSpecifierUnderToleranceChanged()
         // if EqualTolerance is checked, then underTolerance is disabled, so this shouldn't happen!
         // the over tolerance has to match this one
         ui->leFormatSpecifierOverTolerance->setText(ui->leFormatSpecifierUnderTolerance->text());
-        m_parent->getDimFeat()->FormatSpecOverTolerance.setValue(ui->leFormatSpecifierOverTolerance->text().toUtf8().constData());
+        dimension->FormatSpecOverTolerance.setValue(
+            ui->leFormatSpecifierOverTolerance->text()
+                .toUtf8()
+                .constData()
+        );
     }
     recomputeFeature();
 }
 
 void TaskDimension::onArbitraryTolerancesChanged()
 {
-    m_parent->getDimFeat()->ArbitraryTolerances.setValue(ui->cbArbitraryTolerances->isChecked());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->ArbitraryTolerances.setValue(
+        ui->cbArbitraryTolerances->isChecked()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onFlipArrowheadsChanged()
 {
-    if (m_dimensionVP.expired()) {
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
         return;
     }
-    m_dimensionVP->FlipArrowheads.setValue(ui->cbArrowheads->isChecked());
+    viewProvider->FlipArrowheads.setValue(
+        ui->cbArrowheads->isChecked()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onColorChanged()
 {
-    if (m_dimensionVP.expired()) {
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
         return;
     }
     Base::Color ac;
     ac.setValue<QColor>(ui->dimensionColor->color());
-    m_dimensionVP->Color.setValue(ac);
+    viewProvider->Color.setValue(ac);
     recomputeFeature();
 }
 
 void TaskDimension::onFontsizeChanged()
 {
-    if (m_dimensionVP.expired()) {
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
         return;
     }
-    m_dimensionVP->Fontsize.setValue(ui->qsbFontSize->value().getValue());
+    viewProvider->Fontsize.setValue(
+        ui->qsbFontSize->value().getValue()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onDrawingStyleChanged()
 {
-    if (m_dimensionVP.expired()) {
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
         return;
     }
-    m_dimensionVP->StandardAndStyle.setValue(ui->comboDrawingStyle->currentIndex());
+    viewProvider->StandardAndStyle.setValue(
+        ui->comboDrawingStyle->currentIndex()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onOverrideToggled()
 {
-    m_parent->getDimFeat()->AngleOverride.setValue(ui->gbLines->isChecked());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->AngleOverride.setValue(
+        ui->gbLines->isChecked()
+    );
     recomputeFeature();
 
 }
 
 void TaskDimension::onDimAngleChanged()
 {
-    m_parent->getDimFeat()->LineAngle.setValue(ui->dsbDimAngle->value());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->LineAngle.setValue(ui->dsbDimAngle->value());
     recomputeFeature();
 }
 
 void TaskDimension::onExtAngleChanged()
 {
-    m_parent->getDimFeat()->ExtensionAngle.setValue(ui->dsbExtAngle->value());
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    dimension->ExtensionAngle.setValue(
+        ui->dsbExtAngle->value()
+    );
     recomputeFeature();
 }
 
 void TaskDimension::onDimUseDefaultClicked()
 {
-    pointPair points = m_parent->getDimFeat()->getLinearPoints();
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    pointPair points = dimension->getLinearPoints();
     //duplicate coordinate conversion logic from QGIViewDimension
     Base::Vector2d first2(points.first().x, -points.first().y);
     Base::Vector2d second2(points.second().x, -points.second().y);
@@ -494,7 +618,11 @@ void TaskDimension::onDimUseSelectionClicked()
 
 void TaskDimension::onExtUseDefaultClicked()
 {
-    pointPair points = m_parent->getDimFeat()->getLinearPoints();
+    auto* dimension = resolveDimension();
+    if (!dimension) {
+        return;
+    }
+    pointPair points = dimension->getLinearPoints();
     //duplicate coordinate conversion logic from QGIViewDimension
     Base::Vector2d first2(points.first().x, -points.first().y);
     Base::Vector2d second2(points.second().x, -points.second().y);
@@ -520,9 +648,14 @@ std::pair<double, bool> TaskDimension::getAngleFromSelection()
     TechDraw::DrawViewPart * objFeat = nullptr;
     std::vector<std::string> SubNames;
     if (!selection.empty()) {
-        objFeat = static_cast<TechDraw::DrawViewPart*> (selection.front().getObject());
+        objFeat = dynamic_cast<TechDraw::DrawViewPart*>(
+            selection.front().getObject()
+        );
+        if (!objFeat) {
+            result.second = false;
+        }
         SubNames = selection.front().getSubNames();
-        if (SubNames.size() == 2) {             //expecting Vertices
+        if (objFeat && SubNames.size() == 2) {  // expecting vertices
             std::string geomName0 = DrawUtil::getGeomTypeFromName(SubNames[0]);
             int geomIndex0 = DrawUtil::getIndexFromName(SubNames[0]);
             std::string geomName1 = DrawUtil::getGeomTypeFromName(SubNames[1]);
@@ -530,20 +663,30 @@ std::pair<double, bool> TaskDimension::getAngleFromSelection()
             if ((geomName0 == "Vertex") && (geomName1 == "Vertex"))  {
                 TechDraw::VertexPtr v0 = objFeat->getProjVertexByIndex(geomIndex0);
                 TechDraw::VertexPtr v1 = objFeat->getProjVertexByIndex(geomIndex1);
+                if (!v0 || !v1) {
+                    result.second = false;
+                }
+                else {
                 Base::Vector2d v02(v0->point().x, -v0->point().y);
                 Base::Vector2d v12(v1->point().x, -v1->point().y);
                 result.first = (v12 - v02).Angle();
                 return result;
+                }
             }
-        } else if (SubNames.size() == 1) {      //expecting Edge
+        } else if (objFeat && SubNames.size() == 1) {  // expecting edge
             std::string geomName0 = DrawUtil::getGeomTypeFromName(SubNames[0]);
             int geomIndex0 = DrawUtil::getIndexFromName(SubNames[0]);
             if (geomName0 == "Edge") {
                 TechDraw::BaseGeomPtr edge = objFeat->getGeomByIndex(geomIndex0);
+                if (!edge) {
+                    result.second = false;
+                }
+                else {
                 Base::Vector2d v02(edge->getStartPoint().x, -edge->getStartPoint().y);
                 Base::Vector2d v12(edge->getEndPoint().x, -edge->getEndPoint().y);
                 result.first = (v12 - v02).Angle();
                 return result;
+                }
             }
         }
     }
@@ -585,14 +728,12 @@ void TaskDlgDimension::clicked(int i)
 
 bool TaskDlgDimension::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgDimension::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include "moc_TaskDimension.cpp"

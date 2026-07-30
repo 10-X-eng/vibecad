@@ -130,6 +130,87 @@ def test_final_subwindow_close_disposes_coin_sensors_without_rescheduling(
     assert grid._adaptive_controllers == []
 
 
+def test_stale_mdi_activation_cannot_initialize_a_grid(monkeypatch) -> None:
+    callbacks: list[object] = []
+    qt_core = SimpleNamespace(
+        QTimer=SimpleNamespace(
+            singleShot=lambda _delay, callback: callbacks.append(callback)
+        )
+    )
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setattr(grid, "App", SimpleNamespace(GuiUp=True))
+    monkeypatch.setattr(grid, "_activation_generation", 0)
+    monkeypatch.setattr(grid, "_close_suspended", False)
+    monkeypatch.setattr(grid, "_document_restore_active", lambda: False)
+    monkeypatch.setattr(grid, "_grid_should_always_show", lambda: True)
+
+    view = object()
+    tracker = object()
+
+    class _Snapper:
+        trackers = [[], []]
+
+        def setTrackers(self) -> None:
+            self.trackers[0].append(view)
+            self.trackers[1].append(tracker)
+
+    snapper = _Snapper()
+    snapper_requests: list[bool] = []
+    queued_updates: list[tuple[object, object, int]] = []
+    monkeypatch.setattr(grid, "_active_3d_view", lambda: view)
+    monkeypatch.setattr(
+        grid,
+        "_get_snapper",
+        lambda: snapper_requests.append(True) or snapper,
+    )
+    monkeypatch.setattr(
+        grid,
+        "_queue_active_grid_state",
+        lambda active_view, active_grid, generation: queued_updates.append(
+            (active_view, active_grid, generation)
+        ),
+    )
+
+    grid._on_sub_window_activated(object())
+    grid._on_sub_window_activated(object())
+    assert len(callbacks) == 2
+
+    callbacks[0]()
+    assert snapper_requests == []
+    assert queued_updates == []
+
+    callbacks[1]()
+    assert snapper_requests == [True]
+    assert queued_updates == [(view, tracker, 2)]
+
+
+def test_non_3d_mdi_activation_never_initializes_coin_trackers(
+    monkeypatch,
+) -> None:
+    callbacks: list[object] = []
+    qt_core = SimpleNamespace(
+        QTimer=SimpleNamespace(
+            singleShot=lambda _delay, callback: callbacks.append(callback)
+        )
+    )
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setattr(grid, "App", SimpleNamespace(GuiUp=True))
+    monkeypatch.setattr(grid, "_activation_generation", 0)
+    monkeypatch.setattr(grid, "_close_suspended", False)
+    monkeypatch.setattr(grid, "_document_restore_active", lambda: False)
+    monkeypatch.setattr(grid, "_grid_should_always_show", lambda: True)
+    monkeypatch.setattr(grid, "_active_3d_view", lambda: None)
+    monkeypatch.setattr(
+        grid,
+        "_get_snapper",
+        lambda: pytest.fail("a non-3D MDI view requested the Draft Snapper"),
+    )
+
+    grid._on_sub_window_activated(object())
+    assert len(callbacks) == 1
+    callbacks[0]()
+
+
 def test_main_window_close_stops_timer_and_disposes_coin_sensors(monkeypatch) -> None:
     class _Timer:
         stopped = False

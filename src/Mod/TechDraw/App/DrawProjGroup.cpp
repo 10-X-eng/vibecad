@@ -27,6 +27,7 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
+#include <algorithm>
 #include <limits>
 #include <sstream>
 
@@ -34,6 +35,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentTimeline.h>
 #include <App/Part.h>
 #include <Base/BoundBox.h>
 #include <Base/Console.h>
@@ -169,7 +171,7 @@ App::DocumentObjectExecReturn* DrawProjGroup::execute()
     if (!getPage())
         return DrawViewCollection::execute();
 
-    if (!Anchor.getValue())
+    if (!getActiveAnchor())
         //no anchor yet.  nothing to do.
         return DrawViewCollection::execute();
 
@@ -231,7 +233,7 @@ void DrawProjGroup::reportReady()
 
 bool DrawProjGroup::waitingForChildren() const
 {
-    for (const auto v : Views.getValues()) {
+    for (const auto v : getActiveViews()) {
         DrawProjGroupItem* dpgi = static_cast<DrawProjGroupItem*>(v);
         if (dpgi->waitingForHlr() ||//dpgi is still thinking
             dpgi->isTouched()) {    //dpgi needs to execute
@@ -473,6 +475,10 @@ App::DocumentObject* DrawProjGroup::addProjectionImpl(const char* viewProjType,
                                   getNameInDocument(), viewProjType);
             throw Base::TypeError("Error: new projection is not a DPGI!");
         }
+        // addProjection() owns the item's creation and lifetime. Standalone
+        // DrawProjGroupItem views and existing views converted into an anchor
+        // do not pass through this path and remain durable user operations.
+        DrawUtil::markAsTimelineResource(view, this);
         // the label must be set before the view is added
         view->Label.setValue(viewProjType);
         // somewhere deep in DocumentObject, duplicate Labels have a numeric suffix applied,
@@ -574,7 +580,7 @@ std::pair<Base::Vector3d, Base::Vector3d> DrawProjGroup::getDirsFromFront(ProjDi
     std::pair<Base::Vector3d, Base::Vector3d> result;
 
     Base::Vector3d projDir, rotVec;
-    DrawProjGroupItem* anch = getAnchor();
+    DrawProjGroupItem* anch = getActiveAnchor();
     if (!anch) {
         Base::Console().warning("DPG::getDirsFromFront - %s - No Anchor!\n", Label.getValue());
         throw Base::RuntimeError("Project Group missing Anchor projection item");
@@ -867,7 +873,7 @@ void DrawProjGroup::arrangeViewPointers(
     //                 FTRight  T  FTL          7  8  9
 
     bool thirdAngle = (strcmp(projType, "Third angle") == 0);
-    for (auto it : Views.getValues()) {
+    for (auto* it : getActiveViews()) {
         auto oView(freecad_cast<DrawProjGroupItem*>(it));
         if (!oView) {
             //if an element in Views is not a DPGI, something really bad has happened somewhere
@@ -945,7 +951,7 @@ void DrawProjGroup::makeViewBbs(std::array<DrawProjGroupItem*, MAXPROJECTIONCOUN
 void DrawProjGroup::recomputeChildren()
 {
     //    Base::Console().message("DPG::recomputeChildren() - waiting: %d\n", waitingForChildren());
-    for (const auto it : Views.getValues()) {
+    for (const auto it : getActiveViews()) {
         auto view(freecad_cast<DrawProjGroupItem*>(it));
         if (!view) {
             throw Base::TypeError("Error: projection in DPG list is not a DPGI!");
@@ -960,7 +966,7 @@ void DrawProjGroup::autoPositionChildren()
 {
     //    Base::Console().message("DPG::autoPositionChildren() - %s - waiting: %d\n",
     //                            getNameInDocument(), waitingForChildren());
-    for (const auto it : Views.getValues()) {
+    for (const auto it : getActiveViews()) {
         auto view(freecad_cast<DrawProjGroupItem*>(it));
         if (!view) {
             //if an element in Views is not a DPGI, something really bad has happened somewhere
@@ -1033,7 +1039,7 @@ void DrawProjGroup::updateChildrenLock()
 
 void DrawProjGroup::updateChildrenEnforce(void)
 {
-    for (const auto it : Views.getValues()) {
+    for (const auto it : getActiveViews()) {
         auto view(freecad_cast<DrawProjGroupItem*>(it));
         if (!view) {
             //if an element in Views is not a DPGI, something really bad has happened somewhere
@@ -1075,6 +1081,12 @@ TechDraw::DrawProjGroupItem* DrawProjGroup::getAnchor()
         return static_cast<DrawProjGroupItem*>(docObj);
     }
     return nullptr;
+}
+
+TechDraw::DrawProjGroupItem* DrawProjGroup::getActiveAnchor()
+{
+    auto* anchor = getAnchor();
+    return anchor && anchor->isActiveInDocumentTimeline() ? anchor : nullptr;
 }
 
 void DrawProjGroup::setAnchorDirection(const Base::Vector3d dir)
@@ -1174,6 +1186,15 @@ std::vector<DrawProjGroupItem*> DrawProjGroup::getViewsAsDPGI()
     return result;
 }
 
+std::vector<DrawProjGroupItem*> DrawProjGroup::getActiveViewsAsDPGI()
+{
+    std::vector<DrawProjGroupItem*> result;
+    for (auto* view : getActiveViews()) {
+        result.push_back(static_cast<DrawProjGroupItem*>(view));
+    }
+    return result;
+}
+
 int DrawProjGroup::getDefProjConv() const { return Preferences::projectionAngle(); }
 
 /*!
@@ -1228,15 +1249,35 @@ void DrawProjGroup::handleChangedPropertyType(Base::XMLReader& reader, const cha
 void DrawProjGroup::unsetupObject()
 {
     if (getDocument() && !getDocument()->isAnyRestoring()) {
-
+        auto* page = findParentPage();
+        std::vector<App::DocumentObject*> pageViews =
+            page ? page->Views.getValues()
+                 : std::vector<App::DocumentObject*> {};
         std::vector<std::string> childNamesToDelete;
-        for (App::DocumentObject* child : Views.getValues()) {
-            if (child) {
+        const auto children = Views.getValues();
+        for (App::DocumentObject* child : children) {
+            if (!child) {
+                continue;
+            }
+            if (App::DocumentTimeline::timelineOwner(child) == this) {
                 const char* name = child->getNameInDocument();
                 if (name) {
                     childNamesToDelete.push_back(name);
                 }
+                continue;
             }
+
+            // A standalone view converted into a projection-group anchor is
+            // an independent history operation, not implementation geometry
+            // owned by the group. Restore it to the page (when available)
+            // before removing the group instead of deleting user geometry.
+            if (page
+                && std::ranges::find(pageViews, child)
+                    == pageViews.end()) {
+                page->addView(child, false);
+                pageViews.push_back(child);
+            }
+            removeView(child);
         }
 
         for (const std::string& childName : childNamesToDelete) {

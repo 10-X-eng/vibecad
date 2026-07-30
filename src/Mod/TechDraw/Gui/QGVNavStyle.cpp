@@ -394,7 +394,7 @@ void QGVNavStyle::placeBalloon(QPoint p)
     //balloon was created in Command.cpp.  Why are we doing it again?
     getViewer()->getScene()->createBalloon(getViewer()->mapToScene(p),
                                            getViewer()->getBalloonParent());
-    getViewer()->setBalloonPlacing(false);
+    getViewer()->cancelBalloonPlacing();
 }
 
 void QGVNavStyle::balloonCursorMovement(QMouseEvent *event)

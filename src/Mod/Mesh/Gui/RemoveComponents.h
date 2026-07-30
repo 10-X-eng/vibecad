@@ -26,6 +26,7 @@
 #pragma once
 
 #include <QDialog>
+#include <memory>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/Mesh/MeshGlobal.h>
@@ -72,8 +73,10 @@ private:
     void setupConnections();
 
 private:
+    class TargetState;
     Ui_RemoveComponents* ui;
     MeshSelection meshSel;
+    std::unique_ptr<TargetState> targetState;
 
     Q_DISABLE_COPY_MOVE(RemoveComponents)
 };

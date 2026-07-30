@@ -47,6 +47,7 @@ def _make_ortho_array(
     n_y=2,
     n_z=1,
     use_link=True,
+    hide_base=True,
 ):
     """Create an orthogonal array from the given object.
 
@@ -64,7 +65,15 @@ def _make_ortho_array(
     _name = "_make_ortho_array"
 
     new_obj = make_array.make_array(
-        base_object, arg1=v_x, arg2=v_y, arg3=v_z, arg4=n_x, arg5=n_y, arg6=n_z, use_link=use_link
+        base_object,
+        arg1=v_x,
+        arg2=v_y,
+        arg3=v_z,
+        arg4=n_x,
+        arg5=n_y,
+        arg6=n_z,
+        use_link=use_link,
+        hide_base=hide_base,
     )
     return new_obj
 
@@ -160,6 +169,7 @@ def make_ortho_array(
     n_y=2,
     n_z=1,
     use_link=True,
+    hide_base=True,
 ):
     """Create an orthogonal array from the given object.
 
@@ -238,6 +248,10 @@ def make_ortho_array(
         In this case the `Fuse` property is able to fuse
         all copies into a single object, if they touch each other.
 
+    hide_base: bool, optional
+        If it is `True`, hide `base_object` after creating the array.
+        It defaults to `True`.
+
     Returns
     -------
     Part::FeaturePython
@@ -269,7 +283,15 @@ def make_ortho_array(
     use_link = bool(use_link)
 
     new_obj = _make_ortho_array(
-        base_object, v_x=v_x, v_y=v_y, v_z=v_z, n_x=n_x, n_y=n_y, n_z=n_z, use_link=use_link
+        base_object,
+        v_x=v_x,
+        v_y=v_y,
+        v_z=v_z,
+        n_x=n_x,
+        n_y=n_y,
+        n_z=n_z,
+        use_link=use_link,
+        hide_base=hide_base,
     )
     return new_obj
 

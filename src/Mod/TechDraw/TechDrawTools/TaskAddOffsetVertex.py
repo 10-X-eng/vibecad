@@ -39,14 +39,45 @@ class TaskAddOffsetVertex:
     """Provides the TechDraw AddOffsetVertex Task Dialog."""
 
     def __init__(self, view, vertex):
+        if (
+            view is None
+            or vertex is None
+            or not view.isDerivedFrom("TechDraw::DrawViewPart")
+            or view.Document is None
+        ):
+            raise RuntimeError(
+                "Select one projected drawing vertex"
+            )
+        page = view.findParentPage()
+        if page is None or page.Document is not view.Document:
+            raise RuntimeError(
+                "The selected vertex must belong to a drawing page"
+            )
+        self.document = view.Document
+        self.gui_document = Gui.getDocument(self.document.Name)
+        if self.gui_document is None:
+            raise RuntimeError(
+                "The selected drawing has no GUI document"
+            )
+        self.view_name = view.Name
+        self.page_name = page.Name
+        canonical = TechDraw.makeCanonicalPoint(
+            view,
+            vertex.Point,
+            False,
+        )
+        self.source_point = App.Vector(
+            canonical.x,
+            canonical.y,
+            canonical.z,
+        )
+
         self._uiPath = App.getHomePath()
         self._uiPath = os.path.join(
             self._uiPath, "Mod/TechDraw/TechDrawTools/Gui/TaskAddOffsetVertex.ui"
         )
         self.form = Gui.PySideUic.loadUi(self._uiPath)
         self.form.setWindowTitle(translate("TechDraw_AddOffsetVertex", "Offset Vertex"))
-        self.view = view
-        self.vertex = vertex
         self._previewTag = None
         self.form.dSpinBoxX.valueChanged.connect(self.onOffsetChanged)
         self.form.dSpinBoxY.valueChanged.connect(self.onOffsetChanged)
@@ -56,28 +87,66 @@ class TaskAddOffsetVertex:
             sub = sel[0].SubElementNames[0]
             self.form.le_SourceVertex.setText(f"{view.Label}.{sub}")
 
-        App.ActiveDocument.openTransaction("Add offset vertex")
+        self.transaction_id = int(
+            self.gui_document.openCommand("Add offset vertex")
+        )
+        if (
+            self.transaction_id == 0
+            or self.document.getBookedTransactionID()
+            != self.transaction_id
+        ):
+            raise RuntimeError(
+                "Could not open the offset-vertex task"
+            )
+
+    def _resolve_view(self):
+        try:
+            if App.getDocument(self.document.Name) is not self.document:
+                return None
+        except (NameError, ReferenceError, RuntimeError):
+            return None
+        view = self.document.getObject(self.view_name)
+        page = self.document.getObject(self.page_name)
+        if (
+            view is None
+            or page is None
+            or not view.isDerivedFrom("TechDraw::DrawViewPart")
+            or view.findParentPage() is not page
+        ):
+            return None
+        return view
 
     def onOffsetChanged(self):
-        point = TechDraw.makeCanonicalPoint(self.view, self.vertex.Point, False)
+        view = self._resolve_view()
+        if view is None:
+            return
         offset = App.Vector(self.form.dSpinBoxX.value(), self.form.dSpinBoxY.value(), 0)
         if self._previewTag:
-            self.view.removeCosmeticVertex(self._previewTag)
-        self._previewTag = self.view.makeCosmeticVertex(point + offset)
-        self.view.requestPaint()
+            view.removeCosmeticVertex(self._previewTag)
+        self._previewTag = view.makeCosmeticVertex(
+            self.source_point + offset
+        )
+        view.requestPaint()
 
     def accept(self):
+        view = self._resolve_view()
+        if view is None:
+            return False
         if not self._previewTag:
-            point = TechDraw.makeCanonicalPoint(self.view, self.vertex.Point, False)
             offset = App.Vector(self.form.dSpinBoxX.value(), self.form.dSpinBoxY.value(), 0)
-            self.view.makeCosmeticVertex(point + offset)
-        self.view.requestPaint()
-        Gui.Control.closeDialog()
-        App.ActiveDocument.commitTransaction()
+            self._previewTag = view.makeCosmeticVertex(
+                self.source_point + offset
+            )
+        if not self._previewTag:
+            return False
+        view.requestPaint()
+        return True
 
     def reject(self):
-        if self._previewTag:
-            self.view.removeCosmeticVertex(self._previewTag)
-            self.view.requestPaint()
-        App.ActiveDocument.abortTransaction()
+        # The TaskView closes this exact transaction after the panel has been
+        # removed, so preview geometry is rolled back without touching another
+        # document or invalidating live widgets during teardown.
         return True
+
+    def autoClosedOnDeletedDocument(self):
+        self.transaction_id = 0

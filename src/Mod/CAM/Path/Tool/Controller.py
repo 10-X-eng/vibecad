@@ -27,6 +27,7 @@
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 from Path.Tool.toolbit import ToolBit
 import Path.Base.Generator.toolchange as toolchange
 import Path.Dressup.Utils as PathDressup
@@ -324,6 +325,16 @@ class ToolController:
         if needsRecompute:
             obj.recompute()
 
+    def onChanged(self, obj, prop):
+        if prop != "Tool" or not getattr(obj, "Tool", None):
+            return
+        import PathScripts.PathUtils as PathUtils
+
+        job = PathUtils.findParentJob(obj)
+        if job is not None:
+            PathUtil.markTimelineResource(obj, job)
+            PathUtil.markTimelineResourceTree(obj.Tool, job)
+
     def onDelete(self, obj, arg2=None):
         if hasattr(obj.Tool, "InList") and len(obj.Tool.InList) == 1:
             if hasattr(obj.Tool.Proxy, "onDelete"):
@@ -438,6 +449,9 @@ class ToolController:
 
     def execute(self, obj):
         Path.Log.track(obj.Name)
+        if not PathUtil.activeForOp(obj):
+            obj.Path = Path.Path()
+            return
 
         args = {
             "toolnumber": obj.ToolNumber,
@@ -475,38 +489,129 @@ def Create(
     toolNumber=1,
     assignViewProvider=True,
     assignTool=True,
+    document=None,
+    timelineOwner=None,
 ):
 
     Path.Log.track(name, tool, toolNumber, assignViewProvider, assignTool)
 
-    obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
-    obj.Label = name
-    obj.Proxy = ToolController(obj, assignTool)
+    if document is None:
+        document = FreeCAD.ActiveDocument
+    if document is None:
+        raise RuntimeError("A tool controller requires a document")
+    if (
+        tool is not None
+        and getattr(tool, "Document", None) is not document
+    ):
+        raise RuntimeError(
+            "A tool controller and its tool must share a document"
+        )
+    if (
+        timelineOwner is not None
+        and getattr(timelineOwner, "Document", None) is not document
+    ):
+        raise RuntimeError(
+            "A tool controller and its timeline owner must share a document"
+        )
 
-    if FreeCAD.GuiUp and assignViewProvider:
-        from Path.Tool.Gui.Controller import ViewProvider
+    obj = document.addObject("Path::FeaturePython", name)
+    created_tool = None
+    try:
+        if timelineOwner is not None:
+            PathUtil.markTimelineResource(obj, timelineOwner)
+        obj.Label = name
+        obj.Proxy = ToolController(obj, assignTool)
 
-        ViewProvider(obj.ViewObject)
+        if FreeCAD.GuiUp and assignViewProvider:
+            from Path.Tool.Gui.Controller import ViewProvider
 
-    if assignTool:
-        if not tool:
-            # Create a default endmill tool bit and attach it to a new DocumentObject
-            toolbit = ToolBit.from_shape_id("endmill.fcstd")
-            Path.Log.info(f"Controller.Create: Created toolbit with ID: {toolbit.id}")
-            tool = toolbit.attach_to_doc(doc=FreeCAD.ActiveDocument)
-            if tool.ViewObject:
-                tool.ViewObject.Visibility = False
-        obj.Tool = tool
+            ViewProvider(obj.ViewObject)
 
-        if hasattr(obj.Tool, "SpindleDirection"):
-            obj.SpindleDir = obj.Tool.SpindleDirection
+        if assignTool:
+            if not tool:
+                # Create a default endmill tool bit and attach it to a new
+                # DocumentObject.  This factory owns that object until the
+                # controller is returned successfully.
+                toolbit = ToolBit.from_shape_id("endmill.fcstd")
+                Path.Log.info(
+                    f"Controller.Create: Created toolbit with ID: {toolbit.id}"
+                )
+                tool = toolbit.attach_to_doc(
+                    doc=document,
+                    timeline_owner=timelineOwner,
+                )
+                created_tool = tool
+                if tool.ViewObject:
+                    tool.ViewObject.Visibility = False
+            obj.Tool = tool
 
-    obj.ToolNumber = toolNumber
-    return obj
+            if hasattr(obj.Tool, "SpindleDirection"):
+                obj.SpindleDir = obj.Tool.SpindleDirection
+
+        obj.ToolNumber = toolNumber
+        return obj
+    except BaseException as creation_error:
+        try:
+            object_name = str(obj.Name)
+            created_tool_name = (
+                str(created_tool.Name)
+                if created_tool is not None
+                else ""
+            )
+            release = getattr(
+                getattr(timelineOwner, "Proxy", None),
+                "_releaseInitialTimelineResource",
+                None,
+            )
+            if release is not None:
+                release(obj)
+                if created_tool is not None:
+                    release(created_tool)
+                    for resource in (
+                        PathUtil.timelineVisualResourceGraph(
+                            created_tool
+                        )
+                    ):
+                        release(resource)
+
+            if document.getObject(object_name) is obj:
+                document.removeObject(object_name)
+
+            if created_tool is not None:
+                if (
+                    document.getObject(created_tool_name)
+                    is created_tool
+                ):
+                    proxy = getattr(created_tool, "Proxy", None)
+                    on_delete = getattr(proxy, "onDelete", None)
+                    if callable(on_delete):
+                        on_delete(created_tool)
+                    if (
+                        document.getObject(created_tool_name)
+                        is created_tool
+                    ):
+                        document.removeObject(created_tool_name)
+
+            if document.getObject(object_name) is obj or (
+                created_tool is not None
+                and document.getObject(created_tool_name)
+                is created_tool
+            ):
+                raise RuntimeError(
+                    "A failed tool-controller factory left a live partial object"
+                )
+        except BaseException as cleanup_error:
+            raise cleanup_error from creation_error
+        raise
 
 
 def copyTC(tc, job):
-    newtc = Create(name=tc.Label, tool=tc.Tool, toolNumber=tc.ToolNumber)
+    newtc = Create(
+        name=tc.Label,
+        tool=tc.Tool,
+        toolNumber=tc.ToolNumber,
+        document=job.Document,
+    )
     job.Proxy.addToolController(newtc)
 
     for prop in tc.PropertiesList:
@@ -522,15 +627,33 @@ def copyTC(tc, job):
     return newtc
 
 
-def FromTemplate(template, assignViewProvider=True):
+def FromTemplate(
+    template,
+    assignViewProvider=True,
+    document=None,
+    timelineOwner=None,
+):
     Path.Log.track()
 
     name = template.get(ToolControllerTemplate.Name, ToolControllerTemplate.Label)
-    obj = Create(name, assignViewProvider=True, assignTool=False)
+    obj = Create(
+        name,
+        assignViewProvider=assignViewProvider,
+        assignTool=False,
+        document=document,
+        timelineOwner=timelineOwner,
+    )
     obj.Proxy.setFromTemplate(obj, template)
     if obj.Tool:
         return obj
-    FreeCAD.ActiveDocument.removeObject(obj.Name)
+    release = getattr(
+        getattr(timelineOwner, "Proxy", None),
+        "_releaseInitialTimelineResource",
+        None,
+    )
+    if release is not None:
+        release(obj)
+    obj.Document.removeObject(obj.Name)
     return None
 
 

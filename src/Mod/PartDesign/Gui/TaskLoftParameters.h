@@ -79,7 +79,15 @@ protected:
 
 private:
     void onSelectionChanged(const Gui::SelectionChanges& msg) override;
+    void slotChangedObject(
+        const Gui::ViewProviderDocumentObject& object,
+        const App::Property& property
+    ) override;
+    void slotRelabelObject(
+        const Gui::ViewProviderDocumentObject& object
+    ) override;
     void updateUI();
+    void rebuildSectionRows();
     bool referenceSelected(const Gui::SelectionChanges& msg) const;
     void removeFromListWidget(QListWidget* w, QString name);
     void clearButtons(const selectionModes notThis = none);

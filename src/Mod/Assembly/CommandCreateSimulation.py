@@ -32,11 +32,12 @@ import FreeCAD as App
 from pivy import coin
 from Part import LineSegment, Compound
 
+from PySide import QtCore
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
 if App.GuiUp:
     import FreeCADGui as Gui
-    from PySide import QtCore, QtGui, QtWidgets
+    from PySide import QtGui, QtWidgets
     from PySide.QtWidgets import (
         QPushButton,
         QMenu,
@@ -54,6 +55,7 @@ if App.GuiUp:
 
 import UtilsAssembly
 import Preferences
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 translate = App.Qt.translate
 
@@ -88,15 +90,20 @@ class CommandCreateSimulation:
         return len(joints) > 0
 
     def Activated(self):
+        if not self.IsActive():
+            return
         assembly = UtilsAssembly.activeAssembly()
         if not assembly:
             return
 
-        self.panel = TaskAssemblyCreateSimulation()
-        dialog = Gui.Control.showDialog(self.panel)
+        self.panel = TaskAssemblyCreateSimulation(
+            document_name=assembly.Document.Name,
+            assembly_name=assembly.Name,
+        )
+        dialog = Gui.Control.showDialog(self.panel, self.panel.gui_doc)
         if dialog is not None:
             dialog.setAutoCloseOnDeletedDocument(True)
-            dialog.setDocumentName(App.ActiveDocument.Name)
+            dialog.setDocumentName(assembly.Document.Name)
 
 
 ######### Simulation Object ###########
@@ -172,6 +179,18 @@ class Simulation:
         feaPy.jFramesPerSecond = 30
 
         self.motionsChangedCallback = None
+        UtilsAssembly.markTimelineOperationEditor(
+            feaPy,
+            "Assembly_EditHistoryOperation",
+        )
+
+    def onDocumentRestored(self, feaPy):
+        UtilsAssembly.markTimelineOperationEditor(
+            feaPy,
+            "Assembly_EditHistoryOperation",
+        )
+        for motion in feaPy.Group:
+            UtilsAssembly.markTimelineResource(motion, feaPy)
 
     def dumps(self):
         return None
@@ -180,9 +199,15 @@ class Simulation:
         return None
 
     def onChanged(self, feaPy, prop):
-        if prop == "Group" and hasattr(self, "motionsChangedCallback"):
-            if self.motionsChangedCallback is not None:
-                self.motionsChangedCallback()
+        if prop != "Group":
+            return
+        for motion in feaPy.Group:
+            UtilsAssembly.markTimelineResource(motion, feaPy)
+        if (
+            hasattr(self, "motionsChangedCallback")
+            and self.motionsChangedCallback is not None
+        ):
+            self.motionsChangedCallback()
 
     def setMotionsChangedCallback(self, callback):
         self.motionsChangedCallback = callback
@@ -193,10 +218,7 @@ class Simulation:
 
     def getAssembly(self, feaPy):
         assert feaPy.isDerivedFrom("App::FeaturePython"), "Type error"
-        for obj in feaPy.InList:
-            if obj.isDerivedFrom("Assembly::AssemblyObject"):
-                return obj
-        return None
+        return UtilsAssembly.findOwningAssembly(feaPy)
 
 
 class ViewProviderSimulation:
@@ -260,23 +282,39 @@ class ViewProviderSimulation:
         return self.app_obj.Group
 
     def doubleClicked(self, vpDoc):
+        operation = vpDoc.Object
+        if not UtilsAssembly.isTimelineOperationActive(operation):
+            return False
+        assembly = operation.Proxy.getAssembly(operation)
+        if (
+            assembly is None
+            or not UtilsAssembly.isTimelineOperationActive(assembly)
+        ):
+            return False
+
         task = Gui.Control.activeTaskDialog()
         if task:
             task.reject()
-
-        assembly = vpDoc.Object.Proxy.getAssembly(vpDoc.Object)
-
-        if assembly is None:
-            return False
+            if Gui.Control.activeTaskDialog() is not None:
+                return False
 
         if UtilsAssembly.activeAssembly() != assembly:
-            Gui.ActiveDocument.setEdit(assembly)
+            gui_document = Gui.getDocument(assembly.Document.Name)
+            if gui_document is None:
+                return False
+            gui_document.setEdit(assembly)
+            if UtilsAssembly.activeAssembly() is not assembly:
+                return False
 
-        panel = TaskAssemblyCreateSimulation(vpDoc.Object)
-        dialog = Gui.Control.showDialog(panel)
+        panel = TaskAssemblyCreateSimulation(
+            operation,
+            document_name=assembly.Document.Name,
+            existing_transaction_id=assembly.Document.getBookedTransactionID(),
+        )
+        dialog = Gui.Control.showDialog(panel, panel.gui_doc)
         if dialog is not None:
             dialog.setAutoCloseOnDeletedDocument(True)
-            dialog.setDocumentName(App.ActiveDocument.Name)
+            dialog.setDocumentName(assembly.Document.Name)
 
         return True
 
@@ -293,6 +331,20 @@ MotionTypes = [
 ]
 
 
+def _motionTypeMatchesJoint(motion_type, joint):
+    if motion_type not in MotionTypes or joint is None:
+        return False
+
+    joint_type = getattr(joint, "JointType", "")
+    if joint_type == "Revolute":
+        return motion_type == "Angular"
+    if joint_type == "Slider":
+        return motion_type == "Linear"
+    if joint_type == "Cylindrical":
+        return True
+    return False
+
+
 class Motion:
     def __init__(self, feaPy, motionType=MotionTypes[0], joint=None, formula=""):
         feaPy.Proxy = self
@@ -306,6 +358,9 @@ class Motion:
 
     def onDocumentRestored(self, feaPy):
         self.createProperties(feaPy)
+        simulation = self.getSimulation(feaPy)
+        if simulation is not None:
+            UtilsAssembly.markTimelineResource(feaPy, simulation)
 
     def createProperties(self, feaPy):
         if not hasattr(feaPy, "Joint"):
@@ -413,25 +468,142 @@ class ViewProviderMotion:
         return None
 
     def doubleClicked(self, vpDoc):
-        self.openEditDialog()
+        return self.openEditDialog()
 
-    def openEditDialog(self):
-        assembly = self.getAssembly()
+    def openEditDialog(self, existing_transaction_id=0):
+        motion = self.app_obj
+        document = getattr(motion, "Document", None)
+        if (
+            not UtilsAssembly._document_is_open(document)
+            or document.getObject(motion.Name) is not motion
+            or not UtilsAssembly.isTimelineOperationActive(motion)
+        ):
+            return False
+        document_uid = str(getattr(document, "Uid", "") or "")
+        motion_identity = (
+            str(motion.Name),
+            int(motion.ID),
+            motion,
+        )
 
-        if assembly is None:
+        assembly = self.getAssembly(activate=False)
+
+        if (
+            assembly is None
+            or not UtilsAssembly.isTimelineOperationActive(assembly)
+        ):
+            return False
+        assembly_identity = (
+            str(assembly.Name),
+            int(assembly.ID),
+            assembly,
+        )
+
+        gui_document = Gui.getDocument(document.Name)
+        if gui_document is None:
             return False
 
+        booked_transaction_id = int(document.getBookedTransactionID())
+        existing_transaction_id = int(existing_transaction_id or 0)
+        if existing_transaction_id:
+            if (
+                booked_transaction_id != existing_transaction_id
+                or not Gui.Control.ownsCommandTransaction(
+                    gui_document,
+                    existing_transaction_id,
+                )
+            ):
+                return False
+            owned_transaction = None
+        else:
+            if (
+                booked_transaction_id
+                or document.HasPendingTransaction
+                or Gui.Control.activeDialog(gui_document)
+            ):
+                return False
+            owned_transaction = _OwnedDocumentTransaction(
+                document,
+                "Edit Assembly motion",
+            )
+
         joint = None
-        if self.app_obj.Joint is not None:
-            joint = self.app_obj.Joint[0]
+        if motion.Joint is not None:
+            joint = motion.Joint[0]
 
-        dialog = MotionEditDialog(assembly, self.app_obj.MotionType, joint, self.app_obj.Formula)
-        if dialog.exec_():
-            self.app_obj.MotionType = dialog.motionType
-            self.app_obj.Joint = dialog.joint
-            self.app_obj.Formula = dialog.formula
+        try:
+            dialog = MotionEditDialog(
+                assembly,
+                motion.MotionType,
+                joint,
+                motion.Formula,
+            )
+            accepted = bool(dialog.exec_())
+            if accepted:
+                motion_name, motion_id, exact_motion = (
+                    motion_identity
+                )
+                assembly_name, assembly_id, exact_assembly = (
+                    assembly_identity
+                )
+                if (
+                    not UtilsAssembly._document_is_open(document)
+                    or str(getattr(document, "Uid", "") or "")
+                    != document_uid
+                    or document.getObject(motion_name)
+                    is not exact_motion
+                    or int(exact_motion.ID) != motion_id
+                    or document.getObject(assembly_name)
+                    is not exact_assembly
+                    or int(exact_assembly.ID) != assembly_id
+                    or not UtilsAssembly.isTimelineOperationActive(
+                        exact_assembly
+                    )
+                    or not UtilsAssembly.isTimelineOperationActive(motion)
+                ):
+                    raise RuntimeError(
+                        "The Assembly motion changed identity while editing"
+                    )
+                selected_joint = dialog.joint
+                if (
+                    selected_joint is None
+                    or selected_joint.Document is not document
+                    or document.getObject(selected_joint.Name)
+                    is not selected_joint
+                    or int(selected_joint.ID) <= 0
+                    or not UtilsAssembly.isTimelineOperationActive(
+                        selected_joint
+                    )
+                    or selected_joint not in assembly.Joints
+                ):
+                    raise RuntimeError(
+                        "The Assembly motion requires one active joint "
+                        "from its exact assembly"
+                    )
+                if not _motionTypeMatchesJoint(
+                    dialog.motionType,
+                    selected_joint,
+                ):
+                    raise RuntimeError(
+                        "The Assembly motion type is incompatible with "
+                        "the selected joint"
+                    )
+                motion.MotionType = dialog.motionType
+                motion.Joint = selected_joint
+                motion.Formula = dialog.formula
+                self.updateLabel()
+                document.recompute()
 
-            self.updateLabel()
+            if owned_transaction is not None:
+                if accepted:
+                    owned_transaction.commit()
+                else:
+                    owned_transaction.abort()
+            return accepted
+        except Exception:
+            if owned_transaction is not None:
+                owned_transaction.abort()
+            raise
 
     def updateLabel(self):
         if self.app_obj.Joint is None:
@@ -443,14 +615,17 @@ class ViewProviderMotion:
             label=self.app_obj.Joint[0].Label, type_=translate("Assembly", typeStr)
         )
 
-    def getAssembly(self):
+    def getAssembly(self, activate=True):
         assembly = self.app_obj.Proxy.getAssembly(self.app_obj)
 
         if assembly is None:
             return None
 
-        if UtilsAssembly.activeAssembly() != assembly:
-            Gui.ActiveDocument.setEdit(assembly)
+        if activate and UtilsAssembly.activeAssembly() != assembly:
+            gui_document = Gui.getDocument(assembly.Document.Name)
+            if gui_document is None:
+                return None
+            gui_document.setEdit(assembly)
 
         return assembly
 
@@ -777,21 +952,95 @@ SLOPE defines the steepness of the transition between 0 and H1 and H2 to 0 about
 
 ######### Create Simulation Task ###########
 class TaskAssemblyCreateSimulation(QtCore.QObject):
-    def __init__(self, simFeaturePy=None):
+    def __init__(
+        self,
+        simFeaturePy=None,
+        document_name=None,
+        existing_transaction_id=0,
+        assembly_name=None,
+    ):
         super().__init__()
-        Gui.Selection.clearSelection()
 
-        self.assembly = UtilsAssembly.activeAssembly()
+        if simFeaturePy is not None:
+            operation_document = getattr(simFeaturePy, "Document", None)
+            if (
+                not UtilsAssembly._document_is_open(operation_document)
+                or operation_document.getObject(simFeaturePy.Name)
+                is not simFeaturePy
+                or not UtilsAssembly.isTimelineOperationActive(simFeaturePy)
+            ):
+                raise RuntimeError(
+                    "The simulation operation is not active and live"
+                )
+            self.assembly = simFeaturePy.Proxy.getAssembly(simFeaturePy)
+        elif document_name is not None and assembly_name is not None:
+            try:
+                task_document = App.getDocument(document_name)
+            except (NameError, RuntimeError):
+                task_document = None
+            self.assembly = (
+                task_document.getObject(assembly_name)
+                if task_document is not None
+                else None
+            )
+            if (
+                self.assembly is None
+                or not self.assembly.isDerivedFrom(
+                    "Assembly::AssemblyObject"
+                )
+                or UtilsAssembly.activeAssembly() is not self.assembly
+            ):
+                raise RuntimeError(
+                    "The simulation task lost its exact active assembly"
+                )
+        else:
+            self.assembly = UtilsAssembly.activeAssembly()
+        if self.assembly is None:
+            raise RuntimeError("An active assembly is required for a simulation")
+        if not UtilsAssembly.isTimelineOperationActive(self.assembly):
+            raise RuntimeError(
+                "The simulation assembly is not active in History"
+            )
 
-        self.initialPlcs = UtilsAssembly.saveAssemblyPartsPlacements(self.assembly)
+        self.initialPlcs = (
+            UtilsAssembly._saveExactAssemblyPartPlacements(
+                self.assembly
+            )
+        )
 
         self.doc = self.assembly.Document
-        self.gui_doc = Gui.getDocument(self.doc)
+        if document_name is not None and self.doc.Name != document_name:
+            raise RuntimeError("The simulation task document changed before launch")
+        if simFeaturePy is not None and simFeaturePy.Document is not self.doc:
+            raise RuntimeError("The simulation does not belong to the assembly")
+        self.document_uid = str(
+            getattr(self.doc, "Uid", "") or ""
+        )
+        Gui.Selection.clearSelection(self.doc.Name)
+        self.assembly_identity = (
+            str(self.assembly.Name),
+            int(self.assembly.ID),
+            self.assembly,
+        )
+
+        self.gui_doc = Gui.getDocument(self.doc.Name)
+        if self.gui_doc is None:
+            raise RuntimeError("The simulation task has no GUI document")
 
         self.view = self.gui_doc.activeView()
 
-        if not self.assembly or not self.view or not self.doc:
-            return
+        if self.view is None:
+            raise RuntimeError("The simulation task has no active 3D view")
+
+        self.transaction = UtilsAssembly._TaskTransactionOwner(
+            self.doc,
+            (
+                "Edit " + simFeaturePy.Label + " Simulation"
+                if simFeaturePy
+                else "Create Simulation"
+            ),
+            existing_transaction_id,
+        )
 
         self.runKinematicsTimer = QtCore.QTimer()
         self.runKinematicsTimer.setSingleShot(True)
@@ -828,13 +1077,23 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.SaveAnimationButton.clicked.connect(self.saveAnimation)
         self.form.SaveAnimationButton.hide()
 
+        self.creating_timeline_operation = simFeaturePy is None
         if simFeaturePy:
             self.simFeaturePy = simFeaturePy
-            Gui.ActiveDocument.openCommand("Edit " + simFeaturePy.Label + " Simulation")
+            self.timeline_resource_edit = (
+                UtilsAssembly.stageTimelineResourceGroupEdit(
+                    self.simFeaturePy
+                )
+            )
             self.onMotionsChanged()
         else:
-            Gui.ActiveDocument.openCommand("Create Simulation")
+            self.timeline_resource_edit = None
             self.createSimulationObject()
+        self.simulation_identity = (
+            str(self.simFeaturePy.Name),
+            int(self.simFeaturePy.ID),
+            self.simFeaturePy,
+        )
 
         self.setUiInitialValues()
 
@@ -847,6 +1106,42 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.deltaTime = 1.0 / self.fps
         self.startTime = time.time()
         self.index = 0
+
+    def _ownsLiveTaskContext(self):
+        assembly_name, assembly_id, exact_assembly = (
+            self.assembly_identity
+        )
+        simulation_name, simulation_id, exact_simulation = (
+            self.simulation_identity
+        )
+        try:
+            return (
+                self.transaction.owns_current()
+                and UtilsAssembly._document_is_open(self.doc)
+                and str(getattr(self.doc, "Uid", "") or "")
+                == self.document_uid
+                and self.doc.getObject(assembly_name)
+                is exact_assembly
+                and int(exact_assembly.ID) == assembly_id
+                and self.assembly is exact_assembly
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.assembly
+                )
+                and self.doc.getObject(simulation_name)
+                is exact_simulation
+                and int(exact_simulation.ID) == simulation_id
+                and self.simFeaturePy is exact_simulation
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.simFeaturePy
+                )
+                and UtilsAssembly.findOwningAssembly(
+                    self.simFeaturePy,
+                    include_inactive=True,
+                )
+                is self.assembly
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            return False
 
     def setUiInitialValues(self):
         self.form.TimeStartSpinBox.setProperty("rawValue", self.simFeaturePy.aTimeStart.Value)
@@ -866,42 +1161,106 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         spinbox.setProperty("value", q)
 
     def accept(self):
+        if not self._ownsLiveTaskContext():
+            App.Console.PrintError(
+                "Could not finalize the simulation: "
+                "the task no longer owns its exact Assembly objects and "
+                "document transaction\n"
+            )
+            return False
+        try:
+            UtilsAssembly._restoreExactAssemblyPartPlacements(
+                self.assembly,
+                self.initialPlcs,
+            )
+            if self.creating_timeline_operation:
+                self.doc.finalizeProvisionalTimelineOperationBlock(
+                    self.simFeaturePy,
+                    [*self.simFeaturePy.Group, self.simFeaturePy],
+                )
+            else:
+                UtilsAssembly.finalizeTimelineResourceGroupEdit(
+                    self.simFeaturePy,
+                    self.timeline_resource_edit,
+                    list(self.simFeaturePy.Group),
+                )
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not finalize the simulation: "
+                f"{error}\n"
+            )
+            return False
+
         self.deactivate()
-        UtilsAssembly.restoreAssemblyPartsPlacements(self.assembly, self.initialPlcs)
-        Gui.ActiveDocument.commitCommand()
         return True
 
     def reject(self):
         self.deactivate()
-        Gui.ActiveDocument.abortCommand()
         return True
+
+    def autoClosedOnDeletedDocument(self):
+        self.animationTimer.stop()
+        self.transaction.document_deleted()
 
     def deactivate(self):
         self.animationTimer.stop()
-        self.simFeaturePy.Proxy.setMotionsChangedCallback(None)
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        simulation_name, simulation_id, exact_simulation = (
+            self.simulation_identity
+        )
+        if (
+            UtilsAssembly._document_is_open(self.doc)
+            and str(getattr(self.doc, "Uid", "") or "")
+            == self.document_uid
+            and self.doc.getObject(simulation_name)
+            is exact_simulation
+            and int(exact_simulation.ID) == simulation_id
+        ):
+            exact_simulation.Proxy.setMotionsChangedCallback(None)
 
     def onTimeStartChanged(self, quantity):
+        if not self._ownsLiveTaskContext():
+            return
         self.simFeaturePy.aTimeStart = self.form.TimeStartSpinBox.property("rawValue")
 
     def onTimeEndChanged(self, quantity):
+        if not self._ownsLiveTaskContext():
+            return
         self.simFeaturePy.bTimeEnd = self.form.TimeEndSpinBox.property("rawValue")
 
     def onTimeStepOutputChanged(self, quantity):
+        if not self._ownsLiveTaskContext():
+            return
         self.simFeaturePy.cTimeStepOutput = self.form.TimeStepOutputSpinBox.property("rawValue")
 
     def onGlobalErrorToleranceChanged(self, quantity):
+        if not self._ownsLiveTaskContext():
+            return
         self.simFeaturePy.fGlobalErrorTolerance = self.form.GlobalErrorToleranceSpinBox.property(
             "rawValue"
         )
 
     def onItemDoubleClicked(self, item):
-        row = self.form.motionList.row(item)
-        if row < len(self.simFeaturePy.Group):
-            motion = self.simFeaturePy.Group[row]
-            motion.ViewObject.Proxy.openEditDialog()
+        if not self._ownsLiveTaskContext():
+            return
+        identity = item.data(QtCore.Qt.UserRole)
+        if (
+            not isinstance(identity, tuple)
+            or len(identity) != 2
+        ):
+            return
+        motion = self.doc.getObject(identity[0])
+        if (
+            motion is None
+            or int(motion.ID) != int(identity[1])
+            or motion not in self.simFeaturePy.Group
+            or not UtilsAssembly.isTimelineOperationActive(motion)
+        ):
             self.onMotionsChanged()
+            return
+        motion.ViewObject.Proxy.openEditDialog(
+            self.transaction.transaction_id,
+        )
+        self.onMotionsChanged()
 
     def createSimulationObject(self):
         sim_group = UtilsAssembly.getSimulationGroup(self.assembly)
@@ -910,6 +1269,18 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         ViewProviderSimulation(self.simFeaturePy.ViewObject)
 
     def createMotionObject(self, motionType, joint, formula):
+        if (
+            not self._ownsLiveTaskContext()
+            or not _motionTypeMatchesJoint(motionType, joint)
+            or joint.Document is not self.doc
+            or self.doc.getObject(joint.Name) is not joint
+            or joint not in self.assembly.Joints
+            or not UtilsAssembly.isTimelineOperationActive(joint)
+        ):
+            raise RuntimeError(
+                "A motion requires one compatible active joint from this "
+                "exact assembly"
+            )
         motion = self.assembly.newObject("App::FeaturePython", "Motion")
         Motion(motion, motionType, joint, formula)
         ViewProviderMotion(motion.ViewObject)
@@ -917,13 +1288,28 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         listOfMotions = self.simFeaturePy.Group
         listOfMotions.append(motion)
         self.simFeaturePy.Group = listOfMotions
+        UtilsAssembly.markTimelineResource(motion, self.simFeaturePy)
 
     def onMotionsChanged(self):
+        if (
+            hasattr(self, "simulation_identity")
+            and not self._ownsLiveTaskContext()
+        ):
+            return
         self.form.motionList.clear()
         for motion in self.simFeaturePy.Group:
-            self.form.motionList.addItem(motion.Label)
+            if not UtilsAssembly.isTimelineOperationActive(motion):
+                continue
+            item = QtWidgets.QListWidgetItem(motion.Label)
+            item.setData(
+                QtCore.Qt.UserRole,
+                (str(motion.Name), int(motion.ID)),
+            )
+            self.form.motionList.addItem(item)
 
     def runKinematics(self):
+        if not self._ownsLiveTaskContext():
+            return
         self.assembly.generateSimulation(self.simFeaturePy)
         nFrms = self.assembly.numberOfFrames()
         self.form.frameSlider.setMaximum(nFrms - 1)
@@ -932,12 +1318,16 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.SaveAnimationButton.show()
 
     def onFrameChanged(self, val):
+        if not self._ownsLiveTaskContext():
+            return
         self.assembly.updateForFrame(val)
         self.form.FrameLabel.setText(translate("Assembly", "Frame" + " " + str(val)))
         time = float(val * self.simFeaturePy.cTimeStepOutput)
         self.form.FrameTimeLabel.setText(f"{time:.2f} s")
 
     def onFramesPerSecondChanged(self):
+        if not self._ownsLiveTaskContext():
+            return
         self.simFeaturePy.jFramesPerSecond = self.form.FramesPerSecondSpinBox.value()
 
     def playBackward(self):
@@ -953,6 +1343,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
 
     def animationTimerStart(self):
         self.animationTimer.stop()
+        if not self._ownsLiveTaskContext():
+            return
         self.currentFrm = self.form.frameSlider.value()
         self.startFrm = 1
         self.endFrm = self.form.frameSlider.maximum()
@@ -967,6 +1359,9 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.animationTimer.start()
 
     def playAnimation(self):
+        if not self._ownsLiveTaskContext():
+            self.animationTimer.stop()
+            return
         range_ = self.endFrm - self.startFrm
         offset = self.currentFrm - self.startFrm
         count = int((time.time() - self.startTime) / self.deltaTime)
@@ -974,11 +1369,15 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.setFrameValue(self.index)
 
     def displayLastFrame(self):
+        if not self._ownsLiveTaskContext():
+            return
         nFrms = self.assembly.numberOfFrames()
         self.setFrameValue(nFrms - 1)
 
     def stepBackward(self):
         self.animationTimer.stop()
+        if not self._ownsLiveTaskContext():
+            return
 
         nextFrm = self.form.frameSlider.value() - 1
         if nextFrm < 1:
@@ -987,6 +1386,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
 
     def stepForward(self):
         self.animationTimer.stop()
+        if not self._ownsLiveTaskContext():
+            return
 
         nextFrm = self.form.frameSlider.value() + 1
         if nextFrm > self.form.frameSlider.maximum():
@@ -1005,6 +1406,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.animationTimer.stop()
 
     def addMotionClicked(self):
+        if not self._ownsLiveTaskContext():
+            return
         dialog = MotionEditDialog(self.assembly)
         if dialog.exec_():
             self.createMotionObject(dialog.motionType, dialog.joint, dialog.formula)
@@ -1026,18 +1429,36 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         return super().eventFilter(watched, event)
 
     def deleteSelectedMotions(self):
+        if not self._ownsLiveTaskContext():
+            return
         selected_indexes = self.form.motionList.selectedIndexes()
         sorted_indexes = sorted(selected_indexes, key=lambda x: x.row(), reverse=True)
         for index in sorted_indexes:
-            row = index.row()
-            if row < len(self.simFeaturePy.Group):
-                motion = self.simFeaturePy.Group[row]
-                # First remove the link from the viewObj
-                self.simFeaturePy.Group.remove(motion)
-                # Delete the object
-                motion.Document.removeObject(motion.Name)
+            item = self.form.motionList.item(index.row())
+            identity = item.data(QtCore.Qt.UserRole)
+            if (
+                not isinstance(identity, tuple)
+                or len(identity) != 2
+            ):
+                continue
+            motion = self.doc.getObject(identity[0])
+            if (
+                motion is None
+                or int(motion.ID) != int(identity[1])
+                or motion not in self.simFeaturePy.Group
+                or not UtilsAssembly.isTimelineOperationActive(
+                    motion
+                )
+            ):
+                continue
+            group = list(self.simFeaturePy.Group)
+            group.remove(motion)
+            self.simFeaturePy.Group = group
+            self.doc.removeObject(motion.Name)
 
     def saveAnimation(self):
+        if not self._ownsLiveTaskContext():
+            return
         num_frames = self.assembly.numberOfFrames()
         if num_frames <= 1:
             QMessageBox.warning(
@@ -1059,7 +1480,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             return  # User cancelled
 
         # Get parameters
-        view = Gui.ActiveDocument.ActiveView
+        view = self.view
         width, height = view.getSize()
         # Ensure dimensions are even, as required by many video codecs
         if width % 2 != 0:

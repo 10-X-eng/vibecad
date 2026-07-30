@@ -73,8 +73,11 @@ class ShapeString(gui_base.GuiCommandBase):
         self.ui = task_shapestring.ShapeStringTaskPanelCmd(self)
         self.call = self.view.addEventCallback("SoEvent", self.ui.action)
         _toolmsg(translate("draft", "Pick ShapeString location point"))
-        task = Gui.Control.showDialog(self.ui)
-        task.setDocumentName(Gui.ActiveDocument.Document.Name)
+        task = Gui.Control.showDialog(
+            self.ui,
+            Gui.getDocument(self.doc.Name),
+        )
+        task.setDocumentName(self.doc.Name)
         task.setAutoCloseOnDeletedDocument(True)
         self.ui.update_hints()
 
@@ -86,8 +89,7 @@ class ShapeString(gui_base.GuiCommandBase):
             # the view has been deleted already
             pass
         self.call = None
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        self.close_task_dialog()
         super().finish()
 
 

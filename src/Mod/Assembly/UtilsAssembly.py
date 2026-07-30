@@ -54,7 +54,10 @@ def activePartOrAssembly():
 def activeAssembly():
     active_assembly = activePartOrAssembly()
     if active_assembly is not None and active_assembly.isDerivedFrom("Assembly::AssemblyObject"):
-        if active_assembly.ViewObject.isInEditMode():
+        if (
+            active_assembly.ViewObject.isInEditMode()
+            and isTimelineOperationActive(active_assembly)
+        ):
             return active_assembly
 
     return None
@@ -63,14 +66,793 @@ def activeAssembly():
 def activePart():
     active_part = activePartOrAssembly()
 
-    if active_part is not None and not active_part.isDerivedFrom("Assembly::AssemblyObject"):
+    if (
+        active_part is not None
+        and not active_part.isDerivedFrom("Assembly::AssemblyObject")
+        and isTimelineOperationActive(active_part)
+    ):
         return active_part
 
     return None
 
 
 def isAssemblyCommandActive():
-    return activeAssembly() is not None and not Gui.Control.activeDialog()
+    assembly = activeAssembly()
+    if assembly is None or Gui.Control.activeDialog():
+        return False
+
+    document = assembly.Document
+    return (
+        document is not None
+        and document.getBookedTransactionID() == 0
+        and not document.HasPendingTransaction
+    )
+
+
+def _document_is_open(document):
+    """Return whether *document* is still the exact live application document."""
+
+    if document is None:
+        return False
+    try:
+        return App.getDocument(document.Name) is document
+    except (NameError, RuntimeError):
+        return False
+
+
+def _ensure_timeline_property(obj, type_id, name, description):
+    if name in obj.PropertiesList:
+        actual_type = obj.getTypeIdOfProperty(name)
+        if actual_type != type_id:
+            raise TypeError(
+                f"{obj.Name}.{name} must be {type_id}, not {actual_type}"
+            )
+    else:
+        obj.addProperty(
+            type_id,
+            name,
+            "Timeline",
+            description,
+            attr=16,
+            hidden=True,
+            locked=True,
+        )
+
+    # Imported and copied objects can retain a correctly typed metadata
+    # property without the complete internal-storage contract.  History
+    # publication accepts existing metadata only when all three statuses are
+    # present, so normalize the property itself as well as its editor mode.
+    obj.setPropertyStatus(
+        name,
+        ("Hidden", "LockDynamic", "NoRecompute"),
+    )
+    obj.setEditorMode(name, 2)
+
+
+def markTimelineOperation(obj):
+    """Persist one user-visible Assembly history operation."""
+
+    if obj is None:
+        raise ValueError("An Assembly timeline operation is required")
+    _ensure_timeline_property(
+        obj,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    if "VibeCADTimelineOwner" in obj.PropertiesList:
+        _ensure_timeline_property(
+            obj,
+            "App::PropertyLinkHidden",
+            "VibeCADTimelineOwner",
+            "Assembly operation which owns this implementation object",
+        )
+        obj.VibeCADTimelineOwner = None
+    obj.VibeCADTimelineRole = "operation"
+    return obj
+
+
+def markTimelineOperationEditor(obj, command_name):
+    """Persist the approved command which edits one Assembly operation."""
+
+    markTimelineOperation(obj)
+    if not isinstance(command_name, str) or not command_name:
+        raise ValueError("An Assembly timeline editor command is required")
+    _ensure_timeline_property(
+        obj,
+        "App::PropertyString",
+        "VibeCADTimelineEditCommand",
+        "Command which edits this document timeline operation",
+    )
+    obj.VibeCADTimelineEditCommand = command_name
+    return obj
+
+
+def markTimelineResource(obj, owner):
+    """Persist one Assembly implementation object under its operation."""
+
+    if obj is None or owner is None or obj is owner:
+        raise ValueError(
+            "An Assembly timeline resource requires a distinct owner"
+        )
+    if obj.Document is not owner.Document:
+        raise ValueError(
+            "An Assembly timeline resource and its owner must share a document"
+        )
+    _ensure_timeline_property(
+        obj,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    _ensure_timeline_property(
+        obj,
+        "App::PropertyLinkHidden",
+        "VibeCADTimelineOwner",
+        "Assembly operation which owns this implementation object",
+    )
+    obj.VibeCADTimelineOwner = owner
+    obj.VibeCADTimelineRole = "resource"
+    return obj
+
+
+def _assemblyOccurrenceResources(occurrence):
+    """Return the exact native implementation graph owned by an occurrence.
+
+    ``Assembly::AssemblyLink`` persists the exact source document UID, object
+    ID, and object name on every component representation, link element,
+    nested occurrence, joint group, and joint clone it manages.  Only those
+    marked objects are part of the native synchronization graph.  This keeps
+    unrelated resources in the occurrence's groups out of AssemblyLink's
+    replacement authority.
+    """
+
+    if occurrence is None or occurrence.TypeId != "Assembly::AssemblyLink":
+        return []
+
+    document = occurrence.Document
+    resources = []
+    seen = {occurrence}
+    pending = [occurrence]
+    while pending:
+        owner = pending.pop()
+        children = []
+        if owner.isDerivedFrom("Assembly::AssemblyLink"):
+            children.extend(list(owner.Group))
+        elif owner.isDerivedFrom("App::DocumentObjectGroup"):
+            children.extend(list(owner.Group))
+        if owner.isDerivedFrom("App::Link") and owner.ElementCount > 0:
+            children.extend(list(owner.ElementList))
+
+        for child in children:
+            if (
+                child is None
+                or child in seen
+                or child.Document is not document
+                or document.getObject(child.Name) is not child
+                or not _isAssemblyLinkManagedResource(child)
+            ):
+                continue
+            seen.add(child)
+            resources.append(child)
+            pending.append(child)
+
+    return resources
+
+
+def _isAssemblyLinkManagedResource(obj):
+    """Return whether native AssemblyLink source identity is complete."""
+
+    if obj is None:
+        return False
+    expected = {
+        "VibeCADAssemblySourceDocument": "App::PropertyString",
+        "VibeCADAssemblySourceObjectId": "App::PropertyInteger",
+        "VibeCADAssemblySourceObjectName": "App::PropertyString",
+    }
+    present = [
+        name in obj.PropertiesList
+        for name in expected
+    ]
+    if not any(present):
+        return False
+    if not all(present):
+        raise RuntimeError(
+            f"{obj.Name} has incomplete AssemblyLink source identity"
+        )
+    for name, type_id in expected.items():
+        if obj.getTypeIdOfProperty(name) != type_id:
+            raise TypeError(
+                f"{obj.Name}.{name} must be {type_id}"
+            )
+    return (
+        bool(obj.VibeCADAssemblySourceDocument)
+        and int(obj.VibeCADAssemblySourceObjectId) >= 0
+        and bool(obj.VibeCADAssemblySourceObjectName)
+    )
+
+
+def _resolveAssemblyLinkManagedSource(obj):
+    """Resolve one managed clone's exact persisted source identity."""
+
+    if not _isAssemblyLinkManagedResource(obj):
+        return None
+    source_documents = [
+        document
+        for document in App.listDocuments().values()
+        if str(getattr(document, "Uid", "") or "")
+        == str(obj.VibeCADAssemblySourceDocument)
+    ]
+    if len(source_documents) != 1:
+        return None
+    source_document = source_documents[0]
+    source = source_document.getObject(
+        int(obj.VibeCADAssemblySourceObjectId)
+    )
+    if (
+        source is None
+        or source.Document is not source_document
+        or source_document.getObject(source.Name) is not source
+        or source.Name != obj.VibeCADAssemblySourceObjectName
+    ):
+        return None
+    return source
+
+
+def _assemblyObjectIsTimelineActive(obj, visiting):
+    """Apply native History state plus exact Assembly link-source state."""
+
+    if obj is None:
+        return False
+    document = getattr(obj, "Document", None)
+    if not _document_is_open(document):
+        return False
+    if not bool(
+        document.isObjectUsableAtCurrentTimelinePosition(obj)
+    ):
+        return False
+
+    identity = (
+        str(getattr(document, "Uid", "") or ""),
+        int(getattr(obj, "ID", -1)),
+        str(getattr(obj, "Name", "") or ""),
+    )
+    if identity in visiting:
+        return False
+    visiting.add(identity)
+    try:
+        property_names = set(
+            getattr(obj, "PropertiesList", ())
+        )
+        managed_names = {
+            "VibeCADAssemblySourceDocument",
+            "VibeCADAssemblySourceObjectId",
+            "VibeCADAssemblySourceObjectName",
+        }
+        if property_names & managed_names:
+            source = _resolveAssemblyLinkManagedSource(obj)
+            if source is None or not _assemblyObjectIsTimelineActive(
+                source,
+                visiting,
+            ):
+                return False
+
+        linked_object = None
+        if getattr(obj, "TypeId", "") == "Assembly::AssemblyLink":
+            linked_object = getattr(obj, "LinkedObject", None)
+        else:
+            is_link = getattr(obj, "isLink", None)
+            if callable(is_link) and is_link():
+                linked_object = obj.getLinkedObject(False)
+        if linked_object is not None:
+            return _assemblyObjectIsTimelineActive(
+                linked_object,
+                visiting,
+            )
+        if (
+            getattr(obj, "TypeId", "") == "Assembly::AssemblyLink"
+            or (
+                callable(getattr(obj, "isLink", None))
+                and obj.isLink()
+            )
+        ):
+            return False
+        return True
+    finally:
+        visiting.discard(identity)
+
+
+def finalizeInsertedComponentTimeline(occurrence, following_operation=None):
+    """Publish one inserted component and only its native occurrence graph.
+
+    Every invocation represents one deliberate click in the Insert Component
+    task.  The occurrence is therefore its own public operation even when
+    several clicks share the task transaction.  Implementation links created
+    inside an ``Assembly::AssemblyLink`` are owned resources of that one
+    operation.  Core provisional-block validation supplies the final proof
+    that every classified object was created by the caller-owned transaction.
+    """
+
+    if occurrence is None:
+        raise ValueError("An inserted Assembly occurrence is required")
+    document = occurrence.Document
+    if (
+        not _document_is_open(document)
+        or document.getObject(occurrence.Name) is not occurrence
+    ):
+        raise ValueError("The inserted Assembly occurrence is not live")
+
+    structural_resources = []
+    if occurrence.TypeId == "Assembly::AssemblyLink":
+        # Materialize and source-mark the native occurrence graph before the
+        # one atomic initial publication.  This is still the untracked
+        # creation path; later refreshes are reconciled inside AssemblyLink.
+        synchronization = occurrence.synchronizeContentsWithResourceMap(
+            _assemblyOccurrenceResources(occurrence),
+        )
+        structural_resources = list(
+            synchronization["final_resources"]
+        )
+        if (
+            len(structural_resources)
+            != len(set(structural_resources))
+            or set(structural_resources)
+            != set(_assemblyOccurrenceResources(occurrence))
+        ):
+            raise RuntimeError(
+                "Native AssemblyLink synchronization did not return its "
+                "complete exact initial resource graph"
+            )
+
+    document.publishProvisionalTimelineOperationBlock(
+        occurrence,
+        structural_resources,
+    )
+
+    timeline = document.getObject("VibeCADTimeline")
+    if timeline is None or timeline.TypeId != "App::DocumentTimeline":
+        raise RuntimeError(
+            "The inserted Assembly occurrence has no native document timeline"
+        )
+    timeline_operations = list(timeline.Operations)
+
+    if following_operation is not None:
+        if (
+            following_operation is occurrence
+            or following_operation.Document is not document
+            or document.getObject(following_operation.Name)
+            is not following_operation
+            or following_operation not in timeline_operations
+        ):
+            raise ValueError(
+                "The following Assembly operation is not one distinct "
+                "tracked object in the occurrence document"
+            )
+        document.reorderTimelineOperationBlocksAfter(
+            [following_operation],
+            occurrence,
+        )
+
+    return occurrence
+
+
+def finalizeNewPartTimeline(
+    part,
+    body,
+    occurrence,
+    following_operation=None,
+):
+    """Publish the definition, initial Body, and first occurrence as one part.
+
+    The Part definition is the object the user names, edits, reuses, and
+    deletes.  Its initially empty Body and the occurrence placed in the
+    assembly are two representations created by that same New Part gesture,
+    not independent history operations.
+    """
+
+    if part is None or body is None or occurrence is None:
+        raise ValueError(
+            "A new Assembly part requires its Part, Body, and occurrence"
+        )
+    document = part.Document
+    if (
+        not _document_is_open(document)
+        or body.Document is not document
+        or occurrence.Document is not document
+        or document.getObject(part.Name) is not part
+        or document.getObject(body.Name) is not body
+        or document.getObject(occurrence.Name) is not occurrence
+        or body not in part.Group
+    ):
+        raise ValueError(
+            "The new Assembly part graph is not live in one document"
+        )
+
+    document.publishProvisionalTimelineOperationBlock(
+        part,
+        [body, occurrence],
+    )
+
+    timeline = document.getObject("VibeCADTimeline")
+    if timeline is None or timeline.TypeId != "App::DocumentTimeline":
+        raise RuntimeError(
+            "The new Assembly part has no native document timeline"
+        )
+    timeline_operations = list(timeline.Operations)
+    if following_operation is not None:
+        if (
+            following_operation in (part, body, occurrence)
+            or following_operation.Document is not document
+            or document.getObject(following_operation.Name)
+            is not following_operation
+            or following_operation not in timeline_operations
+        ):
+            raise ValueError(
+                "The following Assembly operation is not one distinct "
+                "tracked object in the new-part document"
+            )
+        document.reorderTimelineOperationBlocksAfter(
+            [following_operation],
+            part,
+        )
+
+    return part
+
+
+def _timeline_owner(obj):
+    if (
+        obj is None
+        or getattr(obj, "VibeCADTimelineRole", None) != "resource"
+        or "VibeCADTimelineOwner" not in obj.PropertiesList
+        or obj.getTypeIdOfProperty("VibeCADTimelineOwner")
+        != "App::PropertyLinkHidden"
+    ):
+        return None
+
+    owner = obj.VibeCADTimelineOwner
+    document = obj.Document
+    if (
+        owner is None
+        or owner is obj
+        or owner.Document is not document
+        or document.getObject(owner.Name) is not owner
+    ):
+        return None
+    return owner
+
+
+def _timeline_root(obj):
+    """Return the exact public operation owning *obj*, or ``None``."""
+
+    current = obj
+    visited = set()
+    while getattr(current, "VibeCADTimelineRole", None) == "resource":
+        if current in visited:
+            return None
+        visited.add(current)
+        current = _timeline_owner(current)
+        if current is None:
+            return None
+    return current
+
+
+def _isPublishedTimelineOwnerUsable(obj):
+    """Return whether one local published owner may reconcile its resources."""
+
+    document = getattr(obj, "Document", None)
+    return bool(
+        document is not None
+        and _document_is_open(document)
+        and document.getObject(obj.Name) is obj
+        and getattr(obj, "VibeCADTimelineRole", None)
+        == "operation"
+        and _timeline_root(obj) is obj
+        and document.isObjectUsableAtCurrentTimelinePosition(obj)
+    )
+
+
+class _TimelineResourceGroupEdit:
+    """Exact retained-resource state for one Assembly group editor."""
+
+    def __init__(self, document, owner, resources):
+        self.document = document
+        self.document_uid = str(
+            getattr(document, "Uid", "") or ""
+        )
+        self.owner_identity = (
+            str(owner.Name),
+            int(owner.ID),
+        )
+        self.resource_identities = tuple(
+            (str(resource.Name), int(resource.ID))
+            for resource in resources
+        )
+        self.consumed = False
+
+
+def stageTimelineResourceGroupEdit(owner):
+    """Stage one retained Assembly operation's complete exact resource graph."""
+
+    document = getattr(owner, "Document", None)
+    if (
+        document is None
+        or document.getObject(owner.Name) is not owner
+        or getattr(owner, "VibeCADTimelineRole", None) != "operation"
+        or _timeline_root(owner) is not owner
+    ):
+        raise ValueError(
+            "An Assembly resource edit requires one live tracked operation"
+        )
+    timeline = document.getObject("VibeCADTimeline")
+    if timeline is None or timeline.TypeId != "App::DocumentTimeline":
+        raise RuntimeError(
+            "The Assembly operation has no native document timeline"
+        )
+    operations = list(timeline.Operations)
+    if owner not in operations:
+        raise RuntimeError(
+            "The Assembly operation is absent from document History"
+        )
+    resources = [
+        candidate
+        for candidate in operations
+        if candidate is not owner
+        and _timeline_root(candidate) is owner
+    ]
+    direct_roots = [
+        resource
+        for resource in resources
+        if _timeline_owner(resource) is owner
+    ]
+    document.stageTimelineOperationResourceReconciliation(
+        owner,
+        direct_roots,
+    )
+    return _TimelineResourceGroupEdit(
+        document,
+        owner,
+        resources,
+    )
+
+
+def finalizeTimelineResourceGroupEdit(owner, token, final_resources):
+    """Publish an existing Assembly editor's exact final resource identities."""
+
+    if (
+        not isinstance(token, _TimelineResourceGroupEdit)
+        or token.consumed
+    ):
+        raise ValueError(
+            "A live unconsumed Assembly resource-edit token is required"
+        )
+    document = token.document
+    if (
+        getattr(owner, "Document", None) is not document
+        or str(getattr(document, "Uid", "") or "")
+        != token.document_uid
+        or (
+            str(getattr(owner, "Name", "")),
+            int(getattr(owner, "ID", -1)),
+        )
+        != token.owner_identity
+        or document.getObject(owner.Name) is not owner
+    ):
+        raise RuntimeError(
+            "The Assembly resource-edit owner changed exact identity"
+        )
+
+    exact_final = []
+    for resource in final_resources:
+        if (
+            resource is owner
+            or resource in exact_final
+            or getattr(resource, "Document", None) is not document
+            or document.getObject(resource.Name) is not resource
+            or _timeline_root(resource) is not owner
+        ):
+            raise ValueError(
+                "Every final Assembly resource must be one distinct exact "
+                "resource of the edited operation"
+            )
+        exact_final.append(resource)
+
+    old_index_by_identity = {
+        identity: index
+        for index, identity in enumerate(
+            token.resource_identities
+        )
+    }
+    final_index_by_identity = {
+        (str(resource.Name), int(resource.ID)): index
+        for index, resource in enumerate(exact_final)
+    }
+    state_sources = []
+    for resource in exact_final:
+        identity = (str(resource.Name), int(resource.ID))
+        old_index = old_index_by_identity.get(identity)
+        if old_index is None and not document.isProvisionallyEnrolledInTimelineByCurrentTransaction(
+            resource
+        ):
+            raise RuntimeError(
+                "A new Assembly resource lacks current-transaction identity proof"
+            )
+        state_sources.append(
+            old_index if old_index is not None else -1
+        )
+    document.finalizeProvisionalTimelineOperationResourceReconciliation(
+        owner,
+        exact_final,
+        state_sources,
+        [
+            final_index_by_identity.get(identity, -1)
+            for identity in token.resource_identities
+        ],
+    )
+    token.consumed = True
+    return tuple(exact_final)
+
+
+def synchronizeAssemblyLinkTimelineResources(occurrence):
+    """Run native atomic synchronization for one published occurrence.
+
+    Python only supplies the managed resources in canonical History order.
+    ``AssemblyLink`` itself stages the complete block, performs the exact
+    native reuse/create/replace branches, preserves unrelated owned
+    resources, and finalizes the resource reconciliation before returning.
+    """
+
+    if occurrence is None or occurrence.TypeId != "Assembly::AssemblyLink":
+        raise TypeError(
+            "AssemblyLink synchronization requires one "
+            "Assembly::AssemblyLink occurrence"
+        )
+    document = occurrence.Document
+    if (
+        not _isPublishedTimelineOwnerUsable(occurrence)
+    ):
+        raise ValueError(
+            "AssemblyLink synchronization requires one live published "
+            "occurrence operation"
+        )
+    timeline = document.getObject("VibeCADTimeline")
+    if timeline is None or timeline.TypeId != "App::DocumentTimeline":
+        raise RuntimeError(
+            "The AssemblyLink occurrence has no native document timeline"
+        )
+
+    managed_resources = [
+        candidate
+        for candidate in list(timeline.Operations)
+        if candidate is not occurrence
+        and _timeline_root(candidate) is occurrence
+        and _isAssemblyLinkManagedResource(candidate)
+    ]
+    return occurrence.synchronizeContentsWithResourceMap(
+        managed_resources
+    )
+
+
+def isTimelineOperationActive(obj):
+    """Return whether *obj* is usable at the current history boundary.
+
+    Timeline activity is intentionally independent from ``Visibility``.  A
+    user-hidden component remains part of the mechanism. Future, suppressed,
+    internal, and malformed resource objects are not usable inputs.
+    """
+
+    try:
+        return _assemblyObjectIsTimelineActive(obj, set())
+    except (
+        AttributeError,
+        ReferenceError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+
+class _TaskTransactionOwner:
+    """Own one native Assembly task transaction on one captured document.
+
+    Assembly task panels can outlive a change to ``App.ActiveDocument``.  They
+    must therefore never use the ambient active document to commit or abort.
+    This owner records the exact transaction opened by the panel and only
+    closes it while that same transaction is still booked on that same live
+    document.
+    """
+
+    def __init__(self, document, label, existing_transaction_id=0):
+        if not _document_is_open(document):
+            raise RuntimeError("The Assembly task document is not open")
+
+        gui_document = Gui.getDocument(document.Name)
+        if gui_document is None:
+            raise RuntimeError("The Assembly task has no GUI document")
+
+        self.document = document
+        self.document_name = str(document.Name)
+        self.gui_document = gui_document
+        self.transaction_id = 0
+
+        booked_transaction_id = int(document.getBookedTransactionID())
+        existing_transaction_id = int(existing_transaction_id or 0)
+        if existing_transaction_id:
+            if (
+                booked_transaction_id != existing_transaction_id
+                or not Gui.Control.ownsCommandTransaction(
+                    gui_document,
+                    existing_transaction_id,
+                )
+            ):
+                raise RuntimeError(
+                    "The Assembly edit transaction is no longer owned by "
+                    "the exact task document"
+                )
+            transaction_id = existing_transaction_id
+        else:
+            if booked_transaction_id != 0 or document.HasPendingTransaction:
+                raise RuntimeError(
+                    "Another operation already owns the Assembly task document"
+                )
+            transaction_id = int(gui_document.openCommand(label))
+
+        self.transaction_id = transaction_id
+        if (
+            transaction_id == 0
+            or document.getBookedTransactionID() != transaction_id
+        ):
+            raise RuntimeError("Could not open the Assembly task transaction")
+
+    def __del__(self):
+        # Construction of a Python task panel can fail after its transaction
+        # has opened but before TaskView owns the panel.  Exact-ID checking in
+        # abort() makes this a safe final rollback guard without ever touching
+        # a successor transaction.
+        try:
+            self.abort()
+        except Exception:
+            pass
+
+    def owns_current(self):
+        return (
+            self.transaction_id != 0
+            and _document_is_open(self.document)
+            and self.document.getBookedTransactionID() == self.transaction_id
+        )
+
+    def _close(self, abort):
+        if self.transaction_id == 0:
+            return True
+
+        if not _document_is_open(self.document):
+            self.transaction_id = 0
+            return True
+
+        if self.document.getBookedTransactionID() != self.transaction_id:
+            # The task no longer owns a transaction.  In particular, never
+            # close a successor transaction belonging to another gesture.
+            self.transaction_id = 0
+            return False
+
+        App.closeActiveTransaction(bool(abort), self.transaction_id)
+
+        if self.document.getBookedTransactionID() == self.transaction_id:
+            return False
+
+        self.transaction_id = 0
+        return True
+
+    def commit(self):
+        return self._close(False)
+
+    def abort(self):
+        return self._close(True)
+
+    def document_deleted(self):
+        """Forget ownership after TaskView reports that the document closed."""
+
+        self.transaction_id = 0
 
 
 def isDocTemporary(doc):
@@ -93,12 +875,18 @@ def assembly_has_at_least_n_parts(n):
 
 
 def number_of_components_in(assembly):
-    if not assembly:
+    if not isTimelineOperationActive(assembly):
         return 0
     i = 0
     for obj in assembly.Group:
+        if not isTimelineOperationActive(obj):
+            continue
         if isLinkGroup(obj):
-            i = i + obj.ElementCount
+            i = i + sum(
+                1
+                for element in obj.ElementList
+                if isTimelineOperationActive(element)
+            )
             continue
 
         if obj.isDerivedFrom("Assembly::AssemblyObject") or obj.isDerivedFrom(
@@ -109,6 +897,8 @@ def number_of_components_in(assembly):
 
         if obj.isDerivedFrom("App::Link"):
             obj = obj.getLinkedObject()
+            if not isTimelineOperationActive(obj):
+                continue
 
         if not obj.isDerivedFrom("App::GeoFeature"):
             continue
@@ -160,7 +950,7 @@ def getObject(ref):
 
         # the last is the element name. So if we are at the last but one name, then it must be the selected
         if i == len(names) - 2:
-            return obj
+            return obj if isTimelineOperationActive(obj) else None
 
         if obj.TypeId in {"App::Part", "Assembly::AssemblyObject"} or isLinkGroup(obj):
             continue
@@ -618,7 +1408,7 @@ def color_from_unsigned(c):
 
 
 def getJointsOfType(asm, jointTypes):
-    if not (
+    if asm is None or not isTimelineOperationActive(asm) or not (
         asm.isDerivedFrom("Assembly::AssemblyObject") or asm.isDerivedFrom("Assembly::AssemblyLink")
     ):
         return []
@@ -626,9 +1416,104 @@ def getJointsOfType(asm, jointTypes):
     joints = []
     allJoints = asm.Joints
     for joint in allJoints:
-        if joint.JointType in jointTypes:
+        if (
+            isTimelineOperationActive(joint)
+            and joint.JointType in jointTypes
+        ):
             joints.append(joint)
     return joints
+
+
+def findOwningAssembly(obj, include_inactive=False):
+    """Return the unique assembly which structurally owns *obj*.
+
+    Only persisted ``Group`` containment is followed. Arbitrary dependencies,
+    spreadsheet references, and linked definitions are not ownership.
+    """
+
+    if obj is None:
+        return None
+    document = getattr(obj, "Document", None)
+    if not _document_is_open(document):
+        return None
+
+    pending = [obj]
+    visited = set()
+    assemblies = []
+    while pending:
+        child = pending.pop()
+        if child in visited:
+            continue
+        visited.add(child)
+        for parent in getattr(child, "InList", ()):
+            if (
+                parent.Document is not document
+                or child not in getattr(parent, "Group", ())
+            ):
+                continue
+            if parent.isDerivedFrom("Assembly::AssemblyObject"):
+                assemblies.append(parent)
+            else:
+                pending.append(parent)
+
+    unique = []
+    for assembly in assemblies:
+        if assembly not in unique:
+            unique.append(assembly)
+    if len(unique) > 1:
+        raise RuntimeError(
+            "The object belongs to more than one assembly"
+        )
+    assembly = unique[0] if unique else None
+    if (
+        assembly is not None
+        and not include_inactive
+        and not isTimelineOperationActive(assembly)
+    ):
+        return None
+    return assembly
+
+
+def findOwningPartOrAssembly(obj, include_inactive=False):
+    """Return the exact Assembly or App::Part which structurally owns *obj*."""
+
+    assembly = findOwningAssembly(
+        obj,
+        include_inactive=True,
+    )
+    if assembly is not None:
+        if (
+            include_inactive
+            or isTimelineOperationActive(assembly)
+        ):
+            return assembly
+        return None
+
+    document = getattr(obj, "Document", None)
+    if not _document_is_open(document):
+        return None
+    pending = [obj]
+    visited = set()
+    while pending:
+        child = pending.pop()
+        if child in visited:
+            continue
+        visited.add(child)
+        for parent in getattr(child, "InList", ()):
+            if (
+                parent.Document is not document
+                or child not in getattr(parent, "Group", ())
+            ):
+                continue
+            if parent.isDerivedFrom("App::Part"):
+                if (
+                    include_inactive
+                    or isTimelineOperationActive(parent)
+                ):
+                    return parent
+                return None
+            pending.append(parent)
+    return None
 
 
 def getBomGroup(assembly):
@@ -695,7 +1580,7 @@ def isAssemblyGrounded():
     jointGroup = getJointGroup(assembly)
 
     for joint in jointGroup.Group:
-        if hasattr(joint, "ObjectToGround"):
+        if isTimelineOperationActive(joint) and hasattr(joint, "ObjectToGround"):
             return True
 
     return False
@@ -731,6 +1616,9 @@ def removeObjsAndChilds(objs):
 # It does not include Part::Features that are within App::Parts.
 # It includes things inside Groups.
 def getMovablePartsWithin(group, partsAsSolid=False):
+    if not isTimelineOperationActive(group):
+        return []
+
     children = []
     if isLinkGroup(group):
         children = group.ElementList
@@ -739,11 +1627,30 @@ def getMovablePartsWithin(group, partsAsSolid=False):
 
     parts = []
     for obj in children:
-        parts = parts + getSubMovingParts(obj, partsAsSolid)
+        if isTimelineOperationActive(obj):
+            parts = parts + getSubMovingParts(obj, partsAsSolid)
     return parts
 
 
+def isMovableAssemblyComponent(assembly, component):
+    """Return whether *component* is one exact active movable occurrence."""
+
+    if (
+        component is None
+        or not isTimelineOperationActive(assembly)
+        or not isTimelineOperationActive(component)
+    ):
+        return False
+    return any(
+        candidate is component
+        for candidate in getMovablePartsWithin(assembly)
+    )
+
+
 def getSubMovingParts(obj, partsAsSolid):
+    if not isTimelineOperationActive(obj):
+        return []
+
     if obj.isDerivedFrom("Part::Feature"):
         return [obj]
 
@@ -759,7 +1666,13 @@ def getSubMovingParts(obj, partsAsSolid):
 
     if isLink(obj):
         linked_obj = obj.getLinkedObject()
-        if linked_obj.isDerivedFrom("App::Part") or linked_obj.isDerivedFrom("Part::Feature"):
+        if (
+            isTimelineOperationActive(linked_obj)
+            and (
+                linked_obj.isDerivedFrom("App::Part")
+                or linked_obj.isDerivedFrom("Part::Feature")
+            )
+        ):
             return [obj]
 
     return []
@@ -786,14 +1699,21 @@ def getCenterOfMass(parts):
 
 
 def getObjMassAndCom(obj, containingPart=None):
+    if not isTimelineOperationActive(obj):
+        return 0, App.Vector(0, 0, 0)
+
     link_global_plc = None
 
     if isLink(obj):
         link_global_plc = getGlobalPlacement(obj, containingPart)
         obj = obj.getLinkedObject()
+        if not isTimelineOperationActive(obj):
+            return 0, App.Vector(0, 0, 0)
 
     if obj.TypeId == "PartDesign::Body":
         obj = obj.Tip
+        if not isTimelineOperationActive(obj):
+            return 0, App.Vector(0, 0, 0)
 
     if obj.isDerivedFrom("Part::Feature"):
         mass = obj.Shape.Volume
@@ -832,6 +1752,8 @@ def getObjMassAndCom(obj, containingPart=None):
             children = obj.Group
 
         for subObj in children:
+            if not isTimelineOperationActive(subObj):
+                continue
             mass, com = getObjMassAndCom(subObj, containingPart)
             total_mass += mass
             total_com += com
@@ -1149,6 +2071,108 @@ def saveAssemblyPartsPlacements(assembly):
     return initialPlcs
 
 
+class _ExactAssemblyPlacementSnapshot:
+    def __init__(self, assembly, parts):
+        self.document = assembly.Document
+        self.document_uid = str(
+            getattr(self.document, "Uid", "") or ""
+        )
+        self.assembly_identity = (
+            str(assembly.Name),
+            int(assembly.ID),
+            assembly,
+        )
+        self.parts = tuple(
+            (
+                str(part.Name),
+                int(part.ID),
+                part,
+                App.Placement(part.Placement),
+            )
+            for part in parts
+        )
+
+
+def _saveExactAssemblyPartPlacements(assembly):
+    document = getattr(assembly, "Document", None)
+    if (
+        not _document_is_open(document)
+        or document.getObject(assembly.Name) is not assembly
+        or not isTimelineOperationActive(assembly)
+    ):
+        raise RuntimeError(
+            "An exact placement snapshot requires one active assembly"
+        )
+    parts = list(getMovablePartsWithin(assembly))
+    if any(
+        part.Document is not document
+        or document.getObject(part.Name) is not part
+        or not isTimelineOperationActive(part)
+        for part in parts
+    ):
+        raise RuntimeError(
+            "The assembly contains a stale or inactive movable component"
+        )
+    return _ExactAssemblyPlacementSnapshot(assembly, parts)
+
+
+def _restoreExactAssemblyPartPlacements(
+    assembly,
+    snapshot,
+    require_complete=True,
+):
+    valid = isinstance(snapshot, _ExactAssemblyPlacementSnapshot)
+    document = getattr(assembly, "Document", None)
+    if valid:
+        name, object_id, exact_assembly = snapshot.assembly_identity
+        valid = (
+            document is snapshot.document
+            and _document_is_open(document)
+            and str(getattr(document, "Uid", "") or "")
+            == snapshot.document_uid
+            and assembly is exact_assembly
+            and str(assembly.Name) == name
+            and int(assembly.ID) == object_id
+            and document.getObject(name) is assembly
+            and isTimelineOperationActive(assembly)
+        )
+
+    live_parts = []
+    if valid:
+        for name, object_id, exact_part, placement in snapshot.parts:
+            part = document.getObject(name)
+            if (
+                part is not exact_part
+                or int(part.ID) != object_id
+                or not assembly.hasObject(part, True)
+                or not isTimelineOperationActive(part)
+            ):
+                valid = False
+                break
+            live_parts.append((part, placement))
+
+    if valid:
+        current_parts = list(getMovablePartsWithin(assembly))
+        valid = (
+            len(current_parts) == len(live_parts)
+            and {part for part in current_parts}
+            == {part for part, _placement in live_parts}
+        )
+
+    if not valid:
+        if require_complete:
+            raise RuntimeError(
+                "The assembly component identities changed after their "
+                "placements were captured"
+            )
+        return False
+
+    for part, placement in live_parts:
+        part.Placement = App.Placement(placement)
+        part.purgeTouched()
+    return True
+
+
 def restoreAssemblyPartsPlacements(assembly, initialPlcs):
     assemblyParts = getMovablePartsWithin(assembly)
     for part in assemblyParts:
@@ -1280,6 +2304,8 @@ def getComponentReference(assembly, root_obj, sub_string):
 
     if not component:
         return None, ""
+    if not isTimelineOperationActive(component):
+        return None, ""
 
     # 4. Construct new sub-string
     # Everything after the component in the original names list
@@ -1353,13 +2379,6 @@ def createPart(partName, doc):
 
     part = doc.addObject("App::Part", partName)
     body = part.newObject("PartDesign::Body", "Body")
-    # Gui.ActiveDocument.ActiveView.setActiveObject('pdbody', body)
-    sketch = body.newObject("Sketcher::SketchObject", "Sketch")
-    sketch.MapMode = "FlatFace"
-    sketch.AttachmentSupport = [(body.Origin.OriginFeatures[3], "")]  # XY_Plane
-
-    # add a circle as a base shape for visualisation
-    sketch.addGeometry(Part.Circle(App.Vector(0, 0), App.Vector(0, 0, 1), 5), False)
     doc.recompute()
 
     return part, body
@@ -1387,8 +2406,12 @@ def getParentPlacementIfNeeded(part):
 
 def generatePropertySettings(documentObject):
     commands = []
-    if hasattr(documentObject, "Name"):
-        commands.append(f'obj = App.ActiveDocument.getObject("{documentObject.Name}")')
+    document = getattr(documentObject, "Document", None)
+    if hasattr(documentObject, "Name") and document is not None:
+        commands.append(
+            f"document = App.getDocument({str(document.Name)!r})"
+        )
+        commands.append(f"obj = document.getObject({str(documentObject.Name)!r})")
     for propertyName in documentObject.PropertiesList:
         propertyValue = documentObject.getPropertyByName(propertyName)
         propertyType = documentObject.getTypeIdOfProperty(propertyName)
@@ -1399,7 +2422,7 @@ def generatePropertySettings(documentObject):
         elif propertyType == "App::PropertyInt" or propertyType == "App::PropertyBool":
             commands.append(f"obj.{propertyName} = {propertyValue}")
         elif propertyType == "App::PropertyString" or propertyType == "App::PropertyEnumeration":
-            commands.append(f'obj.{propertyName} = "{propertyValue}"')
+            commands.append(f"obj.{propertyName} = {str(propertyValue)!r}")
         elif propertyType == "App::PropertyPlacement":
             commands.append(
                 f"obj.{propertyName} = App.Placement("
@@ -1407,8 +2430,12 @@ def generatePropertySettings(documentObject):
                 f"App.Rotation(*{[round(n,5) for n in propertyValue.Rotation.getYawPitchRoll()]}))"
             )
         elif propertyType == "App::PropertyXLinkSubHidden":
+            linked_object = propertyValue[0]
+            linked_document = linked_object.Document
             commands.append(
-                f'obj.{propertyName} = [App.ActiveDocument.getObject("{propertyValue[0].Name}"), {propertyValue[1]}]'
+                f"obj.{propertyName} = "
+                f"[App.getDocument({str(linked_document.Name)!r}).getObject("
+                f"{str(linked_object.Name)!r}), {propertyValue[1]!r}]"
             )
         else:
             # print("Not processing properties of type ", propertyType)

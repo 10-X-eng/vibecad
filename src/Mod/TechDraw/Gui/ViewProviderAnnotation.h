@@ -52,6 +52,10 @@ public:
     TechDraw::DrawViewAnnotation* getViewObject() const override;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     bool setEdit(int ModNum) override;
 };
 

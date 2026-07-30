@@ -33,7 +33,6 @@
   "${workspaceFolder}/src/Mod/Measure",
   "${workspaceFolder}/src/Mod/Mesh",
   "${workspaceFolder}/src/Mod/MeshPart",
-  "${workspaceFolder}/src/Mod/OpenSCAD",
   "${workspaceFolder}/src/Mod/Part",
   "${workspaceFolder}/src/Mod/PartDesign",
   "${workspaceFolder}/src/Mod/Plot",

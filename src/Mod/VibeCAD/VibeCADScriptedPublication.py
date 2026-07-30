@@ -455,6 +455,15 @@ def external_reference_uses(
     *,
     internal_objects: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
+    def is_non_consuming_index(owner: Any) -> bool:
+        # App::DocumentTimeline is the document's persisted operation index. Its
+        # hidden links preserve ordering; they do not consume geometry or claim
+        # that a generated implementation must retain object identity. Treating
+        # those bookkeeping backlinks as downstream uses would prevent every
+        # scripted implementation from regenerating. Keep this exemption exact:
+        # all other link owners remain protected by the normal reference guard.
+        return str(getattr(owner, "TypeId", "") or "") == "App::DocumentTimeline"
+
     target_by_id = {id(item): item for item in targets}
     target_ids = set(target_by_id)
     internal_ids = {id(item) for item in list(internal_objects or [])}
@@ -464,7 +473,11 @@ def external_reference_uses(
         for owner in list(getattr(target, "InList", []) or []):
             owners[id(owner)] = owner
     for owner in owners.values():
-        if id(owner) in target_ids or id(owner) in internal_ids:
+        if (
+            id(owner) in target_ids
+            or id(owner) in internal_ids
+            or is_non_consuming_index(owner)
+        ):
             continue
         for property_name in list(getattr(owner, "PropertiesList", []) or []):
             property_type = _property_type(owner, property_name)
@@ -513,6 +526,7 @@ def external_reference_uses(
             if (
                 id(owner) in target_ids
                 or id(owner) in internal_ids
+                or is_non_consuming_index(owner)
                 or (id(owner), id(target)) in known_pairs
             ):
                 continue

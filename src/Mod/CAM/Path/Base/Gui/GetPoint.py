@@ -49,10 +49,11 @@ class TaskPanel:
     The (only) public API function other than the constructor is getPoint(whenDone, start).
     """
 
-    def __init__(self, form, onPath=False):
+    def __init__(self, form, onPath=False, document=None):
         """__init___(form) ... form will be replaced by PointEdit.ui while the Snapper is active."""
         self.formOrig = form
         self.formPoint = FreeCADGui.PySideUic.loadUi(":/panels/PointEdit.ui")
+        self.document = document or FreeCAD.ActiveDocument
 
         self.formPoint.setParent(form.parent())
         form.parent().layout().addWidget(self.formPoint)
@@ -131,9 +132,13 @@ class TaskPanel:
                 # directly, at least for now. Simple enough because there isn't really any
                 # "snapping" going on other than what getObjectInfo() provides.
                 screenpos = tuple(pos.getValue())
-                snapInfo = Draft.get3DView().getObjectInfo(screenpos)
+                snapInfo = self.view.getObjectInfo(screenpos)
                 if snapInfo:
-                    obj = FreeCAD.ActiveDocument.getObject(snapInfo["Object"])
+                    obj = (
+                        self.document.getObject(snapInfo["Object"])
+                        if self.document is not None
+                        else None
+                    )
                     if hasattr(obj, "Path"):
                         self.obj = obj
                         p = FreeCAD.Vector(snapInfo["x"], snapInfo["y"], snapInfo["z"])
@@ -178,7 +183,16 @@ class TaskPanel:
         else:
             displayPoint(FreeCAD.Vector(0, 0, 0))
 
-        self.view = Draft.get3DView()
+        gui_document = (
+            FreeCADGui.getDocument(self.document.Name)
+            if self.document is not None
+            else None
+        )
+        self.view = (
+            gui_document.ActiveView
+            if gui_document is not None
+            else Draft.get3DView()
+        )
         self.pointCbClick = self.view.addEventCallbackPivy(
             coin.SoMouseButtonEvent.getClassTypeId(), click
         )

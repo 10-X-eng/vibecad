@@ -234,6 +234,9 @@ class VPPostTable(view_base_fempostvisualization.VPPostVisualization):
     A View Provider for Table plots
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def __init__(self, vobj):
         super().__init__(vobj)
 
@@ -245,10 +248,7 @@ class VPPostTable(view_base_fempostvisualization.VPPostVisualization):
         # build up the task panel
         taskd = task_post_table._TaskPanel(vobj)
 
-        # show it
-        FreeCADGui.Control.showDialog(taskd)
-
-        return True
+        return self._show_task_dialog(vobj, taskd)
 
     def show_visualization(self):
 

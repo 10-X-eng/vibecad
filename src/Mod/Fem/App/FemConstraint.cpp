@@ -211,6 +211,14 @@ void Constraint::slotChangedObject(const App::DocumentObject& Obj, const App::Pr
     if (Obj.isDerivedFrom<App::GeoFeature>()
         && (Prop.isDerivedFrom<App::PropertyPlacement>() || Obj.isRemoving())) {
         for (const auto ref : References.getValues()) {
+            // A LinkSubList can temporarily contain an unresolved object
+            // while its referenced feature is being finalized, restored, or
+            // removed. Document change notifications remain synchronous
+            // during those transitions, so never dereference the unresolved
+            // entry.
+            if (!ref) {
+                continue;
+            }
             auto v = ref->getInListEx(true);
             if ((&Obj == ref) || (std::ranges::find(v, &Obj) != v.end())) {
                 References.touch();
@@ -541,24 +549,15 @@ const Base::Vector3d Constraint::getDirection(const App::PropertyLinkSub& direct
     }
     std::string subName = names.front();
     if (!obj) {
-        TopoDS_Shape sh = Tools::getFeatureSubShape(
-            object,
-            subName.c_str(),
-            !this->isRecomputing()
-        );
-        return sh.IsNull() ? Base::Vector3d(0, 0, 0)
-                           : Fem::Tools::getDirectionFromShape(sh);
+        TopoDS_Shape sh = Tools::getFeatureSubShape(object, subName.c_str(), !this->isRecomputing());
+        return sh.IsNull() ? Base::Vector3d(0, 0, 0) : Fem::Tools::getDirectionFromShape(sh);
     }
     Base::Rotation rot = obj->globalPlacement().getRotation();
     if (obj->isDerivedFrom<App::DatumElement>() || obj->isDerivedFrom<Part::Datum>()) {
         return rot.multVec(Base::Vector3d(0, 0, 1));
     }
 
-    TopoDS_Shape sh = Tools::getFeatureSubShape(
-        object,
-        subName.c_str(),
-        !this->isRecomputing()
-    );
+    TopoDS_Shape sh = Tools::getFeatureSubShape(object, subName.c_str(), !this->isRecomputing());
     if (sh.IsNull()) {
         return Base::Vector3d(0, 0, 0);
     }

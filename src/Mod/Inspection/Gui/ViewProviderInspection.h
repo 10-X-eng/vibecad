@@ -27,10 +27,11 @@
 #include <limits>
 
 #include <App/ComplexGeoData.h>
+#include <Base/Matrix.h>
 #include <Base/Observer.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Gui/ViewProviderDocumentObjectGroup.h>
-
+#include <Gui/ViewProviderSuppressibleExtension.h>
 
 class SoGroup;
 class SoMaterial;
@@ -51,7 +52,9 @@ namespace InspectionGui
 /**
  * @author Werner Mayer
  */
-class ViewProviderInspection: public Gui::ViewProviderDocumentObject, public Base::Observer<int>
+class ViewProviderInspection: public Gui::ViewProviderDocumentObject,
+                              public Gui::ViewProviderSuppressibleExtension,
+                              public Base::Observer<int>
 {
     using inherited = ViewProviderDocumentObject;
 
@@ -71,8 +74,8 @@ public:
     std::vector<std::string> getDisplayModes() const override;
     /// Update colorbar after recomputation of distances.
     void updateData(const App::Property*) override;
-    /// Once the color bar settings has been changed this method gets called to update the feature's
-    /// representation
+    /// Once the color bar settings has been changed this method gets called to
+    /// update the feature's representation
     void OnChange(Base::Subject<int>& rCaller, int rcReason) override;
     QIcon getIcon() const override;
     /// Returns a color bar
@@ -90,9 +93,9 @@ protected:
     QString inspectDistance(const SoPickedPoint* pp) const;
 
 private:
-    bool setupFaces(const Data::ComplexGeoData*);
-    bool setupLines(const Data::ComplexGeoData*);
-    bool setupPoints(const Data::ComplexGeoData*, App::PropertyContainer* container);
+    bool setupFaces(const Data::ComplexGeoData*, const Base::Matrix4D&);
+    bool setupLines(const Data::ComplexGeoData*, const Base::Matrix4D&);
+    bool setupPoints(const Data::ComplexGeoData*, App::PropertyContainer* container, const Base::Matrix4D&);
     void setupCoords(const std::vector<Base::Vector3d>&);
     void setupNormals(const std::vector<Base::Vector3f>&);
     void setupLineIndexes(const std::vector<Data::ComplexGeoData::Line>&);
@@ -115,7 +118,8 @@ private:
     static App::PropertyFloatConstraint::Constraints floatRange;
 };
 
-class ViewProviderInspectionGroup: public Gui::ViewProviderDocumentObjectGroup
+class ViewProviderInspectionGroup: public Gui::ViewProviderDocumentObjectGroup,
+                                   public Gui::ViewProviderSuppressibleExtension
 {
     PROPERTY_HEADER_WITH_OVERRIDE(InspectionGui::ViewProviderInspectionGroup);
 

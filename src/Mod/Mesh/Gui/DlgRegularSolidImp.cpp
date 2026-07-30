@@ -26,24 +26,44 @@
 #include <qmessagebox.h>
 
 #include <App/Document.h>
+#include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/Control.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentObserver.h>
+#include <Gui/ExactTransaction.h>
+#include <Gui/MDIView.h>
 #include <Gui/WaitCursor.h>
+#include <Mod/Mesh/App/FeatureMeshSolid.h>
 
 #include "DlgRegularSolidImp.h"
+#include "CommandGuard.h"
 #include "ui_DlgRegularSolid.h"
 
 
 using namespace MeshGui;
+
+class DlgRegularSolidImp::LaunchState
+{
+public:
+    explicit LaunchState(Gui::Document* document)
+        : document(document)
+    {}
+
+    Gui::DocumentWeakPtrT document;
+};
 
 /* TRANSLATOR MeshGui::DlgRegularSolidImp */
 
 // clang-format off
 DlgRegularSolidImp::DlgRegularSolidImp(QWidget* parent, Qt::WindowFlags fl)
     : QDialog(parent, fl)
+    , launchState(std::make_unique<LaunchState>(
+          Gui::Application::Instance->activeDocument()
+      ))
     , ui(new Ui_DlgRegularSolid)
 {
     ui->setupUi(this);
@@ -116,100 +136,169 @@ void DlgRegularSolidImp::onCreateSolidButtonClicked()
 {
     try {
         Gui::WaitCursor wc;
-        std::string cmd, name;
-        App::Document* doc = App::GetApplication().getActiveDocument();
+        std::string name;
+        Gui::Document* guiDocument =
+            launchState ? *launchState->document : nullptr;
+        App::Document* doc = guiDocument
+            ? guiDocument->getDocument()
+            : nullptr;
         if (!doc) {
-            QMessageBox::warning(this, tr("Create %1").arg(ui->comboBox1->currentText()), tr("No Active Document"));
+            QMessageBox::warning(
+                this,
+                tr("Create %1").arg(ui->comboBox1->currentText()),
+                tr("The document used to open this dialog is no longer available.")
+            );
             return;
         }
-        switch (ui->comboBox1->currentIndex()) {
-            case 0:
-                name = doc->getUniqueObjectName("Cube");
-                cmd = fmt::format(
-                    "App.ActiveDocument.addObject(\"Mesh::Cube\",\"{0}\")\n"
-                    "App.ActiveDocument.{0}.Length={1}\n"
-                    "App.ActiveDocument.{0}.Width={2}\n"
-                    "App.ActiveDocument.{0}.Height={3}\n", name,
-                        ui->boxLength->value().toNumber(),
-                        ui->boxWidth->value().toNumber(),
-                        ui->boxHeight->value().toNumber());
-                break;
-            case 1:
-                name = doc->getUniqueObjectName("Cylinder");
-                cmd = fmt::format(
-                    "App.ActiveDocument.addObject(\"Mesh::Cylinder\",\"{0}\")\n"
-                    "App.ActiveDocument.{0}.Radius={1}\n"
-                    "App.ActiveDocument.{0}.Length={2}\n"
-                    "App.ActiveDocument.{0}.EdgeLength={3}\n"
-                    "App.ActiveDocument.{0}.Closed={4}\n"
-                    "App.ActiveDocument.{0}.Sampling={5}\n", name,
-                        ui->cylinderRadius->value().toNumber(),
-                        ui->cylinderLength->value().toNumber(),
-                        ui->cylinderEdgeLength->value().toNumber(),
-                        ui->cylinderClosed->isChecked() ? "True" : "False",
-                        ui->cylinderCount->value());
-                break;
-            case 2:
-                name = doc->getUniqueObjectName("Cone");
-                cmd = fmt::format(
-                    "App.ActiveDocument.addObject(\"Mesh::Cone\",\"{0}\")\n"
-                    "App.ActiveDocument.{0}.Radius1={1}\n"
-                    "App.ActiveDocument.{0}.Radius2={2}\n"
-                    "App.ActiveDocument.{0}.Length={3}\n"
-                    "App.ActiveDocument.{0}.EdgeLength={4}\n"
-                    "App.ActiveDocument.{0}.Closed={5}\n"
-                    "App.ActiveDocument.{0}.Sampling={6}\n", name,
-                        ui->coneRadius1->value().toNumber(),
-                        ui->coneRadius2->value().toNumber(),
-                        ui->coneLength->value().toNumber(),
-                        ui->coneEdgeLength->value().toNumber(),
-                        ui->coneClosed->isChecked() ? "True" : "False",
-                        ui->coneCount->value());
-                break;
-            case 3:
-                name = doc->getUniqueObjectName("Sphere");
-                cmd = fmt::format(
-                    "App.ActiveDocument.addObject(\"Mesh::Sphere\",\"{0}\")\n"
-                    "App.ActiveDocument.{0}.Radius={1}\n"
-                    "App.ActiveDocument.{0}.Sampling={2}\n", name,
-                        ui->sphereRadius->value().toNumber(),
-                        ui->sphereCount->value());
-                break;
-            case 4:
-                name = doc->getUniqueObjectName("Ellipsoid");
-                cmd = fmt::format(
-                    "App.ActiveDocument.addObject(\"Mesh::Ellipsoid\",\"{0}\")\n"
-                    "App.ActiveDocument.{0}.Radius1={1}\n"
-                    "App.ActiveDocument.{0}.Radius2={2}\n"
-                    "App.ActiveDocument.{0}.Sampling={3}\n", name,
-                        ui->ellipsoidRadius1->value().toNumber(),
-                        ui->ellipsoidRadius2->value().toNumber(),
-                        ui->ellipsoidCount->value());
-                break;
-            case 5:
-                name = doc->getUniqueObjectName("Torus");
-                cmd = fmt::format(
-                    "App.ActiveDocument.addObject(\"Mesh::Torus\",\"{0}\")\n"
-                    "App.ActiveDocument.{0}.Radius1={1}\n"
-                    "App.ActiveDocument.{0}.Radius2={2}\n"
-                    "App.ActiveDocument.{0}.Sampling={3}\n", name,
-                        ui->toroidRadius1->value().toNumber(),
-                        ui->toroidRadius2->value().toNumber(),
-                        ui->toroidCount->value());
-                break;
+        if (!MeshGui::hasCleanNativeMutationBoundary(doc)
+            || Gui::Control().activeDialog()) {
+            QMessageBox::warning(
+                this,
+                tr("Create %1").arg(ui->comboBox1->currentText()),
+                tr("Finish the current operation before creating a mesh.")
+            );
+            return;
         }
 
-        // Execute the Python block
-        QString solid = tr("Create %1").arg(ui->comboBox1->currentText());
-        Gui::Application::Instance->activeDocument()->openCommand(solid.toUtf8());
-        Gui::Command::doCommand(Gui::Command::Doc, cmd.c_str());
-        Gui::Application::Instance->activeDocument()->commitCommand();
-        Gui::Command::doCommand(Gui::Command::Doc, "App.activeDocument().recompute()");
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
+        QString solid =
+            tr("Create %1").arg(ui->comboBox1->currentText());
+        Gui::ExactTransaction mutation(
+            *doc,
+            solid.toUtf8().constData()
+        );
+        Mesh::Feature* result = nullptr;
+        switch (ui->comboBox1->currentIndex()) {
+            case 0: {
+                name = doc->getUniqueObjectName("Cube");
+                auto* cube = doc->addObject<Mesh::Cube>(name.c_str());
+                cube->Length.setValue(ui->boxLength->value().getValue());
+                cube->Width.setValue(ui->boxWidth->value().getValue());
+                cube->Height.setValue(ui->boxHeight->value().getValue());
+                result = cube;
+                break;
+            }
+            case 1: {
+                name = doc->getUniqueObjectName("Cylinder");
+                auto* cylinder =
+                    doc->addObject<Mesh::Cylinder>(name.c_str());
+                cylinder->Radius.setValue(
+                    ui->cylinderRadius->value().getValue()
+                );
+                cylinder->Length.setValue(
+                    ui->cylinderLength->value().getValue()
+                );
+                cylinder->EdgeLength.setValue(
+                    ui->cylinderEdgeLength->value().getValue()
+                );
+                cylinder->Closed.setValue(
+                    ui->cylinderClosed->isChecked()
+                );
+                cylinder->Sampling.setValue(
+                    ui->cylinderCount->value()
+                );
+                result = cylinder;
+                break;
+            }
+            case 2: {
+                name = doc->getUniqueObjectName("Cone");
+                auto* cone = doc->addObject<Mesh::Cone>(name.c_str());
+                cone->Radius1.setValue(
+                    ui->coneRadius1->value().getValue()
+                );
+                cone->Radius2.setValue(
+                    ui->coneRadius2->value().getValue()
+                );
+                cone->Length.setValue(
+                    ui->coneLength->value().getValue()
+                );
+                cone->EdgeLength.setValue(
+                    ui->coneEdgeLength->value().getValue()
+                );
+                cone->Closed.setValue(ui->coneClosed->isChecked());
+                cone->Sampling.setValue(ui->coneCount->value());
+                result = cone;
+                break;
+            }
+            case 3: {
+                name = doc->getUniqueObjectName("Sphere");
+                auto* sphere =
+                    doc->addObject<Mesh::Sphere>(name.c_str());
+                sphere->Radius.setValue(
+                    ui->sphereRadius->value().getValue()
+                );
+                sphere->Sampling.setValue(ui->sphereCount->value());
+                result = sphere;
+                break;
+            }
+            case 4: {
+                name = doc->getUniqueObjectName("Ellipsoid");
+                auto* ellipsoid =
+                    doc->addObject<Mesh::Ellipsoid>(name.c_str());
+                ellipsoid->Radius1.setValue(
+                    ui->ellipsoidRadius1->value().getValue()
+                );
+                ellipsoid->Radius2.setValue(
+                    ui->ellipsoidRadius2->value().getValue()
+                );
+                ellipsoid->Sampling.setValue(
+                    ui->ellipsoidCount->value()
+                );
+                result = ellipsoid;
+                break;
+            }
+            case 5: {
+                name = doc->getUniqueObjectName("Torus");
+                auto* torus =
+                    doc->addObject<Mesh::Torus>(name.c_str());
+                torus->Radius1.setValue(
+                    ui->toroidRadius1->value().getValue()
+                );
+                torus->Radius2.setValue(
+                    ui->toroidRadius2->value().getValue()
+                );
+                torus->Sampling.setValue(ui->toroidCount->value());
+                result = torus;
+                break;
+            }
+            default:
+                throw Base::RuntimeError(
+                    "Unknown regular mesh type"
+                );
+        }
+
+        doc->recompute();
+        if (!result
+            || result->Mesh.getValue().countFacets() == 0) {
+            throw Base::RuntimeError(
+                "The regular solid did not produce a usable mesh"
+            );
+        }
+        if (!mutation.commit()) {
+            throw Base::RuntimeError(
+                "The mesh could not be committed"
+            );
+        }
+        if (auto* view = guiDocument->getActiveView()) {
+            view->onMsg("ViewFit");
+        }
     }
     catch (const Base::PyException& e) {
         QMessageBox::warning(this, tr("Create %1").arg(ui->comboBox1->currentText()),
             QString::fromLatin1(e.what()));
+    }
+    catch (const Base::Exception& e) {
+        QMessageBox::warning(
+            this,
+            tr("Create %1").arg(ui->comboBox1->currentText()),
+            QString::fromUtf8(e.what())
+        );
+    }
+    catch (...) {
+        QMessageBox::warning(
+            this,
+            tr("Create %1").arg(ui->comboBox1->currentText()),
+            tr("The mesh could not be created.")
+        );
     }
 }
 // clang-format on

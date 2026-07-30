@@ -551,7 +551,19 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
     else {
         // if the object was invisible and has been changed, recreate the visual
         if (prop == &Visibility && (isUpdateForced() || Visibility.getValue()) && VisualTouched) {
-            updateVisual();
+            auto* object = getObject();
+            auto* document = object ? object->getDocument() : nullptr;
+            if (!isRestoring() && document && document->testStatus(App::Document::Status::Restoring)) {
+                // Another view provider can restore the logical visibility of
+                // this object after its own finishRestoring() callback has
+                // already run. Tessellation cannot execute until the App
+                // document leaves restore, so put it on the same deferred
+                // visual queue used by finishRestoring().
+                deferVisualRestore(*this);
+            }
+            else {
+                updateVisual();
+            }
             // updateVisual() may not be triggered by any change (e.g.
             // triggered by an external object through forceUpdate()). And
             // since ShapeAppearance is not changed here either, do not falsely set

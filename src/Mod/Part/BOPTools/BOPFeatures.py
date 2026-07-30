@@ -35,8 +35,7 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.common_input_owner([obj.Base, obj.Tool])
-        self.add_result_to_target(target, obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_cut(self, inputNames):
@@ -44,8 +43,7 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.common_input_owner([obj.Base, obj.Tool])
-        self.add_result_to_target(target, obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_common(self, inputNames):
@@ -53,16 +51,14 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.common_input_owner([obj.Base, obj.Tool])
-        self.add_result_to_target(target, obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_multi_common(self, inputNames):
         obj = self.doc.addObject("Part::MultiCommon", "Common")
         obj.Shapes = [self.doc.getObject(name) for name in inputNames]
         self.copy_visual_attributes(obj, obj.Shapes[0])
-        target = self.common_input_owner(obj.Shapes)
-        self.add_result_to_target(target, obj)
+        self.finalize_result(obj, obj.Shapes)
         return obj
 
     def make_fuse(self, inputNames):
@@ -70,16 +66,14 @@ class BOPFeatures:
         obj.Base = self.doc.getObject(inputNames[0])
         obj.Tool = self.doc.getObject(inputNames[1])
         self.copy_visual_attributes(obj, obj.Base)
-        target = self.common_input_owner([obj.Base, obj.Tool])
-        self.add_result_to_target(target, obj)
+        self.finalize_result(obj, [obj.Base, obj.Tool])
         return obj
 
     def make_multi_fuse(self, inputNames):
         obj = self.doc.addObject("Part::MultiFuse", "Fusion")
         obj.Shapes = [self.doc.getObject(name) for name in inputNames]
         self.copy_visual_attributes(obj, obj.Shapes[0])
-        target = self.common_input_owner(obj.Shapes)
-        self.add_result_to_target(target, obj)
+        self.finalize_result(obj, obj.Shapes)
         return obj
 
     @staticmethod
@@ -87,10 +81,35 @@ class BOPFeatures:
         if target and (not hasattr(target, "Group") or obj not in target.Group):
             target.addObject(obj)
 
+    def finalize_result(self, obj, inputs):
+        """Place one result, then replace only its exact visible presentations."""
+
+        target = self.common_input_owner(inputs)
+        self.add_result_to_target(target, obj)
+
+        import PartGui
+
+        presentations = []
+        for input_obj in inputs:
+            presentation = PartGui.resolveModelingPresentationObject(
+                input_obj
+            )
+            if (
+                presentation is not None
+                and presentation not in presentations
+                and bool(presentation.Visibility)
+            ):
+                presentations.append(presentation)
+        if (
+            presentations
+            and PartGui.setModelingReplacedInputs(obj, presentations)
+        ):
+            for presentation in presentations:
+                presentation.Visibility = False
+
     def common_input_owner(self, objects):
         parents = []
         for obj in objects:
-            obj.Visibility = False
             try:
                 parent = obj.getParentGeoFeatureGroup()
             except (AttributeError, RuntimeError):

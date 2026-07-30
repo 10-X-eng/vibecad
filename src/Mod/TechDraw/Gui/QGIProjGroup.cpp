@@ -238,7 +238,7 @@ QList<QGIViewPart*> QGIProjGroup::secondaryQViews() const
     }
 
     DrawProjGroup* pgFeature = getPGroupFeature();
-    auto pgViewsAll = pgFeature->getViewsAsDPGI();
+    auto pgViewsAll = pgFeature->getActiveViewsAsDPGI();
     QList<QGIViewPart*> result;
 
     for (auto& pgView : pgViewsAll) {

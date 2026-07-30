@@ -48,18 +48,23 @@ TaskCosmeticLine::TaskCosmeticLine(TechDraw::DrawViewPart* partFeat,
                                    std::string edgeName) :
     ui(new Ui_TaskCosmeticLine),
     m_partFeat(partFeat),
+    m_partIdentity(partFeat),
     m_edgeName(edgeName),
     m_ce(nullptr),
-    m_saveCE(nullptr),
     m_createMode(false)
 {
-    //existence of partFeat is checked in calling command
-
+    if (!partFeat) {
+        throw Base::TypeError(
+            "The cosmetic-line editor requires a live drawing view"
+        );
+    }
     m_ce = m_partFeat->getCosmeticEdgeBySelection(m_edgeName);
     if (!m_ce) {
-        Base::Console().error("TaskCosmeticLine - bad parameters.  Cannot proceed.\n");
-        return;
+        throw Base::TypeError(
+            "The selected edge is not an editable cosmetic line"
+        );
     }
+    m_tag = m_ce->getTagAsString();
 
     ui->setupUi(this);
 
@@ -72,13 +77,17 @@ TaskCosmeticLine::TaskCosmeticLine(TechDraw::DrawViewPart* partFeat,
                                    std::vector<bool> is3d) :
     ui(new Ui_TaskCosmeticLine),
     m_partFeat(partFeat),
+    m_partIdentity(partFeat),
     m_ce(nullptr),
-    m_saveCE(nullptr),
     m_points(points),
     m_is3d(is3d),
     m_createMode(true)
 {
-    //existence of partFeat is checked in calling command
+    if (!partFeat || points.size() != 2 || is3d.size() != 2) {
+        throw Base::TypeError(
+            "A cosmetic line requires one live view and two valid points"
+        );
+    }
 
     ui->setupUi(this);
 
@@ -87,9 +96,6 @@ TaskCosmeticLine::TaskCosmeticLine(TechDraw::DrawViewPart* partFeat,
 
 TaskCosmeticLine::~TaskCosmeticLine()
 {
-    if (m_saveCE) {
-        delete m_saveCE;
-    }
 }
 
 void TaskCosmeticLine::updateTask()
@@ -137,7 +143,7 @@ void TaskCosmeticLine::setUiPrimary()
     ui->qsbx1->setValue(p1.x);
     ui->qsby1->setUnit(Base::Unit::Length);
     ui->qsby1->setValue(-p1.y);
-    ui->qsby1->setUnit(Base::Unit::Length);
+    ui->qsbz1->setUnit(Base::Unit::Length);
     ui->qsbz1->setValue(p1.z);
 
     ui->qsbx2->setUnit(Base::Unit::Length);
@@ -171,9 +177,6 @@ void TaskCosmeticLine::setUiEdit()
 //******************************************************************************
 void TaskCosmeticLine::createCosmeticLine()
 {
-//    Base::Console().message("TCL::createCosmeticLine()\n");
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Cosmetic Line"));
-
     // ui 2d points are interpreted as unscaled, unrotated, uninverted
     double x = ui->qsbx1->value().getValue();
     double y = ui->qsby1->value().getValue();
@@ -198,9 +201,15 @@ void TaskCosmeticLine::createCosmeticLine()
     }
     m_tag = m_partFeat->addCosmeticEdge(p0, p1);
     m_ce = m_partFeat->getCosmeticEdge(m_tag);
+    if (!m_ce) {
+        throw Base::RuntimeError(
+            "The cosmetic line was not added to its drawing view"
+        );
+    }
     m_ce->setFormat(LineFormat::getCurrentLineFormat());
-
-    Gui::Command::commitCommand(tid);
+    m_partFeat->CosmeticEdges.setValues(
+        m_partFeat->CosmeticEdges.getValues()
+    );
 }
 
 void TaskCosmeticLine::updateCosmeticLine()
@@ -241,31 +250,61 @@ void TaskCosmeticLine::updateCosmeticLine()
 
 bool TaskCosmeticLine::accept()
 {
-    if (m_createMode) {
-        createCosmeticLine();
-        m_partFeat->add1CEToGE(m_tag);
-        m_partFeat->refreshCEGeoms();
-        m_partFeat->requestPaint();
-    } else {
-        //update mode
-        int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Update Cosmetic Line"));
-        updateCosmeticLine();
-        m_partFeat->refreshCEGeoms();
-        m_partFeat->requestPaint();
-        Gui::Command::updateActive();
-        Gui::Command::commitCommand(tid);
+    auto* partFeature = m_partIdentity.resolve();
+    if (!partFeature) {
+        return false;
     }
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            partFeature->getDocument(),
+            m_createMode
+                ? "Create Cosmetic Line"
+                : "Update Cosmetic Line"
+        );
+        m_partFeat = partFeature;
+        if (m_createMode) {
+            createCosmeticLine();
+            partFeature->add1CEToGE(m_tag);
+        } else {
+            // Journal the pointer-backed value before updating its nested
+            // geometry so transaction abort can restore the original.
+            partFeature->CosmeticEdges.setValues(
+                partFeature->CosmeticEdges.getValues()
+            );
+            m_ce = partFeature->getCosmeticEdge(m_tag);
+            if (!m_ce) {
+                throw Base::RuntimeError(
+                    "The cosmetic line no longer exists"
+                );
+            }
+            updateCosmeticLine();
+            partFeature->CosmeticEdges.setValues(
+                partFeature->CosmeticEdges.getValues()
+            );
+        }
+        partFeature->refreshCEGeoms();
+        partFeature->requestPaint();
+        TaskInternal::updateExactDocument(partFeature->getDocument());
+        transaction.commit();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not apply cosmetic line: %s\n",
+            error.what()
+        );
+        return false;
+    }
+
+    TaskInternal::resetExactEdit(partFeature->getDocument());
 
     return true;
 }
 
 bool TaskCosmeticLine::reject()
 {
-    //there's nothing to do.
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    return false;
+    TaskInternal::resetExactEdit(m_partIdentity.resolveDocument());
+    return true;
 }
 ////////////////////////////////////////////////////////////////////////////////
 TaskDlgCosmeticLine::TaskDlgCosmeticLine(TechDraw::DrawViewPart* partFeat,
@@ -311,14 +350,12 @@ void TaskDlgCosmeticLine::clicked(int)
 
 bool TaskDlgCosmeticLine::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgCosmeticLine::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskCosmeticLine.cpp>

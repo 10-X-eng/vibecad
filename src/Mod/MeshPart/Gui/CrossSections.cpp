@@ -22,18 +22,12 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
 #include <limits>
 #include <sstream>
 
-#include <BRepBuilderAPI_MakePolygon.hxx>
-#include <BRep_Builder.hxx>
-#include <TopoDS.hxx>
-#include <TopoDS_Compound.hxx>
-
-#include <QFuture>
 #include <QKeyEvent>
 #include <QMessageBox>
-#include <QtConcurrentMap>
 
 #include <Inventor/nodes/SoBaseColor.h>
 #include <Inventor/nodes/SoCoordinate3.h>
@@ -41,27 +35,27 @@
 #include <Inventor/nodes/SoLineSet.h>
 #include <Inventor/nodes/SoSeparator.h>
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProvider.h>
-#include <Mod/Mesh/App/Core/Algorithm.h>
-#include <Mod/Mesh/App/Core/Grid.h>
 #include <Mod/Mesh/App/MeshFeature.h>
-#include <Mod/Part/App/PartFeature.h>
-#include <Mod/Part/App/Tools.h>
+#include <Mod/Mesh/Gui/CommandGuard.h>
+#include <Mod/Mesh/Gui/ParametricMeshFilter.h>
 
+#include "../App/FeatureMeshPartOperations.h"
 #include "CrossSections.h"
 #include "ui_CrossSections.h"
 
 
 using namespace MeshPartGui;
-namespace sp = std::placeholders;
-
 namespace MeshPartGui
 {
 class ViewProviderCrossSections: public Gui::ViewProvider
@@ -120,61 +114,35 @@ private:
     SoLineSet* planes;
 };
 
-class MeshCrossSection
+class CrossSections::SelectionState
 {
 public:
-    MeshCrossSection(
-        const MeshCore::MeshKernel& mesh,
-        const MeshCore::MeshFacetGrid& grid,
-        double x,
-        double y,
-        double z,
-        bool connectEdges,
-        double eps
-    )
-        : mesh(mesh)
-        , grid(grid)
-        , x(x)
-        , y(y)
-        , z(z)
-        , connectEdges(connectEdges)
-        , epsilon(eps)
-    {}
-    std::list<TopoDS_Wire> section(double d)
+    explicit SelectionState(App::Document* targetDocument)
+        : document(targetDocument)
     {
-        Mesh::MeshObject::TPolylines polylines;
-        MeshCore::MeshAlgorithm algo(mesh);
-        Base::Vector3f p(x * d, y * d, z * d);
-        Base::Vector3f n(x, y, z);
-        algo.CutWithPlane(p, n, grid, polylines, epsilon, connectEdges);
-
-        std::list<TopoDS_Wire> wires;
-        for (const auto& polyline : polylines) {
-            BRepBuilderAPI_MakePolygon mkPoly;
-            for (auto jt : polyline) {
-                mkPoly.Add(Base::convertTo<gp_Pnt>(jt));
-            }
-
-            if (mkPoly.IsDone()) {
-                wires.push_back(mkPoly.Wire());
+        if (!targetDocument) {
+            return;
+        }
+        for (auto* object :
+             Gui::Selection().getObjectsOfType<Mesh::Feature>()) {
+            if (object && object->getDocument() == targetDocument
+                && MeshGui::isNativeMeshInputActive(object)) {
+                meshes.emplace_back(object);
             }
         }
-
-        return wires;
     }
 
-private:
-    const MeshCore::MeshKernel& mesh;
-    const MeshCore::MeshFacetGrid& grid;
-    double x, y, z;
-    bool connectEdges;
-    double epsilon;
+    App::DocumentWeakPtrT document;
+    std::vector<App::DocumentObjectWeakPtrT> meshes;
 };
 }  // namespace MeshPartGui
 
 CrossSections::CrossSections(const Base::BoundBox3d& bb, QWidget* parent, Qt::WindowFlags fl)
     : QDialog(parent, fl)
     , bbox(bb)
+    , selectionState(std::make_unique<SelectionState>(
+          App::GetApplication().getActiveDocument()
+      ))
 {
     ui = new Ui_CrossSections();
     ui->setupUi(this);
@@ -192,8 +160,14 @@ CrossSections::CrossSections(const Base::BoundBox3d& bb, QWidget* parent, Qt::Wi
     calcPlane(CrossSections::XY, c.z);
     ui->position->setValue(c.z);
 
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    view = qobject_cast<Gui::View3DInventor*>(doc->getActiveView());
+    App::Document* targetDocument =
+        selectionState ? *selectionState->document : nullptr;
+    Gui::Document* doc = targetDocument
+        ? Gui::Application::Instance->getDocument(targetDocument)
+        : nullptr;
+    view = doc
+        ? qobject_cast<Gui::View3DInventor*>(doc->getActiveView())
+        : nullptr;
     if (view) {
         view->getViewer()->addViewProvider(vp);
     }
@@ -266,15 +240,36 @@ void CrossSections::keyPressEvent(QKeyEvent* ke)
 
 void CrossSections::accept()
 {
-    apply();
-    QDialog::accept();
+    if (applyAndReport()) {
+        QDialog::accept();
+    }
 }
 
 void CrossSections::apply()
 {
-    std::vector<App::DocumentObject*> obj = Gui::Selection().getObjectsOfType(
-        Mesh::Feature::getClassTypeId()
-    );
+    (void)applyAndReport();
+}
+
+bool CrossSections::applyAndReport()
+{
+    App::Document* document =
+        selectionState ? *selectionState->document : nullptr;
+    if (!document || selectionState->meshes.empty()) {
+        return false;
+    }
+    std::vector<Mesh::Feature*> meshes;
+    meshes.reserve(selectionState->meshes.size());
+    for (const auto& target : selectionState->meshes) {
+        auto* mesh = target.get<Mesh::Feature>();
+        if (!mesh || mesh->getDocument() != document
+            || !MeshGui::isNativeMeshInputActive(mesh)) {
+            return false;
+        }
+        meshes.push_back(mesh);
+    }
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        return false;
+    }
 
     std::vector<double> d;
     if (ui->sectionsBox->isChecked()) {
@@ -299,97 +294,58 @@ void CrossSections::apply()
     bool connectEdges = ui->checkBoxConnect->isChecked();
     double eps = ui->spinEpsilon->value();
 
-#if 1  // multi-threaded sections
-    for (auto it : obj) {
-        const Mesh::MeshObject& mesh = static_cast<Mesh::Feature*>(it)->Mesh.getValue();
-
-        MeshCore::MeshKernel kernel(mesh.getKernel());
-        kernel.Transform(mesh.getTransform());
-
-        MeshCore::MeshFacetGrid grid(kernel);
-
-        // NOLINTBEGIN
-        MeshCrossSection cs(kernel, grid, a, b, c, connectEdges, eps);
-        QFuture<std::list<TopoDS_Wire>> future
-            = QtConcurrent::mapped(d, std::bind(&MeshCrossSection::section, &cs, sp::_1));
-        future.waitForFinished();
-        // NOLINTEND
-
-        TopoDS_Compound comp;
-        BRep_Builder builder;
-        builder.MakeCompound(comp);
-
-        for (const auto& w : future) {
-            for (const auto& wt : w) {
-                if (!wt.IsNull()) {
-                    builder.Add(comp, wt);
-                }
+    Gui::ExactTransaction transaction(*document, "Mesh cross-sections");
+    std::vector<App::DocumentObject*> outputs;
+    outputs.reserve(meshes.size());
+    const Base::Vector3d normal(a, b, c);
+    for (auto* source : meshes) {
+        std::string name = source->getNameInDocument();
+        name += "_cs";
+        auto* section =
+            document->addObject<MeshPart::CrossSections>(name.c_str());
+        section->Label.setValue(
+            source->Label.getStrValue() + " Cross-Sections"
+        );
+        section->Source.setValue(source);
+        section->PlaneNormal.setValue(normal);
+        section->PlanePositions.setValues(d);
+        section->Epsilon.setValue(eps);
+        section->ConnectEdges.setValue(connectEdges);
+        outputs.push_back(section);
+    }
+    document->recompute();
+    if (std::ranges::any_of(
+            outputs,
+            [](const App::DocumentObject* output) {
+                const auto* section =
+                    freecad_cast<const MeshPart::CrossSections*>(
+                        output
+                    );
+                return !section || section->Shape.getShape().isNull()
+                    || !section->Shape.getShape().isValid();
             }
-        }
-
-        App::Document* doc = it->getDocument();
-        std::string s = it->getNameInDocument();
-        s += "_cs";
-        Part::Feature* section = doc->addObject<Part::Feature>(s.c_str());
-        section->Shape.setValue(comp);
-        section->purgeTouched();
+        )) {
+        QMessageBox::information(
+            this,
+            tr("Cross-Sections"),
+            tr("The selected planes do not intersect every selected mesh.")
+        );
+        return false;
     }
-#else
-    try {
-        Gui::Command::runCommand(Gui::Command::App, "import Mesh, Part\n");
-        Gui::Command::runCommand(Gui::Command::App, "from FreeCAD import Base\n");
-
-        std::stringstream str;
-        str << "[";
-        for (std::vector<double>::iterator jt = d.begin(); jt != d.end(); ++jt) {
-            double d = *jt;
-            str << "("
-                << "App.Vector(" << a * d << ", " << b * d << ", " << c * d << "), "
-                << "App.Vector(" << a << ", " << b << ", " << c << ")"
-                << "), ";
-        }
-        str << "]";
-
-        QString planes = QString::fromStdString(str.str());
-        for (std::vector<App::DocumentObject*>::iterator it = obj.begin(); it != obj.end(); ++it) {
-            App::Document* doc = (*it)->getDocument();
-            std::string s = (*it)->getNameInDocument();
-            s += "_cs";
-            Gui::Command::runCommand(
-                Gui::Command::App,
-                QStringLiteral(
-                    "points=FreeCAD.getDocument(\"%1\").%2.Mesh.crossSections(%3, %4, %5)\n"
-                    "wires=[]\n"
-                    "for i in points:\n"
-                    "    wires.extend([Part.makePolygon(j) for j in i])\n"
-                )
-                    .arg(QLatin1String(doc->getName()))
-                    .arg(QLatin1String((*it)->getNameInDocument()))
-                    .arg(planes)
-                    .arg(eps)
-                    .arg(connectEdges ? QLatin1String("True") : QLatin1String("False"))
-                    .toLatin1()
-            );
-
-            Gui::Command::runCommand(
-                Gui::Command::App,
-                QStringLiteral(
-                    "comp=Part.Compound(wires)\n"
-                    "slice=FreeCAD.getDocument(\"%1\").addObject(\"Part::Feature\",\"%2\")\n"
-                    "slice.Shape=comp\n"
-                    "slice.purgeTouched()\n"
-                    "del slice,comp,wires,points"
-                )
-                    .arg(QLatin1String(doc->getName()))
-                    .arg(QLatin1String(s.c_str()))
-                    .toLatin1()
-            );
-        }
+    std::vector<App::DocumentObject*> sources(meshes.begin(), meshes.end());
+    MeshGui::createSourcePreservingOutputGroup(
+        *document,
+        sources,
+        outputs,
+        "MeshCrossSections",
+        "Mesh Cross-Sections",
+        "Create mesh cross-sections"
+    );
+    document->recompute();
+    if (!transaction.commit()) {
+        return false;
     }
-    catch (const Base::Exception& e) {
-        QMessageBox::critical(this, tr("Failure"), QString::fromLatin1(e.what()));
-    }
-#endif
+    return true;
 }
 
 void CrossSections::xyPlaneClicked()
@@ -632,6 +588,12 @@ void CrossSections::makePlanes(Plane type, const std::vector<double>& d, double 
 
 TaskCrossSections::TaskCrossSections(const Base::BoundBox3d& bb)
 {
+    App::Document* document =
+        App::GetApplication().getActiveDocument();
+    if (document) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     widget = new CrossSections(bb);
     addTaskBox(Gui::BitmapFactory().pixmap("Mesh_CrossSections"), widget, true);
 }

@@ -208,9 +208,17 @@ def _run_standalone(
         sweep.Solid = bool(solid)
         sweep.Frenet = orientation == "frenet"
         sweep.Transition = transition_values[transition]
-        domain_runtime.adopt_part_result(sweep)
+        source_objects = [*target_sections, target_spine]
+        domain_runtime.adopt_part_result(
+            sweep,
+            replaced_inputs=[
+                source
+                for source in source_objects
+                if visibility_before[source.Name].get("visible") is True
+            ],
+        )
         active.recompute()
-        for source in [*target_sections, target_spine]:
+        for source in source_objects:
             view = getattr(source, "ViewObject", None)
             if view is not None and hasattr(view, "Visibility"):
                 view.Visibility = False
@@ -231,7 +239,7 @@ def _run_standalone(
             "source_visibility_before": visibility_before,
             "source_visibility_after": {
                 source.Name: domain_runtime.view_visibility_summary(source)
-                for source in [*target_sections, target_spine]
+                for source in source_objects
             },
             "shape": domain_runtime.shape_summary(sweep),
             "feature_state": domain_runtime.feature_state_summary(sweep),

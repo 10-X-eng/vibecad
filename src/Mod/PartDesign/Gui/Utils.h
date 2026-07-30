@@ -48,6 +48,15 @@ class SketchObject;
 namespace PartDesignGui
 {
 
+/**
+ * Return whether a top-level modeling command may start its own transaction.
+ *
+ * Part Design transactions are not nested. Refuse a new top-level operation
+ * while an unrelated caller transaction is booked; a child command invoked by
+ * an enclosing GUI command remains part of that enclosing command attempt.
+ */
+bool canStartModelingCommand();
+
 /// Activate edit mode of the given object
 bool setEdit(App::DocumentObject* obj, PartDesign::Body* body = nullptr);
 
@@ -59,6 +68,15 @@ PartDesign::Body* getBody(
     App::DocumentObject** topParent = nullptr,
     std::string* subname = nullptr
 );
+
+/**
+ * Resolve the Body that a command-state query should inspect without changing
+ * the active Body or recording a GUI command.
+ *
+ * An unambiguous Body represented by the current selection takes precedence;
+ * otherwise the already-active Body is returned.
+ */
+PartDesign::Body* getBodyForCommandState();
 
 /// Display a dialog to select or create a Body object when none is active
 PartDesign::Body* needActiveBodyMessage(App::Document* doc, const QString& infoText = QString());

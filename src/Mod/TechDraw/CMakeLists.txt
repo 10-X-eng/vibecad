@@ -63,6 +63,12 @@ add_custom_target(TechDraw_Data ALL
 SOURCES ${TechDraw_Scripts} ${TechDraw_PATFile} ${TechDraw_CSVFile} ${TechDraw_LineGroupFile} ${TechDraw_ToolsScripts} ${TechDraw_ToolsGui}
 )
 
+if(TARGET TechDrawGui)
+    # TechDraw's compiled commands load InitGui.py and TechDrawTools from the
+    # build tree.  Named incremental builds do not run unrelated ALL targets.
+    add_dependencies(TechDrawGui TechDraw_Data)
+endif()
+
 fc_target_copy_resource(TechDraw_Data
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/Mod/TechDraw
@@ -187,6 +193,8 @@ SET(TDTest_SRCS
     TDTest/DrawViewBalloonTest.py
     TDTest/DrawViewDetailTest.py
     TDTest/DrawViewScaleTypeTest.py
+    TDTest/DrawTimelineTest.py
+    TDTest/TechDrawGuiBehaviorContractTest.py
     TDTest/TechDrawTestUtilities.py
 )
 
@@ -212,4 +220,3 @@ fc_copy_sources(TDTestTarget "${CMAKE_BINARY_DIR}/Mod/TechDraw" ${TDAllTest})
 # install Python packages (for make install)
 INSTALL(FILES ${TDTest_SRCS} DESTINATION Mod/TechDraw/TDTest)
 INSTALL(FILES ${TDTestFile_SRCS} DESTINATION Mod/TechDraw/TDTest)
-

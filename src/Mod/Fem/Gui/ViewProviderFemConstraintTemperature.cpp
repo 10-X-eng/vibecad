@@ -45,10 +45,10 @@ ViewProviderFemConstraintTemperature::~ViewProviderFemConstraintTemperature() = 
 bool ViewProviderFemConstraintTemperature::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
         // clear the selection (convenience)
         Gui::Selection().clearSelection();
-        Gui::Control().showDialog(new TaskDlgFemConstraintTemperature(this));
+        Gui::Control().showDialog(new TaskDlgFemConstraintTemperature(this), getObject()->getDocument());
 
         return true;
     }

@@ -55,6 +55,9 @@ public:
     PyObject *getPyObject() override;
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+
     virtual pointPair getPointsExtent(ReferenceVector references);
     bool checkReferences2D() const override;
 

@@ -322,6 +322,7 @@ public:
     void addTo(QWidget* widget) override;
     void setEnabled(bool) override;
     void setVisible(bool) override;
+    QAction* toolBarAction();
 
 private Q_SLOTS:
     void actionChanged();
@@ -349,6 +350,7 @@ public:
     void addTo(QWidget* widget) override;
     void setEnabled(bool) override;
     void setVisible(bool) override;
+    QAction* toolBarAction();
 
 private Q_SLOTS:
     void actionChanged();

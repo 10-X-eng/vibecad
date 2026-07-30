@@ -120,7 +120,7 @@ void QGIViewClip::drawClip()
 
     m_cliparea->setRect(r.adjusted(-1, -1, 1,1));
 
-    std::vector<std::string> childNames = viewClip->getChildViewNames();
+    std::vector<std::string> childNames = viewClip->getActiveChildViewNames();
     //for all child Views in Clip, add the graphics representation of the View to the Clip group
     for (auto& name : childNames) {
         QGIView* qgiv = getQGIVByName((name));

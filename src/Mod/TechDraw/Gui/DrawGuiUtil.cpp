@@ -21,8 +21,10 @@
  *                                                                         *
  ***************************************************************************/
 
-
-# include <sstream>
+#include <algorithm>
+#include <iterator>
+#include <ranges>
+#include <sstream>
 
 #include <QBitmap>
 #include <QColor>
@@ -65,6 +67,7 @@
 #include <Mod/TechDraw/App/MattingPropEnum.h>
 #include <Mod/TechDraw/App/DrawPage.h>
 #include <Mod/TechDraw/App/DrawUtil.h>
+#include <Mod/TechDraw/App/DrawView.h>
 #include <Mod/TechDraw/App/DrawViewPart.h>
 #include <Mod/TechDraw/App/LineGenerator.h>
 #include <Mod/TechDraw/App/LineGroup.h>
@@ -83,6 +86,36 @@
 using namespace TechDrawGui;
 using namespace TechDraw;
 using DU = DrawUtil;
+
+namespace
+{
+
+bool isActiveDrawingObject(const App::DocumentObject* object)
+{
+    if (!DU::isActiveInDocumentTimeline(object)) {
+        return false;
+    }
+    const auto* view = dynamic_cast<const TechDraw::DrawView*>(object);
+    return !view || view->isActiveInDocumentTimeline();
+}
+
+void removeInactiveDrawingObjects(
+    std::vector<App::DocumentObject*>& objects
+)
+{
+    objects.erase(
+        std::remove_if(
+            objects.begin(),
+            objects.end(),
+            [](const App::DocumentObject* object) {
+                return !isActiveDrawingObject(object);
+            }
+        ),
+        objects.end()
+    );
+}
+
+}  // namespace
 
 void DrawGuiUtil::loadArrowBox(QComboBox* qcb)
 {
@@ -288,7 +321,9 @@ TechDraw::DrawPage* DrawGuiUtil::findPage(Gui::Command* cmd, bool findAny)
 {
     std::vector<std::string> names;
     std::vector<std::string> labels;
-    auto docs = App::GetApplication().getDocuments();
+    if (!cmd) {
+        return nullptr;
+    }
 
     if (findAny) {
         // find a page in any open document
@@ -298,6 +333,7 @@ TechDraw::DrawPage* DrawGuiUtil::findPage(Gui::Command* cmd, bool findAny)
         auto docsAll = App::GetApplication().getDocuments();
         for (auto& doc : docsAll) {
             auto docPages = doc->getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
+            removeInactiveDrawingObjects(docPages);
             if (docPages.empty()) {
                 // this open document has no TD pages
                 continue;
@@ -321,27 +357,51 @@ TechDraw::DrawPage* DrawGuiUtil::findPage(Gui::Command* cmd, bool findAny)
             }
             DlgPageChooser dlg(labels, names, Gui::getMainWindow());
             if (dlg.exec() == QDialog::Accepted) {
-                std::string selName = dlg.getSelection();
-                if (selName.empty()) {
+                const int selectedIndex = dlg.getSelectionIndex();
+                if (selectedIndex < 0
+                    || static_cast<std::size_t>(selectedIndex)
+                        >= foundPageObjects.size()) {
                     showNoPageMessage();
                     return nullptr;
                 }
-                App::Document* doc = cmd->getDocument();
-                return static_cast<TechDraw::DrawPage*>(doc->getObject(selName.c_str()));
+                return freecad_cast<TechDraw::DrawPage*>(
+                    foundPageObjects[static_cast<std::size_t>(selectedIndex)]
+                );
             }
+            return nullptr;
         }
         else {
             // only 1 page found
-            return static_cast<TechDraw::DrawPage*>(foundPageObjects.front());
+            return freecad_cast<TechDraw::DrawPage*>(
+                foundPageObjects.front()
+            );
         }
     }
 
+    App::Document* commandDocument = cmd->getDocument();
+    if (!commandDocument) {
+        return nullptr;
+    }
+
     // check Selection for a page
-    std::vector<App::DocumentObject*> selPages =
+    const std::vector<App::DocumentObject*> allSelectedPages =
         Gui::Command::getSelection().getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
+    std::vector<App::DocumentObject*> selPages;
+    std::ranges::copy_if(
+        allSelectedPages,
+        std::back_inserter(selPages),
+        [commandDocument](const App::DocumentObject* object) {
+            return object && object->getDocument() == commandDocument
+                && isActiveDrawingObject(object);
+        }
+    );
     if (selPages.empty()) {
         // no page in selection, try this document
-        auto docPages = cmd->getDocument()->getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
+        auto docPages =
+            commandDocument->getObjectsOfType(
+                TechDraw::DrawPage::getClassTypeId()
+            );
+        removeInactiveDrawingObjects(docPages);
         if (docPages.empty()) {
             // we are only to look in this document, and there is no page in this document
             showNoPageMessage();
@@ -354,8 +414,14 @@ TechDraw::DrawPage* DrawGuiUtil::findPage(Gui::Command* cmd, bool findAny)
             auto* mv = w->activeWindow();
             auto* mvp = qobject_cast<MDIViewPage*>(mv);
             if (mvp) {
-                QGSPage* qp = mvp->getViewProviderPage()->getQGSPage();
-                return qp->getDrawPage();
+                auto* provider = mvp->getViewProviderPage();
+                auto* scene = provider ? provider->getQGSPage() : nullptr;
+                auto* activePage = scene ? scene->getDrawPage() : nullptr;
+                if (activePage
+                    && activePage->getDocument() == commandDocument
+                    && isActiveDrawingObject(activePage)) {
+                    return activePage;
+                }
             }
 
             // none of pages in document is active, ask for help
@@ -372,8 +438,9 @@ TechDraw::DrawPage* DrawGuiUtil::findPage(Gui::Command* cmd, bool findAny)
                     showNoPageMessage();
                     return nullptr;
             }
-                App::Document* doc = cmd->getDocument();
-                return static_cast<TechDraw::DrawPage*>(doc->getObject(selName.c_str()));
+                return freecad_cast<TechDraw::DrawPage*>(
+                    commandDocument->getObject(selName.c_str())
+                );
             }
             return nullptr;
         }
@@ -397,13 +464,14 @@ TechDraw::DrawPage* DrawGuiUtil::findPage(Gui::Command* cmd, bool findAny)
                 showNoPageMessage();
                 return nullptr;
             }
-            App::Document* doc = cmd->getDocument();
-            return static_cast<TechDraw::DrawPage*>(doc->getObject(selName.c_str()));
+            return freecad_cast<TechDraw::DrawPage*>(
+                commandDocument->getObject(selName.c_str())
+            );
         }
     }
     else {
         // exactly 1 page in selection, use it
-        return static_cast<TechDraw::DrawPage*>(selPages.front());
+        return freecad_cast<TechDraw::DrawPage*>(selPages.front());
     }
 
     return nullptr;
@@ -456,6 +524,7 @@ bool DrawGuiUtil::needPage(Gui::Command* cmd, bool findAny)
         auto docsAll = App::GetApplication().getDocuments();
         for (auto& doc : docsAll) {
             auto docPages = doc->getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
+            removeInactiveDrawingObjects(docPages);
             if (docPages.empty()) {
                 // this open document has no TD pages
                 continue;
@@ -473,6 +542,7 @@ bool DrawGuiUtil::needPage(Gui::Command* cmd, bool findAny)
     if (cmd->hasActiveDocument()) {
         auto drawPageType(TechDraw::DrawPage::getClassTypeId());
         auto selPages = cmd->getDocument()->getObjectsOfType(drawPageType);
+        removeInactiveDrawingObjects(selPages);
         return !selPages.empty();
     }
     return false;
@@ -485,6 +555,7 @@ bool DrawGuiUtil::needView(Gui::Command* cmd, bool partOnly)
         if (partOnly) {
             auto drawPartType(TechDraw::DrawViewPart::getClassTypeId());
             auto selParts = cmd->getDocument()->getObjectsOfType(drawPartType);
+            removeInactiveDrawingObjects(selParts);
             if (!selParts.empty()) {
                 haveView = true;
             }
@@ -492,6 +563,7 @@ bool DrawGuiUtil::needView(Gui::Command* cmd, bool partOnly)
         else {
             auto drawViewType(TechDraw::DrawView::getClassTypeId());
             auto selParts = cmd->getDocument()->getObjectsOfType(drawViewType);
+            removeInactiveDrawingObjects(selParts);
             if (!selParts.empty()) {
                 haveView = true;
             }

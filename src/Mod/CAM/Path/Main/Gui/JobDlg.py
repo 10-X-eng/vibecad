@@ -28,6 +28,7 @@ import FreeCADGui
 import Path
 import Path.Base.Util as PathUtil
 import Path.Main.Job as PathJob
+from Path.CommandBoundary import is_timeline_input_usable
 import Path.Main.Stock as PathStock
 import glob
 import json
@@ -252,7 +253,15 @@ class JobCreate:
                     if itemSelected:
                         expand2Ds = True
 
-        for j in sorted(PathJob.Instances(), key=lambda x: x.Label):
+        document = FreeCAD.ActiveDocument
+        for j in sorted(
+            (
+                candidate
+                for candidate in PathJob.Instances()
+                if is_timeline_input_usable(candidate, document)
+            ),
+            key=lambda x: x.Label,
+        ):
             if j != job:
                 item0 = QtGui.QStandardItem()
                 item1 = QtGui.QStandardItem()

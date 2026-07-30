@@ -40,6 +40,7 @@
 
 #include "TaskSectionView.h"
 #include "TaskComplexSection.h"
+#include "TaskDocumentGuard.h"
 #include "ViewProviderViewSection.h"
 #include "QGIView.h"
 
@@ -137,24 +138,32 @@ bool ViewProviderViewSection::setEdit(int ModNum)
     if (ModNum != ViewProvider::Default ) {
         return ViewProviderDrawingView::setEdit(ModNum);
     }
-    if (Gui::Control().activeDialog())  {         //TaskPanel already open!
+    auto* section = getViewObject();
+    if (!section
+        || Gui::Control().activeDialog(section->getDocument())) {
         return false;
     }
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
 
-    auto dcs = dynamic_cast<TechDraw::DrawComplexSection*>(getViewObject());
+    auto dcs = dynamic_cast<TechDraw::DrawComplexSection*>(section);
     if (dcs) {
-        Gui::Control().showDialog(new TaskDlgComplexSection(dcs));
+        TaskInternal::showDocumentDialog(
+            new TaskDlgComplexSection(dcs),
+            dcs->getDocument()
+        );
         return true;
     }
-    Gui::Control().showDialog(new TaskDlgSectionView(getViewObject()));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgSectionView(section),
+        section->getDocument()
+    );
     return true;
 }
 
 bool ViewProviderViewSection::doubleClicked()
 {
-    setEdit(ViewProvider::Default);
+    startDefaultEditMode();
     return true;
 }
 

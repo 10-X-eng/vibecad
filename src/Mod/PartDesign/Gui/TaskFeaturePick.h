@@ -33,6 +33,15 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Gui/ViewProviderCoordinateSystem.h>
 
+namespace App
+{
+class Document;
+}
+
+namespace PartDesign
+{
+class Body;
+}
 
 namespace PartDesignGui
 {
@@ -65,6 +74,13 @@ public:
         bool singleFeatureSelect,
         QWidget* parent = nullptr
     );
+    TaskFeaturePick(
+        std::vector<App::DocumentObject*>& objects,
+        const std::vector<featureStatus>& status,
+        bool singleFeatureSelect,
+        PartDesign::Body* targetBody,
+        QWidget* parent = nullptr
+    );
 
     ~TaskFeaturePick() override;
 
@@ -74,6 +90,12 @@ public:
     bool isSingleSelectionEnabled() const;
 
     static App::DocumentObject* makeCopy(App::DocumentObject* obj, std::string sub, bool independent);
+    static App::DocumentObject* makeCopy(
+        App::DocumentObject* obj,
+        std::string sub,
+        bool independent,
+        App::Document* destination
+    );
 
 protected Q_SLOTS:
     void onUpdate(bool);
@@ -95,6 +117,8 @@ private:
     std::vector<Gui::ViewProviderCoordinateSystem*> origins;
     bool doSelection;
     std::string documentName;
+    std::string targetBodyName;
+    long targetBodyId {-1};
 
     std::vector<QString> features;
     std::vector<featureStatus> statuses;
@@ -118,6 +142,15 @@ public:
         bool singleFeatureSelect,
         std::function<void(void)> abortfunc = 0
     );
+    TaskDlgFeaturePick(
+        std::vector<App::DocumentObject*>& objects,
+        const std::vector<TaskFeaturePick::featureStatus>& status,
+        std::function<bool(std::vector<App::DocumentObject*>)> acceptfunc,
+        std::function<void(std::vector<App::DocumentObject*>)> workfunc,
+        bool singleFeatureSelect,
+        std::function<void(void)> abortfunc,
+        PartDesign::Body* targetBody
+    );
     ~TaskDlgFeaturePick() override;
 
 public:
@@ -125,6 +158,7 @@ public:
     void open() override;
     /// is called by the framework if an button is clicked which has no accept or reject role
     void clicked(int) override;
+    void autoClosedOnDeletedDocument() override;
     /// is called by the framework if the dialog is accepted (Ok)
     bool accept() override;
     /// is called by the framework if the dialog is rejected (Cancel)
@@ -147,6 +181,7 @@ public:
 protected:
     TaskFeaturePick* pick;
     bool accepted;
+    bool callbacksEnabled {true};
     std::function<bool(std::vector<App::DocumentObject*>)> acceptFunction;
     std::function<void(std::vector<App::DocumentObject*>)> workFunction;
     std::function<void(void)> abortFunction;

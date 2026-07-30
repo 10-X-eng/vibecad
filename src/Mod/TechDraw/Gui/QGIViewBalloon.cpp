@@ -51,6 +51,7 @@
 #include "QGIArrow.h"
 #include "QGIDimLines.h"
 #include "Rez.h"
+#include "TaskDocumentGuard.h"
 #include "ViewProviderBalloon.h"
 #include "ViewProviderViewPart.h"
 #include "ZVALUE.h"
@@ -497,21 +498,25 @@ void QGIViewBalloon::balloonLabelDragFinished()
 
     double scale = 1.0;
     DrawView* balloonParent = getSourceView();
-    if (!balloonParent) {
+    if (!balloonParent
+        || balloonParent->getDocument() != dvb->getDocument()) {
         return;
     }
     scale = balloonParent->getScale();
+    if (std::abs(scale) <= Base::Vector3d::epsilon()) {
+        m_dragInProgress = false;
+        m_originDragged = false;
+        drawBalloon(false);
+        return;
+    }
 
     //set feature position (x, y) from graphic position
-    double x = Rez::appX(balloonLabel->getCenterX() / scale);
-    double y = Rez::appX(balloonLabel->getCenterY() / scale);
-
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Drag Balloon"));
-
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.X = %f",
-                            dvb->getNameInDocument(), x);
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.Y = %f",
-                            dvb->getNameInDocument(), -y);
+    const double x =
+        Rez::appX(balloonLabel->getCenterX() / scale);
+    const double y =
+        -Rez::appX(balloonLabel->getCenterY() / scale);
+    double originX = dvb->OriginX.getValue();
+    double originY = dvb->OriginY.getValue();
 
     // for the case that origin was also dragged, calc new origin and update feature
     if (m_originDragged) {
@@ -525,13 +530,51 @@ void QGIViewBalloon::balloonLabelDragFinished()
             originAppUnrotated.RotateZ(Base::toRadians(-rotationDeg));
         }
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.OriginX = %f",
-                                dvb->getNameInDocument(), originAppUnrotated.x);
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.OriginY = %f",
-                                dvb->getNameInDocument(), originAppUnrotated.y);
+        originX = originAppUnrotated.x;
+        originY = originAppUnrotated.y;
     }
 
-    Gui::Command::commitCommand(tid);
+    constexpr double tolerance = 0.001;
+    const bool positionChanged =
+        !DrawUtil::fpCompare(dvb->X.getValue(), x, tolerance)
+        || !DrawUtil::fpCompare(dvb->Y.getValue(), y, tolerance);
+    const bool originChanged =
+        m_originDragged
+        && (!DrawUtil::fpCompare(
+                dvb->OriginX.getValue(),
+                originX,
+                tolerance
+            )
+            || !DrawUtil::fpCompare(
+                dvb->OriginY.getValue(),
+                originY,
+                tolerance
+            ));
+    if (positionChanged || originChanged) {
+        try {
+            App::Document* document = dvb->getDocument();
+            TaskInternal::OwnedDocumentTransaction transaction(
+                document,
+                QT_TRANSLATE_NOOP("Command", "Drag Balloon")
+            );
+            if (positionChanged) {
+                dvb->X.setValue(x);
+                dvb->Y.setValue(y);
+            }
+            if (originChanged) {
+                dvb->OriginX.setValue(originX);
+                dvb->OriginY.setValue(originY);
+            }
+            TaskInternal::updateExactDocument(document);
+            transaction.commit();
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().warning(
+                "Could not store the drawing-balloon position: %s\n",
+                error.what()
+            );
+        }
+    }
 
     m_dragInProgress = false;
     m_originDragged = false;

@@ -399,35 +399,54 @@ Part::TopoShape SketchObject::buildInternals(const Part::TopoShape &edges) const
     if (!MakeInternals.getValue())
         return Part::TopoShape();
 
+    const auto wires = edges.getSubTopoShapes(TopAbs_WIRE);
+    Part::TopoShape faces(getID(), getDocument()->getStringHasher());
     try {
-        Part::TopoShape result(getID(), getDocument()->getStringHasher());
-        result = result.makeElementFace(edges.getSubTopoShapes(TopAbs_WIRE),
+        if (!wires.empty()) {
+            // FaceMaker needs the complete wire graph: open partitioning wires
+            // can split a closed boundary into independently selectable
+            // profiles.
+            faces = faces.makeElementFace(wires,
                 /*op*/"",
                 /*maker*/"Part::FaceMakerBuildFace",
                 /*pln*/nullptr
-        );
+            );
+        }
+    } catch (Base::Exception &) {
+        // A sketch containing only open path geometry has no bounded region;
+        // that is valid sketch content, not a recompute failure. Preserve its
+        // selectable wires below.
+    } catch (Standard_Failure &) {
+        // Internal faces are derived selection geometry. Failure to derive a
+        // bounded region must not discard otherwise valid sketch paths.
+    }
 
-        // Append open wires (edges not part of any closed face)
+    Part::TopoShape openWires(getID(), getDocument()->getStringHasher());
+    try {
+        // Preserve path geometry as selectable internals without asking a face
+        // maker to process open wires.
         Part::WireJoiner joiner;
         joiner.setTightBound(true);
         joiner.setMergeEdges(true);
         joiner.addShape(edges);
-        Part::TopoShape openWires(getID(), getDocument()->getStringHasher());
-        joiner.getOpenWires(openWires, "SKF");
-
-        if (openWires.isNull()) {
-            return result;  // No open wires, return either face or empty toposhape
-        }
-        if (result.isNull()) {
-            return openWires;   // No face, but we have open wires to return as a shape
-        }
-        return result.makeElementCompound({result, openWires}); // Compound and return both
+        // A face result already contains its original boundary/partition
+        // edges, so append only genuinely derived open fragments in that
+        // case. With no face result, the original open path is the internal
+        // result and must be retained.
+        joiner.getOpenWires(openWires, "SKF", !faces.isNull());
     } catch (Base::Exception &e) {
-        FC_WARN("Failed to make face for sketch: " << e.what());
+        FC_WARN("Failed to build open sketch wires: " << e.what());
     } catch (Standard_Failure &e) {
-        FC_WARN("Failed to make face for sketch: " << e.GetMessageString());
+        FC_WARN("Failed to build open sketch wires: " << e.GetMessageString());
     }
-    return Part::TopoShape();
+
+    if (openWires.isNull()) {
+        return faces;
+    }
+    if (faces.isNull()) {
+        return openWires;
+    }
+    return faces.makeElementCompound({faces, openWires});
 }
 
 static const char *hasSketchMarker(const char *name) {

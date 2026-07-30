@@ -193,6 +193,9 @@ public:
     bool renameDynamicProperty(Property* prop, const char* newName);
 
 private:
+    friend class PropertyContainer;
+    bool removeDynamicProperty(const char* name, bool bypassLock);
+
     std::string getUniquePropertyName(const PropertyContainer& pc, const char* Name) const;
 
 private:

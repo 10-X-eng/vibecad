@@ -126,6 +126,13 @@ public:
 
     /// Initialize a newly created dock widget
     void initDockWidget(QDockWidget*);
+    /** Present or hide a dock without inferring intent from effective QWidget visibility.
+     *
+     * @return true when \a dock is owned by an overlay container.
+     */
+    bool setDockWidgetVisible(QDockWidget* dock, bool visible);
+    /// Prevent automatic overlay hiding for a requested-visible dock.
+    void setDockWidgetPersistent(QDockWidget* dock, bool persistent);
     /// Prepare a dock widget for overlay display
     void setupDockWidget(QDockWidget*, int dockArea = Qt::NoDockWidgetArea);
     /// Switch a dock widget back to normal display
@@ -186,6 +193,8 @@ private:
     void onTaskViewUpdate();
     void onFocusChanged(QWidget*, QWidget*);
     void onAction();
+    void synchronizePersistentPresentation(OverlayTabWidget*);
+    bool keepsOverlayVisible(const OverlayTabWidget*) const;
 
 private Q_SLOTS:
     void raiseAll();

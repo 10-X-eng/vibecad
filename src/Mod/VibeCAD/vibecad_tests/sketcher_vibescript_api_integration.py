@@ -1032,9 +1032,10 @@ def _exercise_external_geometry(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": prepared["revision"],
-            "replacements": [
-                {"old": "line = api.line([0,0], [5,0]", "new": "line = api.line([0,0], [8,0]"}
-            ],
+            "source": captured["arguments"]["source"].replace(
+                "line = api.line([0,0], [5,0]",
+                "line = api.line([0,0], [8,0]",
+            ),
         },
     }
     update_prepared, update_execution, update_publication, accepted = _run_candidate(
@@ -1343,9 +1344,10 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
-            "replacements": [
-                {"old": height_constraint, "new": missing_height_marker}
-            ],
+            "source": create_capture["arguments"]["source"].replace(
+                height_constraint,
+                missing_height_marker,
+            ),
         },
     }
     failed_prepared = prepare_candidate(failed_capture)
@@ -1383,9 +1385,7 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "replacements": [
-                {"old": missing_height_marker, "new": height_constraint}
-            ],
+            "source": create_capture["arguments"]["source"],
         },
     }
     recovery_prepared, _execution, recovery_publication, accepted = _run_candidate(

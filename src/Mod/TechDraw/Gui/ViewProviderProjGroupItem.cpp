@@ -20,19 +20,26 @@
  *                                                                         *
  ***************************************************************************/
 
- #include <QMessageBox>
- #include <QTextStream>
+#include <QMessageBox>
+#include <QTextStream>
 
+#include <algorithm>
 
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
+#include <Gui/Application.h>
 #include <Gui/Control.h>
 #include <Gui/MainWindow.h>
 
+#include <Mod/TechDraw/App/DrawLeaderLine.h>
 #include <Mod/TechDraw/App/DrawProjGroup.h>
 #include <Mod/TechDraw/App/DrawProjGroupItem.h>
+#include <Mod/TechDraw/App/DrawViewDetail.h>
 #include <Mod/TechDraw/App/DrawViewPart.h>
+#include <Mod/TechDraw/App/DrawViewSection.h>
 
 #include "QGIView.h"
+#include "ViewProviderProjGroup.h"
 #include "ViewProviderProjGroupItem.h"
 
 using namespace TechDrawGui;
@@ -58,7 +65,7 @@ void ViewProviderProjGroupItem::updateData(const App::Property* prop)
     //TODO: Once we know that ProjType is valid, sPixMap = "Proj" + projType
 
     updateIcon();
- }
+}
 
 void ViewProviderProjGroupItem::updateIcon()
 {
@@ -93,7 +100,7 @@ void ViewProviderProjGroupItem::updateIcon()
     } else if(strcmp(projType.c_str(), "FrontBottomLeft") == 0) {
         sPixmap = "TechDraw_ProjFrontBottomLeft";
     }
- }
+}
 
 
 void ViewProviderProjGroupItem::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
@@ -107,10 +114,11 @@ void ViewProviderProjGroupItem::setupContextMenu(QMenu* menu, QObject* receiver,
 
 bool ViewProviderProjGroupItem::setEdit(int ModNum)
 {
-    if (!getObject()->getPGroup()) {
+    auto* item = getObject();
+    if (item && !item->getPGroup()) {
         return ViewProviderViewPart::setEdit(ModNum);
     }
-    return true;
+    return false;
 }
 
 void ViewProviderProjGroupItem::unsetEdit(int ModNum)
@@ -121,8 +129,26 @@ void ViewProviderProjGroupItem::unsetEdit(int ModNum)
 
 bool ViewProviderProjGroupItem::doubleClicked()
 {
-    setEdit(ViewProvider::Default);
+    auto* item = getObject();
+    auto* group = item ? item->getPGroup() : nullptr;
+    auto* groupProvider = group && Gui::Application::Instance
+        ? dynamic_cast<ViewProviderProjGroup*>(Gui::Application::Instance->getViewProvider(group))
+        : nullptr;
+    if (groupProvider) {
+        groupProvider->startDefaultEditMode();
+        return true;
+    }
+    if (!item || group) {
+        return false;
+    }
+    startDefaultEditMode();
     return true;
+}
+
+bool ViewProviderProjGroupItem::supportsDocumentTimelineEdit() const noexcept
+{
+    const auto* item = getObject();
+    return item && !item->getPGroup();
 }
 
 bool ViewProviderProjGroupItem::onDelete(const std::vector<std::string>& subNames)
@@ -194,6 +220,34 @@ bool ViewProviderProjGroupItem::onDelete(const std::vector<std::string>& subName
    else {
         return true;
    }
+}
+
+bool ViewProviderProjGroupItem::onDeleteOwnedTimelineResource(
+    App::DocumentObject* semanticOwner
+)
+{
+    auto* item = getObject();
+    if (!App::DocumentTimeline::isTimelineResourceOwnedBy(
+            item,
+            semanticOwner
+        )
+        || item->getPGroup() != semanticOwner) {
+        return onDelete({});
+    }
+
+    const auto isOwnedDependent =
+        [semanticOwner](const App::DocumentObject* dependent) {
+            return App::DocumentTimeline::isTimelineResourceOwnedBy(
+                dependent,
+                semanticOwner
+            );
+        };
+    if (!std::ranges::all_of(item->getSectionRefs(), isOwnedDependent)
+        || !std::ranges::all_of(item->getDetailRefs(), isOwnedDependent)
+        || !std::ranges::all_of(item->getLeaders(), isOwnedDependent)) {
+        return onDelete({});
+    }
+    return true;
 }
 
 bool ViewProviderProjGroupItem::canDelete(App::DocumentObject *obj) const

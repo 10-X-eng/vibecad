@@ -748,6 +748,7 @@ class ObjectWaterline(PathOp.ObjectOp):
         """opExecute(obj) ... process surface operation"""
         Path.Log.track()
 
+        self.document = obj.Document
         self.modelSTLs = list()
         self.safeSTLs = list()
         self.modelTypes = list()
@@ -764,7 +765,12 @@ class ObjectWaterline(PathOp.ObjectOp):
         self.gaps = [0.1, 0.2, 0.3]
         CMDS = list()
         modelVisibility = list()
-        FCAD = FreeCAD.ActiveDocument
+        FCAD = self.document
+        gui_document = (
+            FreeCADGui.getDocument(FCAD.Name)
+            if FreeCAD.GuiUp
+            else None
+        )
 
         try:
             dotIdx = __name__.index(".") + 1
@@ -908,7 +914,9 @@ class ObjectWaterline(PathOp.ObjectOp):
         if FreeCAD.GuiUp:
             for m in range(0, len(JOB.Model.Group)):
                 mNm = JOB.Model.Group[m].Name
-                modelVisibility.append(FreeCADGui.ActiveDocument.getObject(mNm).Visibility)
+                modelVisibility.append(
+                    gui_document.getObject(mNm).Visibility
+                )
 
         # Setup STL, model type, and bound box containers for each model in Job
         for m in range(0, len(JOB.Model.Group)):
@@ -977,7 +985,7 @@ class ObjectWaterline(PathOp.ObjectOp):
         # Delete temporary objects
         # Restore model visibilities for restoration
         if FreeCAD.GuiUp:
-            FreeCADGui.ActiveDocument.getObject(tempGroupName).Visibility = False
+            gui_document.getObject(tempGroupName).Visibility = False
             for m in range(0, len(JOB.Model.Group)):
                 M = JOB.Model.Group[m]
                 M.Visibility = modelVisibility[m]
@@ -2450,7 +2458,7 @@ class ObjectWaterline(PathOp.ObjectOp):
 
     def showDebugObject(self, objShape, objName):
         if self.showDebugObjects:
-            do = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmp_" + objName)
+            do = self.document.addObject("Part::Feature", "tmp_" + objName)
             do.Shape = objShape
             do.purgeTouched()
             self.tempGroup.addObject(do)
@@ -2463,7 +2471,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Waterline operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectWaterline(obj, name, parentJob)
     return obj

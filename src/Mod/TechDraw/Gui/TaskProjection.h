@@ -30,8 +30,19 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 class QCheckBox;
+
+namespace App
+{
+class Document;
+}
+
+namespace Part
+{
+class Feature;
+}
 
 namespace TechDrawGui
 {
@@ -46,6 +57,10 @@ class TaskProjection : public QWidget
 
 public:
     TaskProjection();
+    TaskProjection(
+        App::Document* document,
+        const std::vector<Part::Feature*>& shapes
+    );
     ~TaskProjection() override;
 
 public:
@@ -57,6 +72,9 @@ public:
 
 private:
     std::unique_ptr<Ui_TaskProjection> ui;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    std::vector<TaskInternal::ObjectIdentity<Part::Feature>>
+        m_shapeIdentities;
 
 };
 
@@ -67,6 +85,10 @@ class TaskDlgProjection : public Gui::TaskView::TaskDialog
 
 public:
     TaskDlgProjection();
+    TaskDlgProjection(
+        App::Document* document,
+        const std::vector<Part::Feature*>& shapes
+    );
     ~TaskDlgProjection() override;
 
 public:

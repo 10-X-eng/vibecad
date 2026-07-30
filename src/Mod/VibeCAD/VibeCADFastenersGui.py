@@ -41,6 +41,211 @@ def _catalog_available() -> bool:
         return False
 
 
+def _can_start_modeling_transaction() -> bool:
+    import PartGui
+
+    return bool(PartGui.canStartRetainedModelingTask())
+
+
+def _document_transaction_is_clean(document: Any) -> bool:
+    return (
+        document is not None
+        and int(document.getBookedTransactionID()) == 0
+        and not bool(document.HasPendingTransaction)
+    )
+
+
+def _ensure_timeline_property(
+    obj: Any,
+    type_id: str,
+    name: str,
+    description: str,
+) -> None:
+    if name in obj.PropertiesList:
+        existing_type = str(obj.getTypeIdOfProperty(name))
+        if existing_type != type_id:
+            raise TypeError(f"{name} must be {type_id}, not {existing_type}")
+    else:
+        obj.addProperty(
+            type_id,
+            name,
+            "Timeline",
+            description,
+            attr=16,
+            hidden=True,
+            locked=True,
+        )
+    obj.setPropertyStatus(
+        name,
+        ("Hidden", "LockDynamic", "NoRecompute"),
+    )
+    obj.setEditorMode(name, 2)
+
+
+def _mark_timeline_operation(
+    operation: Any,
+    edit_command: str = "VibeCAD_EditStandardFastener",
+    *,
+    editor: Any | None = None,
+) -> None:
+    """Persist one visible standard-fastener history operation and editor."""
+
+    if operation is None:
+        raise ValueError("A standard-fastener timeline operation is required")
+    if not isinstance(edit_command, str) or not edit_command:
+        raise ValueError("A standard-fastener timeline editor command is required")
+    _ensure_timeline_property(
+        operation,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    _ensure_timeline_property(
+        operation,
+        "App::PropertyString",
+        "VibeCADTimelineEditCommand",
+        "Command which edits this document timeline operation",
+    )
+    if "VibeCADTimelineOwner" in operation.PropertiesList:
+        _ensure_timeline_property(
+            operation,
+            "App::PropertyLinkHidden",
+            "VibeCADTimelineOwner",
+            "Visible standard-component operation which owns this implementation",
+        )
+        operation.VibeCADTimelineOwner = None
+    operation.VibeCADTimelineRole = "operation"
+    operation.VibeCADTimelineEditCommand = edit_command
+    if editor is None:
+        if "VibeCADTimelineEditor" in operation.PropertiesList:
+            _ensure_timeline_property(
+                operation,
+                "App::PropertyLinkHidden",
+                "VibeCADTimelineEditor",
+                "Implementation object which edits this standard component",
+            )
+        return
+
+    if editor is operation or getattr(editor, "Document", None) is not getattr(
+        operation,
+        "Document",
+        None,
+    ):
+        raise ValueError(
+            "A standard-fastener editor must be a distinct resource in the "
+            "operation document"
+        )
+    if (
+        str(getattr(editor, "VibeCADTimelineRole", "") or "")
+        != "resource"
+        or getattr(editor, "VibeCADTimelineOwner", None) is not operation
+    ):
+        raise ValueError(
+            "A standard-fastener editor must already be owned by its "
+            "timeline operation"
+        )
+    _ensure_timeline_property(
+        operation,
+        "App::PropertyLinkHidden",
+        "VibeCADTimelineEditor",
+        "Implementation object which edits this standard component",
+    )
+    operation.VibeCADTimelineEditor = editor
+
+
+def _mark_timeline_resource(resource: Any, owner: Any) -> None:
+    """Persist that *resource* is implementation owned by *owner*."""
+
+    if resource is None or owner is None or resource is owner:
+        raise ValueError(
+            "A standard-fastener timeline resource requires a distinct owner"
+        )
+    resource_document = getattr(resource, "Document", None)
+    if resource_document is None or resource_document is not getattr(
+        owner, "Document", None
+    ):
+        raise ValueError(
+            "A standard-fastener timeline resource and its owner must share a document"
+        )
+
+    _ensure_timeline_property(
+        resource,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    _ensure_timeline_property(
+        resource,
+        "App::PropertyLinkHidden",
+        "VibeCADTimelineOwner",
+        "Visible standard-component operation which owns this implementation",
+    )
+    resource.VibeCADTimelineOwner = owner
+    resource.VibeCADTimelineRole = "resource"
+
+
+def migrate_assembly_fastener_timeline_resources(document: Any) -> list[Any]:
+    """Migrate unambiguous legacy Assembly fastener definitions."""
+
+    from VibeCADFasteners import COMPONENT_SCHEMA, PROP_SCHEMA
+
+    if document is None:
+        return []
+    objects = list(getattr(document, "Objects", []) or [])
+    assemblies = [
+        obj
+        for obj in objects
+        if bool(
+            getattr(obj, "isDerivedFrom", lambda _type: False)(
+                "Assembly::AssemblyObject"
+            )
+        )
+    ]
+    assembly_members = {
+        member
+        for assembly in assemblies
+        for member in list(getattr(assembly, "Group", []) or [])
+    }
+    migrated = []
+    for source in objects:
+        if (
+            str(getattr(source, "TypeId", "") or "") != "Part::FeaturePython"
+            or str(getattr(source, PROP_SCHEMA, "") or "") != COMPONENT_SCHEMA
+        ):
+            continue
+        view = getattr(source, "ViewObject", None)
+        if view is None or bool(getattr(view, "ShowInTree", True)):
+            continue
+        occurrences = [
+            candidate
+            for candidate in assembly_members
+            if str(getattr(candidate, "TypeId", "") or "") == "App::Link"
+            and getattr(candidate, "LinkedObject", None) is source
+            and bool(
+                getattr(
+                    getattr(candidate, "ViewObject", None),
+                    "ShowInTree",
+                    True,
+                )
+            )
+        ]
+        if len(occurrences) != 1:
+            continue
+        occurrence = occurrences[0]
+        role = str(getattr(source, "VibeCADTimelineRole", "") or "")
+        owner = getattr(source, "VibeCADTimelineOwner", None)
+        if (
+            "VibeCADTimelineRole" not in source.PropertiesList
+            and "VibeCADTimelineOwner" not in source.PropertiesList
+        ):
+            _mark_timeline_resource(source, occurrence)
+            migrated.append(source)
+        elif role != "resource" or owner is not occurrence:
+            continue
+        _mark_timeline_operation(occurrence, editor=source)
+    return migrated
+
+
 def _show_error(title: str, error: Any) -> None:
     from PySide import QtGui
 
@@ -71,40 +276,124 @@ def _safe_name(value: str, fallback: str) -> str:
 def _fastener_target(obj: Any) -> Any | None:
     from VibeCADFasteners import COMPONENT_SCHEMA, PROP_SCHEMA
 
-    if str(getattr(obj, PROP_SCHEMA, "") or "") == COMPONENT_SCHEMA:
-        return obj
-    linked = getattr(obj, "LinkedObject", None)
-    if (
-        linked is not None
-        and str(getattr(linked, PROP_SCHEMA, "") or "") == COMPONENT_SCHEMA
-    ):
-        return linked
-    if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body":
-        matches = [
-            child
-            for child in list(getattr(obj, "Group", []) or [])
-            if str(getattr(child, PROP_SCHEMA, "") or "") == COMPONENT_SCHEMA
-        ]
-        if len(matches) == 1:
-            return matches[0]
-    return None
+    def resolve(candidate: Any, seen: set[tuple[str, str]]) -> Any | None:
+        if candidate is None:
+            return None
+        key = (
+            str(
+                getattr(getattr(candidate, "Document", None), "Uid", "")
+                or getattr(getattr(candidate, "Document", None), "Name", "")
+            ),
+            str(getattr(candidate, "Name", "") or id(candidate)),
+        )
+        if key in seen:
+            return None
+        seen.add(key)
+
+        linked = getattr(candidate, "LinkedObject", None)
+        if linked is not None and linked is not candidate:
+            target = resolve(linked, seen)
+            if target is not None:
+                return target
+        if str(getattr(candidate, PROP_SCHEMA, "") or "") == COMPONENT_SCHEMA:
+            return candidate
+        if str(getattr(candidate, "TypeId", "") or "") == "PartDesign::Body":
+            matches = [
+                child
+                for child in list(getattr(candidate, "Group", []) or [])
+                if str(getattr(child, PROP_SCHEMA, "") or "")
+                == COMPONENT_SCHEMA
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
+    return resolve(obj, set())
 
 
 def _selected_fasteners() -> list[tuple[Any, Any]]:
     result: list[tuple[Any, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for selected in Gui.Selection.getSelection():
-        target = _fastener_target(selected)
-        if target is None:
-            continue
-        key = (
-            str(getattr(target.Document, "Uid", "") or target.Document.Name),
-            str(target.Name),
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append((selected, target))
+    # Keep the object the user actually selected.  The default resolved
+    # selection replaces an App::Link occurrence with its linked definition,
+    # which makes Assembly occurrences indistinguishable from source features.
+    for selection in Gui.Selection.getSelectionEx("", 0):
+        candidates: list[Any] = []
+        for sub_name in selection.SubElementNames:
+            try:
+                resolved = selection.Object.resolve(str(sub_name))
+            except Exception:
+                resolved = ()
+            resolved_objects = [
+                obj
+                for obj in resolved[:2]
+                if obj is not None and hasattr(obj, "TypeId")
+            ]
+            # Prefer the actual Link over its linked definition or container.
+            resolved_objects.sort(
+                key=lambda obj: getattr(obj, "LinkedObject", None) is not None,
+                reverse=True,
+            )
+            candidates.extend(resolved_objects)
+        candidates.append(selection.Object)
+
+        candidate_seen: set[tuple[str, str]] = set()
+        for selected in candidates:
+            candidate_key = (
+                str(
+                    getattr(getattr(selected, "Document", None), "Uid", "")
+                    or getattr(getattr(selected, "Document", None), "Name", "")
+                ),
+                str(getattr(selected, "Name", "") or id(selected)),
+            )
+            if candidate_key in candidate_seen:
+                continue
+            candidate_seen.add(candidate_key)
+            target = _fastener_target(selected)
+            if target is None:
+                continue
+            key = (
+                str(
+                    getattr(target.Document, "Uid", "")
+                    or target.Document.Name
+                ),
+                str(target.Name),
+            )
+            if key not in seen:
+                seen.add(key)
+                result.append((selected, target))
+            break
     return result
+
+
+def _fastener_label_owner(selected: Any, target: Any) -> Any:
+    """Return the visible object whose label represents the fastener."""
+
+    if selected is not target:
+        return selected
+    try:
+        body = target.getParentGeoFeatureGroup()
+    except Exception:
+        body = None
+    if (
+        body is not None
+        and str(getattr(body, "TypeId", "") or "") == "PartDesign::Body"
+    ):
+        return body
+    return target
+
+
+def _activate_partdesign_body(body: Any) -> None:
+    """Make the Body that owns the operation the active modeling context."""
+
+    if body is None or str(getattr(body, "TypeId", "") or "") != "PartDesign::Body":
+        return
+    try:
+        Gui.activeView().setActiveObject("pdbody", body)
+    except Exception:
+        # A document can exist without a compatible 3D view (for example while
+        # restoring a file). The command result remains valid in that case.
+        pass
 
 
 class _FastenerDialog:
@@ -405,11 +694,15 @@ class _InsertStandardFastenerCommand:
             "ToolTip": _translate(
                 "Insert an exact native component from the bundled standards catalog"
             ),
+            "CmdType": "AlterDoc",
         }
 
     def IsActive(self) -> bool:
+        if Gui.Control.activeDialog():
+            return False
         return (
             App.ActiveDocument is not None
+            and _can_start_modeling_transaction()
             and _active_workbench()
             in {"PartDesignWorkbench", "AssemblyWorkbench"}
             and _catalog_available()
@@ -423,7 +716,12 @@ class _InsertStandardFastenerCommand:
         if values is None:
             return
         document = App.ActiveDocument
+        if not _document_transaction_is_clean(document):
+            return
         workbench = _active_workbench()
+        visible_label = str(
+            values["label"] or values["identity"]["part_number"]
+        )
         document.openTransaction(_translate("Insert standard fastener"))
         try:
             if workbench == "AssemblyWorkbench":
@@ -437,7 +735,15 @@ class _InsertStandardFastenerCommand:
                             "a standard fastener."
                         )
                     )
-                source, identity = create_fastener_feature(
+                occurrence = assembly.newObject(
+                    "App::Link",
+                    _safe_name(
+                        visible_label,
+                        "StandardFastener",
+                    ),
+                )
+                occurrence.Label = visible_label
+                source, _identity = create_fastener_feature(
                     document,
                     **{
                         key: values[key]
@@ -454,30 +760,29 @@ class _InsertStandardFastenerCommand:
                         f"{values['standard']}_{values['nominal_thread']}_Definition",
                         "StandardFastenerDefinition",
                     ),
-                    label=str(identity_label(values)),
+                    label=visible_label,
                 )
                 source.ViewObject.Visibility = False
                 if hasattr(source.ViewObject, "ShowInTree"):
                     source.ViewObject.ShowInTree = False
-                occurrence = assembly.newObject(
-                    "App::Link",
-                    _safe_name(
-                        str(values["label"] or identity["part_number"]),
-                        "StandardFastener",
-                    ),
-                )
                 occurrence.LinkedObject = source
-                occurrence.Label = str(values["label"] or identity["part_number"])
+                _mark_timeline_resource(source, occurrence)
+                _mark_timeline_operation(occurrence, editor=source)
+                document.finalizeProvisionalTimelineOperationBlock(
+                    occurrence,
+                    [source, occurrence],
+                )
                 selected = occurrence
             else:
                 body = document.addObject(
                     "PartDesign::Body",
                     _safe_name(
-                        str(values["label"] or "StandardFastener"),
+                        visible_label,
                         "StandardFastener",
                     ),
                 )
-                feature, identity = create_fastener_feature(
+                body.Label = visible_label
+                feature, _identity = create_fastener_feature(
                     body,
                     **{
                         key: values[key]
@@ -491,10 +796,16 @@ class _InsertStandardFastenerCommand:
                         )
                     },
                     object_name="Fastener",
-                    label=str(values["label"] or values["identity"]["part_number"]),
+                    label=visible_label,
                 )
-                body.Label = str(values["label"] or identity["part_number"])
                 body.Tip = feature
+                _mark_timeline_resource(feature, body)
+                _mark_timeline_operation(body, editor=feature)
+                document.finalizeProvisionalTimelineOperationBlock(
+                    body,
+                    [feature, body],
+                )
+                _activate_partdesign_body(body)
                 selected = body
             document.recompute()
             document.commitTransaction()
@@ -519,11 +830,15 @@ class _EditStandardFastenerCommand:
             "ToolTip": _translate(
                 "Change exact dimensions, compatible standard, or real thread geometry"
             ),
+            "CmdType": "AlterDoc",
         }
 
     def IsActive(self) -> bool:
+        if Gui.Control.activeDialog():
+            return False
         return (
             App.ActiveDocument is not None
+            and _can_start_modeling_transaction()
             and _catalog_available()
             and len(_selected_fasteners()) == 1
         )
@@ -543,6 +858,7 @@ class _EditStandardFastenerCommand:
             )
             return
         occurrence, target = selected[0]
+        label_owner = _fastener_label_owner(occurrence, target)
         try:
             initial = fastener_feature_identity(target)
             compatible = compatible_fastener_standards(target)
@@ -550,14 +866,21 @@ class _EditStandardFastenerCommand:
                 title="Edit Standard Fastener",
                 allowed_standards=compatible,
                 initial=initial,
-                initial_label=str(getattr(occurrence, "Label", "") or ""),
+                initial_label=str(getattr(label_owner, "Label", "") or ""),
             )
             values = dialog.exec()
             if values is None:
                 return
             document = target.Document
+            if not _document_transaction_is_clean(document):
+                return
             document.openTransaction(_translate("Edit standard fastener"))
             try:
+                visible_label = str(
+                    values["label"] or values["identity"]["part_number"]
+                )
+                if label_owner is not target:
+                    label_owner.Label = visible_label
                 update_fastener_feature(
                     target,
                     **{
@@ -573,10 +896,6 @@ class _EditStandardFastenerCommand:
                         )
                     },
                 )
-                if occurrence is not target:
-                    occurrence.Label = str(
-                        values["label"] or values["identity"]["part_number"]
-                    )
                 document.recompute()
                 document.commitTransaction()
             except Exception:
@@ -610,6 +929,49 @@ def _selected_hole_inputs() -> tuple[Any, Any]:
     return sketch, fastener
 
 
+def _selected_attachment_inputs() -> tuple[Any, Any, Any, str]:
+    """Return one native fastener and one circular host edge."""
+
+    import Part
+
+    fasteners = _selected_fasteners()
+    if len(fasteners) != 1:
+        raise RuntimeError(_translate("Select exactly one standard fastener."))
+    occurrence, fastener = fasteners[0]
+    if (
+        occurrence is not fastener
+        and getattr(occurrence, "LinkedObject", None) is not None
+    ):
+        raise RuntimeError(
+            _translate(
+                "Use Assembly connectors and joints to place an Assembly occurrence."
+            )
+        )
+
+    circular: list[tuple[Any, str]] = []
+    for selected in Gui.Selection.getSelectionEx("", 0):
+        if selected.Object is occurrence:
+            continue
+        for sub_name in selected.SubElementNames:
+            shape = Part.getShape(
+                selected.Object,
+                sub_name,
+                needSubElement=True,
+                noElementMap=True,
+            )
+            curve = getattr(shape, "Curve", None)
+            if curve is not None and curve.isDerivedFrom("Part::GeomCircle"):
+                circular.append((selected.Object, str(sub_name)))
+    if len(circular) != 1:
+        raise RuntimeError(
+            _translate(
+                "Select exactly one circular hole edge with the standard fastener."
+            )
+        )
+    host, sub_name = circular[0]
+    return occurrence, fastener, host, sub_name
+
+
 class _CreateMatchingHoleCommand:
     def GetResources(self) -> dict[str, str]:
         return {
@@ -618,14 +980,24 @@ class _CreateMatchingHoleCommand:
             "ToolTip": _translate(
                 "Create a native Part Design hole derived from the selected standard component"
             ),
+            "CmdType": "AlterDoc",
         }
 
     def IsActive(self) -> bool:
-        return (
-            App.ActiveDocument is not None
-            and _active_workbench() == "PartDesignWorkbench"
-            and _catalog_available()
-        )
+        if Gui.Control.activeDialog():
+            return False
+        if (
+            App.ActiveDocument is None
+            or not _can_start_modeling_transaction()
+            or _active_workbench() != "PartDesignWorkbench"
+            or not _catalog_available()
+        ):
+            return False
+        try:
+            _selected_hole_inputs()
+            return True
+        except Exception:
+            return False
 
     def Activated(self) -> None:
         from PySide import QtGui
@@ -682,7 +1054,10 @@ class _CreateMatchingHoleCommand:
                 if not accepted:
                     return
             body = sketch.getParentGeoFeatureGroup()
+            _activate_partdesign_body(body)
             document = sketch.Document
+            if not _document_transaction_is_clean(document):
+                return
             document.openTransaction(_translate("Create matching fastener hole"))
             try:
                 feature = body.newObject(
@@ -730,57 +1105,33 @@ class _AttachStandardFastenerCommand:
             "ToolTip": _translate(
                 "Align the selected standard fastener axis to one selected circular edge"
             ),
+            "CmdType": "AlterDoc",
         }
 
     def IsActive(self) -> bool:
-        return (
-            App.ActiveDocument is not None
-            and _active_workbench() == "PartDesignWorkbench"
-            and _catalog_available()
-        )
+        if Gui.Control.activeDialog():
+            return False
+        if (
+            App.ActiveDocument is None
+            or not _can_start_modeling_transaction()
+            or _active_workbench() != "PartDesignWorkbench"
+            or not _catalog_available()
+        ):
+            return False
+        try:
+            _selected_attachment_inputs()
+            return True
+        except Exception:
+            return False
 
     def Activated(self) -> None:
-        import Part
-
         try:
-            fasteners = _selected_fasteners()
-            if len(fasteners) != 1:
-                raise RuntimeError(
-                    _translate("Select exactly one standard fastener.")
-                )
-            occurrence, fastener = fasteners[0]
-            if occurrence is not fastener:
-                raise RuntimeError(
-                    _translate(
-                        "Use Assembly connectors and joints to place an "
-                        "Assembly occurrence."
-                    )
-                )
-            circular = []
-            for selected in Gui.Selection.getSelectionEx("", 0):
-                if selected.Object is occurrence:
-                    continue
-                for sub_name in selected.SubElementNames:
-                    shape = Part.getShape(
-                        selected.Object,
-                        sub_name,
-                        needSubElement=True,
-                        noElementMap=True,
-                    )
-                    curve = getattr(shape, "Curve", None)
-                    if curve is not None and curve.isDerivedFrom(
-                        "Part::GeomCircle"
-                    ):
-                        circular.append((selected.Object, str(sub_name)))
-            if len(circular) != 1:
-                raise RuntimeError(
-                    _translate(
-                        "Select exactly one circular hole edge with the "
-                        "standard fastener."
-                    )
-                )
-            host, sub_name = circular[0]
+            _occurrence, fastener, host, sub_name = (
+                _selected_attachment_inputs()
+            )
             document = fastener.Document
+            if not _document_transaction_is_clean(document):
+                return
             document.openTransaction(_translate("Attach standard fastener"))
             try:
                 fastener.BaseObject = (host, [sub_name])
@@ -815,4 +1166,8 @@ def ensure_commands_registered() -> None:
         "VibeCAD_AttachStandardFastener",
         _AttachStandardFastenerCommand(),
     )
+    for action in Gui.Command.get(
+        "VibeCAD_EditStandardFastener"
+    ).ensureAction():
+        action.setProperty("VibeCADTimelineOperationEditor", True)
     _COMMANDS_REGISTERED = True

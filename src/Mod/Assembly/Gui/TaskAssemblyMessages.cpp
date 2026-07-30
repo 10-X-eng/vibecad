@@ -58,6 +58,9 @@ void TaskAssemblyMessages::updateToolTip(const QString& link)
     else if (link == QStringLiteral("#redundant")) {
         setLinkTooltip(tr("Selects these redundant joints"));
     }
+    else if (link == QStringLiteral("#partially_redundant")) {
+        setLinkTooltip(tr("Selects these partially redundant joints"));
+    }
     else if (link == QStringLiteral("#dofs")) {
         setLinkTooltip(
             tr("The assembly has unconstrained components giving rise to those "
@@ -81,6 +84,11 @@ void TaskAssemblyMessages::onLabelStatusLinkClicked(const QString& str)
     else if (str == QStringLiteral("#redundant")) {
         Gui::Application::Instance->commandManager().runCommandByName(
             "Assembly_SelectRedundantConstraints"
+        );
+    }
+    else if (str == QStringLiteral("#partially_redundant")) {
+        Gui::Application::Instance->commandManager().runCommandByName(
+            "Assembly_SelectPartiallyRedundantConstraints"
         );
     }
     else if (str == QStringLiteral("#dofs")) {

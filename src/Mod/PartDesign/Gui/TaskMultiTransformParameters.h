@@ -24,20 +24,27 @@
 
 #pragma once
 
+#include <cstddef>
+#include <string>
+#include <vector>
+
 #include "TaskTransformedParameters.h"
 #include "ViewProviderMultiTransform.h"
 
 
+class QAction;
 class Ui_TaskMultiTransformParameters;
 class QModelIndex;
 
 namespace PartDesign
 {
+class MultiTransform;
 class Transformed;
 }
 
 namespace App
 {
+class DocumentObject;
 class Property;
 }
 
@@ -66,6 +73,7 @@ public:
     /// Return the currently active subFeature
     PartDesign::Transformed* getSubFeature()
     {
+        subFeature = resolveSubFeature();
         return subFeature;
     }
 
@@ -91,17 +99,61 @@ private:
 
     /** Notifies when the object is about to be removed. */
     void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;
+    /** Keeps the row identities synchronized with the live Transformations property. */
+    void slotChangedObject(
+        const Gui::ViewProviderDocumentObject& Obj,
+        const App::Property& Prop
+    ) override;
+    void slotRelabelObject(const Gui::ViewProviderDocumentObject& Obj) override;
 
     void updateUI();
     void closeSubTask();
     void moveTransformFeature(int increment);
-    void finishAdd(std::string& newFeatName);
+    void finishAdd(PartDesign::Transformed* newFeature);
+    void scheduleTransformListRefresh();
+    void rebuildTransformList(long preferredObjectId = -1);
+    void updateOperationState();
+    bool ensureTransformListSynchronized();
+    bool transformListMatches(const PartDesign::MultiTransform* multiTransform) const;
+    bool isLiveTransformation(
+        const PartDesign::MultiTransform* multiTransform,
+        const App::DocumentObject* object
+    ) const;
+    bool isOwnedTransformation(
+        const PartDesign::MultiTransform* multiTransform,
+        const PartDesign::Transformed* transformation
+    ) const;
+    PartDesign::Transformed* transformationForRow(
+        PartDesign::MultiTransform* multiTransform,
+        int row,
+        const std::vector<App::DocumentObject*>& transformations,
+        std::size_t& propertyIndex
+    ) const;
+    PartDesign::MultiTransform* resolveMultiTransform();
+    PartDesign::Transformed* resolveSubFeature() const;
+    void rememberSubFeature(PartDesign::Transformed* transformation);
+    void recomputeMultiTransform(PartDesign::MultiTransform* multiTransform);
 
 private:
     std::unique_ptr<Ui_TaskMultiTransformParameters> ui;
+    QAction* editAction = nullptr;
+    QAction* deleteAction = nullptr;
+    QAction* addMirroredAction = nullptr;
+    QAction* addLinearAction = nullptr;
+    QAction* addPolarAction = nullptr;
+    QAction* addScaledAction = nullptr;
+    QAction* moveUpAction = nullptr;
+    QAction* moveDownAction = nullptr;
     /// The subTask and subFeature currently active in the UI
     TaskTransformedParameters* subTask = nullptr;
     PartDesign::Transformed* subFeature = nullptr;
+    std::string multiTransformDocumentName;
+    std::string multiTransformObjectName;
+    long multiTransformObjectId = -1;
+    std::string subFeatureDocumentName;
+    std::string subFeatureObjectName;
+    long subFeatureObjectId = -1;
+    bool refreshScheduled = false;
     bool editHint = false;
 };
 
@@ -114,8 +166,8 @@ class TaskDlgMultiTransformParameters: public TaskDlgTransformedParameters
 public:
     explicit TaskDlgMultiTransformParameters(ViewProviderMultiTransform* MultiTransformView);
 
-    /// is called by the framework if the dialog is rejected (Cancel)
-    // virtual bool reject();
+protected:
+    void finalizeAcceptedFeature(App::DocumentObject* feature) override;
 };
 
 }  // namespace PartDesignGui

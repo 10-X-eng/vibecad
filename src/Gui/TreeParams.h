@@ -215,7 +215,7 @@ public:
     // Auto generated code (Tools/params_utils.py:138)
     //@{
     /// Presents model objects in virtual type folders such as Bodies, Sketches,
-    /// Construction, and Geometry without changing document ownership.
+    /// References, and Geometry without changing document ownership.
     static const bool& getOrganizeModelByType();
     static const bool& defaultOrganizeModelByType();
     static void removeOrganizeModelByType();

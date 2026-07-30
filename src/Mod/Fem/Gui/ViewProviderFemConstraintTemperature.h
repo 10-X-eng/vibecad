@@ -39,6 +39,10 @@ public:
     ViewProviderFemConstraintTemperature();
     ~ViewProviderFemConstraintTemperature() override;
     void updateData(const App::Property*) override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
 protected:
     bool setEdit(int ModNum) override;

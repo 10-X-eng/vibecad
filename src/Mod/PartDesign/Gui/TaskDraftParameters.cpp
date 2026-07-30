@@ -195,7 +195,11 @@ void TaskDraftParameters::onButtonPlane(bool checked)
         setButtons(plane);
         getViewObject()->showPreviousFeature(true);
         selectionMode = plane;
-        Gui::Selection().clearSelection();
+        if (auto* draft = getObject<PartDesign::Draft>()) {
+            Gui::Selection().clearSelection(
+                draft->getDocument()->getName()
+            );
+        }
         Gui::Selection().addSelectionGate(new ReferenceSelection(
             this->getBase(),
             AllowSelection::EDGE | AllowSelection::FACE | AllowSelection::PLANAR
@@ -209,7 +213,11 @@ void TaskDraftParameters::onButtonLine(bool checked)
         setButtons(line);
         getViewObject()->showPreviousFeature(true);
         selectionMode = line;
-        Gui::Selection().clearSelection();
+        if (auto* draft = getObject<PartDesign::Draft>()) {
+            Gui::Selection().clearSelection(
+                draft->getDocument()->getName()
+            );
+        }
         Gui::Selection().addSelectionGate(
             new ReferenceSelection(this->getBase(), AllowSelection::EDGE | AllowSelection::PLANAR)
         );
@@ -280,7 +288,11 @@ bool TaskDraftParameters::getReversed() const
 TaskDraftParameters::~TaskDraftParameters()
 {
     try {
-        Gui::Selection().clearSelection();
+        if (auto* object = getObject()) {
+            Gui::Selection().clearSelection(
+                object->getDocument()->getName()
+            );
+        }
         Gui::Selection().rmvSelectionGate();
     }
     catch (const Py::Exception&) {

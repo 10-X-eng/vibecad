@@ -30,6 +30,11 @@
 
 class QTreeWidgetItem;
 
+namespace Part
+{
+class Loft;
+}
+
 namespace PartGui
 {
 
@@ -43,6 +48,7 @@ public:
 
     bool accept();
     bool reject();
+    Part::Loft* lastAcceptedResult() const noexcept;
 
 private Q_SLOTS:
     void onCurrentItemChanged(QTreeWidgetItem*, QTreeWidgetItem*);

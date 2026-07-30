@@ -49,6 +49,7 @@ class ElmerTools(ObjectTools):
         self._result_format = ""
 
     def prepare(self):
+        grid_bin = settings.require_binary("ElmerGrid")
         w = writer.Writer(self.obj, self.obj.WorkingDirectory)
         w.write_solver_input()
 
@@ -56,7 +57,6 @@ class ElmerTools(ObjectTools):
         mesh_file = os.path.join(self.obj.WorkingDirectory, "mesh.unv")
         mesh.FemMesh.write(mesh_file)
 
-        grid_bin = settings.get_binary("ElmerGrid")
         env = QProcessEnvironment.systemEnvironment()
         p = QProcess()
         p.setProcessEnvironment(env)
@@ -78,9 +78,14 @@ class ElmerTools(ObjectTools):
             FreeCAD.Console.PrintWarning(f"Ignored constraint {obj.Label}")
 
     def compute(self):
-        self._clear_results()
-        elmer_bin = settings.get_binary("ElmerSolver")
+        elmer_bin = settings.require_binary("ElmerSolver")
         num_proc = self.fem_param.GetGroup("Elmer").GetInt("NumberOfTasks", 1)
+        mpi_bin = (
+            settings.require_binary("MPIElmer")
+            if num_proc > 1
+            else None
+        )
+        self._clear_results()
         num_thr = self.fem_param.GetGroup("Elmer").GetInt("ThreadsPerTask", 1)
         env = QProcessEnvironment.systemEnvironment()
         env.insert("OMP_NUM_THREADS", str(num_thr))
@@ -89,7 +94,6 @@ class ElmerTools(ObjectTools):
 
         if num_proc > 1:
             # MPI parallel computing version
-            mpi_bin = settings.get_binary("MPIElmer")
             self._result_format = ".pvtu"
             command_list = ["-n", str(num_proc), elmer_bin]
             self.process.start(mpi_bin, command_list)
@@ -104,8 +108,42 @@ class ElmerTools(ObjectTools):
         return self.process
 
     def update_properties(self):
-        self._load_vtk_results()
-        self._load_dat_results()
+        keep_results = self.fem_param.GetGroup("General").GetBool(
+            "KeepResultsOnReRun",
+            False,
+        )
+        retained_pipeline = None
+        if not keep_results:
+            for result in self.obj.Results:
+                if result.isDerivedFrom("Fem::FemPostPipeline"):
+                    retained_pipeline = result
+        reconciliation = None
+        if retained_pipeline is not None:
+            from femcommands.manager import (
+                _stage_timeline_result_graph,
+            )
+
+            reconciliation = _stage_timeline_result_graph(
+                retained_pipeline
+            )
+        pipeline, pipeline_created = self._load_vtk_results()
+        dat, dat_created = self._load_dat_results()
+        if pipeline is not None:
+            resources = tuple(
+                resource
+                for resource in (dat,)
+                if resource is not None and dat_created
+            )
+            if pipeline_created or resources or reconciliation is not None:
+                return (
+                    pipeline,
+                    resources,
+                    pipeline_created,
+                    reconciliation,
+                )
+        if dat is not None and dat_created:
+            return dat, (), True
+        return None
 
     def _clear_results(self):
         dir_content = os.listdir(self.obj.WorkingDirectory)
@@ -151,11 +189,13 @@ class ElmerTools(ObjectTools):
                 if f.lower().startswith(self._get_default_field()):
                     pipeline.ViewObject.Field = f
                     break
+        return pipeline, create
 
     def _load_dat_results(self):
         # search dat output
         keep_result = self.fem_param.GetGroup("General").GetBool("KeepResultsOnReRun", False)
         dat = None
+        create = False
         for res in self.obj.Results:
             if res.isDerivedFrom("App::TextDocument"):
                 dat = res
@@ -167,6 +207,7 @@ class ElmerTools(ObjectTools):
             tmp = self.obj.Results
             tmp.append(dat)
             self.obj.Results = tmp
+            create = True
 
         files = os.listdir(self.obj.WorkingDirectory)
         for f in files:
@@ -175,10 +216,11 @@ class ElmerTools(ObjectTools):
                 with open(dat_file, "r") as file:
                     dat.Text = file.read()
                 break
+        return dat, create
 
     def _get_default_field(self):
         default = "None"
-        for eq in self.obj.Group:
+        for eq in membertools._active_group_members(self.obj):
             match eq.Proxy.Type:
                 case "Fem::EquationElmerHeat":
                     default = "temperature"
@@ -194,7 +236,7 @@ class ElmerTools(ObjectTools):
 
     def version(self):
         p = QProcess()
-        elmer_bin = settings.get_binary("ElmerSolver")
+        elmer_bin = settings.require_binary("ElmerSolver")
         p.start(elmer_bin, ["-v"])
         p.waitForFinished()
         info = p.readAll().data().decode()

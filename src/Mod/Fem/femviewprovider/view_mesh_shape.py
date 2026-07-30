@@ -36,6 +36,9 @@ class VPMeshShape(view_base_femmeshelement.VPBaseFemMeshElement):
     A View Provider for the FemMeshSphere object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def __init__(self, vobj):
         vobj.addExtension("FemGui::ViewProviderBoxExtensionPython")
         vobj.addExtension("FemGui::ViewProviderSphereExtensionPython")

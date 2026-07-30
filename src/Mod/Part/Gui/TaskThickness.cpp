@@ -43,6 +43,7 @@
 #include <Mod/Part/App/PartFeatures.h>
 
 #include "TaskThickness.h"
+#include "TaskResultValidation.h"
 #include "ViewProvider.h"
 #include "ui_TaskOffset.h"
 
@@ -282,16 +283,10 @@ bool ThicknessWidget::accept()
             d->ui.selfIntersection->isChecked() ? "True" : "False"
         );
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        if (!d->thickness->isValid()) {
-            throw Base::CADKernelError(d->thickness->getStatusString());
-        }
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        d->thickness->getDocument()->commitTransaction();  // Opened in
-                                                           // ViewProviderDocumentObject::startDefaultEditMode()
+        Gui::cmdAppDocumentArgs(d->thickness->getDocument(), "recompute()");
+        TaskResultValidation::validatePartResult(d->thickness);
     }
     catch (const Base::Exception& e) {
-        d->thickness->getDocument()->abortTransaction();  // ViewProviderDocumentObject::startDefaultEditMode()
         QMessageBox::warning(
             this,
             tr("Input error"),
@@ -303,28 +298,28 @@ bool ThicknessWidget::accept()
     return true;
 }
 
-bool ThicknessWidget::reject()
+void ThicknessWidget::prepareForClose()
 {
+    if (!d->thickness) {
+        return;
+    }
+    d->ui.spinOffset->unbind();
+    for (QObject* sender : {
+             static_cast<QObject*>(d->ui.spinOffset),
+             static_cast<QObject*>(d->ui.modeType),
+             static_cast<QObject*>(d->ui.joinType),
+             static_cast<QObject*>(d->ui.intersection),
+             static_cast<QObject*>(d->ui.selfIntersection),
+             static_cast<QObject*>(d->ui.facesButton),
+             static_cast<QObject*>(d->ui.updateView),
+         }) {
+        sender->disconnect(this);
+    }
     if (d->ui.facesButton->isChecked()) {
-        return false;
+        Gui::Selection().rmvSelectionGate();
     }
-
-    // save this and check if the object is still there after the
-    // transaction is aborted
-    std::string objname = d->thickness->getNameInDocument();
-    App::DocumentObject* source = d->thickness->Faces.getValue();
-
-    // roll back the done things
-    d->thickness->getDocument()->abortTransaction();  // ViewProviderDocumentObject::startDefaultEditMode()
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    Gui::Command::updateActive();
-
-    // Thickness object was deleted
-    if (source && !source->getDocument()->getObject(objname.c_str())) {
-        Gui::Application::Instance->getViewProvider(source)->show();
-    }
-
-    return true;
+    gizmoContainer.reset();
+    linearGizmo = nullptr;
 }
 
 void ThicknessWidget::changeEvent(QEvent* e)
@@ -395,6 +390,9 @@ void ThicknessWidget::setGizmoPositions()
 TaskThickness::TaskThickness(Part::Thickness* offset)
 {
     widget = new ThicknessWidget(offset);
+    launchTransactionId = offset && offset->getDocument()
+        ? offset->getDocument()->getBookedTransactionID()
+        : App::NullTransaction;
     widget->setWindowTitle(ThicknessWidget::tr("Thickness"));
     addTaskBox(Gui::BitmapFactory().pixmap("Part_Thickness"), widget);
 }
@@ -412,12 +410,48 @@ void TaskThickness::clicked(int)
 
 bool TaskThickness::accept()
 {
-    return widget->accept();
+    if (!widget->accept()) {
+        return false;
+    }
+
+    auto* object = widget->getObject();
+    auto* appDocument = object ? object->getDocument() : nullptr;
+    auto* guiDocument = appDocument
+        ? Gui::Application::Instance->getDocument(appDocument)
+        : nullptr;
+    auto* objectViewProvider = object
+        ? Gui::Application::Instance->getViewProvider(object)
+        : nullptr;
+    widget->prepareForClose();
+    if (guiDocument
+        && guiDocument->getEditViewProvider() == objectViewProvider) {
+        guiDocument->resetEdit();
+    }
+    return true;
 }
 
 bool TaskThickness::reject()
 {
-    return widget->reject();
+    auto* object = widget->getObject();
+    auto* appDocument = object ? object->getDocument() : nullptr;
+    auto* guiDocument = appDocument
+        ? Gui::Application::Instance->getDocument(appDocument)
+        : nullptr;
+    auto* objectViewProvider = object
+        ? Gui::Application::Instance->getViewProvider(object)
+        : nullptr;
+    widget->prepareForClose();
+    if (guiDocument
+        && guiDocument->getEditViewProvider() == objectViewProvider) {
+        guiDocument->cancelEdit();
+    }
+    else if (appDocument
+             && launchTransactionId != App::NullTransaction
+             && appDocument->getBookedTransactionID()
+                 == launchTransactionId) {
+        App::GetApplication().abortTransaction(launchTransactionId);
+    }
+    return true;
 }
 
 #include "moc_TaskThickness.cpp"

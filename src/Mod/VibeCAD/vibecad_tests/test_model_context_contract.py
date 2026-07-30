@@ -11,18 +11,9 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from VibeCADCore import VibeCADService
-from VibeCADInspection import (
-    MAX_INSPECT_RESULT_BYTES,
-    _bounded_page,
-    _encoded_bytes,
-    capture_inspection,
-    complete_inspection,
-)
 from VibeCADProject import VibeCADConversationStore, _validated_conversation_turns
 import VibeCADProvider as provider
 import VibeCADSession as session
-from VibeCADTools import ToolSpec
-from tool_impl.service import core_inspect
 
 
 def _prompt_payload(
@@ -54,9 +45,9 @@ def _active_state(object_count: int = 10) -> dict:
         "workbench": "AssemblyWorkbench",
         "modeling_surface": {
             "workbench": "AssemblyWorkbench",
-            "engine": "native",
+            "engine": "vibescript",
             "domain": "assemblies",
-            "surface_id": "vibecad/surface/assembly/native",
+            "surface_id": "vibecad/surface/assembly/vibescript",
             "available": True,
         },
         "document": {
@@ -87,7 +78,7 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         "working_set": ["must not leak"],
         "intent_memory": {"must": "not leak"},
         "tool_trace": [{"result": "must not leak"}],
-        "provider_tool_schemas": [{"name": "core.inspect"}],
+        "provider_tool_schemas": [{"name": "core.set_view"}],
     }
 
     payload, conversation, remainder = _prompt_payload(current, context)
@@ -172,6 +163,41 @@ def test_recent_conversation_window_keeps_newest_turns_within_hard_limits() -> N
     assert b"must not leak" not in encoded
 
 
+def test_stop_button_control_is_not_reinjected_as_a_design_instruction() -> None:
+    turns = [
+        {"role": "user", "content": "Move only the lock pin."},
+        {"role": "assistant", "content": "Working on the lock pin."},
+        {
+            "role": "user",
+            "content": "Stop.",
+            "metadata": {"source": "stop"},
+        },
+        {
+            "role": "user",
+            "content": "Keep the two-handle-half architecture and continue.",
+        },
+        {
+            "role": "assistant",
+            "content": "The two exterior handle halves remain unchanged.",
+        },
+    ]
+
+    payload = session._recent_conversation_payload(turns)
+
+    assert [turn["content"] for turn in payload["turns"]] == [
+        "Move only the lock pin.",
+        "Working on the lock pin.",
+        "Keep the two-handle-half architecture and continue.",
+        "The two exterior handle halves remain unchanged.",
+    ]
+    assert payload["omitted_turn_count"] == 0
+
+    literal_user_request = session._recent_conversation_payload(
+        [{"role": "user", "content": "Stop."}]
+    )
+    assert literal_user_request["turns"] == [{"role": "user", "content": "Stop."}]
+
+
 @pytest.mark.parametrize("object_count", (10, 100, 1000))
 def test_turn_context_size_does_not_scale_with_document_objects(object_count: int) -> None:
     payload, _conversation, _ = _prompt_payload(
@@ -236,7 +262,7 @@ def test_oversized_selection_is_rejected_before_object_enumeration(
 def test_provider_context_does_not_copy_conversation_cache() -> None:
     service = object.__new__(VibeCADService)
     service.active_workbench_name = lambda: "AssemblyWorkbench"
-    service.modeling_engine = lambda: "native"
+    service.modeling_engine = lambda: "vibescript"
     service.provider_turn_document_summary = lambda: _active_state()["document"]
     service.provider_turn_selection_summary = lambda: _active_state()["selection"]
     service.view_screenshot_summary = lambda: {"captured": False}
@@ -442,9 +468,14 @@ def test_run_prompt_includes_active_thread_history_exactly_once(
             metadata=None,
             conversation_id=None,
         ):
+            entry = {"role": role, "content": content}
+            if provider:
+                entry["provider"] = provider
+            if metadata:
+                entry["metadata"] = dict(metadata)
             return {
                 "conversation_id": conversation_id,
-                "entry": {"role": role, "content": content},
+                "entry": entry,
             }
 
         def persist_prepared_conversation_turn(self, prepared):
@@ -461,29 +492,27 @@ def test_run_prompt_includes_active_thread_history_exactly_once(
         def accept_persisted_conversation_turn(self, history, prepared):
             return {"accepted": True}
 
-    class _Provider(provider.BaseProvider):
-        def __init__(self):
-            self.prompt = ""
-
-        def run(self, prompt, context, **kwargs):
-            self.prompt = prompt
-            return provider.ProviderResult("I can see the prior question.")
-
     service = _Service()
-    active_provider = _Provider()
+    active_provider = provider.CodexProvider(
+        model="gpt-test",
+        auth_mode="chatgpt",
+        reasoning_effort="xhigh",
+    )
+    active_provider.prompt = ""
+
+    def fake_run(prompt, context, **kwargs):
+        active_provider.prompt = prompt
+        return provider.ProviderResult("I can see the prior question.")
+
+    monkeypatch.setattr(active_provider, "run", fake_run)
     context = {
         **_active_state(),
         "provider_tool_schemas": [],
     }
     monkeypatch.setattr(
         session,
-        "_prime_modeling_engine_for_session",
-        lambda active_service, dispatch: "native",
-    )
-    monkeypatch.setattr(
-        session,
         "_context_for_provider",
-        lambda active_service, trigger: dict(context),
+        lambda active_service, trigger, interaction_mode="build": dict(context),
     )
     monkeypatch.setattr(
         session,
@@ -491,11 +520,13 @@ def test_run_prompt_includes_active_thread_history_exactly_once(
         lambda *args, **kwargs: lambda *tool_args: {"ok": True},
     )
 
+    progress_events: list[dict] = []
     response = session.run_prompt(
         current,
         service=service,
         provider=active_provider,
         prefer_online=False,
+        progress_callback=lambda event: progress_events.append(dict(event)),
     )
 
     assert response.error is None
@@ -508,92 +539,33 @@ def test_run_prompt_includes_active_thread_history_exactly_once(
     assert service.conversation[-1] == {
         "role": "assistant",
         "content": "I can see the prior question.",
+        "provider": "CodexProvider",
+        "metadata": {
+            "provider_runtime": {
+                "provider_id": "chatgpt",
+                "provider_label": "ChatGPT subscription via Codex",
+                "adapter": "CodexProvider",
+                "requested_model": "gpt-test",
+                "model_selection": "explicit",
+                "reasoning_effort": "xhigh",
+                "model_fallback_allowed": False,
+                "interaction_mode": "build",
+            }
+        },
     }
-
-
-def test_session_modeling_engine_manifest_read_stays_off_document_thread() -> None:
-    in_document_callback = False
-    events: list[str] = []
-
-    class _Service:
-        def prepare_modeling_engine_read(self):
-            assert in_document_callback is True
-            events.append("capture")
-            return {"manifest_path": "/project/project.vibecad.json"}
-
-        def complete_modeling_engine_read(self, prepared):
-            assert in_document_callback is False
-            assert prepared["manifest_path"].endswith("project.vibecad.json")
-            events.append("read")
-            return "native"
-
-        def accept_modeling_engine_read(self, prepared, engine):
-            assert in_document_callback is True
-            assert engine == "native"
-            events.append("accept")
-            return {"accepted": True, "engine": engine}
-
-    def dispatch(operation):
-        nonlocal in_document_callback
-        assert in_document_callback is False
-        in_document_callback = True
-        try:
-            return operation()
-        finally:
-            in_document_callback = False
-
-    engine = session._prime_modeling_engine_for_session(_Service(), dispatch)
-
-    assert engine == "native"
-    assert events == ["capture", "read", "accept"]
-
-
-def test_non_partdesign_engine_state_does_not_probe_optional_runtimes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import VibeCADBuild123d as build123d
-    import VibeCADOpenSCAD as openscad
-
-    def unexpected_probe(*args, **kwargs):
-        raise AssertionError("optional runtime probe must not run outside Part Design")
-
-    monkeypatch.setattr(build123d, "runtime_health", unexpected_probe)
-    monkeypatch.setattr(openscad, "runtime_health", unexpected_probe)
-    service = object.__new__(VibeCADService)
-    service.build123d_enabled = lambda: True
-    service.openscad_enabled = lambda: True
-    service.vibescript_enabled = lambda: True
-    service.modeling_engine = lambda: "vibescript"
-
-    state = service.modeling_engine_state("AssemblyWorkbench")
-
-    assert state["selected"] == "vibescript"
-    assert state["build123d"]["ready"] is False
-    assert state["openscad"]["ready"] is False
-    assert state["available_engines"] == ["native", "vibescript"]
-
-
-def test_core_inspect_schema_is_one_low_friction_read_interface() -> None:
-    spec = ToolSpec.from_mapping(core_inspect.TOOL_SPEC)
-
-    spec.validate_arguments({"scope": "document"})
-    assert spec.safety.value == "read"
-    assert spec.parameters["required"] == ["scope"]
-    assert spec.parameters["properties"]["limit"]["default"] == 20
-    assert set(spec.parameters["properties"]["scope"]["enum"]) == {
-        "document",
-        "selection",
-        "object",
-        "domain",
-        "program",
-        "api",
-        "image",
-    }
+    started = next(
+        event
+        for event in progress_events
+        if event.get("event") == "provider_turn_started"
+    )
+    assert started["provider_runtime"] == service.conversation[-1]["metadata"][
+        "provider_runtime"
+    ]
 
 
 def test_turn_start_rejects_oversized_exact_tool_schemas() -> None:
     schema = {
-        "name": "core.inspect",
+        "name": "vibescript.read_api",
         "description": "x" * session.MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES,
         "parameters": {
             "type": "object",
@@ -607,124 +579,8 @@ def test_turn_start_rejects_oversized_exact_tool_schemas() -> None:
         session._turn_start_tool_surface(
             "PartWorkbench",
             [schema],
-            engine="native",
+            engine="vibescript",
         )
-
-
-def test_core_inspect_pages_are_deterministic_and_exactly_size_accounted() -> None:
-    raw = {
-        "objects": [
-            {"name": f"Object{index:04d}", "label": "x" * 200}
-            for index in range(1000)
-        ]
-    }
-    captured = {
-        "scope": "document",
-        "target": "",
-        "path": "/objects",
-        "offset": 100,
-        "limit": 50,
-        "surface": {"workbench": "PartWorkbench", "engine": "native"},
-        "document": {"name": "Large", "uid": "doc", "object_count": 1000},
-    }
-
-    first = _bounded_page(raw, captured)
-    second = _bounded_page(raw, captured)
-
-    assert first == second
-    assert first["page"]["offset"] == 100
-    assert first["page"]["returned"] == 50
-    assert first["page"]["next_offset"] == 150
-    assert first["result_json_bytes"] == _encoded_bytes(first)
-    assert first["result_json_bytes"] <= MAX_INSPECT_RESULT_BYTES
-
-
-def test_core_inspect_shrinks_large_string_pages_below_the_hard_limit() -> None:
-    captured = {
-        "scope": "program",
-        "target": "program-id",
-        "path": "/source",
-        "offset": 0,
-        "limit": 50,
-        "surface": {"workbench": "PartWorkbench", "engine": "vibescript"},
-        "document": {"name": "Large", "uid": "doc", "object_count": 1},
-    }
-
-    result = _bounded_page({"source": "x" * 100000}, captured)
-
-    assert result["page"]["requested_limit"] == 50
-    assert result["page"]["effective_limit"] < 50
-    assert result["page"]["next_offset"] == len(result["value"])
-    assert result["result_json_bytes"] == _encoded_bytes(result)
-    assert result["result_json_bytes"] <= MAX_INSPECT_RESULT_BYTES
-
-
-def test_document_inspection_is_explicit_and_paged() -> None:
-    objects = [
-        SimpleNamespace(Name=f"Object{index:04d}", Label=f"Object {index}", TypeId="Part::Feature")
-        for index in range(1000)
-    ]
-
-    class _Service:
-        def active_workbench_name(self) -> str:
-            return "PartWorkbench"
-
-        def modeling_engine(self) -> str:
-            return "native"
-
-        def _active_document(self):
-            return SimpleNamespace(Name="Large", Uid="doc", Objects=objects)
-
-    captured = capture_inspection(
-        _Service(),
-        {"scope": "document", "path": "/objects", "offset": 500, "limit": 20},
-    )
-    result = complete_inspection(captured)
-
-    assert result["ok"] is True
-    assert result["page"]["total"] == 1000
-    assert result["page"]["returned"] == 20
-    assert result["value"][0]["name"] == "Object0500"
-    assert result["result_json_bytes"] <= MAX_INSPECT_RESULT_BYTES
-
-
-def test_document_inspection_captures_only_the_requested_object_page() -> None:
-    accessed: list[int] = []
-
-    class _Objects:
-        def __len__(self) -> int:
-            return 1000
-
-        def __getitem__(self, index: int):
-            accessed.append(index)
-            return SimpleNamespace(
-                Name=f"Object{index:04d}",
-                Label=f"Object {index}",
-                TypeId="Part::Feature",
-            )
-
-        def __iter__(self):
-            raise AssertionError("inspection capture must not enumerate every object")
-
-    class _Service:
-        def active_workbench_name(self) -> str:
-            return "PartWorkbench"
-
-        def modeling_engine(self) -> str:
-            return "native"
-
-        def _active_document(self):
-            return SimpleNamespace(Name="Large", Uid="doc", Objects=_Objects())
-
-    captured = capture_inspection(
-        _Service(),
-        {"scope": "document", "path": "/objects", "offset": 500, "limit": 20},
-    )
-    result = complete_inspection(captured)
-
-    assert accessed == list(range(500, 520))
-    assert result["page"]["total"] == 1000
-    assert result["page"]["next_offset"] == 520
 
 
 def test_reference_attachments_are_queued_and_consumed_by_exact_id() -> None:

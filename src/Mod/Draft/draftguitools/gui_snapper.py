@@ -241,7 +241,15 @@ class Snapper:
             self.radiusTracker.update(fpt)
         return fpt
 
-    def snap(self, screenpos, lastpoint=None, active=True, constrain=False, noTracker=False):
+    def snap(
+        self,
+        screenpos,
+        lastpoint=None,
+        active=True,
+        constrain=False,
+        noTracker=False,
+        view=None,
+    ):
         """Return a snapped point from the given (x, y) screen position.
 
         snap(screenpos,lastpoint=None,active=True,constrain=False,
@@ -280,7 +288,7 @@ class Snapper:
             return None
 
         # Setup trackers if needed
-        self.setTrackers()
+        self.setTrackers(view=view)
 
         # Get current snap radius
         self.radius = self.getScreenDist(params.get_param("snapRange"), screenpos)
@@ -321,7 +329,7 @@ class Snapper:
 
         # Check if we have an object under the cursor and try to
         # snap to it
-        _view = gui_utils.get_3d_view()
+        _view = self.activeview or gui_utils.get_3d_view()
         objectsUnderCursor = _view.getObjectsInfo((screenpos[0], screenpos[1]))
         if objectsUnderCursor:
             if self.snapObjectIndex >= len(objectsUnderCursor):
@@ -495,7 +503,7 @@ class Snapper:
         if winner_not_near is None or shortest_not_near == shortest_all:
             winner = winner_all
         else:
-            view = gui_utils.get_3d_view()
+            view = self.activeview or gui_utils.get_3d_view()
             # get screen points with pixel coordinates
             scr_win_not_near_pt = App.Vector(*view.getPointOnScreen(winner_not_near[0]), 0)
             scr_cursor_pt = App.Vector(*view.getPointOnScreen(cursor_pt), 0)
@@ -536,7 +544,7 @@ class Snapper:
 
     def getApparentPoint(self, x, y):
         """Return a 3D point, projected on the current working plane."""
-        view = gui_utils.get_3d_view()
+        view = self.activeview or gui_utils.get_3d_view()
         pt = view.getPoint(x, y)
         if self.mask != "z":
             if view.getCameraType() == "Perspective":
@@ -1122,7 +1130,7 @@ class Snapper:
 
     def getScreenDist(self, dist, cursor):
         """Return a distance in 3D space from a screen pixels distance."""
-        view = gui_utils.get_3d_view()
+        view = self.activeview or gui_utils.get_3d_view()
         p1 = view.getPoint(cursor)
         p2 = view.getPoint((cursor[0] + dist, cursor[1]))
         return (p2.sub(p1)).Length
@@ -1243,8 +1251,21 @@ class Snapper:
             self.setDimensions(lastpoint, locked)
         return locked
 
-    def off(self):
-        """Finish snapping."""
+    def off(self, view=None):
+        """Finish snapping in the requested 3D view.
+
+        ``view`` is optional for compatibility. Supplying it prevents a
+        command which finishes after an MDI switch from clearing the snap and
+        grid state of the newly active document.
+        """
+        active_view = gui_utils.get_3d_view()
+        restore_view = None
+        if view is not None:
+            if view not in self.trackers[0]:
+                return
+            if active_view is not None and active_view is not view:
+                restore_view = active_view
+            self.setTrackers(update_grid=False, view=view)
         if self.tracker:
             self.tracker.off()
         if self.trackLine:
@@ -1262,6 +1283,17 @@ class Snapper:
         if self.holdTracker:
             self.holdTracker.clear()
             self.holdTracker.off()
+
+        # A command from a background MDI view owns only that view's scene
+        # nodes. Do not clear the shared cursor, constraints, or snap memory
+        # currently used by the foreground command.
+        if restore_view is not None:
+            if self.grid and self.grid.show_always is False:
+                self.grid.off()
+            if restore_view in self.trackers[0]:
+                self.setTrackers(update_grid=False, view=restore_view)
+            return
+
         self.unconstrain()
         self.radius = 0
         self.setCursor()
@@ -1457,7 +1489,13 @@ class Snapper:
             mousepos = event.getPosition()
             ctrl = event.wasCtrlDown()
             shift = event.wasShiftDown()
-            self.pt = Gui.Snapper.snap(mousepos, lastpoint=last, active=ctrl, constrain=shift)
+            self.pt = Gui.Snapper.snap(
+                mousepos,
+                lastpoint=last,
+                active=ctrl,
+                constrain=shift,
+                view=self.view,
+            )
             self.ui.displayPoint(self.pt, last, plane=self._get_wp(), mask=Gui.Snapper.affinity)
             if movecallback:
                 movecallback(self.pt, self.snapInfo)
@@ -1666,9 +1704,9 @@ class Snapper:
         """Set the grid, if visible."""
         self.setTrackers()
 
-    def setTrackers(self, update_grid=True):
-        """Set the trackers."""
-        v = gui_utils.get_3d_view()
+    def setTrackers(self, update_grid=True, view=None):
+        """Set the trackers for one exact 3D view."""
+        v = view if view is not None else gui_utils.get_3d_view()
         if v is None:
             return
 

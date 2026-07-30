@@ -22,6 +22,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+#include <exception>
+
 #include <QMessageBox>
 #include <QTreeWidget>
 #include <TopExp_Explorer.hxx>
@@ -29,6 +32,7 @@
 
 
 #include <Base/Exception.h>
+#include <Base/Console.h>
 #include <Base/Tools.h>
 #include <App/Application.h>
 #include <App/Document.h>
@@ -44,6 +48,8 @@
 #include <Mod/Part/App/PartFeature.h>
 
 #include "DlgBooleanOperation.h"
+#include "ModelingSelection.h"
+#include "TaskResultValidation.h"
 #include "ui_DlgBooleanOperation.h"
 
 
@@ -90,6 +96,7 @@ DlgBooleanOperation::DlgBooleanOperation(QWidget* parent)
     , ui(new Ui_DlgBooleanOperation)
 {
     ui->setupUi(this);
+    appliedResults.reserve(1);
     connect(ui->swapButton, &QPushButton::clicked, this, &DlgBooleanOperation::onSwapButtonClicked);
     connect(
         ui->firstShape,
@@ -235,9 +242,21 @@ void DlgBooleanOperation::findShapes()
         return;
     }
 
-    std::vector<App::DocumentObject*> objs = activeDoc->getObjectsOfType(
-        Part::Feature::getClassTypeId()
+    auto clearShapeItems = [](QTreeWidget* tree) {
+        for (int groupIndex = 0; groupIndex < tree->topLevelItemCount(); ++groupIndex) {
+            auto* group = tree->topLevelItem(groupIndex);
+            while (group && group->childCount() > 0) {
+                delete group->takeChild(0);
+            }
+        }
+    };
+    clearShapeItems(ui->firstShape);
+    clearShapeItems(ui->secondShape);
+
+    const auto objs = PartGui::resolveModelingObjects(
+        activeDoc->getObjectsOfType(Part::Feature::getClassTypeId())
     );
+    const auto currentSelection = PartGui::getModelingSelection(activeDoc->getName());
 
     QTreeWidgetItem *item_left = nullptr, *item_right = nullptr;
     for (auto obj : objs) {
@@ -290,7 +309,12 @@ void DlgBooleanOperation::findShapes()
             }
 
             if (!item_left || !item_right) {
-                bool selected = Gui::Selection().isSelected(obj);
+                const bool selected = std::ranges::any_of(
+                    currentSelection,
+                    [obj](const Gui::SelectionObject& item) {
+                        return item.getObject() == obj;
+                    }
+                );
                 if (!item_left && selected) {
                     item_left = child;
                 }
@@ -374,6 +398,8 @@ void DlgBooleanOperation::onSwapButtonClicked()
 
 void DlgBooleanOperation::accept()
 {
+    applySucceeded = false;
+    appliedResults.clear();
     int ltop, lchild, rtop, rchild;
 
     QTreeWidgetItem* litem = nullptr;
@@ -486,25 +512,63 @@ void DlgBooleanOperation::accept()
         method = "make_section";
     }
 
+    const auto observedBeforeOperation = observe;
+    std::vector<App::DocumentObject*> replacedInputs;
+    for (auto* operand : {obj1, obj2}) {
+        auto* presentation =
+            PartGui::resolveModelingPresentationObject(operand);
+        if (presentation && presentation->Visibility.getValue()
+            && std::ranges::find(replacedInputs, presentation)
+                == replacedInputs.end()) {
+            replacedInputs.push_back(presentation);
+        }
+    }
+
     try {
         Gui::WaitCursor wc;
-        activeDoc->openTransaction("Boolean operation");
+        ModelingTaskAttempt attempt(*activeDoc, "Boolean operation");
         std::vector<std::string> names;
         names.push_back(Base::Tools::quoted(shapeOne.c_str()));
         names.push_back(Base::Tools::quoted(shapeTwo.c_str()));
         Gui::Command::doCommand(Gui::Command::Doc, "from BOPTools import BOPFeatures");
-        Gui::Command::doCommand(Gui::Command::Doc, "bp = BOPFeatures.BOPFeatures(App.activeDocument())");
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "bp.%s([%s])",
-            method.c_str(),
-            Base::Tools::joinList(names).c_str()
+        const auto factory = QByteArray::fromStdString(
+            "BOPFeatures.BOPFeatures(App.getDocument("
+            + Base::Tools::quoted(activeDoc->getName()) + "))."
+            + method + "([" + Base::Tools::joinList(names) + "])"
         );
-        activeDoc->commitTransaction();
+        auto* result = Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            *activeDoc,
+            factory,
+            Part::Feature::getClassTypeId()
+        );
+        attempt.trackCreatedObject(*result);
+        if (!replacedInputs.empty()) {
+            attempt.trackReplacedInputs(*result, replacedInputs);
+        }
         activeDoc->recompute();
+        TaskResultValidation::validatePartResult(result);
+
+        attempt.commit();
+        appliedResults.push_back(result);
+        applySucceeded = true;
     }
     catch (const Base::Exception& e) {
+        // Objects created by the failed attempt no longer exist.  Do not
+        // retain their addresses in the dialog's shape-change watch list.
+        observe = observedBeforeOperation;
+        findShapes();
         e.reportException();
+    }
+    catch (const std::exception& e) {
+        observe = observedBeforeOperation;
+        findShapes();
+        Base::Console().error("Boolean operation failed: %s\n", e.what());
+    }
+    catch (...) {
+        observe = observedBeforeOperation;
+        findShapes();
+        Base::Console().error("Boolean operation failed with an unknown error\n");
     }
 }
 
@@ -520,6 +584,9 @@ void TaskBooleanOperation::clicked(int id)
 {
     if (id == QDialogButtonBox::Apply) {
         widget->accept();
+        if (widget->wasLastApplySuccessful()) {
+            markCommandInteractionStateDurable(widget->lastAppliedResults());
+        }
     }
 }
 

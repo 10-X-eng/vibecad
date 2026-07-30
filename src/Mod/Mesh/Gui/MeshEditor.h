@@ -26,6 +26,9 @@
 
 #include <QObject>
 
+#include <memory>
+
+#include <Gui/DocumentObserver.h>
 #include <Mod/Mesh/Gui/ViewProvider.h>
 
 
@@ -108,12 +111,16 @@ private Q_SLOTS:
     void flipNormal();
 
 private:
+    Mesh::Feature* targetFeature() const;
     bool addMarkerPoint();
     void showMarker(SoPickedPoint*);
     static void addFacetCallback(void* ud, SoEventCallback* n);
 
 private:
     ViewProviderFace* faceView;
+    std::unique_ptr<Gui::WeakPtrT<ViewProviderMesh>> targetMesh;
+    fastsignals::connection targetDeletedConnection;
+    bool finishing {false};
 
     Q_DISABLE_COPY_MOVE(MeshFaceAddition)
 };

@@ -35,6 +35,7 @@ import FreeCADGui
 import FemGui
 from PySide import QtGui
 from femtaskpanels import task_post_glyphfilter
+from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
 
 
 class VPPostGlyphFilter:
@@ -64,6 +65,8 @@ class VPPostGlyphFilter:
         return "Default"
 
     def setEdit(self, vobj, mode):
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
         # make sure we see what we edit
         vobj.show()
 
@@ -71,12 +74,20 @@ class VPPostGlyphFilter:
         taskd = task_post_glyphfilter._TaskPanel(vobj)
 
         # show it
-        FreeCADGui.Control.showDialog(taskd)
+        FreeCADGui.Control.showDialog(taskd, gui_document)
+        self._fem_edit_identity = identity
 
         return True
 
     def unsetEdit(self, vobj, mode):
-        FreeCADGui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        FreeCADGui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
         return True
 
     def dumps(self):

@@ -1,9 +1,9 @@
 {
   "vibescript.partdesign.create_program": "ec43de7f8e2da018e3e713bc6c714a7c3c1612cfe9bcc6fb07d4fc03949299ac",
-  "vibescript.partdesign.delete_program": "a82346bb5c3f213e2d7fcd99295cea7bfd47da60a09df1d5521debfdad8e52e0",
-  "vibescript.partdesign.describe_api": "20e119b9c26888687577e2b3ad9b372456741eade9f5fbcb5122833cc405452a",
-  "vibescript.partdesign.edit_source": "c32cdf839c949d0c3151c85d46be34e4f4f65f55676eebb7434a86cae44bf565",
-  "vibescript.partdesign.inspect_program": "1d02b15747c3f869c0c32857b65db824e137f1157d02fbe20fa91391576dda93",
-  "vibescript.partdesign.reconfigure_program": "f35e9b308501eec4dbc29de516aee7287ab9242ad5e966155326d0d63ec9a5a0",
-  "vibescript.partdesign.set_inputs": "99d256a5f16267e12644b52ebec763bebc72fd6a78d57a7c620f686a68bb1da4"
+  "vibescript.partdesign.delete_program": "4bc947149390f7d05cd59a922ee9ab11ad6cc1f9d610f9babf9a6fb2d8b0c94e",
+  "vibescript.partdesign.reconfigure_program": "df6b4a7e011b7a8f4b67d9a7fd6ce84e796e1db1e7ca957951086de5d90cf8e5",
+  "vibescript.partdesign.set_inputs": "5c1079bfdffa5a1a01e9f9ad06b1d31c67f2f5f555a09f3f4da2e25ba8e4f6e8",
+  "vibescript.edit_source": "e20ed28546a07e36a8762bbb8325a2710b6984d0730025a592144756d8f6be33",
+  "vibescript.read_api": "3fda9fa3dd87ac6b2a974052bc765d63c2464c677c1118797a70f17780b2fc10",
+  "vibescript.read_source": "79d631086109ca1bfe23d6e522b5abb46b34e6d80e2ec3c788cbbd3e2af87101"
 }

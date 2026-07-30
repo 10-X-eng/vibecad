@@ -24,9 +24,16 @@ import FreeCAD
 import FreeCADGui
 import Path
 import Path.Op.Base as PathOp
+import Path.Main.Job as PathJob
 import PathScripts.PathUtils as PathUtils
 import Path.Base.Util as PathUtil
+from Path.CommandBoundary import (
+    ExactDocumentObjectIdentity,
+    can_start_document_command,
+    is_timeline_input_usable,
+)
 from Path.Dressup.Utils import toolController
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 import tsp_solver
 
 import random
@@ -41,6 +48,7 @@ translate = FreeCAD.Qt.translate
 
 class ObjectArray:
     def __init__(self, obj):
+        PathUtil.markTimelineOperation(obj)
         # Path properties group
         obj.addProperty(
             "App::PropertyBool",
@@ -254,6 +262,7 @@ class ObjectArray:
 
     def onDocumentRestored(self, obj):
         """onDocumentRestored(obj) ... Called automatically when document is restored."""
+        PathUtil.restoreTimelineOperation(obj)
         if not obj.ViewObject.Proxy:
             Path.Op.Gui.Array.ViewProviderArray(obj.ViewObject)
 
@@ -348,10 +357,57 @@ class ObjectArray:
             base = [obj.Base]
 
         # Do not generate paths and clear current Path data
-        # if operation not Active or no base operations or operations not compatible
-        if not obj.Active or len(base) == 0 or not self.isBaseCompatible(obj):
+        # Suppressed arrays and arrays built from an inactive source must not
+        # retain a stale executable toolpath.
+        if (
+            not PathUtil.activeForOp(obj)
+            or len(base) == 0
+            or any(
+                operation is None
+                or not PathUtil.activeForOp(operation)
+                for operation in base
+            )
+        ):
             obj.Path = Path.Path()
             return
+
+        document = obj.Document
+        if any(
+            operation.Document is not document
+            or not operation.isValid()
+            or not is_timeline_input_usable(operation, document)
+            for operation in base
+        ):
+            obj.Path = Path.Path()
+            raise RuntimeError(
+                "The CAM array has an unavailable base toolpath"
+            )
+
+        point_sources = [
+            source
+            for source, _subelements in obj.PointsSource
+            if source is not None
+        ]
+        if obj.PointsOrigin and obj.PointsOrigin[0] is not None:
+            point_sources.append(obj.PointsOrigin[0])
+        if any(
+            not is_timeline_input_usable(
+                source,
+                source.Document,
+            )
+            for source in point_sources
+        ):
+            obj.Path = Path.Path()
+            raise RuntimeError(
+                "The CAM array has an unavailable point source"
+            )
+
+        if not self.isBaseCompatible(obj):
+            obj.Path = Path.Path()
+            raise RuntimeError(
+                "The CAM array bases do not share one tool controller "
+                "and coolant mode"
+            )
 
         obj.ToolController = toolController(base[0])
 
@@ -396,7 +452,7 @@ class ObjectArray:
             tcs.append(toolController(sel))
             cms.append(PathUtil.coolantModeForOp(sel))
 
-        if tcs == {None} or len(set(tcs)) > 1:
+        if any(controller is None for controller in tcs) or len(set(tcs)) > 1:
             Path.Log.warning(
                 translate(
                     "PathArray",
@@ -814,10 +870,79 @@ class ViewProviderArray:
         return True
 
     def getIcon(self):
-        if self.obj.Active:
+        if PathUtil.activeForOp(self.obj):
             return ":/icons/CAM_Array.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
+
+
+def _selected_array_operations():
+    document = FreeCAD.ActiveDocument
+    selection = FreeCADGui.Selection.getSelection()
+    if document is None or not selection:
+        return None
+
+    parent_job = None
+    selected_tool = None
+    for operation in selection:
+        if (
+            getattr(operation, "Document", None) is not document
+            or not is_timeline_input_usable(operation, document)
+            or not operation.isDerivedFrom("Path::Feature")
+            or not operation.isValid()
+            or not PathUtil.activeForOp(operation)
+            or not getattr(operation, "Path", None)
+            or not operation.Path.Commands
+        ):
+            return None
+
+        job = PathUtils.findParentJob(operation)
+        if (
+            job is None
+            or job.Document is not document
+            or not isinstance(getattr(job, "Proxy", None), PathJob.ObjectJob)
+            or getattr(job, "Operations", None) is None
+            or not is_timeline_input_usable(job, document)
+        ):
+            return None
+        if parent_job is None:
+            parent_job = job
+        elif job is not parent_job:
+            return None
+
+        operation_tool = toolController(operation)
+        if (
+            operation_tool is None
+            or operation_tool.Document is not document
+            or not is_timeline_input_usable(
+                operation_tool,
+                document,
+            )
+        ):
+            return None
+        if selected_tool is None:
+            selected_tool = operation_tool
+        elif operation_tool is not selected_tool:
+            return None
+
+        if PathUtil.coolantModeForOp(operation) != "None":
+            return None
+
+    return tuple(selection), parent_job
+
+
+def _validate_array_result(document, result, bases, job):
+    if (
+        result is None
+        or result.Document is not document
+        or not result.isDerivedFrom("Path::Feature")
+        or not isinstance(getattr(result, "Proxy", None), ObjectArray)
+        or tuple(result.Base) != bases
+        or not result.isValid()
+        or PathUtils.findParentJob(result) is not job
+        or result not in job.Operations.Group
+    ):
+        raise RuntimeError("The CAM array was not created correctly")
 
 
 class CommandPathArray:
@@ -829,61 +954,96 @@ class CommandPathArray:
         }
 
     def IsActive(self):
-        selection = FreeCADGui.Selection.getSelection()
-        if not selection:
+        if not can_start_document_command():
             return False
-        tcs = []
-        for sel in selection:
-            if not sel.isDerivedFrom("Path::Feature"):
-                return False
-            tc = toolController(sel)
-            if tc:
-                # Active only for operations with identical tool controller
-                tcs.append(tc)
-                if len(set(tcs)) != 1:
-                    return False
-            else:
-                return False
-            if PathUtil.coolantModeForOp(sel) != "None":
-                # Active only for operations without cooling
-                return False
-        return True
+        return _selected_array_operations() is not None
 
     def Activated(self):
+        document = FreeCAD.ActiveDocument
+        if document is None or not can_start_document_command(document):
+            return
 
-        # check that the selection contains exactly what we want
-        selection = FreeCADGui.Selection.getSelection()
+        selected = _selected_array_operations()
+        if selected is None:
+            return
+        selection, job = selected
+        source_identities = [
+            ExactDocumentObjectIdentity(operation, document)
+            for operation in selection
+        ]
+        job_identity = ExactDocumentObjectIdentity(job, document)
 
-        for sel in selection:
-            if not (sel.isDerivedFrom("Path::Feature")):
-                FreeCAD.Console.PrintError(
-                    translate("CAM_Array", "Arrays can be created only from toolpath operations.")
-                    + "\n"
+        transaction = _OwnedDocumentTransaction(document, "Create CAM array")
+        try:
+            selection = tuple(
+                identity.resolve(require_timeline=True)
+                for identity in source_identities
+            )
+            job = job_identity.resolve(require_timeline=True)
+            FreeCADGui.addModule("Path.Op.Gui.Array")
+            FreeCADGui.doCommand(
+                "document = App.getDocument(%r)" % document.Name
+            )
+            result = FreeCADGui.runDocumentObjectCommand(
+                document,
+                'document.addObject("Path::FeaturePython","Array")',
+                "Path::FeaturePython",
+            )
+            result_name = result.Name
+            result_id = int(result.ID)
+            result_expression = "document.getObject(%r)" % result_name
+            FreeCADGui.doCommand(
+                "Path.Op.Gui.Array.ObjectArray(%s)" % result_expression
+            )
+
+            baseString = "[%s]" % ",".join(
+                [
+                    "document.getObject(%r)" % operation.Name
+                    for operation in selection
+                ]
+            )
+            FreeCADGui.doCommand(
+                "%s.Base = %s" % (result_expression, baseString)
+            )
+            FreeCADGui.doCommand(
+                "Path.Op.Gui.Array.ViewProviderArray("
+                f"{result_expression}.ViewObject)"
+            )
+            FreeCADGui.doCommand(
+                "job = document.getObject(%r)" % job.Name
+            )
+            FreeCADGui.doCommand(
+                f"job.Proxy.addOperation({result_expression})"
+            )
+
+            selection = tuple(
+                identity.resolve(require_timeline=True)
+                for identity in source_identities
+            )
+            job = job_identity.resolve(require_timeline=True)
+            document.recompute()
+            resolved = document.getObject(result_name)
+            if (
+                resolved is not result
+                or int(resolved.ID) != result_id
+                or document.getObject(result_id) is not result
+                or not document
+                .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                    result
                 )
-                return
-
-        # if everything is ok, execute and register the transaction in the
-        # undo/redo stack
-        FreeCAD.ActiveDocument.openTransaction("Create Array")
-        FreeCADGui.addModule("Path.Op.Gui.Array")
-        FreeCADGui.addModule("PathScripts.PathUtils")
-
-        FreeCADGui.doCommand(
-            'obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython","Array")'
-        )
-
-        FreeCADGui.doCommand("Path.Op.Gui.Array.ObjectArray(obj)")
-
-        baseString = "[%s]" % ",".join(
-            ["FreeCAD.ActiveDocument.%s" % sel.Name for sel in selection]
-        )
-        FreeCADGui.doCommand("obj.Base = %s" % baseString)
-
-        FreeCADGui.doCommand("Path.Op.Gui.Array.ViewProviderArray(obj.ViewObject)")
-        FreeCADGui.doCommand("job = PathScripts.PathUtils.findParentJob(obj.Base[0])")
-        FreeCADGui.doCommand("PathScripts.PathUtils.addToJob(obj, job.Name)")
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCAD.ActiveDocument.recompute()
+            ):
+                raise RuntimeError(
+                    "The CAM array command did not return its exact output"
+                )
+            _validate_array_result(document, result, selection, job)
+            document.publishProvisionalTimelineOperationBlock(
+                result,
+                [],
+            )
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
 
 
 if FreeCAD.GuiUp:

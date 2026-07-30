@@ -27,19 +27,40 @@
 #include <QPushButton>
 
 
+#include <App/Application.h>
+#include <App/Document.h>
+#include <App/DocumentObserver.h>
+#include <Base/Console.h>
 #include <Gui/Application.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/Document.h>
 #include <Gui/Selection/Selection.h>
+#include <Gui/View3DInventor.h>
+#include <Gui/View3DInventorViewer.h>
+
+#include <Mod/Mesh/App/MeshFeature.h>
 
 #include "RemoveComponents.h"
+#include "CommandGuard.h"
 #include "ui_RemoveComponents.h"
 
 
 using namespace MeshGui;
 
+class RemoveComponents::TargetState
+{
+public:
+    explicit TargetState(App::Document* document)
+        : document(document)
+    {}
+
+    App::DocumentWeakPtrT document;
+};
+
 RemoveComponents::RemoveComponents(QWidget* parent, Qt::WindowFlags fl)
     : QWidget(parent, fl)
     , ui(new Ui_RemoveComponents)
+    , targetState(std::make_unique<TargetState>(App::GetApplication().getActiveDocument()))
 {
     ui->setupUi(this);
     setupConnections();
@@ -48,6 +69,21 @@ RemoveComponents::RemoveComponents(QWidget* parent, Qt::WindowFlags fl)
     ui->spDeselectComp->setRange(1, std::numeric_limits<int>::max());
     ui->spDeselectComp->setValue(10);
 
+    App::Document* document = targetState ? *targetState->document : nullptr;
+    std::vector<Gui::SelectionObject> targets;
+    if (document) {
+        for (auto* mesh : document->getObjectsOfType<Mesh::Feature>()) {
+            if (MeshGui::isNativeMeshInputActive(mesh)) {
+                targets.emplace_back(mesh);
+            }
+        }
+        if (auto* guiDocument = Gui::Application::Instance->getDocument(document)) {
+            if (auto* view = dynamic_cast<Gui::View3DInventor*>(guiDocument->getActiveView())) {
+                meshSel.setViewer(view->getViewer());
+            }
+        }
+    }
+    meshSel.setObjects(targets);
     Gui::Selection().clearSelection();
     meshSel.setCheckOnlyVisibleTriangles(ui->visibleTriangles->isChecked());
     meshSel.setCheckOnlyPointToUserTriangles(ui->screenTriangles->isChecked());
@@ -156,18 +192,13 @@ void RemoveComponents::onDeselectCompToggled(bool on)
 
 void RemoveComponents::deleteSelection()
 {
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (!doc) {
+    App::Document* document = targetState ? *targetState->document : nullptr;
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
         return;
     }
-    // delete all selected faces
-    doc->openCommand(QT_TRANSLATE_NOOP("Command", "Delete selection"));
     bool ok = meshSel.deleteSelection();
     if (!ok) {
-        doc->abortCommand();
-    }
-    else {
-        doc->commitCommand();
+        Base::Console().warning("No mesh components were removed\n");
     }
 }
 
@@ -245,6 +276,11 @@ void RemoveComponentsDialog::clicked(QAbstractButton* btn)
 
 TaskRemoveComponents::TaskRemoveComponents()
 {
+    App::Document* document = App::GetApplication().getActiveDocument();
+    if (document) {
+        setDocumentName(document->getName());
+        setAutoCloseOnDeletedDocument(true);
+    }
     widget = new RemoveComponents();  // NOLINT
     addTaskBox(widget, false);
 }

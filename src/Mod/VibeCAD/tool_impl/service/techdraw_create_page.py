@@ -92,11 +92,17 @@ def run(service: Any, sheet_size: str, label: str) -> dict[str, Any]:
         active = App.ActiveDocument
         if active is None:
             raise RuntimeError("No active document.")
-        page = active.addObject("TechDraw::DrawPage", "Page")
-        template = active.addObject("TechDraw::DrawSVGTemplate", "Template")
-        template.Template = requested_template_path
-        page.Template = template
-        page.Label = clean_label
+        with domain_runtime.NewTimelineOperation() as timeline:
+            page = active.addObject("TechDraw::DrawPage", "Page")
+            timeline.set_operation(page)
+            template = active.addObject(
+                "TechDraw::DrawSVGTemplate",
+                "Template",
+            )
+            timeline.add_resource(template)
+            template.Template = requested_template_path
+            page.Template = template
+            page.Label = clean_label
         active.recompute()
         return {
             "document": active.Name,

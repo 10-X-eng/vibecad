@@ -1046,6 +1046,7 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Create a linear feature or standalone extrusion from a profile.
 
+        Use this for straight additions and cuts whose cross-section stays constant.
         operation is add_material, remove_material, new_solid, or new_surface.
         remove_material requires base and exactly one of distance_mm or through_all.
         vector and output_type apply only to standalone edge or wire extrusion.
@@ -1314,6 +1315,8 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Create a loft through 2-64 ordered sections.
 
+        Use this only when the intended cross-section genuinely changes between
+        sections. For a constant cross-section, use api.extrude.
         Use api.sketch sections for planar profiles. operation selects add_material,
         remove_material, new_solid, or new_surface; remove_material requires base.
         Direct wire sections are valid only for standalone nonplanar topology.

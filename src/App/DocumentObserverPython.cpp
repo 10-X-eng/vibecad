@@ -35,6 +35,40 @@
 using namespace App;
 namespace sp = std::placeholders;
 
+namespace
+{
+class PendingPythonErrorScope
+{
+public:
+    PendingPythonErrorScope()
+    {
+        if (PyErr_Occurred()) {
+            PyErr_Fetch(&type, &value, &traceback);
+        }
+    }
+
+    ~PendingPythonErrorScope()
+    {
+        if (!type) {
+            return;
+        }
+        // A document observer is secondary to the Python operation which
+        // caused the document change. Its own failure is reported by the
+        // normal catch path below; never replace the caller's pending error.
+        PyErr_Clear();
+        PyErr_Restore(type, value, traceback);
+    }
+
+    PendingPythonErrorScope(const PendingPythonErrorScope&) = delete;
+    PendingPythonErrorScope& operator=(const PendingPythonErrorScope&) = delete;
+
+private:
+    PyObject* type {};
+    PyObject* value {};
+    PyObject* traceback {};
+};
+}  // namespace
+
 std::vector<DocumentObserverPython*> DocumentObserverPython::_instances;
 
 void DocumentObserverPython::addObserver(const Py::Object& obj)
@@ -353,6 +387,7 @@ void DocumentObserverPython::slotChangedObject(const App::DocumentObject& Obj,
                                                const App::Property& Prop)
 {
     Base::PyGILStateLocker lock;
+    PendingPythonErrorScope pendingError;
     try {
         Py::Tuple args(2);
         args.setItem(0, Py::asObject(const_cast<App::DocumentObject&>(Obj).getPyObject()));

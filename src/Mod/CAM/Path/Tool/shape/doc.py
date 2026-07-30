@@ -188,7 +188,11 @@ class ShapeDocFromBytes:
         # Open the document from the temporary file
         # Use a specific name to avoid clashes if multiple docs are open
         # Open the document from the temporary file
-        self._doc = FreeCAD.openDocument(self._temp_file, hidden=True)
+        self._doc = FreeCAD.openDocument(
+            self._temp_file,
+            hidden=True,
+            temporary=True,
+        )
         if not self._doc:
             raise RuntimeError(f"Failed to open document from {self._temp_file}")
         return self._doc

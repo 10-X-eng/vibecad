@@ -105,6 +105,54 @@ bool findBSplineAndKnotIndex(
     return false;
 }
 
+bool isCommandNeedingEdgeActive(Gui::Document* doc)
+{
+    if (!isCommandActive(doc)) {
+        return false;
+    }
+
+    const auto selection = Gui::Selection().getSelectionEx(
+        doc->getDocument()->getName()
+    );
+    if (selection.size() != 1
+        || !selection.front().isObjectTypeOf(
+            Sketcher::SketchObject::getClassTypeId()
+        )) {
+        return false;
+    }
+
+    const auto* sketch = static_cast<const Sketcher::SketchObject*>(
+        selection.front().getObject()
+    );
+    auto* editingView =
+        dynamic_cast<SketcherGui::ViewProviderSketch*>(
+            doc->getInEdit()
+        );
+    if (!sketch || !editingView
+        || editingView->getSketchObject() != sketch) {
+        return false;
+    }
+
+    for (const auto& subName : selection.front().getSubNames()) {
+        const bool edge =
+            (subName.size() > 4 && subName.starts_with("Edge"))
+            || (subName.size() > 12 && subName.starts_with("ExternalEdge"));
+        if (!edge) {
+            continue;
+        }
+
+        int geometryId = Sketcher::GeoEnum::GeoUndef;
+        Sketcher::PointPos position = Sketcher::PointPos::none;
+        getIdsFromName(subName, sketch, geometryId, position);
+        if (geometryId != Sketcher::GeoEnum::GeoUndef
+            && position == Sketcher::PointPos::none
+            && sketch->getGeometry(geometryId)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Convert to NURBS
 DEF_STD_CMD_A(CmdSketcherConvertToNURBS)
 
@@ -180,7 +228,7 @@ void CmdSketcherConvertToNURBS::activated(int iMsg)
 
 bool CmdSketcherConvertToNURBS::isActive()
 {
-    return isCommandNeedingGeometryActive(getActiveGuiDocument());
+    return isCommandNeedingEdgeActive(getActiveGuiDocument());
 }
 
 // Increase degree of the spline
@@ -733,8 +781,14 @@ Gui::Action* CmdSketcherCompModifyKnotMultiplicity::createAction()
     applyCommandData(this->className(), pcAction);
 
     QAction* c1 = pcAction->addAction(QString());
+    c1->setObjectName(QStringLiteral("Sketcher_BSplineIncreaseKnotMultiplicity"));
+    c1->setProperty("CommandName", c1->objectName());
+    c1->setProperty("FreeCADCommandGroupSynthetic", false);
     c1->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplineIncreaseKnotMultiplicity"));
     QAction* c2 = pcAction->addAction(QString());
+    c2->setObjectName(QStringLiteral("Sketcher_BSplineDecreaseKnotMultiplicity"));
+    c2->setProperty("CommandName", c2->objectName());
+    c2->setProperty("FreeCADCommandGroupSynthetic", false);
     c2->setIcon(Gui::BitmapFactory().iconFromTheme("Sketcher_BSplineDecreaseKnotMultiplicity"));
 
     _pcAction = pcAction;

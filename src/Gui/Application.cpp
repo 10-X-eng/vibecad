@@ -296,6 +296,8 @@ struct ApplicationP
     PreferencePackManager* prefPackManager;
     ThemeManager* themeMngr;
     StyleParameters::ParameterManager* styleParameterManager;
+    Application::DurableTaskResultPreparer durableTaskResultPreparer;
+    Application::DurableTaskResultIntentPreparer durableTaskResultIntentPreparer;
 
     /// List of all registered views
     std::list<Gui::BaseView*> passive;
@@ -1188,10 +1190,11 @@ void Application::slotDeleteDocument(const App::Document& Doc)
     // and therefore can alter the selection.
     doc->second->beforeDelete();
 
-    // We must clear the selection here to notify all observers.
-    // And because of possible cross document link, better clear all selection
-    // to be safe
-    Gui::Selection().clearCompleteSelection();
+    // Selection state is document-scoped.  Closing an inactive document must
+    // not clear the user's selection in the active document.  The selection
+    // singleton also prunes cross-document resolved references when it
+    // receives the close notification.
+    Gui::Selection().clearCompleteSelection(Doc.getName());
     doc->second->signalDeleteDocument(*doc->second);
     signalDeleteDocument(*doc->second);
 
@@ -2301,6 +2304,62 @@ bool Application::isClosing()
 MacroManager* Application::macroManager()
 {
     return d->macroMngr;
+}
+
+void Application::setDurableTaskResultPreparer(
+    DurableTaskResultPreparer preparer
+)
+{
+    d->durableTaskResultPreparer = std::move(preparer);
+}
+
+void Application::setDurableTaskResultIntentPreparer(
+    DurableTaskResultIntentPreparer preparer
+)
+{
+    d->durableTaskResultIntentPreparer = std::move(preparer);
+}
+
+void Application::prepareDurableTaskResults(
+    const App::Document& document,
+    const std::vector<long>& objectIds
+)
+{
+    if (d->durableTaskResultPreparer) {
+        d->durableTaskResultPreparer(document, objectIds);
+        return;
+    }
+    if (d->durableTaskResultIntentPreparer) {
+        d->durableTaskResultIntentPreparer(document, objectIds, {});
+    }
+}
+
+void Application::prepareDurableTaskResults(
+    const App::Document& document,
+    const std::vector<long>& objectIds,
+    const std::vector<DurableTaskResultIntent>& intents
+)
+{
+    if (d->durableTaskResultIntentPreparer) {
+        d->durableTaskResultIntentPreparer(document, objectIds, intents);
+        return;
+    }
+
+    const bool automatic = std::ranges::all_of(
+        intents,
+        [](const DurableTaskResultIntent& intent) {
+            return intent.ownership
+                == DurableTaskResultOwnership::Automatic;
+        }
+    );
+    if (!automatic) {
+        throw Base::RuntimeError(
+            "No durable result preparer can honor explicit ownership"
+        );
+    }
+    if (d->durableTaskResultPreparer) {
+        d->durableTaskResultPreparer(document, objectIds);
+    }
 }
 
 CommandManager& Application::commandManager()

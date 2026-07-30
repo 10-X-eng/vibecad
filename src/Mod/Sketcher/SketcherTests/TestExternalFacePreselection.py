@@ -56,7 +56,7 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         super().setUp()
 
         FreeCADGui.activateWorkbench("PartDesignWorkbench")
-        self.doc = FreeCAD.newDocument("TestExtFacePresel")
+        self.doc = self.new_document("TestExtFacePresel")
 
         body = self.doc.addObject("PartDesign::Body", "Body")
 

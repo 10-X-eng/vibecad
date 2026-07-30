@@ -27,6 +27,13 @@
 #include <GProp_GProps.hxx>
 #include <Precision.hxx>
 
+#include <unordered_set>
+
+#include <App/Document.h>
+#include <App/DocumentTimeline.h>
+#include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
+#include <Base/Exception.h>
 
 #include "FeatureMultiTransform.h"
 #include "FeatureAddSub.h"
@@ -59,6 +66,137 @@ MultiTransform::MultiTransform()
     );
     ADD_PROPERTY(Transformations, (nullptr));
     Transformations.setSize(0);
+}
+
+void MultiTransform::synchronizeTimelineResources()
+{
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+
+    const auto transformationValues = Transformations.getValues();
+    const std::unordered_set<App::DocumentObject*> currentResources(
+        transformationValues.begin(),
+        transformationValues.end()
+    );
+    const auto ensureProperty = [](App::DocumentObject* object,
+                                   const char* type,
+                                   const char* name,
+                                   const char* description) {
+        auto* property = object->getPropertyByName(name);
+        if (!property) {
+            property = object->addDynamicProperty(
+                type,
+                name,
+                "Timeline",
+                description,
+                App::Prop_NoRecompute,
+                true,
+                true
+            );
+        }
+        property->setStatus(App::Property::Hidden, true);
+        property->setStatus(App::Property::LockDynamic, true);
+        property->setStatus(App::Property::NoRecompute, true);
+        return property;
+    };
+
+    auto* operationRole = dynamic_cast<App::PropertyString*>(ensureProperty(
+        this,
+        "App::PropertyString",
+        App::DocumentTimeline::RolePropertyName,
+        "Document timeline classification"
+    ));
+    auto* operationOwner =
+        dynamic_cast<App::PropertyLinkHidden*>(ensureProperty(
+            this,
+            "App::PropertyLinkHidden",
+            App::DocumentTimeline::OwnerPropertyName,
+            "Owning timeline operation"
+        ));
+    if (!operationRole || !operationOwner) {
+        throw Base::TypeError(
+            "MultiTransform timeline metadata properties have incompatible types"
+        );
+    }
+    operationOwner->setValue(nullptr);
+    operationRole->setValue(App::DocumentTimeline::OperationRole);
+
+    for (auto* resource : currentResources) {
+        if (!resource || resource == this
+            || resource->getDocument() != document) {
+            throw Base::ValueError(
+                "A MultiTransform timeline resource must be a distinct object "
+                "in the same document"
+            );
+        }
+        auto* role = dynamic_cast<App::PropertyString*>(ensureProperty(
+            resource,
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Document timeline classification"
+        ));
+        auto* owner = dynamic_cast<App::PropertyLinkHidden*>(ensureProperty(
+            resource,
+            "App::PropertyLinkHidden",
+            App::DocumentTimeline::OwnerPropertyName,
+            "MultiTransform operation which owns this internal transformation"
+        ));
+        if (!role || !owner) {
+            throw Base::TypeError(
+                "MultiTransform timeline metadata properties have incompatible types"
+            );
+        }
+
+        owner->setValue(this);
+        role->setValue(App::DocumentTimeline::ResourceRole);
+    }
+
+    // A child removed from Transformations is once again an independent
+    // operation. Clear only ownership assigned to this MultiTransform; never
+    // disturb a resource that has since been adopted by another operation.
+    for (auto* object : document->getObjects()) {
+        if (!object || currentResources.contains(object)) {
+            continue;
+        }
+        auto* owner = dynamic_cast<App::PropertyLinkHidden*>(
+            object->getPropertyByName(App::DocumentTimeline::OwnerPropertyName)
+        );
+        if (!owner || owner->getValue() != this) {
+            continue;
+        }
+        owner->setStatus(App::Property::Hidden, true);
+        owner->setStatus(App::Property::LockDynamic, true);
+        owner->setStatus(App::Property::NoRecompute, true);
+        auto* role = dynamic_cast<App::PropertyString*>(
+            object->getPropertyByName(App::DocumentTimeline::RolePropertyName)
+        );
+        if (!role) {
+            throw Base::TypeError(
+                "MultiTransform timeline metadata properties have incompatible types"
+            );
+        }
+        role->setStatus(App::Property::Hidden, true);
+        role->setStatus(App::Property::LockDynamic, true);
+        role->setStatus(App::Property::NoRecompute, true);
+        owner->setValue(nullptr);
+        role->setValue(App::DocumentTimeline::OperationRole);
+    }
+}
+
+void MultiTransform::onChanged(const App::Property* property)
+{
+    Transformed::onChanged(property);
+    if (property == &Transformations && !isRestoring()) {
+        synchronizeTimelineResources();
+    }
+}
+
+void MultiTransform::onDocumentRestored()
+{
+    Transformed::onDocumentRestored();
+    synchronizeTimelineResources();
 }
 
 void MultiTransform::positionBySupport()

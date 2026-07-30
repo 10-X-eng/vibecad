@@ -25,6 +25,7 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import FreeCADGui
 import Path
+from Path.CommandBoundary import can_start_ui_command
 from Path.Tool.library.ui.dock import ToolBitLibraryDock
 from Path.Tool.library.ui.editor import LibraryEditor
 
@@ -57,9 +58,12 @@ class CommandToolBitLibraryDockOpen:
         }
 
     def IsActive(self):
-        return True
+        return can_start_ui_command()
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         dock = ToolBitLibraryDock()
         dock.open()
 
@@ -83,9 +87,11 @@ class CommandLibraryEditorOpen:
         }
 
     def IsActive(self):
-        return True
+        return can_start_ui_command()
 
     def Activated(self):
+        if not self.IsActive():
+            return
         library = LibraryEditor(parent=FreeCADGui.getMainWindow())
         library.open()
 

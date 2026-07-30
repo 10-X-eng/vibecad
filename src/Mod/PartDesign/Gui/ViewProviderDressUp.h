@@ -44,6 +44,11 @@ public:
     /// destructor
     ~ViewProviderDressUp() override = default;
 
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
+
     void attach(App::DocumentObject* pcObject) override;
 
     /// grouping handling

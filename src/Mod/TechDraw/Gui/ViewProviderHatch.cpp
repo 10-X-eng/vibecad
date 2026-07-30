@@ -35,6 +35,7 @@
 #include <Mod/TechDraw/App/DrawViewPart.h>
 
 #include "TaskHatch.h"
+#include "TaskDocumentGuard.h"
 #include "ViewProviderHatch.h"
 
 using namespace TechDrawGui;
@@ -76,19 +77,24 @@ bool ViewProviderHatch::setEdit(int ModNum)
     if (ModNum != ViewProvider::Default) {
         return Gui::ViewProviderDocumentObject::setEdit(ModNum);
     }
-    if (Gui::Control().activeDialog()) {
+    auto* hatch = getViewObject();
+    if (!hatch
+        || Gui::Control().activeDialog(hatch->getDocument())) {
         return false; //TaskPanel already open!
     }
 
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
-    Gui::Control().showDialog(new TaskDlgHatch(this));
+    TaskInternal::showDocumentDialog(
+        new TaskDlgHatch(this),
+        hatch->getDocument()
+    );
     return true;
 }
 
 bool ViewProviderHatch::doubleClicked()
 {
-    setEdit(0);
+    startDefaultEditMode();
     return true;
 }
 

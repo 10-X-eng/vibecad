@@ -422,48 +422,25 @@ TaskDlgFemConstraintForce::TaskDlgFemConstraintForce(ViewProviderFemConstraintFo
 
 bool TaskDlgFemConstraintForce::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintForce* parameterForce = static_cast<const TaskFemConstraintForce*>(
         parameter
     );
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Force = \"%s\"",
-            name.c_str(),
-            parameterForce->getForce().c_str()
-        );
+        runConstraintCommand("Force = \"%s\"", parameterForce->getForce().c_str());
 
         std::string dirname = parameterForce->getDirectionName().data();
         std::string dirobj = parameterForce->getDirectionObject().data();
         std::string scale = "1";
 
         if (!dirname.empty()) {
-            QString buf = QStringLiteral("(App.ActiveDocument.%1,[\"%2\"])");
-            buf = buf.arg(QString::fromStdString(dirname));
-            buf = buf.arg(QString::fromStdString(dirobj));
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Direction = %s",
-                name.c_str(),
-                buf.toStdString().c_str()
-            );
+            runConstraintCommand("Direction = %s", constraintReference(dirname, dirobj));
         }
         else {
-            Gui::Command::doCommand(
-                Gui::Command::Doc,
-                "App.ActiveDocument.%s.Direction = None",
-                name.c_str()
-            );
+            runConstraintCommand("Direction = None");
         }
 
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Reversed = %s",
-            name.c_str(),
-            parameterForce->getReverse() ? "True" : "False"
-        );
+        runConstraintCommand("Reversed = %s", parameterForce->getReverse() ? "True" : "False");
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));

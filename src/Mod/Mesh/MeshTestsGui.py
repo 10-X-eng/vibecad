@@ -6,6 +6,11 @@ import FreeCADGui
 import Mesh
 from pivy import coin
 
+from MeshTests.TestVibeCADRibbonTools import (
+    TestVibeCADMeshSourceContracts,
+    TestVibeCADRibbonTools,
+)
+
 
 class PivyTestCases(unittest.TestCase):
     def setUp(self):

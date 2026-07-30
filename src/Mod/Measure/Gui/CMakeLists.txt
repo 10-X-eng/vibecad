@@ -2,7 +2,7 @@
 
 set(MeasureGui_LIBS
     Measure
-    #Part
+    PartGui
     FreeCADGui
 )
 
@@ -37,6 +37,7 @@ SET(MeasureGui_SRCS
     QuickMeasurePyImp.cpp
     QuickMeasure.cpp
     QuickMeasure.h
+    TimelineSelection.h
     TaskMeasure.cpp
     TaskMeasure.h
     TaskMassProperties.ui

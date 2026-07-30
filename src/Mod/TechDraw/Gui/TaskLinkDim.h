@@ -26,6 +26,8 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
+
 
 class QTreeWidgetItem;
 
@@ -59,15 +61,20 @@ protected:
     void updateDims();
     void loadToTree(const TechDraw::DrawViewDimension* dim, bool selected, Gui::Document* guiDoc);
     bool dimReferencesSelection(const TechDraw::DrawViewDimension* dim) const;
+    bool resolveInputs();
 
 protected Q_SLOTS:
     void onCurrentItemChanged(QTreeWidgetItem*, QTreeWidgetItem*);
 
 private:
     std::unique_ptr<Ui_TaskLinkDim> ui;
-    const std::vector<App::DocumentObject*> m_parts;
+    std::vector<App::DocumentObject*> m_parts;
     const std::vector<std::string> m_subs;
-    TechDraw::DrawPage* m_page;
+    TechDraw::DrawPage* m_page {nullptr};
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
+    std::vector<TaskInternal::ObjectIdentity<App::DocumentObject>>
+        m_partIdentities;
 };
 
 class TaskDlgLinkDim : public Gui::TaskView::TaskDialog

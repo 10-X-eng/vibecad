@@ -9,13 +9,15 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
 from VibeCADModelingSurface import (
+    COMPONENT_CATALOG_TOOL,
     CORE_CONVERSATION_VIEW_TOOLS,
     FASTENER_CATALOG_TOOL,
-    HIDDEN_PROVIDER_INSPECTION_TOOLS,
+    PROVIDER_READ_TOOL_OWNERS,
     resolve_modeling_surface,
     validate_surface_names,
 )
@@ -50,30 +52,10 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
 )
 
 
-def test_complete_native_and_vibescript_surface_matrix() -> None:
+def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
     assert len(USER_WORKBENCHES) == 16
     observed_ready = set()
     for workbench in USER_WORKBENCHES:
-        native_pack = WORKBENCH_TOOL_PACKS[workbench]
-        visible_native_tools = tuple(
-            name
-            for name in native_pack.tool_names
-            if name not in HIDDEN_PROVIDER_INSPECTION_TOOLS
-            and not name.endswith(".describe_api")
-            and not name.endswith(".inspect_program")
-        )
-        native = resolve_modeling_surface(workbench, "native")
-        assert not any(name.startswith("vibescript.") for name in native.tool_names)
-        if visible_native_tools:
-            assert native.available is True
-            assert native.cad_tool_names == visible_native_tools
-            assert "core.inspect" in native.tool_names
-            assert not set(native.tool_names) & set(HIDDEN_PROVIDER_INSPECTION_TOOLS)
-        else:
-            assert native.available is False
-            assert native.cad_tool_names == ()
-            assert native.unavailable_reason
-
         scripted = resolve_modeling_surface(workbench, "vibescript")
         domain_pack = domains.get_vibescript_pack(workbench)
         assert domain_pack is not None
@@ -81,31 +63,40 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
         expected_core = set(CORE_CONVERSATION_VIEW_TOOLS)
         if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
             expected_core.add(FASTENER_CATALOG_TOOL)
+        if workbench == "AssemblyWorkbench":
+            expected_core.add(COMPONENT_CATALOG_TOOL)
         assert set(scripted.core_tool_names) == expected_core
         if domain_pack.production_ready:
             observed_ready.add(workbench)
+            focused_reads = tuple(
+                name
+                for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
+                if owner == (workbench, "vibescript")
+            )
             assert scripted.available is True
             assert scripted.unavailable_reason == ""
-            assert scripted.cad_tool_names == tuple(
-                name
-                for name in domain_pack.tool_names
-                if name not in HIDDEN_PROVIDER_INSPECTION_TOOLS
-                and not name.endswith(".describe_api")
-                and not name.endswith(".inspect_program")
+            assert scripted.cad_tool_names == (
+                *domain_pack.tool_names,
+                *focused_reads,
             )
-            assert len(scripted.cad_tool_names) == 5
-            assert len(scripted.tool_names) <= 11
-            assert "core.inspect" in scripted.tool_names
-            assert not set(scripted.tool_names) & set(HIDDEN_PROVIDER_INSPECTION_TOOLS)
-            assert set(native_pack.tool_names).isdisjoint(
-                scripted.cad_tool_names
-            )
+            assert len(scripted.cad_tool_names) == 7 + len(focused_reads)
+            assert len(scripted.tool_names) <= 15
+            assert "core.inspect" not in scripted.tool_names
+            unrelated_human_commands = set(
+                WORKBENCH_TOOL_PACKS[workbench].tool_names
+            ) - set(focused_reads)
+            assert unrelated_human_commands.isdisjoint(scripted.cad_tool_names)
             namespaces = {
                 name.split(".")[1]
                 for name in scripted.cad_tool_names
-                if name.count(".") == 2
+                if name.startswith("vibescript.") and name.count(".") == 2
             }
             assert namespaces == {domain_pack.domain}
+            assert {
+                "vibescript.read_source",
+                "vibescript.read_api",
+                "vibescript.edit_source",
+            } <= set(scripted.cad_tool_names)
         else:
             assert scripted.available is False
             assert scripted.cad_tool_names == ()
@@ -121,46 +112,33 @@ def test_complete_native_and_vibescript_surface_matrix() -> None:
     "workbench",
     (None, "NoneWorkbench", "TestWorkbench", "UnregisteredWorkbench"),
 )
-@pytest.mark.parametrize("engine", ("native", "vibescript", "build123d", "openscad"))
 def test_unsupported_surfaces_are_precise_and_core_only(
-    workbench: str | None, engine: str
+    workbench: str | None,
 ) -> None:
-    surface = resolve_modeling_surface(workbench, engine)
+    surface = resolve_modeling_surface(workbench, "vibescript")
     assert surface.available is False
     assert surface.cad_tool_names == ()
     assert surface.unavailable_reason
     assert set(surface.tool_names) == set(CORE_CONVERSATION_VIEW_TOOLS)
 
 
-@pytest.mark.parametrize("engine", ("build123d", "openscad"))
-def test_external_script_engines_are_partdesign_only(engine: str) -> None:
-    assert resolve_modeling_surface("PartDesignWorkbench", engine).available is True
-    for workbench in USER_WORKBENCHES:
-        if workbench == "PartDesignWorkbench":
-            continue
-        surface = resolve_modeling_surface(workbench, engine)
-        assert surface.available is False
-        assert surface.cad_tool_names == ()
-        assert "Part Design" in surface.unavailable_reason
-
-
 def test_mixed_and_cross_domain_surfaces_are_rejected() -> None:
     part = resolve_modeling_surface("PartWorkbench", "vibescript")
-    native_part_tool = WORKBENCH_TOOL_PACKS["PartDesignWorkbench"].tool_names[-1]
-    with pytest.raises(ValueError, match="cannot contain native"):
+    foreign_workbench_tool = WORKBENCH_TOOL_PACKS["PartDesignWorkbench"].tool_names[-1]
+    with pytest.raises(ValueError, match="foreign read"):
         validate_surface_names(
             workbench="PartWorkbench",
             engine="vibescript",
-            names=[*part.tool_names, native_part_tool],
-            allowed_names=[*part.tool_names, native_part_tool],
+            names=[*part.tool_names, foreign_workbench_tool],
+            allowed_names=[*part.tool_names, foreign_workbench_tool],
         )
-    with pytest.raises(ValueError, match="exactly one domain"):
+    with pytest.raises(ValueError, match="active domain namespace"):
         validate_surface_names(
             workbench="PartWorkbench",
             engine="vibescript",
             names=[
-                "vibescript.part.inspect_program",
-                "vibescript.assembly.inspect_program",
+                "vibescript.part.create_program",
+                "vibescript.assembly.create_program",
             ],
         )
 
@@ -170,8 +148,10 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
         specs = domains.domain_tool_specs(pack)
-        assert tuple(spec["name"] for spec in specs) == pack.tool_names
-        assert len(specs) == 7
+        assert tuple(spec["name"] for spec in specs) == tuple(
+            name for name in pack.tool_names if name.count(".") == 2
+        )
+        assert len(specs) == 4
         for raw in specs:
             spec = ToolSpec.from_mapping(raw)
             assert spec.workbench == workbench
@@ -184,6 +164,21 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
 
 
 def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() -> None:
+    universal = {
+        spec["name"]: spec for spec in domains.universal_tool_specs()
+    }
+    assert set(universal) == {
+        "vibescript.read_source",
+        "vibescript.read_api",
+        "vibescript.edit_source",
+    }
+    edit = universal["vibescript.edit_source"]
+    assert edit["parameters"]["required"] == [
+        "source_id",
+        "expected_revision",
+        "source",
+    ]
+    assert "replacements" not in edit["parameters"]["properties"]
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
@@ -191,12 +186,6 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
             spec["name"].rsplit(".", 1)[-1]: spec
             for spec in domains.domain_tool_specs(pack)
         }
-        program_id_description = specs["inspect_program"]["parameters"]["properties"][
-            "program_id"
-        ]["description"]
-        assert "create_program" in program_id_description
-        assert "core.inspect" in program_id_description
-        assert "Change only the source text" in specs["edit_source"]["description"]
         assert "Change only input values" in specs["set_inputs"]["description"]
         assert "contracts must change" in specs["reconfigure_program"]["description"]
 
@@ -205,7 +194,8 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         description = adapter.describe_api()
         operating = description["model_operating_contract"]
         assert "authoring_sequence" not in operating
-        assert "Inspect only when" in operating["context_first"]
+        assert "vibescript.read_source" in operating["context_first"]
+        assert "vibescript.read_api" in operating["context_first"]
         assert set(operating["mutation_selection"]) == {
             "edit_source",
             "set_inputs",
@@ -242,7 +232,8 @@ def test_every_domain_description_is_copy_ready_for_the_operating_model() -> Non
         assert len(json.dumps(description, separators=(",", ":")).encode()) < 48_000
 
         handoffs = json.dumps(description["workbench_handoffs"]).lower()
-        assert "human" in handoffs and "switch" in handoffs
+        assert "active workbench determines the available api" in handoffs
+        assert "modeling engine" not in handoffs
         error_contract = json.dumps(description["error_contract"]).lower()
         assert "correct" in error_contract
 
@@ -307,7 +298,7 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
         "accepted_live_state_preserved": True,
         "next_write_expected_revision": accepted_revision,
         "mutation_selection": {
-            "source_only": "vibescript.assembly.edit_source",
+            "source_only": "vibescript.edit_source",
             "input_values_only": "vibescript.assembly.set_inputs",
             "contract_or_outputs": "vibescript.assembly.reconfigure_program",
         },
@@ -334,13 +325,251 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
     assert failed["program"]["latest_candidate"]["failure"]["error"] == "bad"
 
 
+def test_universal_read_source_returns_complete_code_and_every_affected_output() -> None:
+    import VibeCADSession as session
+
+    source = "feature = api.box(10, 20, 30)\nresult = {'Body': feature}\n"
+    payload = session._read_source_payload(
+        {
+            "ok": True,
+            "program": {
+                "program_id": "a" * 32,
+                "domain": "partdesign",
+                "workbench": "PartDesignWorkbench",
+                "label": "Bracket",
+                "source": source,
+                "input_schema": {"type": "object"},
+                "inputs": {},
+                "expected_outputs": [{"name": "Body", "type": "solid"}],
+                "working_revision": "b" * 64,
+                "accepted_revision": "b" * 64,
+                "live_outputs": {
+                    "Body": {
+                        "object_name": "VibePartdesign_Body",
+                        "label": "Bracket",
+                        "type_id": "PartDesign::Body",
+                    },
+                    "Guide": {
+                        "object_name": "VibePartdesign_Guide",
+                        "label": "Guide",
+                        "type_id": "PartDesign::Feature",
+                    },
+                },
+            },
+        }
+    )
+
+    assert payload["source_id"] == "a" * 32
+    assert payload["current_revision"] == "b" * 64
+    assert payload["source"] == source
+    assert [item["name"] for item in payload["affected_outputs"]] == [
+        "Body",
+        "Guide",
+    ]
+    assert payload["edit_source"]["target_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+
+
+def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **_kwargs):
+        observed["tool_name"] = tool_name
+        observed["arguments"] = arguments
+        return {"ok": True, "program_id": arguments["program_id"]}
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    result = session._run_universal_vibescript_tool(
+        object(),
+        "PartDesignWorkbench",
+        "vibescript.edit_source",
+        {
+            "source_id": "a" * 32,
+            "expected_revision": "b" * 64,
+            "source": "result = {'Body': api.box(1, 2, 3)}",
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": "vibescript.partdesign.edit_source",
+        "arguments": {
+            "program_id": "a" * 32,
+            "expected_revision": "b" * 64,
+            "source": "result = {'Body': api.box(1, 2, 3)}",
+        },
+    }
+    assert result["source_id"] == "a" * 32
+
+
+def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -> None:
+    class View:
+        Visibility = False
+
+    class Output:
+        PropertiesList = [
+            domains.PROP_PROGRAM_ID,
+            domains.PROP_PROGRAM_DOMAIN,
+            domains.PROP_PROGRAM_WORKBENCH,
+            domains.PROP_PROGRAM_REVISION,
+            domains.PROP_PROGRAM_OUTPUT,
+            domains.PROP_PROGRAM_LABEL,
+            domains.PROP_PROGRAM_CONTRACT,
+            domains.PROP_PROGRAM_EDITOR_DRAFT,
+        ]
+        Name = "HiddenBody"
+        Label = "Hidden Body"
+        TypeId = "PartDesign::Body"
+        ViewObject = View()
+        VibeCADVibeScriptProgramId = "a" * 32
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptWorkbench = "PartDesignWorkbench"
+        VibeCADVibeScriptRevision = "b" * 64
+        VibeCADVibeScriptOutputName = "Body"
+        VibeCADVibeScriptProgramLabel = "Body Source"
+        VibeCADVibeScriptProgramContract = "{}"
+        VibeCADVibeScriptEditorDraft = ""
+
+    class DraftOnly:
+        PropertiesList = list(Output.PropertiesList)
+        Name = "SourceDraft"
+        Label = "Source Draft"
+        TypeId = "App::FeaturePython"
+        ViewObject = View()
+        VibeCADVibeScriptProgramId = "c" * 32
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptWorkbench = "PartDesignWorkbench"
+        VibeCADVibeScriptRevision = "d" * 64
+        VibeCADVibeScriptOutputName = ""
+        VibeCADVibeScriptProgramLabel = "Draft Source"
+        VibeCADVibeScriptProgramContract = "{}"
+        VibeCADVibeScriptEditorDraft = "{}"
+
+    class ForeignMeshSource:
+        PropertiesList = list(Output.PropertiesList)
+        Name = "ForeignMesh"
+        Label = "Foreign Mesh"
+        TypeId = "Mesh::Feature"
+        ViewObject = View()
+        VibeCADVibeScriptProgramId = "e" * 32
+        VibeCADVibeScriptDomain = "mesh"
+        VibeCADVibeScriptWorkbench = "MeshWorkbench"
+        VibeCADVibeScriptRevision = "f" * 64
+        VibeCADVibeScriptOutputName = "Mesh"
+        VibeCADVibeScriptProgramLabel = "Foreign Mesh Source"
+        VibeCADVibeScriptProgramContract = "{}"
+        VibeCADVibeScriptEditorDraft = ""
+
+    class Service:
+        def active_workbench_name(self):
+            return "PartDesignWorkbench"
+
+        def _active_document(self):
+            return type(
+                "Document",
+                (),
+                {"Objects": [Output(), DraftOnly(), ForeignMeshSource()]},
+            )()
+
+    index = domains.editable_sources_snapshot(Service(), "partdesign")
+
+    assert index["tools"]["read_source"] == "vibescript.read_source"
+    assert index["tools"]["read_api"] == "vibescript.read_api"
+    assert index["tools"]["edit_source"] == "vibescript.edit_source"
+    assert index["workbench"] == "PartDesignWorkbench"
+    assert index["domain"] == "partdesign"
+    assert [item["source_id"] for item in index["sources"]] == [
+        "a" * 32,
+        "c" * 32,
+    ]
+    hidden, draft = index["sources"]
+    assert hidden["source_kind"] == "vibescript_program"
+    assert hidden["read_tool"] == "vibescript.read_source"
+    assert hidden["edit_tool"] == "vibescript.edit_source"
+    assert hidden["affected_outputs"] == [
+        {
+            "name": "Body",
+            "object_name": "HiddenBody",
+            "label": "Hidden Body",
+            "type_id": "PartDesign::Body",
+            "visible": False,
+        }
+    ]
+    assert hidden["read_arguments"] == {"source_id": "a" * 32}
+    assert hidden["edit_target_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert draft["affected_outputs"] == []
+    assert draft["status"] == "editor_draft"
+    assert all("source" not in item for item in index["sources"])
+
+
+def test_component_catalog_finds_literal_substrings_in_saved_project_files(
+    tmp_path: Path,
+) -> None:
+    from VibeCADComponentCatalog import search_captured_component_catalog
+
+    owner = tmp_path / "assembly.FCStd"
+    owner.write_bytes(b"owner")
+    component = tmp_path / "components" / "drive-bracket.FCStd"
+    component.parent.mkdir()
+    document_xml = """<?xml version="1.0" encoding="utf-8"?>
+<Document>
+  <Properties>
+    <Property name="Label" type="App::PropertyString"><String value="Drive Module"/></Property>
+    <Property name="Uid" type="App::PropertyUUID"><Uuid value="component-uid"/></Property>
+  </Properties>
+  <Objects>
+    <Object type="PartDesign::Body" name="BracketBody" id="1"/>
+    <Object type="PartDesign::Pad" name="Pad" id="2"/>
+  </Objects>
+  <ObjectData>
+    <Object name="BracketBody">
+      <Properties>
+        <Property name="Label" type="App::PropertyString"><String value="M3 Motor Bracket"/></Property>
+        <Property name="PartNumber" type="App::PropertyString"><String value="DRV-BRK-003"/></Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>
+"""
+    with zipfile.ZipFile(component, "w") as archive:
+        archive.writestr("Document.xml", document_xml)
+    captured = {
+        "project_directory": str(tmp_path),
+        "owner_file": str(owner),
+        "open_document_files": [str(owner)],
+        "open_candidates": [],
+    }
+    result = search_captured_component_catalog(captured, "m3 brk", limit=10)
+    assert result["match_count"] == 1
+    match = result["matches"][0]
+    assert match["object_name"] == "BracketBody"
+    assert match["live_validated"] is False
+    assert match["reference"] == {
+        "document_uid": "component-uid",
+        "object_name": "BracketBody",
+        "document_path": "components/drive-bracket.FCStd",
+    }
+    assert all(item["object_name"] != "Pad" for item in result["matches"])
+
+
 def test_partdesign_vibescript_schema_golden_fixture() -> None:
     fixture_path = Path(__file__).with_name("partdesign_vibescript_schema_sha256.json")
     expected = json.loads(fixture_path.read_text(encoding="utf-8"))
     pack = domains.get_vibescript_pack("PartDesignWorkbench")
     assert pack is not None
     observed: dict[str, str] = {}
-    for raw in domains.domain_tool_specs(pack):
+    for raw in (*domains.universal_tool_specs(), *domains.domain_tool_specs(pack)):
         schema = ToolSpec.from_mapping(raw).to_schema(
             active_workbench="PartDesignWorkbench"
         )
@@ -408,6 +637,30 @@ def test_source_and_input_policy_blocks_escape_hatches() -> None:
     assert domains.validate_inputs(
         {"source": {"document_uid": "uid", "object_name": "Cloud"}}
     )
+    assert domains.validate_inputs(
+        {
+            "source": {
+                "document_uid": "uid",
+                "object_name": "Bracket",
+                "document_path": "parts/bracket.FCStd",
+            }
+        }
+    )
+    for invalid_path in (
+        "../bracket.FCStd",
+        "./bracket.FCStd",
+        "parts//bracket.FCStd",
+    ):
+        with pytest.raises(ValueError, match="segments"):
+            domains.validate_inputs(
+                {
+                    "source": {
+                        "document_uid": "uid",
+                        "object_name": "Bracket",
+                        "document_path": invalid_path,
+                    }
+                }
+            )
     with pytest.raises(ValueError, match="must require"):
         domains.validate_input_schema(
             {
@@ -424,6 +677,32 @@ def test_source_and_input_policy_blocks_escape_hatches() -> None:
                     }
                 },
                 "additionalProperties": False,
+            }
+        )
+
+
+def test_input_reference_deduplication_preserves_one_unambiguous_locator() -> None:
+    from VibeCADVibeScriptDomainRuntime import _input_references
+
+    legacy = {
+        "document_uid": "component-document",
+        "object_name": "Bracket",
+    }
+    portable = {
+        **legacy,
+        "document_path": "parts/bracket.FCStd",
+    }
+    assert _input_references({"first": legacy, "second": portable}) == [portable]
+    assert _input_references({"first": portable, "second": legacy}) == [portable]
+
+    with pytest.raises(ValueError, match="conflicting document_path locators"):
+        _input_references(
+            {
+                "first": portable,
+                "second": {
+                    **legacy,
+                    "document_path": "alternate/bracket.FCStd",
+                },
             }
         )
 
@@ -497,7 +776,7 @@ def test_part_api_is_explicit_documented_and_generated_from_the_runtime() -> Non
         in description["model_verification_contract"]["selection_repair"]
     )
     assert (
-        "cannot switch workbench or engine" in description["workbench_handoffs"]["rule"]
+        "active workbench determines" in description["workbench_handoffs"]["rule"]
     )
     assert (
         len(
@@ -621,7 +900,7 @@ def test_surface_api_is_explicit_typed_and_generated_from_runtime() -> None:
         "never retry by guessing"
         in description["model_verification_contract"]["reference"].lower()
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -789,7 +1068,7 @@ def test_spreadsheet_api_is_explicit_atomic_and_generated_from_runtime() -> None
         "domain_failure_stage"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, sort_keys=True)) < 32_768
     assert len(set(api.exported_names)) == len(api.exported_names)
     for pattern in description["recommended_patterns"]:
@@ -941,7 +1220,7 @@ def test_material_api_is_explicit_separated_and_generated_from_runtime() -> None
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -1161,6 +1440,16 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert description["operation_selection"]["standard_hardware_occurrence"] == (
         "api.fastener"
     )
+    assert description["operation_selection"]["repeated_source_occurrences"] == (
+        "api.instances"
+    )
+    assert "component_catalog.search" in description["input_reference_contract"][
+        "purpose"
+    ]
+    assert (
+        "document_path"
+        in description["input_reference_contract"]["schema"]["properties"]
+    )
     assert "fastener_catalog.search" in description["standard_hardware"]["selection"]
     assert "no aliases" in description["operation_selection"]["redundancy_contract"]
     assert "failed_segment_index" in description["nested_subassemblies"]["repair"]
@@ -1228,6 +1517,16 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         placement={"position": [0, 0, 20], "rotation": [0, 0, 0, 2]},
         label="Arm",
     )
+    repeated = api.instances(
+        {
+            "document_uid": "component-document",
+            "object_name": "Bracket",
+            "document_path": "parts/bracket.FCStd",
+        },
+        [[0, 0, 0], [25, 0, 0], [50, 0, 0]],
+        grounded_index=0,
+        labels=["Bracket 1", "Bracket 2", "Bracket 3"],
+    )
     hinge = api.joint(
         "revolute",
         api.connector(base, "Face1"),
@@ -1237,6 +1536,32 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     )
     model = api.assembly([base, arm], [hinge], label="Robot Arm")
     diagnostics = api.solve(model)
+    verification = api.mechanism_check(
+        model,
+        requirements=[
+            {
+                "type": "minimum_clearance",
+                "first": base,
+                "second": arm,
+                "minimum_mm": 0.25,
+                "tolerance_mm": 0.01,
+            }
+        ],
+        label="Static clearance",
+    )
+    allowed_contact = api.mechanism_check(
+        model,
+        contacts=[
+            {
+                "first": base,
+                "second": arm,
+                "policy": "allowed",
+                "first_interface": "MatingFace",
+                "second_interface": "SeatFace",
+                "tolerance_mm": 0.01,
+            }
+        ],
+    )
     drive = api.motion(hinge, "initialValue + pi/2*time")
     simulation = api.simulation(
         model,
@@ -1278,9 +1603,29 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert bolt.properties["model_thread"] is True
     assert bolt.properties["placement"]["position"] == (0.0, 0.0, 5.0)
     assert arm.properties["placement"]["rotation"] == (0.0, 0.0, 0.0, 1.0)
+    assert len(repeated) == 3
+    assert all(item.operation == "component" for item in repeated)
+    assert all(item.output_type == "component_link" for item in repeated)
+    assert repeated[0].properties["grounded"] is True
+    assert repeated[1].properties["grounded"] is False
+    assert repeated[2].properties["placement"]["position"] == (50.0, 0.0, 0.0)
+    assert repeated[1].arguments[0] == {
+        "document_uid": "component-document",
+        "object_name": "Bracket",
+        "document_path": "parts/bracket.FCStd",
+    }
     assert model.properties["components"] == (base, arm)
     assert model.properties["joints"] == (hinge,)
     assert diagnostics.arguments == (model,)
+    assert verification.arguments == (model,)
+    assert verification.output_type == "mechanism_verification"
+    assert verification.properties["requirements"][0]["first"] is base
+    assert verification.properties["requirements"][0]["minimum_mm"] == 0.25
+    assert allowed_contact.properties["contacts"][0]["policy"] == "allowed"
+    assert (
+        allowed_contact.properties["contacts"][0]["first_interface"]
+        == "MatingFace"
+    )
     assert drive.arguments == (hinge,)
     assert drive.properties["motion_type"] == "angular"
     assert simulation.arguments == (model,)
@@ -1429,6 +1774,16 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
 
     with pytest.raises(ValueError, match=r"api\.component.*source"):
         api.component({"object_name": "First"})
+    with pytest.raises(ValueError, match=r"api\.instances.*placements"):
+        api.instances(reference("First"), [])
+    with pytest.raises(ValueError, match=r"api\.instances.*grounded_index"):
+        api.instances(reference("First"), [[0, 0, 0]], grounded_index=1)
+    with pytest.raises(ValueError, match=r"api\.instances.*labels"):
+        api.instances(
+            reference("First"),
+            [[0, 0, 0], [1, 0, 0]],
+            labels=["Only one"],
+        )
     with pytest.raises(ValueError, match=r"api\.connector.*selection"):
         api.connector(first, "Face0")
     with pytest.raises(ValueError, match=r"api\.connector.*anchor.*exact"):
@@ -1600,6 +1955,63 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
         )
     with pytest.raises(ValueError, match=r"api\.bill_of_materials.*assembly"):
         api.bill_of_materials(first)
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*at least one explicit pair",
+    ):
+        api.mechanism_check(mechanism)
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*tolerance_mm",
+    ):
+        api.mechanism_check(
+            mechanism,
+            requirements=[
+                {
+                    "type": "collision_free",
+                    "first": first,
+                    "second": second,
+                }
+            ],
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*duplicates the unordered pair",
+    ):
+        api.mechanism_check(
+            mechanism,
+            requirements=[
+                {
+                    "type": "collision_free",
+                    "first": first,
+                    "second": second,
+                    "tolerance_mm": 0.01,
+                }
+            ],
+            contacts=[
+                {
+                    "first": second,
+                    "second": first,
+                    "policy": "prohibited",
+                    "tolerance_mm": 0.01,
+                }
+            ],
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"api\.mechanism_check.*evaluated requirement",
+    ):
+        api.mechanism_check(
+            mechanism,
+            contacts=[
+                {
+                    "first": first,
+                    "second": second,
+                    "policy": "ignored",
+                    "reason": "Reference envelope",
+                }
+            ],
+        )
 
 
 def test_assembly_bom_planner_keeps_model_paths_exact_and_actionable() -> None:
@@ -1910,6 +2322,7 @@ def test_assembly_occurrence_global_placement_failure_is_never_silently_local() 
 
 def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     from vibescript_domain_api import create_domain_api
+    from vibescript_meshpart_worker import validate_meshpart_definition
     from vibescript_mesh_worker import validate_mesh_definition
 
     pack = domains.get_vibescript_pack("MeshWorkbench")
@@ -1920,6 +2333,15 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     description = adapter.describe_api()
 
     assert description["api_contract"] == "vibecad-vibescript-mesh-api-v1"
+    assert pack.output_types == (
+        "mesh",
+        "solid",
+        "shell",
+        "face",
+        "wire",
+        "compound",
+    )
+    assert pack.api_exports[-2:] == ("mesh_from_shape", "shape_from_mesh")
     assert tuple(api.exported_names) == pack.api_exports
     assert [item["name"] for item in description["runtime_exports"]] == list(
         pack.api_exports
@@ -1938,7 +2360,7 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -1975,6 +2397,25 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
         scale=[2, 3, 4],
         label="Moved",
     )
+    union = api.union(
+        raw,
+        transformed,
+        linear_deflection=0.05,
+        angular_deflection_degrees=20,
+        relative=True,
+        label="Combined",
+    )
+    difference = api.difference(raw, transformed, label="Subtracted")
+    intersection = api.intersection(raw, transformed, label="Shared")
+    for boolean in (union, difference, intersection):
+        assert validate_mesh_definition(
+            boolean,
+            require_domain_value=True,
+        ) == boolean.to_payload()
+        assert len(boolean.arguments) == 2
+    assert union.properties["linear_deflection"] == 0.05
+    assert union.properties["angular_deflection_degrees"] == 20.0
+    assert union.properties["relative"] is True
     repaired = api.repair(
         transformed,
         remove_non_manifolds=True,
@@ -2013,12 +2454,59 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
         )
         == payload
     )
+    conversion_reference = {
+        "document_uid": "document",
+        "object_name": "ConversionSource",
+    }
+    meshed = api.mesh_from_shape(conversion_reference, label="Converted Mesh")
+    recovered = api.shape_from_mesh(
+        conversion_reference,
+        output_type="solid",
+        label="Recovered Solid",
+    )
+    for conversion in (meshed, recovered):
+        assert conversion.domain == "mesh"
+        assert validate_meshpart_definition(
+            conversion,
+            definition_domain="mesh",
+        ) == conversion.to_payload()
+    with pytest.raises(
+        ValueError,
+        match=r"api\.transform.*publish.*api\.from_object",
+    ):
+        api.transform(meshed)
     with pytest.raises(TypeError):
         raw.arguments[0][0][0] = (9.0, 9.0, 9.0)
 
 
+def test_meshpart_compatibility_context_remains_exactly_unchanged() -> None:
+    from vibescript_domain_api import create_domain_api
+    from vibescript_meshpart_worker import validate_meshpart_definition
+
+    pack = domains.get_vibescript_pack("MeshPartWorkbench")
+    assert pack is not None
+    assert pack.domain == "meshpart"
+    assert pack.api_exports == ("mesh_from_shape", "shape_from_mesh")
+    assert pack.output_types == (
+        "mesh",
+        "solid",
+        "shell",
+        "face",
+        "wire",
+        "compound",
+    )
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    reference = {"document_uid": "document", "object_name": "LegacySource"}
+    meshed = api.mesh_from_shape(reference)
+    recovered = api.shape_from_mesh(reference, output_type="solid")
+    assert meshed.domain == recovered.domain == "meshpart"
+    assert validate_meshpart_definition(meshed) == meshed.to_payload()
+    assert validate_meshpart_definition(recovered) == recovered.to_payload()
+
+
 def test_mesh_api_rejects_malformed_or_unbounded_operations() -> None:
     from vibescript_domain_api import create_domain_api
+    from vibescript_mesh_worker import validate_mesh_definition
 
     pack = domains.get_vibescript_pack("MeshWorkbench")
     assert pack is not None
@@ -2049,6 +2537,28 @@ def test_mesh_api_rejects_malformed_or_unbounded_operations() -> None:
         api.transform(raw, scale=[1, 0, 1])
     with pytest.raises(ValueError, match=r"rotation.*non-zero"):
         api.transform(raw, rotation=[0, 0, 0, 0])
+    for operation in ("union", "difference", "intersection"):
+        identical = getattr(api, operation)(raw, raw)
+        assert validate_mesh_definition(
+            identical,
+            require_domain_value=True,
+        ) == identical.to_payload()
+    with pytest.raises(ValueError, match=r"linear_deflection.*greater than 0"):
+        api.difference(raw, api.transform(raw, translation=[1, 0, 0]), linear_deflection=0)
+    with pytest.raises(
+        ValueError, match=r"angular_deflection_degrees.*at most 180"
+    ):
+        api.intersection(
+            raw,
+            api.transform(raw, translation=[1, 0, 0]),
+            angular_deflection_degrees=181,
+        )
+    with pytest.raises(ValueError, match=r"relative.*true or false"):
+        api.union(
+            raw,
+            api.transform(raw, translation=[1, 0, 0]),
+            relative=1,
+        )
     with pytest.raises(ValueError, match=r"fill_holes_max_edges.*integer"):
         api.repair(raw, fill_holes_max_edges=True)
     with pytest.raises(ValueError, match=r"must both be zero"):
@@ -2083,6 +2593,147 @@ def test_mesh_worker_failures_always_give_the_model_one_exact_correction() -> No
         details={"stage": "artifact_export", "correction": "Repair fixture storage."},
     )
     assert explicit.details["correction"] == "Repair fixture storage."
+
+
+def test_mesh_boolean_traces_bind_both_graph_branches_and_native_backend() -> None:
+    from VibeCADVibeScriptDomainRuntime import _validate_mesh_trace
+    from vibescript_domain_api import create_domain_api
+    from vibescript_mesh_worker import _native_boolean
+
+    pack = domains.get_vibescript_pack("MeshWorkbench")
+    assert pack is not None
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    tetrahedron = [
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+        [[0, 0, 0], [0, 0, 1], [1, 0, 0]],
+        [[0, 0, 0], [0, 1, 0], [0, 0, 1]],
+        [[1, 0, 0], [0, 0, 1], [0, 1, 0]],
+    ]
+    first = api.mesh(tetrahedron, label="First")
+    second_local = api.mesh(tetrahedron, label="Second")
+    second = api.transform(second_local, translation=[0.25, 0, 0])
+    quick = {
+        "points": 4,
+        "facets": 4,
+        "open_edges": 0,
+        "degenerated_facets": 0,
+        "duplicated_facets": 0,
+        "duplicated_points": 0,
+        "components": 1,
+    }
+    operand_facts = {
+        "points": 4,
+        "facets": 4,
+        "open_edges": 0,
+        "components": 1,
+        "is_solid": True,
+        "volume_mm3": 1.0 / 6.0,
+        "bounds": {
+            "minimum": [0.0, 0.0, 0.0],
+            "maximum": [1.0, 1.0, 1.0],
+        },
+    }
+    second_facts = {
+        **operand_facts,
+        "bounds": {
+            "minimum": [0.25, 0.0, 0.0],
+            "maximum": [1.25, 1.0, 1.0],
+        },
+    }
+    result_facts = {
+        **operand_facts,
+        "points": 8,
+        "facets": 8,
+        "volume_mm3": 0.25,
+        "bounds": {
+            "minimum": [0.0, 0.0, 0.0],
+            "maximum": [1.25, 1.0, 1.0],
+        },
+    }
+    observed_result = {
+        **result_facts,
+        "degenerated_facets": 0,
+        "duplicated_facets": 0,
+        "duplicated_points": 0,
+    }
+
+    def sha256(definition: dict) -> str:
+        encoded = json.dumps(
+            definition,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    for operation in ("union", "difference", "intersection"):
+        definition = getattr(api, operation)(
+            first,
+            second,
+            linear_deflection=0.05,
+            angular_deflection_degrees=20,
+            relative=False,
+        ).to_payload()
+        first_definition, second_definition = definition["arguments"]
+        trace = [
+            {
+                "operation": "mesh",
+                "input_facets": 4,
+                "result": dict(quick),
+            },
+            {
+                "operation": "mesh",
+                "input_facets": 4,
+                "result": dict(quick),
+            },
+            {
+                "operation": "transform",
+                "translation": [0.25, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "scale": [1.0, 1.0, 1.0],
+                "before": dict(quick),
+                "after": dict(quick),
+            },
+            {
+                "operation": operation,
+                "first_definition_sha256": sha256(first_definition),
+                "second_definition_sha256": sha256(second_definition),
+                "first": dict(operand_facts),
+                "second": dict(second_facts),
+                "tessellation": {
+                    "linear_deflection": 0.05,
+                    "angular_deflection_degrees": 20.0,
+                    "relative": False,
+                },
+                "backend": "MeshPart::Boolean/OpenCASCADE",
+                "result": dict(result_facts),
+            },
+        ]
+        _validate_mesh_trace(
+            trace,
+            definition,
+            output_name="Mesh",
+            observed=observed_result,
+            source_references={},
+        )
+        forged = json.loads(json.dumps(trace))
+        forged[-1]["second_definition_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="changed an operand"):
+            _validate_mesh_trace(
+                forged,
+                definition,
+                output_name="Mesh",
+                observed=observed_result,
+                source_references={},
+            )
+
+    native_source = inspect.getsource(_native_boolean)
+    assert 'addObject("MeshPart::Boolean"' in native_source
+    assert "tempfile" not in native_source
+    assert "OpenSCAD" not in native_source
+    assert not hasattr(api, "boolean")
+    assert not hasattr(api, "csg")
 
 
 def test_meshpart_api_is_canonical_typed_and_generated_from_runtime() -> None:
@@ -2129,7 +2780,7 @@ def test_meshpart_api_is_canonical_typed_and_generated_from_runtime() -> None:
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -2293,7 +2944,7 @@ def test_sketcher_api_is_explicit_complete_and_generated_from_runtime() -> None:
     assert description["model_verification_contract"]["underconstrained"].endswith(
         "Never apply every suggestion in one edit."
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert set(description["geometry"]) >= {
         "point",
         "line",
@@ -2428,6 +3079,192 @@ def test_sketcher_live_publication_boundary_never_solves_or_recomputes() -> None
     assert populate_source.count("addConstraint(") == 1
 
 
+def test_generic_publication_accepts_non_assembly_and_cleans_failed_creations(
+    monkeypatch,
+) -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Object:
+        def __init__(self, name: str, type_id: str):
+            self.Name = name
+            self.Label = name
+            self.TypeId = type_id
+            self.InList = []
+
+    class Document:
+        Name = "PublicationDocument"
+        Uid = "publication-document-uid"
+
+        def __init__(self):
+            self.objects = {}
+            self.removed = []
+            self.commits = 0
+            self.aborts = 0
+
+        def addObject(self, type_id, name):
+            obj = Object(str(name), str(type_id))
+            self.objects[obj.Name] = obj
+            return obj
+
+        def getObject(self, name):
+            return self.objects.get(str(name))
+
+        def removeObject(self, name):
+            self.removed.append(str(name))
+            self.objects.pop(str(name), None)
+
+        def openTransaction(self, _label):
+            pass
+
+        def commitTransaction(self):
+            self.commits += 1
+
+        def abortTransaction(self):
+            self.aborts += 1
+
+    class Service:
+        def __init__(self, document):
+            self.document = document
+
+        def _active_document(self):
+            return self.document
+
+        def provider_document_revision(self):
+            return "document-revision"
+
+    pack = type("Pack", (), {"domain": "mesh", "title": "Mesh"})()
+    prepared = {
+        "document_name": Document.Name,
+        "document_uid": Document.Uid,
+        "document_revision": "document-revision",
+        "pack": pack,
+        "program_id": "a" * 32,
+        "program_name": "Mesh source",
+        "revision": "b" * 64,
+    }
+    validated = {
+        "outputs": [
+            {
+                "name": "Mesh",
+                "type": "mesh",
+                "definition": {
+                    "operation": "mesh",
+                    "properties": {"label": "Mesh output"},
+                },
+            }
+        ],
+        "stdout": "",
+        "budget": {},
+    }
+
+    monkeypatch.setattr(publication, "_surface_still_matches", lambda *_args: None)
+    monkeypatch.setattr(publication, "_objects_by_output", lambda *_args: {})
+    monkeypatch.setattr(
+        publication, "_retired_program_objects", lambda *_args: []
+    )
+    monkeypatch.setattr(publication, "_program_objects", lambda *_args: [])
+    monkeypatch.setattr(
+        publication, "_preflight_output_updates", lambda *_args: []
+    )
+    monkeypatch.setattr(
+        publication, "_refresh_external_consumers", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(publication, "_set_metadata", lambda *_args: None)
+    assembly_arguments = []
+
+    def create_object(
+        document,
+        _prepared,
+        _output_name,
+        _output_type,
+        _definition,
+        _assembly,
+        assembly_fastener_sources,
+    ):
+        assembly_arguments.append(assembly_fastener_sources)
+        return document.addObject("Mesh::Feature", "CandidateMesh")
+
+    monkeypatch.setattr(publication, "_create_object", create_object)
+    monkeypatch.setattr(publication, "_configure_object", lambda *_args: None)
+
+    successful_document = Document()
+    result = publication.publish_candidate(
+        Service(successful_document),
+        prepared,
+        validated,
+    )
+
+    assert result["ok"] is True
+    assert result["created_objects"] == ["CandidateMesh"]
+    assert successful_document.getObject("CandidateMesh") is not None
+    assert successful_document.commits == 1
+    assert assembly_arguments == [None]
+
+    failed_document = Document()
+
+    def fail_configuration(*_args):
+        raise RuntimeError("injected non-Assembly publication failure")
+
+    monkeypatch.setattr(publication, "_configure_object", fail_configuration)
+    with pytest.raises(
+        RuntimeError,
+        match="injected non-Assembly publication failure",
+    ):
+        publication.publish_candidate(
+            Service(failed_document),
+            prepared,
+            validated,
+        )
+
+    assert failed_document.aborts == 1
+    assert failed_document.getObject("CandidateMesh") is None
+    assert failed_document.removed == ["CandidateMesh"]
+    assert assembly_arguments == [None, None]
+
+
+def test_failed_publication_cleanup_is_dependency_safe_and_exact() -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Object:
+        def __init__(self, name):
+            self.Name = name
+            self.InList = []
+
+    class Document:
+        def __init__(self):
+            self.source = Object("CreatedSource")
+            self.consumer = Object("CreatedConsumer")
+            self.source.InList = [self.consumer]
+            self.objects = {
+                self.source.Name: self.source,
+                self.consumer.Name: self.consumer,
+                "AcceptedObject": Object("AcceptedObject"),
+            }
+            self.removed = []
+
+        def getObject(self, name):
+            return self.objects.get(str(name))
+
+        def removeObject(self, name):
+            self.removed.append(str(name))
+            self.objects.pop(str(name), None)
+
+    document = Document()
+    removed = publication._remove_failed_domain_creations(
+        document,
+        [
+            "CreatedSource",
+            "AlreadyRemovedByTransaction",
+            "CreatedConsumer",
+            "CreatedSource",
+        ],
+    )
+
+    assert removed == ["CreatedConsumer", "CreatedSource"]
+    assert document.removed == ["CreatedConsumer", "CreatedSource"]
+    assert document.getObject("AcceptedObject") is not None
+
+
 def test_draft_api_is_canonical_model_guided_and_generated_from_runtime() -> None:
     from vibescript_domain_api import create_domain_api
 
@@ -2472,7 +3309,7 @@ def test_draft_api_is_canonical_model_guided_and_generated_from_runtime() -> Non
         "next_write_expected_revision"
         in description["model_verification_contract"]["failure_repair"]
     )
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -3024,7 +3861,7 @@ def test_domain_context_is_aggregate_bounded_and_points_to_exact_inspection(
     assert "face_details" not in output_facts
     assert "edge_details" not in output_facts
     assert output_facts["subelement_details_context_omitted"] is True
-    assert "core.inspect" in output_facts["subelement_details_guidance"]
+    assert "vibescript.read_source" in output_facts["subelement_details_guidance"]
 
 
 def test_generic_prototype_adapters_cannot_surface_unfinished_domains() -> None:
@@ -3115,7 +3952,10 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
             "assembly",
             {
                 "VibeCADAssemblyBOM.py",
+                "VibeCADDocumentReferences.py",
                 "VibeCADFasteners.py",
+                "VibeCADMechanismEngine.py",
+                "VibeCADMechanismGeometry.py",
                 "fasteners-provenance.json",
                 "vibescript_assembly_api.py",
                 "vibescript_assembly_worker.py",
@@ -3160,7 +4000,16 @@ def test_part_reference_capture_only_detaches_live_shapes() -> None:
                 "vibescript_material_worker.py",
             },
         ),
-        ("mesh", {"vibescript_mesh_api.py", "vibescript_mesh_worker.py"}),
+        (
+            "mesh",
+            {
+                "vibescript_mesh_api.py",
+                "vibescript_mesh_worker.py",
+                "vibescript_meshpart_api.py",
+                "vibescript_meshpart_worker.py",
+                "vibescript_part_worker.py",
+            },
+        ),
         (
             "meshpart",
             {

@@ -27,6 +27,8 @@
 #include <string>
 #include <vector>
 
+#include <Mod/Mesh/MeshGlobal.h>
+
 namespace App
 {
 class Document;
@@ -42,18 +44,31 @@ namespace Mesh
 class MeshObject;
 class Feature;
 
-class Importer
+class MeshExport Importer
 {
 public:
     explicit Importer(App::Document*);
     void load(const std::string& fileName);
+
+    /**
+     * Load a file and return the exact features created by this importer.
+     *
+     * The legacy load() entry point deliberately keeps its void contract and
+     * delegates here. Native callers which publish semantic history can use
+     * these identities without inferring results from document-wide deltas.
+     */
+    [[nodiscard]] std::vector<Feature*> loadWithResults(const std::string& fileName);
 
 private:
     void addVertexColors(Feature*, const std::vector<Base::Color>&);
     void addFaceColors(Feature*, const std::vector<Base::Color>&);
     void addColors(Feature*, const std::string& property, const std::vector<Base::Color>&);
     Feature* createMesh(const std::string& name, MeshObject&);
-    void createMeshFromSegments(const std::string& name, MeshCore::Material& mat, MeshObject& mesh);
+    std::vector<Feature*> createMeshFromSegments(
+        const std::string& name,
+        MeshCore::Material& mat,
+        MeshObject& mesh
+    );
 
 private:
     App::Document* document;

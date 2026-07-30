@@ -148,6 +148,8 @@ ViewProviderPath::ViewProviderPath()
     , coordStart(-1)
     , coordEnd(-1)
 {
+    Gui::ViewProviderSuppressibleExtension::initExtension(this);
+
     ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/CAM"
     );

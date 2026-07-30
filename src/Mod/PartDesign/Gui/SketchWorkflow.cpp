@@ -24,10 +24,16 @@
 
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
+#include <algorithm>
 #include <boost/signals2.hpp>
+#include <exception>
+#include <iterator>
 #include <map>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
+#include <QByteArray>
 #include <QApplication>
 #include <QMessageBox>
 
@@ -46,13 +52,17 @@
 #include <Mod/Part/App/Attacher.h>
 #include <Mod/Part/App/Part2DObject.h>
 #include <Mod/Part/App/TopoShape.h>
+#include <Mod/Sketcher/App/SketchObject.h>
 #include <Mod/Sketcher/Gui/ViewProviderSketch.h>
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/Link.h>
 #include <App/Origin.h>
 #include <App/Datums.h>
 #include <App/Part.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
@@ -66,6 +76,136 @@ using namespace PartDesignGui;
 
 namespace
 {
+struct ObjectIdentity
+{
+    std::string documentName;
+    std::string objectName;
+    long objectId {-1};
+};
+
+ObjectIdentity identityOf(const App::DocumentObject* object)
+{
+    if (!object || !object->isAttachedToDocument()) {
+        return {};
+    }
+    return {
+        object->getDocument()->getName(),
+        object->getNameInDocument(),
+        object->getID(),
+    };
+}
+
+App::DocumentObject* resolveObject(const ObjectIdentity& identity)
+{
+    if (identity.documentName.empty() || identity.objectName.empty()
+        || identity.objectId < 0) {
+        return nullptr;
+    }
+    App::Document* document = nullptr;
+    try {
+        document = App::GetApplication().getDocument(
+            identity.documentName.c_str()
+        );
+    }
+    catch (...) {
+    }
+    auto* object = document
+        ? document->getObject(identity.objectName.c_str())
+        : nullptr;
+    return object && object->getID() == identity.objectId
+        ? object
+        : nullptr;
+}
+
+struct LinkedBodyPlacementIntent
+{
+    bool requested {false};
+    ObjectIdentity body;
+    ObjectIdentity occurrence;
+};
+
+LinkedBodyPlacementIntent linkedBodyPlacementIntent(
+    PartDesign::Body* body,
+    App::DocumentObject* occurrence
+)
+{
+    return {
+        occurrence != nullptr,
+        identityOf(body),
+        identityOf(occurrence),
+    };
+}
+
+bool applyLinkedBodyPlacement(
+    const LinkedBodyPlacementIntent& intent,
+    int transactionId
+)
+{
+    if (!intent.requested) {
+        return true;
+    }
+    if (transactionId == App::NullTransaction
+        || !App::GetApplication().transactionIsActive(transactionId)) {
+        return false;
+    }
+
+    auto* body = freecad_cast<PartDesign::Body*>(
+        resolveObject(intent.body)
+    );
+    auto* occurrence = dynamic_cast<App::Link*>(
+        resolveObject(intent.occurrence)
+    );
+    if (!body || !occurrence) {
+        return false;
+    }
+
+    auto* bodyDocument = body->getDocument();
+    const int bodyTransactionId = bodyDocument->getBookedTransactionID();
+    if (bodyTransactionId != App::NullTransaction
+        && bodyTransactionId != transactionId) {
+        return false;
+    }
+    if (!bodyDocument->hasPendingTransaction()
+        && bodyDocument->getUndoMode() == 0) {
+        return false;
+    }
+
+    try {
+        // A linked Body definition can live in another document. Enlist that
+        // document in the exact sketch transaction before changing it.
+        if (bodyTransactionId == App::NullTransaction
+            && bodyDocument->setActiveTransaction(
+                   App::TransactionName {
+                       .name = App::GetApplication().getTransactionName(
+                           transactionId
+                       ),
+                       .temporary = false,
+                   },
+                   transactionId
+               ) != transactionId) {
+            return false;
+        }
+
+        const auto occurrencePlacement =
+            occurrence->Placement.getValue();
+        if (body->Placement.getValue() == occurrencePlacement) {
+            return bodyDocument->getBookedTransactionID()
+                    == transactionId
+                && App::GetApplication().transactionIsActive(
+                    transactionId
+                );
+        }
+
+        body->Placement.setValue(occurrencePlacement);
+        return bodyDocument->hasPendingTransaction()
+            && bodyDocument->getBookedTransactionID() == transactionId
+            && App::GetApplication().transactionIsActive(transactionId);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
 struct RejectException
 {
 };
@@ -85,6 +225,68 @@ struct SupportNotPlanarException
 struct MissingPlanesException
 {
 };
+
+Sketcher::SketchObject* createSketchExact(
+    PartDesign::Body* body,
+    const std::string& featureName
+)
+{
+    if (!body || !body->isAttachedToDocument()
+        || !body->getNameInDocument() || featureName.empty()) {
+        return nullptr;
+    }
+
+    auto* document = body->getDocument();
+    if (!document || document->getObject(body->getNameInDocument()) != body
+        || document->getObjectByID(body->getID()) != body) {
+        return nullptr;
+    }
+
+    try {
+        std::ostringstream factory;
+        factory << Gui::Command::getObjectCmd(body)
+                << ".newObject('Sketcher::SketchObject','"
+                << featureName << "')";
+        auto* sketch = freecad_cast<Sketcher::SketchObject*>(
+            Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *document,
+                QByteArray(factory.str().c_str()),
+                Sketcher::SketchObject::getClassTypeId()
+            )
+        );
+        if (!sketch || sketch->getDocument() != document
+            || !sketch->getNameInDocument()
+            || document->getObject(sketch->getNameInDocument()) != sketch
+            || document->getObjectByID(sketch->getID()) != sketch
+            || !body->hasObject(sketch)) {
+            Base::Console().error(
+                "The Part Design sketch factory did not return the exact "
+                "Sketch owned by its Body\n"
+            );
+            return nullptr;
+        }
+        return sketch;
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not create the exact Part Design Sketch: %s\n",
+            error.what()
+        );
+    }
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Could not create the exact Part Design Sketch: %s\n",
+            error.what()
+        );
+    }
+    catch (...) {
+        Base::Console().error(
+            "Could not create the exact Part Design Sketch\n"
+        );
+    }
+    return nullptr;
+}
 
 class SupportFaceValidator
 {
@@ -200,13 +402,15 @@ public:
     SketchPreselection(
         Gui::Document* guidocument,
         PartDesign::Body* activeBody,
-        std::tuple<Gui::SelectionFilter, Gui::SelectionFilter, Gui::SelectionFilter> filter
+        std::tuple<Gui::SelectionFilter, Gui::SelectionFilter, Gui::SelectionFilter> filter,
+        LinkedBodyPlacementIntent linkedBodyPlacement
     )
         : guidocument(guidocument)
         , activeBody(activeBody)
         , faceFilter(std::get<0>(filter))
         , planeFilter(std::get<1>(filter))
         , sketchFilter(std::get<2>(filter))
+        , linkedBodyPlacement(std::move(linkedBodyPlacement))
     {}
 
     bool matches()
@@ -263,9 +467,22 @@ public:
         App::Document* appdocument = guidocument->getDocument();
         std::string FeatName = appdocument->getUniqueObjectName("Sketch");
 
-        guidocument->openCommand(QT_TRANSLATE_NOOP("Command", "Sketch on Face"));
-        FCMD_OBJ_CMD(activeBody, "newObject('Sketcher::SketchObject','" << FeatName << "')");
-        auto Feat = activeBody->getDocument()->getObject(FeatName.c_str());
+        const int transactionId =
+            guidocument->openCommand(
+                QT_TRANSLATE_NOOP("Command", "Sketch on Face")
+            );
+        if (!applyLinkedBodyPlacement(
+                linkedBodyPlacement,
+                transactionId
+            )) {
+            guidocument->abortCommand();
+            throw RejectException();
+        }
+        auto* Feat = createSketchExact(activeBody, FeatName);
+        if (!Feat) {
+            guidocument->abortCommand();
+            throw RejectException();
+        }
         FCMD_OBJ_CMD(Feat, "AttachmentSupport = " << supportString);
         if (sketchFilter.match()) {
             FCMD_OBJ_CMD(
@@ -326,6 +543,18 @@ private:
                 if (!dlg.radioXRef->isChecked()) {
                     guidocument->openCommand(QT_TRANSLATE_NOOP("Command", "Make copy"));
                     auto copy = makeCopy(selectedObject, dlg.radioIndependent->isChecked());
+                    if (!copy) {
+                        guidocument->abortCommand();
+                        QMessageBox::warning(
+                            Gui::getMainWindow(),
+                            QObject::tr("Copy failed"),
+                            QObject::tr(
+                                "The selected sketch support could not be "
+                                "copied into this body."
+                            )
+                        );
+                        throw RejectException();
+                    }
                     supportString = supportFromCopy(copy);
                     guidocument->commitCommand();
                 }
@@ -339,9 +568,16 @@ private:
         if (faceFilter.match()) {
             sub = faceFilter.Result[0][0].getSubNames()[0];
         }
-        auto copy = PartDesignGui::TaskFeaturePick::makeCopy(selectedObject, sub, independent);
+        auto copy = PartDesignGui::TaskFeaturePick::makeCopy(
+            selectedObject,
+            sub,
+            independent,
+            activeBody ? activeBody->getDocument() : guidocument->getDocument()
+        );
 
-        addToBodyOrPart(copy);
+        if (copy) {
+            addToBodyOrPart(copy);
+        }
 
         return copy;
     }
@@ -377,6 +613,7 @@ private:
     Gui::SelectionFilter faceFilter;
     Gui::SelectionFilter planeFilter;
     Gui::SelectionFilter sketchFilter;
+    LinkedBodyPlacementIntent linkedBodyPlacement;
     std::string supportString;
 };
 
@@ -517,16 +754,30 @@ private:
 class SketchRequestSelection
 {
 public:
-    SketchRequestSelection(Gui::Document* guidocument, PartDesign::Body* activeBody)
+    SketchRequestSelection(
+        Gui::Document* guidocument,
+        PartDesign::Body* activeBody,
+        LinkedBodyPlacementIntent linkedBodyPlacement
+    )
         : guidocument(guidocument)
         , activeBody(activeBody)
+        , linkedBodyPlacement(std::move(linkedBodyPlacement))
     {}
 
     void findSupport()
     {
         try {
             // Start command early, so undo will undo any Body creation
-            guidocument->openCommand(QT_TRANSLATE_NOOP("Command", "New Sketch"));
+            const int transactionId =
+                guidocument->openCommand(
+                    QT_TRANSLATE_NOOP("Command", "New Sketch")
+                );
+            if (!applyLinkedBodyPlacement(
+                    linkedBodyPlacement,
+                    transactionId
+                )) {
+                throw RejectException();
+            }
             tryFindSupport();
         }
         catch (const RejectException&) {
@@ -601,8 +852,10 @@ private:
         // Create sketch
         App::Document* doc = activeBody->getDocument();
         std::string FeatName = doc->getUniqueObjectName("Sketch");
-        FCMD_OBJ_CMD(activeBody, "newObject('Sketcher::SketchObject','" << FeatName << "')");
-        auto sketch = doc->getObject(FeatName.c_str());
+        auto* sketch = createSketchExact(activeBody, FeatName);
+        if (!sketch) {
+            throw RejectException();
+        }
 
         if (!hasSketch && support.getSize() > 0) {
             if (auto* pcAttach = sketch->getExtensionByType<Part::AttachExtension>()) {
@@ -615,34 +868,54 @@ private:
                         sketch,
                         "MapMode = '" << Attacher::AttachEngine::getModeName(sugr.bestFitMode) << "'"
                     );
-                    Gui::Command::updateActive();
+                    Gui::Command::updateDocument(doc);
                 }
             }
         }
 
-        PartDesign::Body* partDesignBody = activeBody;
-        auto onAccept = [partDesignBody, sketch]() {
+        const ObjectIdentity bodyIdentity = identityOf(activeBody);
+        const ObjectIdentity sketchIdentity = identityOf(sketch);
+        auto onAccept = [bodyIdentity, sketchIdentity]() {
+            auto* partDesignBody = freecad_cast<PartDesign::Body*>(
+                resolveObject(bodyIdentity)
+            );
+            auto* currentSketch = resolveObject(sketchIdentity);
             resetOriginVisibility(partDesignBody);
-
-            Gui::Selection().clearSelection();
-
-            PartDesignGui::setEdit(sketch, partDesignBody);
+            if (!partDesignBody || !currentSketch
+                || currentSketch->getDocument()
+                    != partDesignBody->getDocument()) {
+                return;
+            }
+            Gui::Selection().clearSelection(
+                partDesignBody->getDocument()->getName()
+            );
+            PartDesignGui::setEdit(currentSketch, partDesignBody);
         };
-        auto onReject = [partDesignBody]() {
+        auto onReject = [bodyIdentity]() {
+            auto* partDesignBody = freecad_cast<PartDesign::Body*>(
+                resolveObject(bodyIdentity)
+            );
             resetOriginVisibility(partDesignBody);
         };
 
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(doc->getName());
 
         // Open attachment dialog
         auto* vps = dynamic_cast<SketcherGui::ViewProviderSketch*>(
             Gui::Application::Instance->getViewProvider(sketch)
         );
+        if (!vps) {
+            resetOriginVisibility(activeBody);
+            throw RejectException();
+        }
         vps->showAttachmentEditor(onAccept, onReject);
     }
 
     static void resetOriginVisibility(PartDesign::Body* partDesignBody)
     {
+        if (!partDesignBody || !partDesignBody->isAttachedToDocument()) {
+            return;
+        }
         auto* origin = partDesignBody->getOrigin();
         auto* vpo = dynamic_cast<Gui::ViewProviderCoordinateSystem*>(
             Gui::Application::Instance->getViewProvider(origin)
@@ -688,8 +961,16 @@ private:
         App::Document* documentOfBody = appdocument;
         PartDesign::Body* partDesignBody = activeBody;
 
-        auto restorePlaneVisibility = [planes]() {
-            for (auto& plane : planes) {
+        std::vector<ObjectIdentity> planeIdentities;
+        planeIdentities.reserve(planes.size());
+        std::ranges::transform(
+            planes,
+            std::back_inserter(planeIdentities),
+            identityOf
+        );
+        auto restorePlaneVisibility = [planeIdentities]() {
+            for (const auto& identity : planeIdentities) {
+                auto* plane = resolveObject(identity);
                 auto* planeViewProvider
                     = Gui::Application::Instance->getViewProvider<Gui::ViewProviderPlane>(plane);
                 if (!planeViewProvider) {
@@ -709,9 +990,21 @@ private:
         };
 
         // Called by dialog when user hits "OK" and accepter returns true
-        auto processFunction = [documentOfBody,
-                                partDesignBody](const std::vector<App::DocumentObject*>& features) {
-            SketchRequestSelection::createSketch(documentOfBody, partDesignBody, features);
+        const ObjectIdentity bodyIdentity = identityOf(partDesignBody);
+        auto processFunction = [bodyIdentity](
+                                   const std::vector<App::DocumentObject*>& features
+                               ) {
+            auto* currentBody = freecad_cast<PartDesign::Body*>(
+                resolveObject(bodyIdentity)
+            );
+            if (!currentBody) {
+                return;
+            }
+            SketchRequestSelection::createSketch(
+                currentBody->getDocument(),
+                currentBody,
+                features
+            );
         };
 
         // Called by dialog for "Cancel", or "OK" if accepter returns false
@@ -732,11 +1025,21 @@ private:
             throw MissingPlanesException();
         }
         else if (validPlaneCount == 1) {
-            processFunction(planes);
+            for (std::size_t index = 0; index < status.size(); ++index) {
+                if (status[index]
+                        == PartDesignGui::TaskFeaturePick::validFeature
+                    || status[index]
+                        == PartDesignGui::TaskFeaturePick::basePlane) {
+                    processFunction({planes[index]});
+                    break;
+                }
+            }
         }
         else if (validPlaneCount > 1) {
             checkForShownDialog();
-            Gui::Selection().clearSelection();
+            Gui::Selection().clearSelection(
+                documentOfBody->getName()
+            );
 
             // Show dialog and let user pick plane
             Gui::Control().showDialog(new PartDesignGui::TaskDlgFeaturePick(
@@ -745,8 +1048,9 @@ private:
                 acceptFunction,
                 processFunction,
                 true,
-                rejectFunction
-            ));
+                rejectFunction,
+                partDesignBody
+            ), documentOfBody);
         }
     }
 
@@ -764,7 +1068,7 @@ private:
             msgBox.setDefaultButton(QMessageBox::Yes);
             int ret = msgBox.exec();
             if (ret == QMessageBox::Yes) {
-                Gui::Control().closeDialog();
+                Gui::Control().closeDialog(appdocument);
             }
             else {
                 throw RejectException();
@@ -772,7 +1076,7 @@ private:
         }
 
         if (dlg) {
-            Gui::Control().closeDialog();
+            Gui::Control().closeDialog(appdocument);
         }
     }
 
@@ -788,37 +1092,58 @@ private:
             return;
         }
         std::string FeatName = documentOfBody->getUniqueObjectName("Sketch");
-        auto* plane = static_cast<App::Plane*>(features.front());
-        auto* lcs = plane->getLCS();
+        auto* support = features.front();
+        if (!support || !support->isAttachedToDocument()) {
+            return;
+        }
+        auto* plane = freecad_cast<App::Plane*>(support);
+        auto* lcs = plane ? plane->getLCS() : nullptr;
 
         std::string supportString;
-        if (lcs) {
+        if (plane && lcs) {
             supportString = Gui::Command::getObjectCmd(lcs, "(") + ",['"
                 + plane->getNameInDocument() + "'])";
         }
-        else {
+        else if (plane) {
             supportString = Gui::Command::getObjectCmd(plane, "(", ",[''])");
+        }
+        else {
+            // Plane-shaped binders expose their single planar face as the
+            // attachment support.
+            supportString =
+                Gui::Command::getObjectCmd(support, "(", ",['Face1'])");
         }
 
         App::Document* doc = partDesignBody->getDocument();
+        bool openedTransaction = false;
         if (!doc->hasPendingTransaction()) {
             doc->openTransaction(QT_TRANSLATE_NOOP("Command", "New Sketch"));
+            openedTransaction = true;
         }
 
-        FCMD_OBJ_CMD(partDesignBody, "newObject('Sketcher::SketchObject','" << FeatName << "')");
-        auto Feat = doc->getObject(FeatName.c_str());
+        auto* Feat = createSketchExact(partDesignBody, FeatName);
+        if (!Feat) {
+            if (openedTransaction) {
+                doc->abortTransaction();
+            }
+            return;
+        }
         FCMD_OBJ_CMD(Feat, "AttachmentSupport = " << supportString);
         FCMD_OBJ_CMD(
             Feat,
             "MapMode = '" << Attacher::AttachEngine::getModeName(Attacher::mmFlatFace) << "'"
         );
-        Gui::Command::updateActive();  // Make sure the AttachmentSupport's Placement property is updated
+        // Make sure the AttachmentSupport's Placement property is updated in
+        // the document that owns the new sketch, even if another tab became
+        // active while the plane picker was open.
+        Gui::Command::updateDocument(doc);
         PartDesignGui::setEdit(Feat, partDesignBody);
     }
 
 private:
     Gui::Document* guidocument;
     PartDesign::Body* activeBody;
+    LinkedBodyPlacementIntent linkedBodyPlacement;
 };
 
 }  // namespace
@@ -884,7 +1209,14 @@ void SketchWorkflow::tryCreateSketch()
     bool shiftHeld = QApplication::queryKeyboardModifiers() & Qt::ShiftModifier;
 
     auto filters = getFilters();
-    SketchPreselection sketchOnFace {guidocument, activeBody, filters};
+    const auto linkedBodyPlacement =
+        linkedBodyPlacementIntent(activeBody, linkedBodyOccurrence);
+    SketchPreselection sketchOnFace {
+        guidocument,
+        activeBody,
+        filters,
+        linkedBodyPlacement,
+    };
 
     // Fast path: single face or datum plane, preference off, Shift not held.
     // If the face turns out to be non-planar or otherwise invalid, fall through
@@ -908,23 +1240,29 @@ void SketchWorkflow::tryCreateSketch()
         }
     }
 
-    SketchRequestSelection requestSelection {guidocument, activeBody};
+    SketchRequestSelection requestSelection {
+        guidocument,
+        activeBody,
+        linkedBodyPlacement,
+    };
     requestSelection.findSupport();
 }
 
 std::tuple<bool, PartDesign::Body*> SketchWorkflow::shouldCreateBody()
 {
     auto shouldMakeBody {false};
+    linkedBodyOccurrence = nullptr;
 
     // We need either an active Body, or for there to be no Body
     // objects (in which case, just make one) to make a new sketch.
     // If we are inside a link, we need to use its placement.
-    App::DocumentObject* topParent;
+    App::DocumentObject* topParent = nullptr;
     PartDesign::Body* pdBody
         = PartDesignGui::getBody(/* messageIfNot = */ false, true, true, &topParent);
-    if (pdBody && topParent->isLink()) {
-        auto* xLink = dynamic_cast<App::Link*>(topParent);
-        pdBody->Placement.setValue(xLink->Placement.getValue());
+    if (pdBody && topParent && topParent->isLink()) {
+        // Capture only. Applying the occurrence placement here would put it
+        // outside the sketch command and make Cancel unable to roll it back.
+        linkedBodyOccurrence = topParent;
     }
     if (!pdBody) {
         if (appdocument->countObjectsOfType<PartDesign::Body>() == 0) {

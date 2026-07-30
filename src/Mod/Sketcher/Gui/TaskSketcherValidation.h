@@ -24,7 +24,9 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <App/DocumentObserver.h>
@@ -33,6 +35,10 @@
 
 
 class SoGroup;
+namespace App
+{
+class Document;
+}
 namespace Sketcher
 {
 class SketchObject;
@@ -71,10 +77,23 @@ private:
 private:
     void showPoints(const std::vector<Base::Vector3d>&);
     void hidePoints();
+    Sketcher::SketchObject* resolveExactSketch(
+        bool requireCurrentHistory = true
+    ) const;
+    bool runExactMutation(
+        const char* transactionName,
+        const std::function<void(Sketcher::SketchObject&)>& mutation,
+        bool recompute = false
+    );
 
 private:
     std::unique_ptr<Ui_TaskSketcherValidation> ui;
     App::WeakPtrT<Sketcher::SketchObject> sketch;
+    App::Document* exactDocument {nullptr};
+    std::string exactDocumentName;
+    std::string exactDocumentUid;
+    long exactSketchId {0};
+    std::string exactSketchName;
     SoGroup* coincidenceRoot;
 };
 

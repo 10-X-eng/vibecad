@@ -38,7 +38,17 @@ translate = App.Qt.translate
 
 class TaskHoleShaftFit:
     def __init__(self, sel):
-
+        if (
+            len(sel) != 1
+            or sel[0].Object is None
+            or sel[0].Object.TypeId != "TechDraw::DrawViewDimension"
+        ):
+            raise RuntimeError("Select exactly one TechDraw dimension")
+        self.dimension = sel[0].Object
+        self.document = self.dimension.Document
+        self.gui_document = Gui.getDocument(self.document.Name)
+        if self.gui_document is None:
+            raise RuntimeError("The dimension has no GUI document")
         loose = translate("TechDraw_HoleShaftFit", "Loose fit")
         snug = translate("TechDraw_HoleShaftFit", "Snug fit")
         press = translate("TechDraw_HoleShaftFit", "Press fit")
@@ -95,7 +105,19 @@ class TaskHoleShaftFit:
         self.form.rbShaftBase.clicked.connect(partial(self.on_HoleShaftChanged, False))
         self.form.cbField.currentIndexChanged.connect(self.on_FieldChanged)
 
-        App.ActiveDocument.openTransaction("Add hole or shaft fit")
+        # Open the task transaction on the captured document. The common
+        # TaskDialog boundary adopts this exact ID when the panel is shown,
+        # commits only after a successful Accept has unwound, and rolls it back
+        # only after Cancel has torn down the panel.
+        self.transaction_id = int(
+            self.gui_document.openCommand("Add hole or shaft fit")
+        )
+        if (
+            self.transaction_id == 0
+            or self.document.getBookedTransactionID()
+            != self.transaction_id
+        ):
+            raise RuntimeError("Could not open the hole/shaft fit task")
 
     def setHoleFields(self):
         """set hole fields in the combo box"""
@@ -147,34 +169,64 @@ class TaskHoleShaftFit:
             selectedField = self.holeValues[currentIndex][1]
         fieldChar = selectedField[0]
         quality = int(selectedField[1:])
-        dim = self.sel[0].Object
-        value = dim.getRawValue()
-        iso = ISO286()
-        iso.calculate(value, fieldChar, quality)
-        rangeValues = iso.getValues()
-        mainFormat = dim.FormatSpec
-        dim.FormatSpec = mainFormat + " " + selectedField
-        dim.EqualTolerance = False
-        dim.OverTolerance = rangeValues[0]
-        dim.UnderTolerance = rangeValues[1]
-        if dim.OverTolerance < 0:
-            dim.FormatSpecOverTolerance = "(%-0.6w)"
-        elif dim.OverTolerance > 0:
-            dim.FormatSpecOverTolerance = "(+%-0.6w)"
-        else:
-            dim.FormatSpecOverTolerance = "( %-0.6w)"
-        if dim.UnderTolerance < 0:
-            dim.FormatSpecUnderTolerance = "(%-0.6w)"
-        elif dim.UnderTolerance > 0:
-            dim.FormatSpecUnderTolerance = "(+%-0.6w)"
-        else:
-            dim.FormatSpecUnderTolerance = "( %-0.6w)"
-        Gui.Control.closeDialog()
-        App.ActiveDocument.commitTransaction()
+        dim = self.dimension
+        property_names = (
+            "FormatSpec",
+            "EqualTolerance",
+            "OverTolerance",
+            "UnderTolerance",
+            "FormatSpecOverTolerance",
+            "FormatSpecUnderTolerance",
+        )
+        original_values = {
+            name: getattr(dim, name)
+            for name in property_names
+        }
+        try:
+            value = dim.getRawValue()
+            iso = ISO286()
+            iso.calculate(value, fieldChar, quality)
+            rangeValues = iso.getValues()
+            mainFormat = dim.FormatSpec
+            dim.FormatSpec = mainFormat + " " + selectedField
+            dim.EqualTolerance = False
+            dim.OverTolerance = rangeValues[0]
+            dim.UnderTolerance = rangeValues[1]
+            if dim.OverTolerance < 0:
+                dim.FormatSpecOverTolerance = "(%-0.6w)"
+            elif dim.OverTolerance > 0:
+                dim.FormatSpecOverTolerance = "(+%-0.6w)"
+            else:
+                dim.FormatSpecOverTolerance = "( %-0.6w)"
+            if dim.UnderTolerance < 0:
+                dim.FormatSpecUnderTolerance = "(%-0.6w)"
+            elif dim.UnderTolerance > 0:
+                dim.FormatSpecUnderTolerance = "(+%-0.6w)"
+            else:
+                dim.FormatSpecUnderTolerance = "( %-0.6w)"
+        except Exception as error:
+            for name, value in original_values.items():
+                try:
+                    setattr(dim, name, value)
+                except Exception as restore_error:
+                    App.Console.PrintError(
+                        "Could not restore TechDraw dimension property "
+                        f"{name}: {restore_error}\n"
+                    )
+            App.Console.PrintError(
+                "Could not apply the hole/shaft fit: "
+                f"{error}\n"
+            )
+            return False
+        return True
 
     def reject(self):
-        App.ActiveDocument.abortTransaction()
+        # TaskView owns the exact rollback and runs it only after this panel and
+        # its widgets have been removed.
         return True
+
+    def autoClosedOnDeletedDocument(self):
+        self.transaction_id = 0
 
 
 class ISO286:

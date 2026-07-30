@@ -205,7 +205,11 @@ class Dimension(gui_base_original.Creator):
             "Draft.autogroup(_dim_)",
             "FreeCAD.ActiveDocument.recompute()",
         ]
-        self.commit(translate("draft", "Create Dimension"), _cmd_list)
+        self.commit(
+            translate("draft", "Create Dimension"),
+            _cmd_list,
+            inputs=(),
+        )
 
     def create_linear_dimension(self):
         """Create a simple linear dimension, not linked to an edge."""
@@ -220,7 +224,11 @@ class Dimension(gui_base_original.Creator):
             "Draft.autogroup(_dim_)",
             "FreeCAD.ActiveDocument.recompute()",
         ]
-        self.commit(translate("draft", "Create Dimension"), _cmd_list)
+        self.commit(
+            translate("draft", "Create Dimension"),
+            _cmd_list,
+            inputs=(),
+        )
 
     def create_linear_dimension_obj(self, direction=None):
         """Create a linear dimension linked to an edge.
@@ -250,7 +258,11 @@ class Dimension(gui_base_original.Creator):
             _cmd_list += ["_dim_.Direction = " + dir_v]
 
         _cmd_list += ["Draft.autogroup(_dim_)", "FreeCAD.ActiveDocument.recompute()"]
-        self.commit(translate("draft", "Create Dimension"), _cmd_list)
+        self.commit(
+            translate("draft", "Create Dimension"),
+            _cmd_list,
+            inputs=(self.link[0],),
+        )
 
     def create_radial_dimension_obj(self):
         """Create a radial dimension linked to a circular edge."""
@@ -266,7 +278,11 @@ class Dimension(gui_base_original.Creator):
             "Draft.autogroup(_dim_)",
             "FreeCAD.ActiveDocument.recompute()",
         ]
-        self.commit(translate("draft", "Create Dimension"), _cmd_list)
+        self.commit(
+            translate("draft", "Create Dimension"),
+            _cmd_list,
+            inputs=(self.link[0],),
+        )
 
     def createObject(self):
         """Create the actual object in the current document."""

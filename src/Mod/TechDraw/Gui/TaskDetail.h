@@ -28,6 +28,7 @@
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
 #include "QGIGhostHighlight.h"
+#include "TaskDocumentGuard.h"
 
 namespace TechDraw
 {
@@ -123,6 +124,10 @@ private:
     std::string    m_pageName;
     std::string    m_detailName;
     App::Document* m_doc;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_baseIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewDetail>
+        m_detailIdentity;
 
     bool m_mode;
     bool m_created;

@@ -179,7 +179,11 @@ double TaskFilletParameters::getLength() const
 TaskFilletParameters::~TaskFilletParameters()
 {
     try {
-        Gui::Selection().clearSelection();
+        if (auto* object = getObject()) {
+            Gui::Selection().clearSelection(
+                object->getDocument()->getName()
+            );
+        }
         Gui::Selection().rmvSelectionGate();
     }
     catch (const Py::Exception&) {

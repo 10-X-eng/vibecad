@@ -41,6 +41,8 @@ import Draft_rc
 from FreeCAD import Units as U
 from draftutils import params
 from draftutils import utils
+from draftutils.transaction import close_task_dialog
+from draftutils.transaction import DocumentReference
 
 
 def QT_TRANSLATE_NOOP(ctx, txt):
@@ -72,17 +74,29 @@ class Draft_SetStyle:
 
     def Activated(self):
 
-        dia = Gui.Control.showDialog(Draft_SetStyle_TaskPanel())
-        dia.setDocumentName(Gui.ActiveDocument.Document.Name)
+        document = App.activeDocument()
+        if document is None:
+            return
+        gui_document = Gui.getDocument(document.Name)
+        if gui_document is None or gui_document.Document is not document:
+            return
+        panel = Draft_SetStyle_TaskPanel(document)
+        dia = Gui.Control.showDialog(panel, gui_document)
+        dia.setDocumentName(document.Name)
         dia.setAutoCloseOnDeletedDocument(True)
 
 
 class Draft_SetStyle_TaskPanel:
     """The task panel for the Draft_SetStyle command"""
 
-    def __init__(self):
+    def __init__(self, document=None):
 
         self.form = Gui.PySideUic.loadUi(":/ui/TaskPanel_SetStyle.ui")
+        self.document_reference = (
+            DocumentReference.capture(document)
+            if document is not None
+            else None
+        )
         self.form.setWindowIcon(
             QtGui.QIcon.fromTheme("gtk-apply", QtGui.QIcon(":/icons/Draft_Apply.svg"))
         )
@@ -334,7 +348,8 @@ class Draft_SetStyle_TaskPanel:
 
     def reject(self):
 
-        Gui.Control.closeDialog()
+        if self.document_reference is not None:
+            close_task_dialog(self.document_reference)
 
     def accept(self):
 

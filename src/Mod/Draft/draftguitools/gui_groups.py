@@ -51,6 +51,11 @@ from draftutils import groups
 from draftutils import params
 from draftutils import utils
 from draftutils.translate import translate
+from draftutils.transaction import (
+    ObjectReference,
+    run_document_mutation,
+    validate_object_references,
+)
 
 # The module is used to prevent complaints from code checkers (flake8)
 True if Draft_rc.__name__ else False
@@ -91,6 +96,16 @@ class AddToGroup(gui_base.GuiCommandNeedsSelection):
         objs = [obj for obj in self.doc.Objects if groups.is_group(obj)]
         objs.sort(key=lambda obj: obj.Label)
         self.objects = [None] + [None] + objs
+        self.object_references = [
+            None,
+            None,
+            *(ObjectReference.capture(obj) for obj in objs),
+        ]
+        self.selection_references = tuple(
+            ObjectReference.capture(obj)
+            for obj in Gui.Selection.getSelection()
+            if obj.Document is self.doc
+        )
         self.labels = (
             [translate("draft", "Ungroup")]
             + ["---"]
@@ -123,14 +138,16 @@ class AddToGroup(gui_base.GuiCommandNeedsSelection):
 
         if option == self.labels[0]:
             # "Ungroup"
-            self.doc.openTransaction(translate("draft", "Ungroup"))
-            for obj in Gui.Selection.getSelection():
-                try:
-                    groups.ungroup(obj)
-                except Exception:
-                    pass
-            self.doc.commitTransaction()
-            self.doc.recompute()
+            selection = validate_object_references(
+                self.doc,
+                self.selection_references,
+            )
+            run_document_mutation(
+                self.doc,
+                translate("draft", "Ungroup"),
+                lambda: [groups.ungroup(obj) for obj in selection],
+                objects=selection,
+            )
             return
 
         if option == self.labels[-1]:
@@ -140,30 +157,37 @@ class AddToGroup(gui_base.GuiCommandNeedsSelection):
             return
 
         # Group has been selected
-        self.doc.openTransaction(translate("draft", "Add to Group"))
         i = self.labels.index(option)
-        grp = self.objects[i]
-        moveToGroup(grp)
-        self.doc.commitTransaction()
-        self.doc.recompute()
+        group_reference = self.object_references[i]
+        grp = group_reference.resolve() if group_reference else None
+        selection = validate_object_references(
+            self.doc,
+            self.selection_references,
+        )
+        if grp is None:
+            return
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Add to Group"),
+            lambda: moveToGroup(grp, selection),
+            objects=(grp, *selection),
+        )
 
 
 Gui.addCommand("Draft_AddToGroup", AddToGroup())
 
 
-def moveToGroup(group):
+def moveToGroup(group, objects=None):
     """
     Place the selected objects in the chosen group.
     """
 
-    for obj in Gui.Selection.getSelection():
-        try:
-            # retrieve group's visibility
-            obj.ViewObject.Visibility = group.ViewObject.Visibility
-            group.addObject(obj)
-
-        except Exception:
-            pass
+    if objects is None:
+        objects = Gui.Selection.getSelection()
+    for obj in objects:
+        # retrieve group's visibility
+        obj.ViewObject.Visibility = group.ViewObject.Visibility
+        group.addObject(obj)
 
 
 class SelectGroup(gui_base.GuiCommandNeedsSelection):
@@ -322,17 +346,18 @@ class SetAutoGroup(gui_base.GuiCommandSimplest):
                 return
             if not txt:
                 return
-            self.doc.openTransaction(translate("draft", "New layer"))
-            lyr = make_layer.make_layer(
-                name=txt,
-                line_color=None,
-                shape_color=None,
-                line_width=None,
-                draw_style=None,
-                transparency=None,
+            lyr = run_document_mutation(
+                self.doc,
+                translate("draft", "New layer"),
+                lambda: make_layer.make_layer(
+                    name=txt,
+                    line_color=None,
+                    shape_color=None,
+                    line_width=None,
+                    draw_style=None,
+                    transparency=None,
+                ),
             )
-            self.doc.commitTransaction()
-            self.doc.recompute()
             self.ui.setAutoGroup(lyr.Name)  # this...
             # self.ui.autoGroupButton.setDown(False) # or this?
             return
@@ -379,32 +404,44 @@ class AddToConstruction(gui_base.GuiCommandNeedsSelection):
         if not hasattr(Gui, "draftToolBar"):
             return
 
-        self.doc.openTransaction(translate("draft", "Add to Construction Group"))
+        selection = tuple(
+            obj
+            for obj in Gui.Selection.getSelection()
+            if obj.Document is self.doc
+        )
         col = params.get_param("constructioncolor") | 0x000000FF
 
-        # Get the construction group or create it if it doesn't exist
-        grp = self.doc.getObject("Draft_Construction")
-        if not grp:
-            grp = self.doc.addObject("App::DocumentObjectGroup", "Draft_Construction")
-            grp.Label = params.get_param("constructiongroupname")
+        def add_to_construction():
+            # Get the construction group or create it if it doesn't exist.
+            grp = self.doc.getObject("Draft_Construction")
+            if not grp:
+                grp = self.doc.addObject(
+                    "App::DocumentObjectGroup",
+                    "Draft_Construction",
+                )
+                grp.Label = params.get_param("constructiongroupname")
 
-        for obj in Gui.Selection.getSelection():
-            grp.addObject(obj)
-            # Change the appearance to the construction colors
-            vobj = obj.ViewObject
-            if "TextColor" in vobj.PropertiesList:
-                vobj.TextColor = col
-            if "PointColor" in vobj.PropertiesList:
-                vobj.PointColor = col
-            if "LineColor" in vobj.PropertiesList:
-                vobj.LineColor = col
-            if "ShapeColor" in vobj.PropertiesList:
-                vobj.ShapeColor = col
-            if hasattr(vobj, "Transparency"):
-                vobj.Transparency = 80
+            for obj in selection:
+                grp.addObject(obj)
+                # Change the appearance to the construction colors.
+                vobj = obj.ViewObject
+                if "TextColor" in vobj.PropertiesList:
+                    vobj.TextColor = col
+                if "PointColor" in vobj.PropertiesList:
+                    vobj.PointColor = col
+                if "LineColor" in vobj.PropertiesList:
+                    vobj.LineColor = col
+                if "ShapeColor" in vobj.PropertiesList:
+                    vobj.ShapeColor = col
+                if hasattr(vobj, "Transparency"):
+                    vobj.Transparency = 80
 
-        self.doc.commitTransaction()
-        self.doc.recompute()
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Add to Construction Group"),
+            add_to_construction,
+            objects=selection,
+        )
 
 
 Draft_AddConstruction = AddToConstruction
@@ -441,12 +478,26 @@ class AddNamedGroup(gui_base.GuiCommandSimplest):
             return
         if not txt:
             return
-        self.doc.openTransaction(translate("draft", "New named group"))
-        grp = self.doc.addObject("App::DocumentObjectGroup", translate("draft", "Group"))
-        grp.Label = txt
-        moveToGroup(grp)
-        self.doc.commitTransaction()
-        self.doc.recompute()
+        selection = tuple(
+            obj
+            for obj in Gui.Selection.getSelection()
+            if obj.Document is self.doc
+        )
+
+        def create_group():
+            grp = self.doc.addObject(
+                "App::DocumentObjectGroup",
+                translate("draft", "Group"),
+            )
+            grp.Label = txt
+            moveToGroup(grp, selection)
+
+        run_document_mutation(
+            self.doc,
+            translate("draft", "New named group"),
+            create_group,
+            objects=selection,
+        )
 
 
 Gui.addCommand("Draft_AddNamedGroup", AddNamedGroup())

@@ -58,7 +58,7 @@ public:
                    TechDraw::DrawPage* page);
     //ctor for edit
     explicit TaskLeaderLine(TechDrawGui::ViewProviderLeader* leadVP);
-    ~TaskLeaderLine() override = default;
+    ~TaskLeaderLine() override;
 
     virtual bool accept();
     virtual bool reject();

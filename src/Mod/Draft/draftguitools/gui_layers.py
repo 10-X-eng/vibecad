@@ -44,6 +44,12 @@ from draftobjects import layer
 from draftutils import params
 from draftutils import utils
 from draftutils.translate import translate
+from draftutils.transaction import (
+    DocumentReference,
+    ObjectReference,
+    run_document_mutation,
+    validate_object_references,
+)
 
 # The module is used to prevent complaints from code checkers (flake8)
 bool(Draft_rc.__name__)
@@ -85,13 +91,24 @@ class Layer(gui_base.GuiCommandSimplest):
         """
         super().Activated()
 
-        self.doc.openTransaction(translate("draft", "Create layer"))
-        Gui.addModule("Draft")
-        Gui.doCommand(
-            "layer = Draft.make_layer(name=None, line_color=None, shape_color=None, line_width=None, draw_style=None, transparency=None)"
+        def create_layer():
+            result = make_layer.make_layer(
+                name=None,
+                line_color=None,
+                shape_color=None,
+                line_width=None,
+                draw_style=None,
+                transparency=None,
+            )
+            if result is None:
+                raise RuntimeError("Draft could not create the layer")
+            return result
+
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Create layer"),
+            create_layer,
         )
-        Gui.doCommand("FreeCAD.ActiveDocument.recompute()")
-        self.doc.commitTransaction()
 
 
 class AddToLayer(gui_base.GuiCommandNeedsSelection):
@@ -119,9 +136,23 @@ class AddToLayer(gui_base.GuiCommandNeedsSelection):
             return
 
         self.ui = Gui.draftToolBar
-        objs = [obj for obj in App.ActiveDocument.Objects if utils.get_type(obj) == "Layer"]
+        objs = [
+            obj
+            for obj in self.doc.Objects
+            if utils.get_type(obj) == "Layer"
+        ]
         objs.sort(key=lambda obj: obj.Label)
         self.objects = [None] + [None] + objs
+        self.object_references = [
+            None,
+            None,
+            *(ObjectReference.capture(obj) for obj in objs),
+        ]
+        self.selection_references = tuple(
+            ObjectReference.capture(obj)
+            for obj in Gui.Selection.getSelection()
+            if obj.Document is self.doc
+        )
         self.labels = (
             [translate("draft", "Remove From Layer")]
             + ["---"]
@@ -144,17 +175,28 @@ class AddToLayer(gui_base.GuiCommandNeedsSelection):
 
         if option == self.labels[0]:
             # "Remove from layer"
-            changed = False
-            for obj in Gui.Selection.getSelection():
-                lyr = layer.get_layer(obj)
-                if lyr is not None:
-                    if not changed:
-                        self.doc.openTransaction(translate("draft", "Remove from layer"))
-                        changed = True
-                    lyr.Proxy.removeObject(lyr, obj)
-            if changed:
-                self.doc.commitTransaction()
-                self.doc.recompute()
+            selection = validate_object_references(
+                self.doc,
+                self.selection_references,
+            )
+            pairs = tuple(
+                (layer.get_layer(obj), obj)
+                for obj in selection
+                if layer.get_layer(obj) is not None
+            )
+            if pairs:
+                run_document_mutation(
+                    self.doc,
+                    translate("draft", "Remove from layer"),
+                    lambda: [
+                        lyr.Proxy.removeObject(lyr, obj)
+                        for lyr, obj in pairs
+                    ],
+                    objects=(
+                        *selection,
+                        *(lyr for lyr, _obj in pairs),
+                    ),
+                )
             return
 
         if option == self.labels[-1]:
@@ -171,29 +213,54 @@ class AddToLayer(gui_base.GuiCommandNeedsSelection):
                 return
             if not txt:
                 return
-            self.doc.openTransaction(translate("draft", "Add to new layer"))
-            lyr = make_layer.make_layer(
-                name=txt,
-                line_color=None,
-                shape_color=None,
-                line_width=None,
-                draw_style=None,
-                transparency=None,
+            selection = validate_object_references(
+                self.doc,
+                self.selection_references,
             )
-            for obj in Gui.Selection.getSelection():
-                lyr.Proxy.addObject(lyr, obj)
-            self.doc.commitTransaction()
-            self.doc.recompute()
+
+            def add_to_new_layer():
+                lyr = make_layer.make_layer(
+                    name=txt,
+                    line_color=None,
+                    shape_color=None,
+                    line_width=None,
+                    draw_style=None,
+                    transparency=None,
+                )
+                if lyr is None:
+                    raise RuntimeError("Draft could not create the layer")
+                for obj in selection:
+                    lyr.Proxy.addObject(lyr, obj)
+
+            run_document_mutation(
+                self.doc,
+                translate("draft", "Add to new layer"),
+                add_to_new_layer,
+                objects=selection,
+            )
             return
 
         # Layer has been selected
         i = self.labels.index(option)
-        lyr = self.objects[i]
-        self.doc.openTransaction(translate("draft", "Add to layer"))
-        for obj in Gui.Selection.getSelection():
-            lyr.Proxy.addObject(lyr, obj)
-        self.doc.commitTransaction()
-        self.doc.recompute()
+        layer_reference = self.object_references[i]
+        lyr = layer_reference.resolve() if layer_reference else None
+        selection = validate_object_references(
+            self.doc,
+            self.selection_references,
+        )
+        if lyr is None:
+            return
+
+        def add_to_layer():
+            for obj in selection:
+                lyr.Proxy.addObject(lyr, obj)
+
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Add to layer"),
+            add_to_layer,
+            objects=(lyr, *selection),
+        )
 
 
 class LayerManager:
@@ -214,6 +281,11 @@ class LayerManager:
     def Activated(self):
 
         from PySide import QtCore, QtGui, QtWidgets
+
+        document = App.activeDocument()
+        if document is None:
+            return
+        self.document_reference = DocumentReference.capture(document)
 
         # store changes to be committed
         self.deleteList = []
@@ -265,6 +337,11 @@ class LayerManager:
 
         # fill the tree view
         self.update()
+        self.layer_references = tuple(
+            ObjectReference.capture(obj)
+            for obj in document.Objects
+            if utils.get_type(obj) == "Layer"
+        )
 
         # rock 'n roll!!!
         self.dialog.exec_()
@@ -272,109 +349,102 @@ class LayerManager:
     def accept(self):
         "when OK button is pressed"
 
-        doc = App.ActiveDocument
-        changed = False
+        doc = self.document_reference.resolve()
+        if doc is None:
+            self.dialog.reject()
+            return
+        layers = validate_object_references(
+            doc,
+            self.layer_references,
+        )
         trans_name = translate("draft", "Layers change")
 
-        # delete layers
-        for name in self.deleteList:
-            if not changed:
-                doc.openTransaction(trans_name)
-                changed = True
-            doc.removeObject(name)
-
-        # apply changes
-        for row in range(self.model.rowCount()):
-
-            # get or create layer
-            name = self.model.item(row, 1).toolTip()
-            obj = None
-            if name:
+        def apply_changes():
+            # Delete layers.
+            for name in self.deleteList:
                 obj = doc.getObject(name)
-            if not obj:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                obj = make_layer.make_layer(
-                    name=None,
-                    line_color=None,
-                    shape_color=None,
-                    line_width=None,
-                    draw_style=None,
-                    transparency=None,
+                if obj is None:
+                    raise RuntimeError(
+                        "A layer was deleted or replaced while editing"
+                    )
+                doc.removeObject(name)
+
+            # Apply edited rows.
+            for row in range(self.model.rowCount()):
+                name = self.model.item(row, 1).toolTip()
+                obj = doc.getObject(name) if name else None
+                if not obj:
+                    obj = make_layer.make_layer(
+                        name=None,
+                        line_color=None,
+                        shape_color=None,
+                        line_width=None,
+                        draw_style=None,
+                        transparency=None,
+                    )
+                    if obj is None:
+                        raise RuntimeError(
+                            "Draft could not create the layer"
+                        )
+                vobj = obj.ViewObject
+
+                checked = (
+                    self.model.item(row, 0).checkState()
+                    == QtCore.Qt.Checked
                 )
-            vobj = obj.ViewObject
+                if checked != vobj.Visibility:
+                    vobj.Visibility = checked
 
-            # visibility
-            checked = self.model.item(row, 0).checkState() == QtCore.Qt.Checked
-            if checked != vobj.Visibility:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.Visibility = checked
+                label = self.model.item(row, 1).text()
+                if label and obj.Label != label:
+                    obj.Label = label
 
-            # label
-            label = self.model.item(row, 1).text()
-            # Setting Label="" is possible in the Property editor but we avoid it here:
-            if label and obj.Label != label:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                obj.Label = label
+                width = self.model.item(row, 2).data(
+                    QtCore.Qt.DisplayRole
+                )
+                if width and vobj.LineWidth != width:
+                    vobj.LineWidth = width
 
-            # line width
-            width = self.model.item(row, 2).data(QtCore.Qt.DisplayRole)
-            # Setting LineWidth=0 is possible in the Property editor but we avoid it here:
-            if width and vobj.LineWidth != width:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.LineWidth = width
+                style = self.model.item(row, 3).text()
+                if style is not None and vobj.DrawStyle != style:
+                    vobj.DrawStyle = style
 
-            # draw style
-            style = self.model.item(row, 3).text()
-            if style is not None and vobj.DrawStyle != style:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.DrawStyle = style
+                color = self.model.item(row, 4).data(
+                    QtCore.Qt.UserRole
+                )
+                if color is not None and vobj.LineColor[:3] != color:
+                    vobj.LineColor = color
 
-            # line color
-            color = self.model.item(row, 4).data(QtCore.Qt.UserRole)
-            if color is not None and vobj.LineColor[:3] != color:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.LineColor = color
+                color = self.model.item(row, 5).data(
+                    QtCore.Qt.UserRole
+                )
+                if color is not None and vobj.ShapeColor[:3] != color:
+                    vobj.ShapeColor = color
 
-            # shape color
-            color = self.model.item(row, 5).data(QtCore.Qt.UserRole)
-            if color is not None and vobj.ShapeColor[:3] != color:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.ShapeColor = color
+                transparency = self.model.item(row, 6).data(
+                    QtCore.Qt.DisplayRole
+                )
+                if (
+                    transparency is not None
+                    and vobj.Transparency != transparency
+                ):
+                    vobj.Transparency = transparency
 
-            # transparency
-            transparency = self.model.item(row, 6).data(QtCore.Qt.DisplayRole)
-            if transparency is not None and vobj.Transparency != transparency:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.Transparency = transparency
+                color = self.model.item(row, 7).data(
+                    QtCore.Qt.UserRole
+                )
+                if (
+                    color is not None
+                    and vobj.LinePrintColor[:3] != color
+                ):
+                    vobj.LinePrintColor = color
 
-            # line print color
-            color = self.model.item(row, 7).data(QtCore.Qt.UserRole)
-            if color is not None and vobj.LinePrintColor[:3] != color:
-                if not changed:
-                    doc.openTransaction(trans_name)
-                    changed = True
-                vobj.LinePrintColor = color
-
-        # recompute
-        if changed:
-            doc.commitTransaction()
-            doc.recompute()
+        run_document_mutation(
+            doc,
+            trans_name,
+            apply_changes,
+            objects=layers,
+        )
 
         # exit
         self.dialog.reject()
@@ -411,7 +481,15 @@ class LayerManager:
         self.dialog.tree.setColumnWidth(1, 128)  # name column
 
         # populate
-        objs = [obj for obj in App.ActiveDocument.Objects if utils.get_type(obj) == "Layer"]
+        document = self.document_reference.resolve()
+        if document is None:
+            self.dialog.reject()
+            return
+        objs = [
+            obj
+            for obj in document.Objects
+            if utils.get_type(obj) == "Layer"
+        ]
         objs.sort(key=lambda o: o.Label)
         for obj in objs:
             self.addItem(obj)

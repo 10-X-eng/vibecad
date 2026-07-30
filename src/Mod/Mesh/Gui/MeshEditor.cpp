@@ -48,15 +48,21 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/WaitCursor.h>
 #include <Gui/Widgets.h>
 #include <Mod/Mesh/App/Core/Algorithm.h>
+#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
+#include "CommandGuard.h"
 #include "MeshEditor.h"
+#include "ParametricMeshFilter.h"
 #include "SoFCMeshObject.h"
 #include "SoPolygon.h"
 
@@ -196,11 +202,18 @@ MeshFaceAddition::MeshFaceAddition(Gui::View3DInventor* parent)
 
 MeshFaceAddition::~MeshFaceAddition()
 {
+    targetDeletedConnection.disconnect();
     delete faceView;
 }
 
 void MeshFaceAddition::startEditing(MeshGui::ViewProviderMesh* vp)
 {
+    auto* feature = vp ? vp->getObject<Mesh::Feature>() : nullptr;
+    if (!feature || !MeshGui::isNativeMeshInputActive(feature)) {
+        deleteLater();
+        return;
+    }
+
     Gui::View3DInventor* view = static_cast<Gui::View3DInventor*>(parent());
     Gui::View3DInventorViewer* viewer = view->getViewer();
     viewer->setEditing(true);
@@ -208,8 +221,17 @@ void MeshFaceAddition::startEditing(MeshGui::ViewProviderMesh* vp)
     viewer->setRedirectToSceneGraph(true);
     viewer->setRedirectToSceneGraphEnabled(true);
 
+    targetMesh = std::make_unique<Gui::WeakPtrT<ViewProviderMesh>>(vp);
+    targetDeletedConnection.disconnect();
+    targetDeletedConnection = feature->getDocument()->signalDeletedObject.connect(
+        [this, feature](const App::DocumentObject& object) {
+            if (&object == feature) {
+                finishEditing();
+            }
+        }
+    );
     faceView->mesh = vp;
-    faceView->attach(vp->getObject());
+    faceView->attach(feature);
     viewer->addViewProvider(faceView);
     // faceView->mesh->startEditing();
     viewer->addEventCallback(SoEvent::getClassTypeId(), MeshFaceAddition::addFacetCallback, this);
@@ -217,6 +239,12 @@ void MeshFaceAddition::startEditing(MeshGui::ViewProviderMesh* vp)
 
 void MeshFaceAddition::finishEditing()
 {
+    if (finishing) {
+        return;
+    }
+    finishing = true;
+    targetDeletedConnection.disconnect();
+
     Gui::View3DInventor* view = static_cast<Gui::View3DInventor*>(parent());
     Gui::View3DInventorViewer* viewer = view->getViewer();
     viewer->setEditing(false);
@@ -225,31 +253,75 @@ void MeshFaceAddition::finishEditing()
     viewer->setRedirectToSceneGraphEnabled(false);
 
     viewer->removeViewProvider(faceView);
+    faceView->mesh = nullptr;
+    targetMesh.reset();
     // faceView->mesh->finishEditing();
     viewer->removeEventCallback(SoEvent::getClassTypeId(), MeshFaceAddition::addFacetCallback, this);
     this->deleteLater();
 }
 
+Mesh::Feature* MeshFaceAddition::targetFeature() const
+{
+    auto* viewProvider = targetMesh ? targetMesh->get() : nullptr;
+    return viewProvider ? viewProvider->getObject<Mesh::Feature>() : nullptr;
+}
+
 void MeshFaceAddition::addFace()
 {
-    Mesh::Feature* mf = faceView->mesh->getObject<Mesh::Feature>();
-    App::Document* doc = mf->getDocument();
-    doc->openTransaction("Add triangle");
-    Mesh::MeshObject* mesh = mf->Mesh.startEditing();
-    MeshCore::MeshFacet f;
-    f._aulPoints[0] = faceView->index[0];
-    f._aulPoints[1] = faceView->index[1];
-    f._aulPoints[2] = faceView->index[2];
-    std::vector<MeshCore::MeshFacet> faces;
-    faces.push_back(f);
-    auto numFaces = mesh->countFacets();
-    mesh->addFacets(faces, true);
-    mf->Mesh.finishEditing();
-    if (mesh->countFacets() > numFaces) {
-        doc->commitTransaction();
+    Mesh::Feature* mf = targetFeature();
+    if (!mf || !MeshGui::isNativeMeshInputActive(mf)) {
+        finishEditing();
+        return;
     }
-    else {
-        doc->abortTransaction();
+    if (faceView->index.size() != 3) {
+        clearPoints();
+        return;
+    }
+
+    const auto pointCount = mf->Mesh.getValue().countPoints();
+    if (std::ranges::any_of(faceView->index, [pointCount](int index) {
+            return index < 0 || static_cast<unsigned long>(index) >= pointCount;
+        })) {
+        clearPoints();
+        return;
+    }
+
+    App::Document* doc = mf->getDocument();
+    if (!MeshGui::hasCleanNativeMutationBoundary(doc)) {
+        clearPoints();
+        return;
+    }
+    try {
+        const std::vector<long> indices {
+            faceView->index[0],
+            faceView->index[1],
+            faceView->index[2],
+        };
+        MeshGui::createParametricMeshFilters(
+            *doc,
+            {
+                MeshGui::ParametricMeshFilterTarget {
+                    mf,
+                    [mf, indices](App::DocumentObject& object) {
+                        auto& edit = static_cast<Mesh::FacetEdit&>(object);
+                        edit.Action.setValue("Add Triangle");
+                        edit.Indices.setValues(indices);
+                        edit.AcceptedSource.setValue(mf->Mesh.getValue());
+                    },
+                },
+            },
+            MeshGui::ParametricMeshFilterSpec {
+                "Mesh::FacetEdit",
+                "AddTriangle",
+                "Add Mesh Triangle",
+                "Add triangle",
+            }
+        );
+        clearPoints();
+        finishEditing();
+        return;
+    }
+    catch (const Base::Exception&) {
         auto label = new Gui::StatusWidget(Gui::getMainWindow());
         label->setAttribute(Qt::WA_DeleteOnClose);
         label->setStatusText(tr("Cannot add triangle to avoid non-manifolds."));
@@ -298,12 +370,17 @@ bool MeshFaceAddition::addMarkerPoint()
 
 void MeshFaceAddition::showMarker(SoPickedPoint* pp)
 {
+    Mesh::Feature* mf = targetFeature();
+    if (!MeshGui::isNativeMeshInputActive(mf)) {
+        finishEditing();
+        return;
+    }
+
     const SbVec3f& vec = pp->getPoint();
     const SoDetail* detail = pp->getDetail();
     if (detail) {
         if (detail->isOfType(SoFaceDetail::getClassTypeId())) {
             const SoFaceDetail* fd = static_cast<const SoFaceDetail*>(detail);
-            Mesh::Feature* mf = faceView->mesh->getObject<Mesh::Feature>();
             const MeshCore::MeshFacetArray& facets = mf->Mesh.getValuePtr()->getKernel().GetFacets();
             const MeshCore::MeshPointArray& points = mf->Mesh.getValuePtr()->getKernel().GetPoints();
             // is the face index valid?
@@ -368,6 +445,11 @@ void MeshFaceAddition::showMarker(SoPickedPoint* pp)
 void MeshFaceAddition::addFacetCallback(void* ud, SoEventCallback* n)
 {
     MeshFaceAddition* that = static_cast<MeshFaceAddition*>(ud);
+    if (!MeshGui::isNativeMeshInputActive(that->targetFeature())) {
+        n->setHandled();
+        that->finishEditing();
+        return;
+    }
     ViewProviderFace* face = that->faceView;
     Gui::View3DInventorViewer* view = static_cast<Gui::View3DInventorViewer*>(n->getUserData());
 
@@ -562,15 +644,23 @@ void MeshFillHole::closeBridge()
         }
 
         App::Document* doc = myMesh->getDocument();
-        doc->openTransaction("Bridge && Fill hole");
-        Mesh::MeshObject* pMesh = myMesh->Mesh.startEditing();
-        bool ok = myHoleFiller.fillHoles(*pMesh, bounds, myVertex1, myVertex2);
-        myMesh->Mesh.finishEditing();
+        if (!MeshGui::hasCleanNativeMutationBoundary(doc)) {
+            return;
+        }
+        Gui::ExactTransaction transaction(*doc, "Bridge && Fill hole");
+        Mesh::MeshObject filled = myMesh->Mesh.getValue();
+        bool ok = myHoleFiller.fillHoles(filled, bounds, myVertex1, myVertex2);
         if (ok) {
-            doc->commitTransaction();
+            // Filling a boundary adds facets but does not renumber the
+            // existing ones, so existing segment metadata remains valid.
+            myMesh->Mesh.setValue(filled);
+            doc->recompute();
+            if (!transaction.commit()) {
+                Base::Console().error("The filled hole could not be committed\n");
+            }
         }
         else {
-            doc->abortTransaction();
+            (void)transaction.abort();
         }
     }
 }

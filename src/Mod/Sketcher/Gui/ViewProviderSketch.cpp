@@ -770,7 +770,11 @@ void ViewProviderSketch::deactivateHandler()
 void ViewProviderSketch::purgeHandler()
 {
     deactivateHandler();
-    Gui::Selection().clearSelection();
+    if (auto* sketchObject = getSketchObject()) {
+        Gui::Selection().rmvSelection(
+            sketchObject->getDocument()->getName(),
+            sketchObject->getNameInDocument());
+    }
 
     // ensure that we are in sketch only selection mode
     auto editDoc = Gui::Application::Instance->editDocument([this](Gui::Document* editdoc) {
@@ -4336,25 +4340,33 @@ void ViewProviderSketch::unsetEdit(int ModNum)
         selection.reset();
 
         if (editingCancelled) {
-            App::AutoTransaction trans(getDocument()->getDocument(), "Cancel sketch editing");
+            // Cancel must remain inside the transaction that began the edit.
+            // Opening an AutoTransaction here commits that transaction before
+            // Gui::Document::cancelEdit() can abort it.  In particular, that
+            // makes a newly created sketch survive Cancel.  Restore the edit
+            // backup in-place; _resetEdit() will then abort the original
+            // transaction and restore the exact pre-edit document state.
             // Restore the object as it was when edit is set.
             getObject()->restoreFromStream(sketchBackup);
             getSketchObject()->purgeTouched();
         }
         else {
-            App::AutoTransaction trans(getDocument()->getDocument(), "Sketch recompute");
             try {
-                // and update the sketch
-                // getSketchObject()->getDocument()->recompute();
-                Gui::Command::updateActive();
+                // Recompute is derived-state finalization, not a second user
+                // edit. Keep it outside a new undo transaction so accepting
+                // one sketch gesture produces exactly one undo record, and
+                // target the edited document even if another document became
+                // active while the task was open.
+                Gui::Command::updateDocument(getSketchObject()->getDocument());
             }
             catch (...) {
             }
         }
     }
 
-    // clear the selection and set the new/edited sketch(convenience)
-    Gui::Selection().clearSelection();
+    // Replace only this sketch's selection. Another document may be active
+    // while this exact edit task is finishing.
+    Gui::Selection().rmvSelection(editDocName.c_str(), editObjName.c_str());
     Gui::Selection().addSelection(editDocName.c_str(), editObjName.c_str(), editSubName.c_str());
 
     connectUndoDocument.disconnect();
@@ -4617,28 +4629,31 @@ const Sketcher::Sketch& ViewProviderSketch::getSolvedSketch() const
 
 void ViewProviderSketch::deleteSelected()
 {
-    std::vector<Gui::SelectionObject> selection;
-    selection = Gui::Selection().getSelectionEx(nullptr, Sketcher::SketchObject::getClassTypeId());
-
-    // only one sketch with its subelements are allowed to be selected
-    if (selection.size() != 1) {
-        Base::Console().developerWarning(
-            "ViewProviderSketch",
-            "Delete: Selection not restricted to one sketch and its subelements\n");
+    auto* sketchObject = getSketchObject();
+    if (!sketchObject || !sketchObject->getDocument()) {
         return;
     }
 
-    // get the needed lists and objects
-    const std::vector<std::string>& SubNames = selection[0].getSubNames();
+    std::vector<std::string> subNames;
+    for (const auto& selection :
+         Gui::Selection().getSelectionEx(sketchObject->getDocument()->getName())) {
+        if (selection.getObject() == sketchObject) {
+            subNames = selection.getSubNames();
+            break;
+        }
+    }
 
-    if (!SubNames.empty()) {
-        App::Document* doc = getSketchObject()->getDocument();
+    if (!subNames.empty()) {
+        auto* guiDocument =
+            Gui::Application::Instance->getDocument(sketchObject->getDocument());
+        if (!guiDocument
+            || guiDocument->openCommand("Delete sketch geometry")
+                == App::NullTransaction) {
+            return;
+        }
 
-        doc->openTransaction("Delete sketch geometry");
-
-        onDelete(SubNames);
-
-        doc->commitTransaction();
+        onDelete(subNames);
+        guiDocument->commitCommand();
     }
 }
 
@@ -4647,7 +4662,10 @@ bool ViewProviderSketch::onDelete(const std::vector<std::string>& subList)
     if (isInEditMode()) {
         std::vector<std::string> SubNames = subList;
 
-        Gui::Selection().clearSelection();
+        auto* sketchObject = getSketchObject();
+        Gui::Selection().rmvSelection(
+            sketchObject->getDocument()->getName(),
+            sketchObject->getNameInDocument());
         resetPreselectPoint();
 
         const auto& constraints = getSketchObject()->Constraints.getValues();
@@ -4809,7 +4827,7 @@ bool ViewProviderSketch::onDelete(const std::vector<std::string>& subList)
         // need to tidy up after ourselves again.
 
         if (viewProviderParameters.autoRecompute) {
-            Gui::Command::updateActive();
+            Gui::cmdAppDocument(getSketchObject()->getDocument(), "recompute()");
         }
         else {
             editCoinManager->drawConstraintIcons();

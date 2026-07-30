@@ -175,7 +175,7 @@ def _exercise_source_api() -> None:
         "construction_order"
     ][0]
     assert "working_revision" in description["model_verification_contract"]["success"]
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, sort_keys=True)) < 32_768
     assert description["recommended_patterns"]
 
@@ -528,9 +528,10 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": prepared["revision"],
-            "replacements": [
-                {"old": "expression='wheelbase / 2'", "new": "expression='B3'"}
-            ],
+            "source": create_capture["arguments"]["source"].replace(
+                "expression='wheelbase / 2'",
+                "expression='B3'",
+            ),
         },
     }
     failed_prepared = prepare_candidate(failed_capture)
@@ -561,9 +562,7 @@ def _exercise_lifecycle(root: Path) -> None:
         "arguments": {
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "replacements": [
-                {"old": "expression='B3'", "new": "expression='wheelbase / 2'"}
-            ],
+            "source": create_capture["arguments"]["source"],
         },
     }
     recovered_prepared, _execution, _validated, recovered_publication, accepted = (

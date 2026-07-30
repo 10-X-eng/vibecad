@@ -34,6 +34,8 @@
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
+#include <Gui/Document.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Tools.h>
 #include <Gui/ViewProvider.h>
@@ -42,6 +44,7 @@
 
 #include "ui_TaskBooleanParameters.h"
 #include "TaskBooleanParameters.h"
+#include "TaskDialogState.h"
 
 
 using namespace PartDesignGui;
@@ -222,7 +225,9 @@ void TaskBooleanParameters::onButtonBodyAdd(bool checked)
             doc->setHide(pcBoolean->BaseFeature.getValue()->getNameInDocument());
         }
         selectionMode = bodyAdd;
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(
+            pcBoolean->getDocument()->getName()
+        );
     }
     else {
         exitSelectionMode();
@@ -232,12 +237,18 @@ void TaskBooleanParameters::onButtonBodyAdd(bool checked)
 void TaskBooleanParameters::onButtonBodyRemove(bool checked)
 {
     if (checked) {
-        Gui::Document* doc = Gui::Application::Instance->activeDocument();
-        if (doc) {
-            BooleanView->show();
+        auto* boolean = BooleanView
+            ? BooleanView->getObject<PartDesign::Boolean>()
+            : nullptr;
+        if (!boolean || !boolean->isAttachedToDocument()) {
+            selectionMode = none;
+            return;
         }
+        BooleanView->show();
         selectionMode = bodyRemove;
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(
+            boolean->getDocument()->getName()
+        );
     }
     else {
         exitSelectionMode();
@@ -287,7 +298,7 @@ void TaskBooleanParameters::onBodyDeleted()
     PartDesign::Boolean* pcBoolean = BooleanView->getObject<PartDesign::Boolean>();
     std::vector<App::DocumentObject*> bodies = pcBoolean->Group.getValues();
     int index = ui->listWidgetBodies->currentRow();
-    if (index < 0 && (size_t)index > bodies.size()) {
+    if (index < 0 || static_cast<size_t>(index) >= bodies.size()) {
         return;
     }
 
@@ -339,8 +350,9 @@ void TaskBooleanParameters::changeEvent(QEvent* e)
 void TaskBooleanParameters::exitSelectionMode()
 {
     selectionMode = none;
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (doc) {
+    Gui::Document* doc = BooleanView ? BooleanView->getDocument() : nullptr;
+    if (doc && BooleanView->getObject()
+        && BooleanView->getObject()->isAttachedToDocument()) {
         doc->setShow(BooleanView->getObject()->getNameInDocument());
     }
 }
@@ -374,15 +386,16 @@ void TaskDlgBooleanParameters::clicked(int)
 
 bool TaskDlgBooleanParameters::accept()
 {
-    auto obj = BooleanView->getObject();
+    auto* obj = BooleanView->getObject<PartDesign::Boolean>();
     if (!obj || !obj->isAttachedToDocument()) {
         return false;
     }
-    BooleanView->Visibility.setValue(true);
+    TaskInternal::AcceptedMacro acceptedMacro;
 
     try {
         std::vector<std::string> bodies = parameter->getBodies();
         if (bodies.empty()) {
+            acceptedMacro.discard();
             QMessageBox::warning(parameter, tr("Empty Body List"), tr("The body list cannot be empty"));
             return false;
         }
@@ -396,12 +409,24 @@ bool TaskDlgBooleanParameters::accept()
         Gui::Command::runCommand(Gui::Command::Doc, str.str().c_str());
         FCMD_OBJ_CMD(obj, "Type = " << parameter->getType());
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-        obj->getDocument()->commitTransaction();
+        Gui::cmdAppDocument(obj, "recompute()");
+        if (!obj->isValid() || obj->Shape.getShape().isNull()
+            || !obj->Shape.getShape().isValid()) {
+            const char* status = obj->getStatusString();
+            throw Base::RuntimeError(
+                status && *status
+                    ? status
+                    : "Boolean did not produce valid geometry"
+            );
+        }
+
+        BooleanView->Visibility.setValue(true);
+        Gui::cmdGuiDocument(obj, "resetEdit()");
     }
     catch (const Base::Exception& e) {
-        obj->getDocument()->abortTransaction();
+        acceptedMacro.discard();
+        // Invalid input is not Cancel. Keep the provisional Boolean and task
+        // alive so the user can fix the operands or operation type.
         QMessageBox::warning(
             parameter,
             tr("Boolean: Accept: Input error"),
@@ -409,28 +434,13 @@ bool TaskDlgBooleanParameters::accept()
         );
         return false;
     }
+    acceptedMacro.publish();
     return true;
 }
 
 bool TaskDlgBooleanParameters::reject()
 {
-    // Show the bodies again
-    PartDesign::Boolean* obj = BooleanView->getObject<PartDesign::Boolean>();
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    if (doc) {
-        if (obj->BaseFeature.getValue()) {
-            doc->setShow(obj->BaseFeature.getValue()->getNameInDocument());
-            std::vector<App::DocumentObject*> bodies = obj->Group.getValues();
-            for (auto body : bodies) {
-                doc->setShow(body->getNameInDocument());
-            }
-        }
-        // roll back the done things
-        doc->abortCommand();
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-    }
-
-    return true;
+    return TaskDlgFeatureParameters::reject();
 }
 
 #include "moc_TaskBooleanParameters.cpp"

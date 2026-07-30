@@ -68,6 +68,7 @@ protected:
     double getAngle() const;
     double getMaxSize() const;
     double getMinSize() const;
+    QString executablePath() const;
     virtual bool writeProject(QString& inpFile, QString& outFile);
     virtual bool loadOutput();
 

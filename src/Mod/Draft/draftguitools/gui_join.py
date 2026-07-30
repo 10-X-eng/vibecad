@@ -83,16 +83,23 @@ class Join(gui_base_original.Modifier):
         """
         if self.call is not None:
             self.end_callbacks(self.call)
-        if Gui.Selection.getSelection():
+        selection = Gui.Selection.getSelection()
+        if selection:
             self.print_selection()
-            if all(utils.get_type(o) == "Wire" for o in Gui.Selection.getSelection()):
-                Gui.addModule("Draft")
-                _cmd = "Draft.join_wires"
-                _cmd += "("
-                _cmd += "FreeCADGui.Selection.getSelection()"
-                _cmd += ")"
+            if all(utils.get_type(o) == "Wire" for o in selection):
+                Gui.addModule("draftutils.timeline")
+                selected_objects = ", ".join(
+                    "FreeCAD.ActiveDocument.getObject(" + repr(obj.Name) + ")"
+                    for obj in selection
+                )
+                _cmd = "draftutils.timeline.join_replacement"
+                _cmd += "([" + selected_objects + "])"
                 _cmd_list = ["j = " + _cmd, "FreeCAD.ActiveDocument.recompute()"]
-                self.commit(translate("draft", "Join Lines"), _cmd_list)
+                self.commit(
+                    translate("draft", "Join Lines"),
+                    _cmd_list,
+                    inputs=selection,
+                )
             else:
                 _err(translate("draft", "Only Draft lines and wires can be joined"))
         self.finish()

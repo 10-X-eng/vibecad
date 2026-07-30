@@ -24,7 +24,9 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
+#include <string>
 #include <Inventor/SbBox3f.h>
 #include <QDialog>
 #include <Base/BoundBox.h>
@@ -58,6 +60,7 @@ public:
     static SectionCut* makeDockWidget(QWidget* parent = nullptr);
     explicit SectionCut(QWidget* parent = nullptr);
     ~SectionCut() override;
+    void refreshForActiveDocument();
 
 protected Q_SLOTS:
     void onGroupBoxXtoggled();
@@ -88,6 +91,19 @@ public:
     void reject() override;
 
 private:
+    struct ExactObjectIdentity
+    {
+        void capture(App::DocumentObject* object);
+        void clear();
+        [[nodiscard]] App::DocumentObject* resolve(
+            App::Document* document
+        ) const;
+
+        long objectId {-1};
+        std::string documentUid;
+        std::string objectName;
+    };
+
     struct Args
     {
         Base::Vector3f origin;
@@ -102,6 +118,47 @@ private:
     void processXBoxAndCut(const Args& args);
     void processYBoxAndCut(const Args& args);
     void processZBoxAndCut(const Args& args);
+
+    bool runAtomicChange(
+        const char* transactionName,
+        const std::function<void()>& change,
+        bool publishResult = true
+    );
+    [[nodiscard]] bool atomicChangeActive() const;
+    [[nodiscard]] bool ownsLiveDocument() const;
+    [[nodiscard]] bool finalizeClose();
+    [[nodiscard]] Part::Compound* findSemanticOwner() const;
+    [[nodiscard]] Part::Compound* ensureSemanticOwner();
+    void ensureSemanticResourceProperties(Part::Compound& owner);
+    [[nodiscard]] App::DocumentObject* semanticTopResult() const;
+    [[nodiscard]] App::DocumentObject* semanticResource(
+        const char* objectRole
+    ) const;
+    void setSemanticResource(
+        const char* objectRole,
+        App::DocumentObject* resource
+    );
+    [[nodiscard]] std::vector<App::DocumentObject*>
+        semanticLinkResources() const;
+    void setSemanticLinkResources(
+        const std::vector<App::DocumentObject*>& resources
+    );
+    void rememberNewResource(App::DocumentObject* resource);
+    void captureLegacyResources();
+    void clearLegacyResources();
+    [[nodiscard]] std::vector<App::DocumentObject*> exactSourceObjects() const;
+    void loadSemanticSources();
+    void publishSemanticResult();
+    void validateSemanticResult() const;
+    void finalizeSemanticTimeline();
+    void setAcceptedVisibility(bool showCut);
+    void syncSemanticAppearance(
+        Part::Compound& owner,
+        App::DocumentObject& result
+    ) const;
+    void markOwnedResource(App::DocumentObject& resource, Part::Compound& owner);
+    void markReachableResources(App::DocumentObject& top, Part::Compound& owner);
+    [[nodiscard]] bool hasCompleteCutGraph() const;
 
     void initSpinBoxes();
     void initControls(const Base::BoundBox3d&);
@@ -195,10 +252,17 @@ private:
     std::unique_ptr<Ui_SectionCut> ui;
     std::vector<App::DocumentObjectT> ObjectsListVisible;
     App::Document* doc = nullptr;  // pointer to active document
+    std::string documentUid;
+    mutable ExactObjectIdentity semanticOwnerIdentity;
+    std::vector<ExactObjectIdentity> newResourceIdentities;
+    std::array<ExactObjectIdentity, 7> legacyResourceIdentities;
+    std::vector<ExactObjectIdentity> legacyLinkIdentities;
     bool hasBoxX = false;
     bool hasBoxY = false;
     bool hasBoxZ = false;
     bool hasBoxCustom = false;
+    bool closeFinalized = false;
+    int atomicChangeDepth = 0;
     const char* CompoundName = "SectionCutCompound";
     const char* BoxXName = "SectionCutBoxX";
     const char* BoxYName = "SectionCutBoxY";

@@ -26,6 +26,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace App
 {
@@ -35,6 +36,7 @@ class DocumentObject;
 namespace TechDraw
 {
 class DrawGeomHatch;
+class DrawView;
 }
 
 
@@ -62,6 +64,7 @@ protected:
     void updateValues();
     void getParameters();
     QStringList listToQ(std::vector<std::string> inList);
+    bool resolveTargets();
 
 protected Q_SLOTS:
     void onFileChanged();
@@ -70,7 +73,9 @@ private:
     std::unique_ptr<Ui_TaskGeomHatch> ui;
     TechDraw::DrawGeomHatch* m_hatch;
     TechDrawGui::ViewProviderGeomHatch* m_Vp;
-    App::DocumentObject* m_source;
+    TechDraw::DrawView* m_source;
+    TaskInternal::ObjectIdentity<TechDraw::DrawGeomHatch> m_hatchIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawView> m_sourceIdentity;
     std::string m_file;
     std::string m_name;
     double m_scale;

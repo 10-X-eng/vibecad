@@ -21,6 +21,10 @@ class _Control:
         """Return the active task dialog, if any."""
         ...
 
+    def ownsCommandTransaction(self, document: Document, transaction_id: int, /) -> bool:
+        """Return whether the active command or task owns the transaction."""
+        ...
+
     def closeDialog(self, document: Document | None = None, /) -> None:
         """Close the active task dialog."""
         ...

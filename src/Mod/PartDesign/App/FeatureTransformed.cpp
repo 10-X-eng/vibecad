@@ -76,14 +76,14 @@ Transformed::Transformed()
         GeneratedOccurrenceCount,
         (0),
         "Transformation diagnostics",
-        App::Prop_ReadOnly,
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Output),
         "Native transformation count generated during the latest execute"
     );
     ADD_PROPERTY_TYPE(
         RejectedSolidCount,
         (0),
         "Transformation diagnostics",
-        App::Prop_ReadOnly,
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Output),
         "Disconnected solids rejected by the latest execute"
     );
 }
@@ -93,7 +93,7 @@ void Transformed::positionBySupport()
     // TODO May be here better to throw exception (silent=false) (2015-07-27, Fat-Zer)
     Part::Feature* support = getBaseObject(/* silent =*/true);
     if (support) {
-        this->Placement.setValue(support->Placement.getValue());
+        this->Placement.setValueIfChanged(support->Placement.getValue());
     }
 }
 
@@ -340,9 +340,17 @@ void Transformed::onChanged(const App::Property* prop)
 
 App::DocumentObjectExecReturn* Transformed::execute()
 {
-    GeneratedOccurrenceCount.setValue(0);
-    RejectedSolidCount.setValue(0);
+    const auto setDiagnostic = [](App::PropertyInteger& property, int value) {
+        if (property.getValue() != value) {
+            property.setValue(value);
+        }
+    };
+    const auto clearDiagnostics = [this, &setDiagnostic]() {
+        setDiagnostic(GeneratedOccurrenceCount, 0);
+        setDiagnostic(RejectedSolidCount, 0);
+    };
     if (isMultiTransformChild()) {
+        clearDiagnostics();
         return App::DocumentObject::StdReturn;
     }
 
@@ -351,6 +359,7 @@ App::DocumentObjectExecReturn* Transformed::execute()
     std::vector<DocumentObject*> originals = getOriginals();
 
     if (mode == Mode::Features && originals.empty()) {
+        clearDiagnostics();
         return App::DocumentObject::StdReturn;
     }
 
@@ -369,16 +378,18 @@ App::DocumentObjectExecReturn* Transformed::execute()
         transformations.insert(transformations.end(), t_list.begin(), t_list.end());
     }
     catch (Base::Exception& e) {
+        clearDiagnostics();
         return new App::DocumentObjectExecReturn(e.what());
     }
     catch (const Standard_Failure& e) {
+        clearDiagnostics();
         return new App::DocumentObjectExecReturn(e.GetMessageString());
     }
 
     if (transformations.empty()) {
+        clearDiagnostics();
         return App::DocumentObject::StdReturn;  // No transformations defined, exit silently
     }
-    GeneratedOccurrenceCount.setValue(static_cast<int>(transformations.size()));
 
     // Get the support
     Part::Feature* supportFeature = nullptr;
@@ -387,11 +398,13 @@ App::DocumentObjectExecReturn* Transformed::execute()
         supportFeature = getBaseObject();
     }
     catch (Base::Exception& e) {
+        clearDiagnostics();
         return new App::DocumentObjectExecReturn(e.what());
     }
 
     const Part::TopoShape& supportTopShape = supportFeature->Shape.getShape();
     if (supportTopShape.getShape().IsNull()) {
+        clearDiagnostics();
         return new App::DocumentObjectExecReturn(
             QT_TRANSLATE_NOOP("Exception", "Cannot transform invalid support shape")
         );
@@ -435,6 +448,7 @@ App::DocumentObjectExecReturn* Transformed::execute()
 
                 auto feature = freecad_cast<PartDesign::FeatureAddSub*>(original);
                 if (!feature) {
+                    clearDiagnostics();
                     return new App::DocumentObjectExecReturn(QT_TRANSLATE_NOOP(
                         "Exception",
                         "Only additive and subtractive features can be transformed"
@@ -443,6 +457,7 @@ App::DocumentObjectExecReturn* Transformed::execute()
 
                 feature->getAddSubShape(fuseShape, cutShape);
                 if (fuseShape.isNull() && cutShape.isNull()) {
+                    clearDiagnostics();
                     return new App::DocumentObjectExecReturn(
                         QT_TRANSLATE_NOOP("Exception", "Shape of additive/subtractive feature is empty")
                     );
@@ -457,6 +472,7 @@ App::DocumentObjectExecReturn* Transformed::execute()
                 if (!fuseShape.isNull()) {
                     auto shapes = getTransformedCompShape(supportShape, fuseShape);
                     if (Base::Sequencer().wasCanceled()) {
+                        clearDiagnostics();
                         return new App::DocumentObjectExecReturn("User aborted");
                     }
                     supportShape.makeElementFuse(shapes);
@@ -464,6 +480,7 @@ App::DocumentObjectExecReturn* Transformed::execute()
                 if (!cutShape.isNull()) {
                     auto shapes = getTransformedCompShape(supportShape, cutShape);
                     if (Base::Sequencer().wasCanceled()) {
+                        clearDiagnostics();
                         return new App::DocumentObjectExecReturn("User aborted");
                     }
                     supportShape.makeElementCut(shapes);
@@ -473,6 +490,7 @@ App::DocumentObjectExecReturn* Transformed::execute()
         case Mode::WholeShape: {
             auto shapes = getTransformedCompShape(supportShape, supportShape);
             if (Base::Sequencer().wasCanceled()) {
+                clearDiagnostics();
                 return new App::DocumentObjectExecReturn("User aborted");
             }
             supportShape.makeElementFuse(shapes);
@@ -483,16 +501,18 @@ App::DocumentObjectExecReturn* Transformed::execute()
     supportShape = refineShapeIfActive((supportShape));
 
     this->Shape.setValue(getSolid(supportShape));
+    setDiagnostic(GeneratedOccurrenceCount, static_cast<int>(transformations.size()));
     if (singleSolidRuleMode() == SingleSolidRuleMode::Enforced) {
         rejected = getRemainingSolids(supportShape.getShape());
         int rejectedCount = 0;
         for (TopExp_Explorer explorer(rejected, TopAbs_SOLID); explorer.More(); explorer.Next()) {
             ++rejectedCount;
         }
-        RejectedSolidCount.setValue(rejectedCount);
+        setDiagnostic(RejectedSolidCount, rejectedCount);
     }
     else {
         rejected.Nullify();
+        setDiagnostic(RejectedSolidCount, 0);
     }
 
     return App::DocumentObject::StdReturn;

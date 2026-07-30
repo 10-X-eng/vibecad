@@ -27,13 +27,16 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Mod/TechDraw/TechDrawGlobal.h>
 #include <Base/Vector3D.h>
 
 namespace App {
+class Document;
 class DocumentObject;
+class DocumentObjectGroup;
 }
 
 namespace Gui {
@@ -58,6 +61,21 @@ std::vector<std::string> getSelectedSubElements(Gui::Command* cmd,
 
 std::pair<App::DocumentObject*, std::string> faceFromSelection();
 
+/**
+ * Represent several user-visible outputs created by one accepted command as
+ * one durable document-history operation.
+ *
+ * A single output remains its own operation. For multiple outputs this
+ * creates an explicit, labeled operation group and classifies the outputs as
+ * its owned resources. The generated Python command stream records the same
+ * graph for macro replay.
+ */
+App::DocumentObjectGroup* groupTimelineOutputs(
+    App::Document* document,
+    const std::vector<App::DocumentObject*>& outputs,
+    const char* name,
+    const char* label
+);
 
-}   // end namespace CommandHelpers
-}   // end namespace TechDraw
+}  // end namespace CommandHelpers
+}  // end namespace TechDraw

@@ -64,6 +64,7 @@
 #include "QGSPage.h"
 #include "QGVPage.h"
 #include "Rez.h"
+#include "TaskDocumentGuard.h"
 #include "ViewProviderDrawingView.h"
 #include "ViewProviderPage.h"
 #include "ZVALUE.h"
@@ -247,28 +248,40 @@ void QGIView::dragFinished()
         return;
     }
 
-    bool ownTransaction = (viewObj->getDocument()->getTransactionID(true) == 0);
-
-    if (ownTransaction) {
-        viewObj->getDocument()->openTransaction("Drag view");
-    }
     // tell the feature that we have moved
     Gui::ViewProvider *vp = getViewProvider(viewObj);
-    if (vp && !vp->isRestoring()) {
-        snapping = true; // avoid triggering updateView by the VP updateData
-        if (setX) {
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.X = %f",
-                                viewObj->getNameInDocument(), candidateX);
-        }
-        if (setY) {
-            Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.Y = %f",
-                                viewObj->getNameInDocument(), candidateY);
-        }
-
-        snapping = false;
+    if (!vp || vp->isRestoring()) {
+        return;
     }
-    if (ownTransaction) {
-        viewObj->getDocument()->commitTransaction();
+
+    try {
+        App::Document* document = viewObj->getDocument();
+        TaskInternal::OwnedDocumentTransaction transaction(
+            document,
+            QT_TRANSLATE_NOOP("Command", "Drag view")
+        );
+        snapping = true; // avoid triggering updateView by the VP updateData
+        try {
+            if (setX) {
+                viewObj->X.setValue(candidateX);
+            }
+            if (setY) {
+                viewObj->Y.setValue(candidateY);
+            }
+        }
+        catch (...) {
+            snapping = false;
+            throw;
+        }
+        snapping = false;
+        TaskInternal::updateExactDocument(document);
+        transaction.commit();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().warning(
+            "Could not store the drawing-view position: %s\n",
+            error.what()
+        );
     }
 }
 
@@ -587,6 +600,12 @@ QGIViewClip* QGIView::getClipGroup()
 void QGIView::updateView(bool forceUpdate)
 {
     Q_UNUSED(forceUpdate);
+
+    auto* viewObject = getViewObject();
+    if (!viewObject || !viewObject->isActiveInDocumentTimeline()) {
+        hide();
+        return;
+    }
 
     setMovableFlag();
 

@@ -34,6 +34,15 @@ except ImportError:
         return msg
 
 
+def _is_modeling_object_active(feature):
+    # PartGui imports this module while its extension module is still being
+    # initialized. Resolve PartGui only when a command is queried or invoked,
+    # after that initialization has completed.
+    import PartGui
+
+    return PartGui.isModelingObjectActive(feature)
+
+
 def editAttachment(
     feature=None,
     take_selection=False,
@@ -66,6 +75,10 @@ def editAttachment(
     global taskd  # exposing to outside, for ease of debugging
     if feature is None:
         feature = Gui.Selection.getSelectionEx()[0].Object
+    if not _is_modeling_object_active(feature):
+        raise RuntimeError(
+            "The selected object is not in the current History state"
+        )
 
     try:
         taskd = TaskAttachmentEditor.AttachmentEditorTaskPanel(
@@ -110,7 +123,10 @@ class CommandEditAttachment:
     def IsActive(self):
         sel = Gui.Selection.getSelectionEx()
         if len(sel) == 1:
-            if hasattr(sel[0].Object, "Placement"):
+            if (
+                _is_modeling_object_active(sel[0].Object)
+                and hasattr(sel[0].Object, "Placement")
+            ):
                 return True
         return False
 

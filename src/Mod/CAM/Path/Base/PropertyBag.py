@@ -23,6 +23,7 @@
 from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import Path
+import Path.Base.Util as PathUtil
 import re
 
 __title__ = "Generic property container to store some values."
@@ -176,9 +177,13 @@ class PropertyBag(object):
             setattr(self.obj, self.CustomPropertyGroups, customGroups)
 
 
-def Create(name="PropertyBag"):
-    obj = FreeCAD.ActiveDocument.addObject("App::FeaturePython", name)
+def Create(name="PropertyBag", document=None):
+    document = document or FreeCAD.ActiveDocument
+    if document is None:
+        raise RuntimeError("A PropertyBag requires a document")
+    obj = document.addObject("App::FeaturePython", name)
     obj.Proxy = PropertyBag(obj)
+    PathUtil.markTimelineOperation(obj)
     return obj
 
 

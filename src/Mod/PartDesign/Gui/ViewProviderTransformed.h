@@ -52,6 +52,11 @@ public:
     ViewProviderTransformed() = default;
     ~ViewProviderTransformed() override = default;
 
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
+
     // The feature name of the subclass
     virtual const std::string& featureName() const;
     std::string featureIcon() const;

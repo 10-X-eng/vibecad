@@ -65,6 +65,10 @@ public:
     /// destructor
     ~ViewProviderPart() override;
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
 
 protected:
     void applyColor(

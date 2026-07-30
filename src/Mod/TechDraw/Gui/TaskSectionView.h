@@ -26,10 +26,12 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 class Ui_TaskSectionView;
 
 namespace TechDraw {
+    class DrawPage;
     class DrawViewPart;
     class DrawViewSection;
 }
@@ -100,6 +102,11 @@ private:
     std::unique_ptr<Ui_TaskSectionView> ui;
     TechDraw::DrawViewPart* m_base;
     TechDraw::DrawViewSection* m_section;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_baseIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewSection>
+        m_sectionIdentity;
+    TaskInternal::DocumentIdentity m_documentIdentity;
     std::string m_symbol;
     Base::Vector3d m_normal;
     Base::Vector3d m_direction;
@@ -115,14 +122,10 @@ private:
 
     std::string m_dirName;
     std::string m_sectionName;
-    std::string m_baseName;
     App::Document* m_doc;
 
     bool m_createMode;
     bool m_saved;
-
-    std::string m_saveBaseName;
-    std::string m_savePageName;
 
     int m_applyDeferred;
     CompassWidget* m_compass;

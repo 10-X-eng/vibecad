@@ -994,7 +994,7 @@ def main() -> int:
     assert "One-way" in description["canonical_operations"]["fit_metrics"][
         "meaning"
     ]
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, allow_nan=False).encode("utf-8")) < 32 * 1024
 
     document = App.newDocument(

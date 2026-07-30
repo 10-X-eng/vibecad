@@ -42,7 +42,9 @@ public:
     void accept() override;
 
 private:
-    void perform();
+    bool perform();
+    class SelectionState;
+    std::unique_ptr<SelectionState> selectionState;
     std::unique_ptr<Ui_ShapeFromMesh> ui;
 };
 

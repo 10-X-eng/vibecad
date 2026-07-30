@@ -128,7 +128,11 @@ class Rectangle(gui_base_original.Creator):
                     "Draft.select(plane)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Plane"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Plane"),
+                    _cmd_list,
+                    inputs=(),
+                )
             else:
                 _cmd = "Draft.make_rectangle"
                 _cmd += "("
@@ -146,7 +150,11 @@ class Rectangle(gui_base_original.Creator):
                     "Draft.autogroup(rec)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Rectangle"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Rectangle"),
+                    _cmd_list,
+                    inputs=self.getSupportInputs(),
+                )
         except Exception:
             _err("Draft: error delaying commit")
         self.finish(cont=None)

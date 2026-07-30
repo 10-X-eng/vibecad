@@ -35,6 +35,7 @@ import FreeCADGui
 import FemGui
 from PySide import QtGui
 from femtaskpanels import task_mesh_gmsh
+from femtaskpanels.base_femtaskpanel import _TaskTargetIdentity
 from femtools.femutils import is_of_type, type_of_obj
 
 _supported_definitions = [
@@ -57,6 +58,9 @@ class VPMeshGmsh:
     A View Provider for the MeshGmsh object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def __init__(self, vobj):
         vobj.Proxy = self
 
@@ -74,6 +78,8 @@ class VPMeshGmsh:
         return
 
     def setEdit(self, vobj, mode):
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document()
         # hide all FEM meshes and VTK FemPost* objects
         for obj in vobj.Object.Document.Objects:
             if (
@@ -95,7 +101,8 @@ class VPMeshGmsh:
         # show task panel
         taskd = task_mesh_gmsh._TaskPanel(self.Object)
         # taskd.obj = vobj.Object
-        FreeCADGui.Control.showDialog(taskd)
+        FreeCADGui.Control.showDialog(taskd, gui_document)
+        self._fem_edit_identity = identity
         return True
 
     """
@@ -110,13 +117,21 @@ class VPMeshGmsh:
 
     # overwrite unsetEdit
     def unsetEdit(self, vobj, mode):
-        FreeCADGui.Control.closeDialog()
+        identity = getattr(self, "_fem_edit_identity", None)
+        if identity is None:
+            identity = _TaskTargetIdentity(vobj.Object)
+        gui_document = identity.resolve_gui_document(
+            require_object=False
+        )
+        FreeCADGui.Control.closeDialog(gui_document)
+        self._fem_edit_identity = None
         return True
 
     def doubleClicked(self, vobj):
         # Group meshing is only active on active analysis
         # we should make sure the analysis the mesh belongs too is active
-        gui_doc = FreeCADGui.getDocument(vobj.Object.Document)
+        identity = _TaskTargetIdentity(vobj.Object)
+        gui_doc = identity.resolve_gui_document()
         if not gui_doc.getInEdit():
             # may be go the other way around and just activate the
             # analysis the user has doubleClicked on ?!

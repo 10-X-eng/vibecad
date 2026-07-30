@@ -58,7 +58,13 @@ def insert(filename, docname):
 
 
 # ********* module specific methods *********
-def setupPipeline(doc, analysis, results_name, result_data):
+def setupPipeline(
+    doc,
+    analysis,
+    results_name,
+    result_data,
+    _result_graph=None,
+):
     import ObjectsFem
     from . import importToolsFem
 
@@ -71,7 +77,8 @@ def setupPipeline(doc, analysis, results_name, result_data):
     fem_prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/General")
     keep_results_on_rerun = fem_prefs.GetBool("KeepResultsOnReRun", False)
 
-    if not pipelines or keep_results_on_rerun:
+    pipeline_created = not pipelines or keep_results_on_rerun
+    if pipeline_created:
         # needs to create a new pipeline!
         pipeline_obj = ObjectsFem.makePostVtkResult(doc, result_data, results_name)
         pipeline_visibility = True
@@ -84,6 +91,15 @@ def setupPipeline(doc, analysis, results_name, result_data):
         named_pipeline = analysis.getObject(pipeline_name)
         if named_pipeline:
             pipeline_obj = named_pipeline
+
+        if _result_graph is not None:
+            from femcommands.manager import (
+                _stage_timeline_result_graph,
+            )
+
+            _result_graph["reconciliation"] = (
+                _stage_timeline_result_graph(pipeline_obj)
+            )
 
         if FreeCAD.GuiUp:
             # store pipeline visibility because pipeline_obj.load makes the
@@ -109,8 +125,19 @@ def setupPipeline(doc, analysis, results_name, result_data):
         # restore pipeline visibility
         pipeline_obj.ViewObject.Visibility = pipeline_visibility
 
+    if _result_graph is not None:
+        _result_graph["pipeline"] = pipeline_obj
+        _result_graph["pipeline_created"] = pipeline_created
+    return pipeline_obj
 
-def importFrd(filename, analysis=None, result_name_prefix="", result_analysis_type=""):
+
+def importFrd(
+    filename,
+    analysis=None,
+    result_name_prefix="",
+    result_analysis_type="",
+    _result_graph=None,
+):
     import ObjectsFem
     from . import importToolsFem
 
@@ -137,6 +164,10 @@ def importFrd(filename, analysis=None, result_name_prefix="", result_analysis_ty
             result_mesh_object = ObjectsFem.makeMeshResult(doc, results_name + "_Mesh")
             result_mesh_object.FemMesh = mesh
             res_obj.Mesh = result_mesh_object
+            if _result_graph is not None:
+                _result_graph["objects"].extend(
+                    (res_obj, result_mesh_object)
+                )
             return res_obj
 
         multistep_result = []
@@ -234,7 +265,13 @@ def importFrd(filename, analysis=None, result_name_prefix="", result_analysis_ty
 
                 # if we have multiple results we delay the pipeline creation
                 if number_of_increments == 1:
-                    setupPipeline(doc, analysis, results_name, [res_obj])
+                    setupPipeline(
+                        doc,
+                        analysis,
+                        results_name,
+                        [res_obj],
+                        _result_graph,
+                    )
                 else:
                     multistep_value.append(step_time)
                     multistep_result.append(res_obj)
@@ -264,12 +301,19 @@ def importFrd(filename, analysis=None, result_name_prefix="", result_analysis_ty
                     analysis,
                     results_name,
                     [multistep_result, multistep_value, unit, description],
+                    _result_graph,
                 )
 
         elif result_analysis_type == "check":
             results_name = f"{result_name_prefix}Check"
             res_obj = make_result_mesh(results_name)
-            setupPipeline(doc, analysis, results_name, [res_obj])
+            setupPipeline(
+                doc,
+                analysis,
+                results_name,
+                [res_obj],
+                _result_graph,
+            )
             if analysis:
                 analysis.addObject(res_obj)
 
@@ -293,8 +337,16 @@ def importFrd(filename, analysis=None, result_name_prefix="", result_analysis_ty
             else:
                 results_name = "Results"
             res_obj = ObjectsFem.makeResultMechanical(doc, results_name)
+            if _result_graph is not None:
+                _result_graph["objects"].append(res_obj)
             res_obj.Mesh = result_mesh_object
-            setupPipeline(doc, analysis, results_name, [res_obj])
+            setupPipeline(
+                doc,
+                analysis,
+                results_name,
+                [res_obj],
+                _result_graph,
+            )
             # TODO, node numbers in result obj could be set
             if analysis:
                 analysis.addObject(res_obj)
@@ -312,6 +364,60 @@ def importFrd(filename, analysis=None, result_name_prefix="", result_analysis_ty
         # or would it be better to raise an exception if there are not even nodes in frd file?
 
     return res_obj
+
+
+def importFrdResultGraph(
+    filename,
+    analysis,
+    result_name_prefix="",
+    result_analysis_type="",
+    include_reconciliation=False,
+):
+    """Return the exact semantic object graph created by one FRD import.
+
+    The ordinary :func:`importFrd` result remains unchanged for existing
+    callers. Solver integrations use this additive entry point so document
+    History can classify the identities returned by the importer itself
+    instead of inferring them from a document delta.
+    """
+
+    graph = {
+        "objects": [],
+        "pipeline": None,
+        "pipeline_created": False,
+        "reconciliation": None,
+    }
+    legacy_result = importFrd(
+        filename,
+        analysis,
+        result_name_prefix,
+        result_analysis_type,
+        graph,
+    )
+    root = graph["pipeline"] or legacy_result
+    if root is None:
+        result = (legacy_result, None, (), False)
+        return (*result, None) if include_reconciliation else result
+
+    resources = []
+    for obj in graph["objects"]:
+        if obj is root or obj in resources:
+            continue
+        resources.append(obj)
+    root_is_new = (
+        graph["pipeline_created"]
+        if graph["pipeline"] is not None
+        else root in graph["objects"]
+    )
+    result = (
+        legacy_result,
+        root,
+        tuple(resources),
+        root_is_new,
+    )
+    if include_reconciliation:
+        return (*result, graph["reconciliation"])
+    return result
 
 
 # read a calculix result file and extract the nodes

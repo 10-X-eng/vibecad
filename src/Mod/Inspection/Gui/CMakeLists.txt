@@ -2,6 +2,7 @@
 
 set(InspectionGui_LIBS
     Inspection
+    PartGui
     FreeCADGui
 )
 
@@ -32,6 +33,7 @@ SET(InspectionGui_SRCS
 
 set(InspectionGui_Scripts
     ../InitGui.py
+    ../TestInspectionGui.py
 )
 
 SET(InspectionGuiIcon_SVG

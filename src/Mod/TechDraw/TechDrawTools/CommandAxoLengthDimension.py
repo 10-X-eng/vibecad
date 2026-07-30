@@ -36,6 +36,7 @@ import FreeCAD as App
 import FreeCADGui as Gui
 
 import TechDrawTools.TDToolsUtil as Utils
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 import TechDraw
 import math
@@ -52,7 +53,7 @@ def makePlumb(dimensionLineAngle):
     if math.isclose(dimensionLineAngle, HalfPi, abs_tol=AngularTolerance):
         return HalfPi
     elif math.isclose(dimensionLineAngle, -HalfPi, abs_tol=AngularTolerance):
-        return -HalfPie
+        return -HalfPi
  
     return dimensionLineAngle
     
@@ -74,15 +75,12 @@ class CommandAxoLengthDimension:
 
     def Activated(self):
         """Run the following code when the command is activated (button press)."""
-
-        App.ActiveDocument.openTransaction("Create axonometric length dimension")
-        vertexes = []
-        edges = []
-
-        if not Utils.getSelEdges(2):
+        if not self.IsActive():
             return
-            
+
         edges = Utils.getSelEdges(2)
+        if not edges:
+            return
         vertexes = Utils.getSelVertexes(0)
 
         vertNames = list()
@@ -95,8 +93,12 @@ class CommandAxoLengthDimension:
             vertNames = Utils.getSelVertexNames(2)
 
         view = Utils.getSelView()
+        if view is None:
+            return
+        document = view.Document
         page = view.findParentPage()
-        scale = view.getScale()
+        if page is None:
+            return
 
         StartPt, EndPt = edges[1].Vertexes[0].Point, edges[1].Vertexes[1].Point
         extLineVec = EndPt.sub(StartPt)
@@ -113,59 +115,97 @@ class CommandAxoLengthDimension:
             lineAngle = 180-lineAngle
 
         if abs(extAngle-lineAngle)>0.1:
+            transaction = _OwnedDocumentTransaction(
+                document,
+                "Create axonometric length dimension",
+            )
             # re issue: https://github.com/FreeCAD/FreeCAD/issues/13677
             # Instead of using makeDistanceDim (which is meant for extent dimensions), we use the 
             # same steps as in CommandCreateDims.cpp to create a regular length dimension.  This avoids
             # the creation of CosmeticVertex objects to serve as dimension points.  These CosmeticVertex
             # objects are never deleted, but are no longer used once their dimension is deleted. 
             # distanceDim=TechDraw.makeDistanceDim(view,'Distance',vertexes[0].Point*scale,vertexes[1].Point*scale)
-            distanceDim = view.Document.addObject("TechDraw::DrawViewDimension", "Dimension")
-            distanceDim.Type = "Distance"
-            distanceDim.MeasureType = "Projected"       #should this not be True?
-            self.setReferences(distanceDim, view, edgeNames, vertNames)
-            page.addView(distanceDim)
+            try:
+                distanceDim = document.addObject(
+                    "TechDraw::DrawViewDimension",
+                    "Dimension",
+                )
+                distanceDim.Type = "Distance"
+                distanceDim.MeasureType = "Projected"
+                self.setReferences(distanceDim, view, edgeNames, vertNames)
+                page.addView(distanceDim)
 
-            distanceDim.AngleOverride = True
-            distanceDim.LineAngle = lineAngle
-            distanceDim.ExtensionAngle = extAngle
+                distanceDim.AngleOverride = True
+                distanceDim.LineAngle = lineAngle
+                distanceDim.ExtensionAngle = extAngle
 
-            distanceDim.recompute()     # ensure linearPoints has been set
+                distanceDim.recompute()
 
-            # as in CmdCreateDims::positionDimText:
-            linearPoints = distanceDim.getLinearPoints()
-            mid = (linearPoints[0] + linearPoints[1]) / 2
-            distanceDim.X = mid.x
-            distanceDim.Y = -mid.y
+                # as in CmdCreateDims::positionDimText:
+                linearPoints = distanceDim.getLinearPoints()
+                mid = (linearPoints[0] + linearPoints[1]) / 2
+                distanceDim.X = mid.x
+                distanceDim.Y = -mid.y
 
-            (px,py,pz) = Utils.getCoordinateVectors(view)
-            arrowTips = distanceDim.getArrowPositions()
-            value2D = (arrowTips[1].sub(arrowTips[0])).Length
-            value3D = 1.0
-            if px.isParallel(dimLineVec,0.1):
-                value3D = value2D/px.Length
-            elif py.isParallel(dimLineVec,0.1):
-                value3D = value2D/py.Length
-            elif pz.isParallel(dimLineVec,0.1):
-                value3D = value2D/pz.Length
-            if value3D != 1.0:
-                fomatted3DValue = self._formatValueToSpec(value3D,distanceDim.FormatSpec)
-                distanceDim.Arbitrary = True
-                distanceDim.Label = distanceDim.Label.replace('Dimension','Dimension3D')
-                distanceDim.FormatSpec = fomatted3DValue
+                (px,py,pz) = Utils.getCoordinateVectors(view)
+                arrowTips = distanceDim.getArrowPositions()
+                value2D = (arrowTips[1].sub(arrowTips[0])).Length
+                value3D = 1.0
+                if px.isParallel(dimLineVec,0.1):
+                    value3D = value2D/px.Length
+                elif py.isParallel(dimLineVec,0.1):
+                    value3D = value2D/py.Length
+                elif pz.isParallel(dimLineVec,0.1):
+                    value3D = value2D/pz.Length
+                if value3D != 1.0:
+                    formatted3DValue = self._formatValueToSpec(
+                        value3D,
+                        distanceDim.FormatSpec,
+                    )
+                    distanceDim.Arbitrary = True
+                    distanceDim.Label = distanceDim.Label.replace(
+                        "Dimension",
+                        "Dimension3D",
+                    )
+                    distanceDim.FormatSpec = formatted3DValue
 
-            distanceDim.recompute()
+                distanceDim.recompute()
+                view.touch()
+            except Exception:
+                transaction.abort()
+                raise
+            transaction.commit()
             view.requestPaint()
 
         Gui.Selection.clearSelection()
-        App.ActiveDocument.commitTransaction()
-        view.touch()	# make view claim its new child
 
     def IsActive(self):
         """Return True when the command should be active or False when it should be disabled (greyed)."""
-        if App.ActiveDocument:
-            return Utils.havePage() and Utils.haveView()
-        else:
+        document = App.ActiveDocument
+        if (
+            document is None
+            or Gui.Control.activeDialog()
+            or document.getBookedTransactionID() != 0
+            or document.HasPendingTransaction
+            or not Utils.havePage()
+            or not Utils.haveView()
+        ):
             return False
+        selection = Gui.Selection.getSelectionEx()
+        if len(selection) != 1:
+            return False
+        selected = selection[0]
+        return (
+            selected.Object is not None
+            and selected.Object.Document is document
+            and selected.Object.isDerivedFrom("TechDraw::DrawView")
+            and sum(
+                1
+                for name in selected.SubElementNames
+                if name.startswith("Edge")
+            )
+            >= 2
+        )
 
     def _formatValueToSpec(self, value, formatSpec):
         '''Calculate value using "%.nf" or "%.nw" formatSpec'''

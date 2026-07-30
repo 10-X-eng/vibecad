@@ -22,9 +22,16 @@
 
 #pragma once
 
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <QPointer>
+
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/Fem/App/FemSetElementNodesObject.h>
-#include <QMessageBox>
 
 
 class Ui_TaskCreateElementSet;
@@ -36,11 +43,21 @@ class Polygon2d;
 }
 namespace App
 {
+class Document;
+class DocumentObject;
 class Property;
-}
+}  // namespace App
+
+namespace Fem
+{
+class FemMesh;
+class FemMeshObject;
+}  // namespace Fem
 
 namespace Gui
 {
+class Document;
+class View3DInventorViewer;
 class ViewProvider;
 class ViewVolumeProjection;
 }  // namespace Gui
@@ -59,8 +76,13 @@ public:
     explicit TaskCreateElementSet(Fem::FemSetElementNodesObject* pcObject, QWidget* parent = nullptr);
     ~TaskCreateElementSet() override;
 
+    void finalizeTimelineBlock();
+
     std::set<long> elementTempSet;
     ViewProviderFemMesh* MeshViewProvider;
+    // Kept for source and binary compatibility.  Erase Elements is now
+    // entirely task/document-owned and deliberately does not use this
+    // process-global value.
     static std::string currentProject;
 
 private Q_SLOTS:
@@ -72,6 +94,7 @@ protected:
     Fem::FemSetElementNodesObject* pcObject;
     static void DefineElementsCallback(void* ud, SoEventCallback* n);
     void DefineNodes(const Base::Polygon2d& polygon, const Gui::ViewVolumeProjection& proj, bool);
+    void stopPolygonSelection();
 
 protected:
     void onSelectionChanged(const Gui::SelectionChanges& msg) override;
@@ -82,8 +105,26 @@ protected:
     } selectionMode;
 
 private:
+    bool ownsObject(const App::DocumentObject* object, const std::string& name) const;
+    bool publishWorkingMesh(const Fem::FemMesh& mesh);
+    void ensurePreviewObject(const Fem::FemMesh& mesh);
+    std::set<long> elementSetForMesh(const Fem::FemMesh& mesh) const;
+
     QWidget* proxy;
-    Ui_TaskCreateElementSet* ui;
+    std::unique_ptr<Ui_TaskCreateElementSet> ui;
+    App::Document* document;
+    Fem::FemMeshObject* sourceMeshObject;
+    Fem::FemMeshObject* previewMeshObject;
+    ViewProviderFemMesh* sourceMeshViewProvider;
+    QPointer<Gui::View3DInventorViewer> polygonViewer;
+    std::unique_ptr<Fem::FemMesh> sourceMeshSnapshot;
+    std::unique_ptr<Fem::FemMesh> workingMesh;
+    std::string operationObjectName;
+    std::string sourceMeshName;
+    std::string previewMeshName;
+    bool sourceWasVisible;
+    bool operationWasTimelineOperation;
+    std::vector<std::pair<std::string, long>> oldTimelineResources;
 };
 
 }  // namespace FemGui

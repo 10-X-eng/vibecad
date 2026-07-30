@@ -73,7 +73,7 @@ class ProviderSpec:
 PROVIDERS: dict[str, ProviderSpec] = {
     "openai": ProviderSpec(
         provider_id="openai",
-        display_name="OpenAI",
+        display_name="OpenAI API key (Codex)",
         auth_kind="api_key",
         env_var="OPENAI_API_KEY",
         keyring_username=KEYRING_USERNAME,

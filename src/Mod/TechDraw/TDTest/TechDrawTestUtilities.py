@@ -10,8 +10,8 @@ def createPageWithSVGTemplate(doc=None):
     if not doc:
         doc = FreeCAD.ActiveDocument
 
+    template = doc.addObject("TechDraw::DrawSVGTemplate", "Template")
+    template.Template = templateFileSpec
     page = doc.addObject("TechDraw::DrawPage", "Page")
-    doc.addObject("TechDraw::DrawSVGTemplate", "Template")
-    doc.Template.Template = templateFileSpec
-    doc.Page.Template = doc.Template
+    page.Template = template
     return page

@@ -165,7 +165,7 @@ PyObject* CommandPy::isActive(PyObject* args) const
     if (cmd) {
         PY_TRY
         {
-            return Py::new_reference_to(Py::Boolean(cmd->isActive()));
+            return Py::new_reference_to(Py::Boolean(cmd->canInvoke()));
         }
         PY_CATCH;
     }
@@ -306,6 +306,22 @@ PyObject* CommandPy::getAction(PyObject* args)
         PyErr_Format(Base::PyExc_FC_GeneralError, "No such command");
         return nullptr;
     }
+}
+
+PyObject* CommandPy::ensureAction(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    Command* cmd = this->getCommandPtr();
+    if (!cmd) {
+        PyErr_Format(Base::PyExc_FC_GeneralError, "No such command");
+        return nullptr;
+    }
+
+    cmd->initAction();
+    return getAction(args);
 }
 
 

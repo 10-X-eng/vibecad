@@ -243,6 +243,9 @@ public:
     static Base::Vector3d getFaceCenter(const TopoDS_Face& face);
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+
     void handleChangedPropertyType(Base::XMLReader& reader, const char* typeName, App::Property* propss) override;
     void Restore(Base::XMLReader& reader) override;
     void onChanged(const App::Property* prop) override;

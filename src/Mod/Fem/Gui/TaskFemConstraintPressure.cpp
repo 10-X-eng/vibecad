@@ -298,30 +298,17 @@ TaskDlgFemConstraintPressure::TaskDlgFemConstraintPressure(
 
 bool TaskDlgFemConstraintPressure::accept()
 {
-    /* Note: */
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintPressure* parameterPressure
         = static_cast<const TaskFemConstraintPressure*>(parameter);
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Pressure = \"%s\"",
-            name.c_str(),
-            parameterPressure->getPressure().c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Reversed = %s",
-            name.c_str(),
-            parameterPressure->getReverse() ? "True" : "False"
-        );
+        runConstraintCommand("Pressure = \"%s\"", parameterPressure->getPressure().c_str());
+        runConstraintCommand("Reversed = %s", parameterPressure->getReverse() ? "True" : "False");
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }
-    /* */
     return TaskDlgFemConstraint::accept();
 }
 

@@ -686,39 +686,22 @@ TaskDlgFemConstraintRigidBody::TaskDlgFemConstraintRigidBody(
 
 bool TaskDlgFemConstraintRigidBody::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
     const TaskFemConstraintRigidBody* parameters = static_cast<const TaskFemConstraintRigidBody*>(
         parameter
     );
     try {
         Base::Vector3d ref = parameters->getReferenceNode();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ReferenceNode = App.Vector(%f, %f, %f)",
-            name.c_str(),
-            ref.x,
-            ref.y,
-            ref.z
-        );
+        runConstraintCommand("ReferenceNode = App.Vector(%f, %f, %f)", ref.x, ref.y, ref.z);
 
         Base::Vector3d disp = parameters->getDisplacement();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Displacement = App.Vector(%f, %f, %f)",
-            name.c_str(),
-            disp.x,
-            disp.y,
-            disp.z
-        );
+        runConstraintCommand("Displacement = App.Vector(%f, %f, %f)", disp.x, disp.y, disp.z);
 
         Base::Rotation rot = parameters->getRotation();
         Base::Vector3d axis;
         double angle;
         rot.getValue(axis, angle);
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.Rotation = App.Rotation(App.Vector(%f,% f, %f), Radian=%f)",
-            name.c_str(),
+        runConstraintCommand(
+            "Rotation = App.Rotation(App.Vector(%f, %f, %f), Radian=%f)",
             axis.x,
             axis.y,
             axis.z,
@@ -726,84 +709,24 @@ bool TaskDlgFemConstraintRigidBody::accept()
         );
 
         auto force = parameters->getForce();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ForceX = \"%s\"",
-            name.c_str(),
-            force[0].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ForceY = \"%s\"",
-            name.c_str(),
-            force[1].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.ForceZ = \"%s\"",
-            name.c_str(),
-            force[2].c_str()
-        );
+        runConstraintCommand("ForceX = \"%s\"", force[0].c_str());
+        runConstraintCommand("ForceY = \"%s\"", force[1].c_str());
+        runConstraintCommand("ForceZ = \"%s\"", force[2].c_str());
 
         auto moment = parameters->getMoment();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.MomentX = \"%s\"",
-            name.c_str(),
-            moment[0].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.MomentY = \"%s\"",
-            name.c_str(),
-            moment[1].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.MomentZ = \"%s\"",
-            name.c_str(),
-            moment[2].c_str()
-        );
+        runConstraintCommand("MomentX = \"%s\"", moment[0].c_str());
+        runConstraintCommand("MomentY = \"%s\"", moment[1].c_str());
+        runConstraintCommand("MomentZ = \"%s\"", moment[2].c_str());
 
         auto transModes = parameters->getTranslationalMode();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.TranslationalModeX = \"%s\"",
-            name.c_str(),
-            transModes[0].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.TranslationalModeY = \"%s\"",
-            name.c_str(),
-            transModes[1].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.TranslationalModeZ = \"%s\"",
-            name.c_str(),
-            transModes[2].c_str()
-        );
+        runConstraintCommand("TranslationalModeX = \"%s\"", transModes[0].c_str());
+        runConstraintCommand("TranslationalModeY = \"%s\"", transModes[1].c_str());
+        runConstraintCommand("TranslationalModeZ = \"%s\"", transModes[2].c_str());
 
         auto rotModes = parameters->getRotationalMode();
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.RotationalModeX = \"%s\"",
-            name.c_str(),
-            rotModes[0].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.RotationalModeY = \"%s\"",
-            name.c_str(),
-            rotModes[1].c_str()
-        );
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.RotationalModeZ = \"%s\"",
-            name.c_str(),
-            rotModes[2].c_str()
-        );
+        runConstraintCommand("RotationalModeX = \"%s\"", rotModes[0].c_str());
+        runConstraintCommand("RotationalModeY = \"%s\"", rotModes[1].c_str());
+        runConstraintCommand("RotationalModeZ = \"%s\"", rotModes[2].c_str());
     }
     catch (const Base::Exception& e) {
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));

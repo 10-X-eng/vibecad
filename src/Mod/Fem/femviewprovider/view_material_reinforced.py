@@ -38,5 +38,8 @@ class VPMaterialReinforced(view_base_femmaterial.VPBaseFemMaterial):
     A View Provider for the MaterialReinforced object
     """
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return super().setEdit(vobj, mode, task_material_reinforced._TaskPanel)

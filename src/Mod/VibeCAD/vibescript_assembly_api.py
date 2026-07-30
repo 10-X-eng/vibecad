@@ -16,6 +16,10 @@ import math
 import re
 from typing import Any, Iterable
 
+from VibeCADDocumentReferences import (
+    DocumentReferenceError,
+    normalize_document_reference,
+)
 from vibescript_domain_api import DomainValue
 
 
@@ -25,6 +29,7 @@ _PUBLISHABLE_TYPES = frozenset(
         "component_link",
         "joint",
         "solver_diagnostics",
+        "mechanism_verification",
         "motion",
         "simulation",
         "exploded_view",
@@ -48,6 +53,10 @@ _JOINT_TYPES = (
 )
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_STATIC_REQUIREMENT_TYPES = frozenset({"collision_free", "minimum_clearance"})
+_CONTACT_POLICIES = frozenset(
+    {"prohibited", "clearance", "allowed", "required", "ignored"}
+)
 _MOTION_FUNCTIONS = frozenset({"abs", "asin", "arcsin", "arctan", "cos", "sin"})
 _MOTION_NAMES = frozenset({"time", "initialValue", "pi"})
 _OCCURRENCE_PATH = re.compile(
@@ -492,20 +501,15 @@ def _placement(operation: str, parameter: str, value: Any) -> dict[str, list[flo
 
 
 def _reference(operation: str, value: Any) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) != {"document_uid", "object_name"}:
+    try:
+        return normalize_document_reference(value)
+    except DocumentReferenceError as exc:
         raise _error(
             operation,
             "source",
-            "expected a stable input reference with document_uid and object_name",
+            str(exc),
             value,
-        )
-    result = {
-        "document_uid": str(value.get("document_uid") or "").strip(),
-        "object_name": str(value.get("object_name") or "").strip(),
-    }
-    if not result["document_uid"] or not result["object_name"]:
-        raise _error(operation, "source", "document_uid and object_name must be non-empty")
-    return result
+        ) from exc
 
 
 def _domain_value(
@@ -560,6 +564,233 @@ def _values(
     if len({id(item) for item in result}) != len(result):
         raise _error(operation, parameter, "contains the same graph value more than once")
     return result
+
+
+def _mechanism_pair(
+    operation: str,
+    parameter: str,
+    raw: Mapping[str, Any],
+    *,
+    graph_components: Mapping[int, DomainValue],
+) -> tuple[DomainValue, DomainValue, tuple[int, int]]:
+    first = _domain_value(
+        operation,
+        f"{parameter}.first",
+        raw.get("first"),
+        output_type="component_link",
+    )
+    second = _domain_value(
+        operation,
+        f"{parameter}.second",
+        raw.get("second"),
+        output_type="component_link",
+    )
+    if first is second:
+        raise _error(
+            operation,
+            f"{parameter}.first/second",
+            "must identify two different component values",
+        )
+    for field, component in (("first", first), ("second", second)):
+        if id(component) not in graph_components:
+            raise _error(
+                operation,
+                f"{parameter}.{field}",
+                "is not listed in this assembly",
+            )
+    return first, second, tuple(sorted((id(first), id(second))))
+
+
+def _mechanism_declarations(
+    model: DomainValue,
+    requirements: Sequence[Mapping[str, Any]],
+    contacts: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    operation = "mechanism_check"
+    graph_components = {
+        id(component): component
+        for component in model.properties.get("components", ())
+    }
+    if isinstance(requirements, (str, bytes)) or not isinstance(
+        requirements,
+        Sequence,
+    ):
+        raise _error(
+            operation,
+            "requirements",
+            "expected an array of 0-64 explicit pair requirements",
+            requirements,
+        )
+    if isinstance(contacts, (str, bytes)) or not isinstance(contacts, Sequence):
+        raise _error(
+            operation,
+            "contacts",
+            "expected an array of 0-64 explicit contact policies",
+            contacts,
+        )
+    if len(requirements) > 64:
+        raise _error(operation, "requirements", "may contain at most 64 entries")
+    if len(contacts) > 64:
+        raise _error(operation, "contacts", "may contain at most 64 entries")
+    if not requirements and not contacts:
+        raise _error(
+            operation,
+            "requirements/contacts",
+            "requires at least one explicit pair declaration",
+        )
+
+    seen_pairs: dict[tuple[int, int], str] = {}
+    normalized_requirements: list[dict[str, Any]] = []
+    for index, value in enumerate(requirements):
+        parameter = f"requirements[{index}]"
+        if not isinstance(value, Mapping):
+            raise _error(operation, parameter, "expected an object", value)
+        requirement_type = str(value.get("type") or "").strip().lower()
+        if requirement_type not in _STATIC_REQUIREMENT_TYPES:
+            raise _error(
+                operation,
+                f"{parameter}.type",
+                f"must be one of {sorted(_STATIC_REQUIREMENT_TYPES)}",
+                value.get("type"),
+            )
+        expected = {"type", "first", "second", "tolerance_mm"}
+        if requirement_type == "minimum_clearance":
+            expected.add("minimum_mm")
+        if set(value) != expected:
+            raise _error(
+                operation,
+                parameter,
+                f"must contain exactly {sorted(expected)}",
+                value,
+            )
+        first, second, pair = _mechanism_pair(
+            operation,
+            parameter,
+            value,
+            graph_components=graph_components,
+        )
+        if pair in seen_pairs:
+            raise _error(
+                operation,
+                parameter,
+                f"duplicates the unordered pair already declared by {seen_pairs[pair]}",
+            )
+        seen_pairs[pair] = parameter
+        normalized = {
+            "type": requirement_type,
+            "first": first,
+            "second": second,
+            "tolerance_mm": _number(
+                operation,
+                f"{parameter}.tolerance_mm",
+                value.get("tolerance_mm"),
+                minimum=0.0,
+                maximum=1.0e3,
+                strict_minimum=True,
+            ),
+        }
+        if requirement_type == "minimum_clearance":
+            normalized["minimum_mm"] = _number(
+                operation,
+                f"{parameter}.minimum_mm",
+                value.get("minimum_mm"),
+                minimum=0.0,
+                maximum=1.0e6,
+            )
+        normalized_requirements.append(normalized)
+
+    normalized_contacts: list[dict[str, Any]] = []
+    for index, value in enumerate(contacts):
+        parameter = f"contacts[{index}]"
+        if not isinstance(value, Mapping):
+            raise _error(operation, parameter, "expected an object", value)
+        policy = str(value.get("policy") or "").strip().lower()
+        if policy not in _CONTACT_POLICIES:
+            raise _error(
+                operation,
+                f"{parameter}.policy",
+                f"must be one of {sorted(_CONTACT_POLICIES)}",
+                value.get("policy"),
+            )
+        expected = {"first", "second", "policy"}
+        if policy == "ignored":
+            expected.add("reason")
+        else:
+            expected.add("tolerance_mm")
+        if policy == "clearance":
+            expected.add("minimum_clearance_mm")
+        elif policy in {"allowed", "required"}:
+            expected.update({"first_interface", "second_interface"})
+        if set(value) != expected:
+            raise _error(
+                operation,
+                parameter,
+                f"must contain exactly {sorted(expected)}",
+                value,
+            )
+        first, second, pair = _mechanism_pair(
+            operation,
+            parameter,
+            value,
+            graph_components=graph_components,
+        )
+        if pair in seen_pairs:
+            raise _error(
+                operation,
+                parameter,
+                f"duplicates the unordered pair already declared by {seen_pairs[pair]}",
+            )
+        seen_pairs[pair] = parameter
+        normalized = {
+            "first": first,
+            "second": second,
+            "policy": policy,
+        }
+        if policy == "ignored":
+            normalized["reason"] = _required_text(
+                operation,
+                f"{parameter}.reason",
+                value.get("reason"),
+                maximum=256,
+            )
+        else:
+            normalized["tolerance_mm"] = _number(
+                operation,
+                f"{parameter}.tolerance_mm",
+                value.get("tolerance_mm"),
+                minimum=0.0,
+                maximum=1.0e3,
+                strict_minimum=True,
+            )
+        if policy == "clearance":
+            normalized["minimum_clearance_mm"] = _number(
+                operation,
+                f"{parameter}.minimum_clearance_mm",
+                value.get("minimum_clearance_mm"),
+                minimum=0.0,
+                maximum=1.0e6,
+            )
+        elif policy in {"allowed", "required"}:
+            for field in ("first_interface", "second_interface"):
+                interface_name = str(value.get(field) or "").strip()
+                if not _INTERFACE_NAME.fullmatch(interface_name):
+                    raise _error(
+                        operation,
+                        f"{parameter}.{field}",
+                        "must name one published semantic interface",
+                        value.get(field),
+                    )
+                normalized[field] = interface_name
+        normalized_contacts.append(normalized)
+    if not normalized_requirements and all(
+        item["policy"] == "ignored" for item in normalized_contacts
+    ):
+        raise _error(
+            operation,
+            "requirements/contacts",
+            "must contain at least one evaluated requirement or non-ignored contact policy",
+        )
+    return normalized_requirements, normalized_contacts
 
 
 def _selection(operation: str, value: Any) -> dict[str, str]:
@@ -768,10 +999,12 @@ class AssemblyDomainAPI:
     exported_names = (
         "assembly",
         "component",
+        "instances",
         "fastener",
         "connector",
         "joint",
         "solve",
+        "mechanism_check",
         "motion",
         "simulation",
         "exploded_view",
@@ -850,6 +1083,108 @@ class AssemblyDomainAPI:
             grounded=grounded,
             flexible=flexible,
             label=label,
+        )
+
+    def instances(
+        self,
+        source: Mapping[str, str],
+        placements: Sequence[
+            Sequence[float] | Mapping[str, Sequence[float]] | None
+        ],
+        *,
+        grounded_index: int | None = None,
+        flexible: bool = False,
+        labels: Sequence[str] | None = None,
+    ) -> tuple[DomainValue, ...]:
+        """Create repeated native links to one authored component definition.
+
+        ``placements`` contains one exact placement per occurrence.  The return
+        value is a tuple of ordinary ``component_link`` graph values: assign or
+        index each item, use those exact items in connectors and api.assembly,
+        and return every item once under its own stable output name.  Set
+        ``grounded_index`` to the one fixed occurrence, or omit it.  ``labels``
+        must contain exactly one label per placement when supplied.
+        """
+
+        operation = "instances"
+        clean_source = _reference(operation, source)
+        if isinstance(placements, (str, bytes)) or not isinstance(
+            placements,
+            Sequence,
+        ):
+            raise _error(
+                operation,
+                "placements",
+                "expected an array of 1-64 placements",
+                placements,
+            )
+        raw_placements = list(placements)
+        if not 1 <= len(raw_placements) <= 64:
+            raise _error(
+                operation,
+                "placements",
+                "requires 1-64 placements",
+                len(raw_placements),
+            )
+        if grounded_index is not None and (
+            isinstance(grounded_index, bool)
+            or not isinstance(grounded_index, int)
+            or not 0 <= grounded_index < len(raw_placements)
+        ):
+            raise _error(
+                operation,
+                "grounded_index",
+                f"expected null or an index from 0 to {len(raw_placements) - 1}",
+                grounded_index,
+            )
+        if not isinstance(flexible, bool):
+            raise _error(operation, "flexible", "expected a boolean", flexible)
+        if flexible and grounded_index is not None:
+            raise _error(
+                operation,
+                "grounded_index",
+                "a flexible subassembly occurrence cannot be grounded",
+                grounded_index,
+            )
+        if labels is None:
+            clean_labels = [""] * len(raw_placements)
+        else:
+            if isinstance(labels, (str, bytes)) or not isinstance(labels, Sequence):
+                raise _error(
+                    operation,
+                    "labels",
+                    "expected one string per placement",
+                    labels,
+                )
+            if len(labels) != len(raw_placements):
+                raise _error(
+                    operation,
+                    "labels",
+                    "must contain exactly one string per placement",
+                    labels,
+                )
+            clean_labels = [
+                _label(operation, str(value or "")) for value in labels
+            ]
+        clean_placements = [
+            _placement(
+                operation,
+                f"placements[{index}]",
+                value,
+            )
+            for index, value in enumerate(raw_placements)
+        ]
+        return tuple(
+            self._value(
+                "component",
+                "component_link",
+                clean_source,
+                placement=placement,
+                grounded=index == grounded_index,
+                flexible=flexible,
+                label=clean_labels[index],
+            )
+            for index, placement in enumerate(clean_placements)
         )
 
     def fastener(
@@ -1186,6 +1521,46 @@ class AssemblyDomainAPI:
             "solver_diagnostics",
             value,
             require_solved=require_solved,
+            label=label,
+        )
+
+    def mechanism_check(
+        self,
+        assembly: DomainValue,
+        *,
+        requirements: Sequence[Mapping[str, Any]] = (),
+        contacts: Sequence[Mapping[str, Any]] = (),
+        label: str = "",
+    ) -> DomainValue:
+        """Evaluate explicit static component-pair requirements after native solve.
+
+        Every evaluated pair and every acceptance tolerance is declared here;
+        no fit, collision exemption, or tolerance is inferred. Use
+        ``collision_free`` or ``minimum_clearance`` requirements for direct
+        assertions. Contact policies are ``prohibited``, ``clearance``,
+        ``allowed``, ``required``, and ``ignored``. ``allowed`` and ``required``
+        must name one published semantic interface on each component. Ignored
+        pairs require a reason and perform no geometry evaluation.
+        """
+
+        operation = "mechanism_check"
+        model = _domain_value(
+            operation,
+            "assembly",
+            assembly,
+            output_type="assembly",
+        )
+        clean_requirements, clean_contacts = _mechanism_declarations(
+            model,
+            requirements,
+            contacts,
+        )
+        return self._value(
+            operation,
+            "mechanism_verification",
+            model,
+            requirements=clean_requirements,
+            contacts=clean_contacts,
             label=label,
         )
 

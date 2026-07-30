@@ -44,6 +44,9 @@ class VPConstraintSectionPrint(view_base_femconstraint.VPBaseFemConstraint):
         mat.DiffuseColor = (0.0, 0.165, 1.0, 0.0)
         vobj.ShapeAppearance = mat
 
+    def supportsDocumentTimelineEdit(self):
+        return True
+
     def setEdit(self, vobj, mode=0):
         return view_base_femconstraint.VPBaseFemConstraint.setEdit(
             self, vobj, mode, task_constraint_sectionprint._TaskPanel

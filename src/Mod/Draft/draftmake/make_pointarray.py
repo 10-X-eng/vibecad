@@ -50,7 +50,13 @@ if App.GuiUp:
     from draftviewproviders.view_draftlink import ViewProviderDraftLink
 
 
-def make_point_array(base_object, point_object, extra=None, use_link=True):
+def make_point_array(
+    base_object,
+    point_object,
+    extra=None,
+    use_link=True,
+    hide_base=True,
+):
     """Make a Draft PointArray object.
 
     Create copies of a `base_object` at the points defined by
@@ -75,6 +81,10 @@ def make_point_array(base_object, point_object, extra=None, use_link=True):
         to each copy of the array.
         The input could be a full placement, just a vector indicating
         the additional translation, or just a rotation.
+
+    hide_base: bool, optional
+        If it is `True`, hide `base_object` after creating the array.
+        It defaults to `True`.
 
     Returns
     -------
@@ -147,7 +157,8 @@ def make_point_array(base_object, point_object, extra=None, use_link=True):
             ViewProviderDraftArray(new_obj.ViewObject)
             gui_utils.format_object(new_obj, new_obj.Base)
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
-        new_obj.Base.ViewObject.hide()
+        if hide_base:
+            new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
 
     return new_obj

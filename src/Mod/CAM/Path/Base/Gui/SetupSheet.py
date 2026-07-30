@@ -29,6 +29,10 @@ import Path.Base.Gui.Util as PathGuiUtil
 import Path.Base.SetupSheet as PathSetupSheet
 import Path.Base.Util as PathUtil
 import PathGui
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    ensure_task_transaction,
+)
 
 from PySide import QtCore, QtGui
 
@@ -58,6 +62,7 @@ class ViewProvider:
         # mode = 2
         self.obj = None
         self.vobj = None
+        self.taskPanel = None
 
     def attach(self, vobj):
         Path.Log.track()
@@ -78,14 +83,29 @@ class ViewProvider:
 
     def setEdit(self, vobj, mode=0):
         Path.Log.track()
-        taskPanel = TaskPanel(vobj)
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.Control.showDialog(taskPanel)
-        taskPanel.setupUi()
-        return True
+        transaction = TaskDocumentTransaction(
+            vobj.Object,
+            "Edit SetupSheet",
+        )
+        try:
+            self.taskPanel = TaskPanel(
+                vobj,
+                transaction=transaction,
+            )
+            transaction.close_dialog()
+            transaction.show_dialog(self.taskPanel)
+            self.taskPanel.setupUi()
+            return True
+        except Exception:
+            self.taskPanel = None
+            transaction.close_dialog()
+            if transaction.owns_transaction():
+                transaction.abort()
+            raise
 
     def unsetEdit(self, vobj, mode):
-        FreeCADGui.Control.closeDialog()
+        if self.taskPanel is not None:
+            self.taskPanel.reject()
         return
 
     def claimChildren(self):
@@ -257,7 +277,7 @@ class OpsDefaultEditor:
         self.getFields()
         self.updateUI()
         if recomp:
-            FreeCAD.ActiveDocument.recompute()
+            self.obj.Document.recompute()
 
     def setFields(self):
         self.updateUI()
@@ -333,7 +353,7 @@ class GlobalEditor(object):
         self.getFields()
         self.updateUI()
         if recomp:
-            FreeCAD.ActiveDocument.recompute()
+            self.obj.Document.recompute()
 
     def setFields(self):
         self.updateUI()
@@ -358,31 +378,60 @@ class GlobalEditor(object):
 class TaskPanel:
     """TaskPanel for the SetupSheet - if it is being edited directly."""
 
-    def __init__(self, vobj):
+    def __init__(self, vobj, transaction=None):
         self.vobj = vobj
+        self.viewProvider = vobj.Proxy
         self.obj = vobj.Object
         Path.Log.track(self.obj.Label)
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                self.obj,
+                "Edit SetupSheet",
+            )
+        elif transaction.document is not self.obj.Document:
+            raise RuntimeError(
+                "The SetupSheet task transaction belongs to another document"
+            )
+        self.transaction = transaction
+        self.document = self.transaction.document
         self.globalForm = FreeCADGui.PySideUic.loadUi(":/panels/SetupGlobal.ui")
         self.globalEditor = GlobalEditor(self.obj, self.globalForm)
         self.opsEditor = OpsDefaultEditor(self.obj, None)
         self.form = [op.form for op in self.opsEditor.ops] + [self.globalForm]
-        FreeCAD.ActiveDocument.openTransaction("Edit SetupSheet")
 
     def reject(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self.globalEditor.reject()
         self.opsEditor.reject()
-        FreeCAD.ActiveDocument.abortTransaction()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.abort()
+        self.clearTaskPanel()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
 
     def accept(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         self.globalEditor.accept()
         self.opsEditor.accept()
 
-        FreeCAD.ActiveDocument.commitTransaction()
-        FreeCADGui.ActiveDocument.resetEdit()
-        FreeCADGui.Control.closeDialog()
-        FreeCAD.ActiveDocument.recompute()
+        self.transaction.commit((self.obj,))
+        self.clearTaskPanel()
+        self.transaction.reset_edit()
+        self.transaction.close_dialog()
+        self.transaction.recompute_after_close()
+        return True
+
+    def clearTaskPanel(self):
+        if self.viewProvider.taskPanel is self:
+            self.viewProvider.taskPanel = None
+
+    def closeDeletedDocumentTask(self):
+        self.viewProvider.taskPanel = None
+        self.transaction.close_dialog()
 
     def getFields(self):
         self.globalEditor.getFields()
@@ -395,7 +444,8 @@ class TaskPanel:
     def updateModel(self):
         self.globalEditor.updateModel(False)
         self.opsEditor.updateModel(False)
-        FreeCAD.ActiveDocument.recompute()
+        if self.transaction.is_open():
+            self.transaction.recompute((self.obj,))
 
     def setFields(self):
         self.globalEditor.setFields()
@@ -408,8 +458,9 @@ class TaskPanel:
 
 def Create(name="SetupSheet"):
     """Create(name='SetupSheet') ... creates a new setup sheet"""
-    FreeCAD.ActiveDocument.openTransaction("Create Job")
-    ssheet = PathSetupSheet.Create(name)
+    document = FreeCAD.ActiveDocument
+    ensure_task_transaction("Create Job", document)
+    ssheet = PathSetupSheet.Create(name, document=document)
     PathIconViewProvider.Attach(ssheet, name)
     return ssheet
 

@@ -133,7 +133,11 @@ class Ellipse(gui_base_original.Creator):
                     "Draft.select(ellipse)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Ellipse"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Ellipse"),
+                    _cmd_list,
+                    inputs=(),
+                )
             else:
                 # Insert a Draft ellipse
                 _cmd = "Draft.make_ellipse"
@@ -151,7 +155,11 @@ class Ellipse(gui_base_original.Creator):
                     "Draft.autogroup(ellipse)",
                     "FreeCAD.ActiveDocument.recompute()",
                 ]
-                self.commit(translate("draft", "Create Ellipse"), _cmd_list)
+                self.commit(
+                    translate("draft", "Create Ellipse"),
+                    _cmd_list,
+                    inputs=self.getSupportInputs(),
+                )
         except Exception:
             _err("Draft: Error: Unable to create object.")
         self.finish(cont=None)

@@ -42,6 +42,7 @@ class Property;
 
 namespace Gui
 {
+class Document;
 class MDIView;
 class ControlSingleton;
 class ViewProviderDocumentObject;
@@ -222,6 +223,11 @@ private:
     void slotActiveDocument(const App::Document&);
     void slotInEdit(const Gui::ViewProviderDocumentObject&);
     void slotResetEdit(const Gui::ViewProviderDocumentObject&);
+    void slotFinishEdit(
+        const Gui::Document&,
+        bool cancelled,
+        bool transactionFinished
+    );
     void slotDeletedDocument(const App::Document&);
     void slotViewClosed(const Gui::MDIView*);
     void slotUndoDocument(const App::Document&);
@@ -261,6 +267,7 @@ protected:
     Connection connectApplicationRedoDocument;
     Connection connectApplicationInEdit;
     Connection connectApplicationResetEdit;
+    Connection connectApplicationFinishEdit;
     Connection connectShowTaskWatcherSetting;
 };
 

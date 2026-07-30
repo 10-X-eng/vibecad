@@ -38,6 +38,12 @@ Importer::Importer(App::Document* doc)
 
 void Importer::load(const std::string& fileName)
 {
+    (void)loadWithResults(fileName);
+}
+
+std::vector<Feature*> Importer::loadWithResults(const std::string& fileName)
+{
+    std::vector<Feature*> results;
     MeshObject mesh;
     MeshCore::Material mat;
 
@@ -45,28 +51,29 @@ void Importer::load(const std::string& fileName)
         Base::FileInfo file(fileName.c_str());
         unsigned long segmct = mesh.countSegments();
         if (segmct > 1) {
-            createMeshFromSegments(file.fileNamePure(), mat, mesh);
+            results = createMeshFromSegments(file.fileNamePure(), mat, mesh);
         }
-        else if (
-            mat.binding == MeshCore::MeshIO::PER_VERTEX
-            && mat.diffuseColor.size() == mesh.countPoints()
-        ) {
+        else if (mat.binding == MeshCore::MeshIO::PER_VERTEX
+                 && mat.diffuseColor.size() == mesh.countPoints()) {
             Feature* feature = createMesh(file.fileNamePure(), mesh);
             addVertexColors(feature, mat.diffuseColor);
             feature->purgeTouched();
+            results.push_back(feature);
         }
-        else if (
-            mat.binding == MeshCore::MeshIO::PER_FACE && mat.diffuseColor.size() == mesh.countFacets()
-        ) {
+        else if (mat.binding == MeshCore::MeshIO::PER_FACE
+                 && mat.diffuseColor.size() == mesh.countFacets()) {
             Feature* feature = createMesh(file.fileNamePure(), mesh);
             addFaceColors(feature, mat.diffuseColor);
             feature->purgeTouched();
+            results.push_back(feature);
         }
         else {
             Feature* feature = createMesh(file.fileNamePure(), mesh);
             feature->purgeTouched();
+            results.push_back(feature);
         }
     }
+    return results;
 }
 
 void Importer::addVertexColors(Feature* feature, const std::vector<Base::Color>& colors)
@@ -93,9 +100,15 @@ void Importer::addColors(
     }
 }
 
-void Importer::createMeshFromSegments(const std::string& name, MeshCore::Material& mat, MeshObject& mesh)
+std::vector<Feature*> Importer::createMeshFromSegments(
+    const std::string& name,
+    MeshCore::Material& mat,
+    MeshObject& mesh
+)
 {
+    std::vector<Feature*> results;
     unsigned long segmct = mesh.countSegments();
+    results.reserve(segmct);
     for (unsigned long i = 0; i < segmct; i++) {
         const Segment& group = mesh.getSegment(i);
         std::string groupName = group.getName();
@@ -119,7 +132,9 @@ void Importer::createMeshFromSegments(const std::string& name, MeshCore::Materia
             addFaceColors(feature, diffuseColor);
         }
         feature->purgeTouched();
+        results.push_back(feature);
     }
+    return results;
 }
 
 Feature* Importer::createMesh(const std::string& name, MeshObject& mesh)

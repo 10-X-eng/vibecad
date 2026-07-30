@@ -25,6 +25,7 @@
 # include <QGroupBox>
 # include <QLabel>
 # include <QScreen>
+# include <QSignalBlocker>
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -32,7 +33,9 @@
 #include <QDialog>
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -70,13 +73,57 @@ TaskProjGroup::TaskProjGroup(TechDraw::DrawView* featView, bool mode) :
     m_createMode(mode),
     blockCheckboxes(false)
 {
+    if (!view) {
+        throw Base::TypeError(
+            "The projection editor requires a live drawing view"
+        );
+    }
+    m_page = view->findParentPage();
+    if (!m_page || m_page->getDocument() != view->getDocument()
+        || view->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The projection editor requires a view on a live page and its "
+            "owning transaction"
+        );
+    }
+    if (!multiView
+        && !dynamic_cast<TechDraw::DrawViewPart*>(view)) {
+        throw Base::TypeError(
+            "The projection editor requires a part view or projection group"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(view->getDocument());
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(m_page);
+    captureCurrentView();
+    if (multiView) {
+        m_initialGroupId = multiView->getID();
+        for (auto* projection : multiView->Views.getValues()) {
+            if (projection
+                && projection->getDocument() == view->getDocument()) {
+                m_initialProjectionIds.insert(
+                    projection->getID()
+                );
+            }
+        }
+    }
+
     ui->setupUi(this);
 
-    m_page = view->findParentPage();
     m_viewName = view->getNameInDocument();
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_page->getDocument());
-    Gui::ViewProvider* vp = activeGui->getViewProvider(m_page);
-    auto* dvp = static_cast<ViewProviderPage*>(vp);
+    Gui::Document* activeGui = m_documentIdentity.guiDocument();
+    auto* dvp = activeGui
+        ? dynamic_cast<ViewProviderPage*>(
+              activeGui->getViewProvider(m_page)
+          )
+        : nullptr;
+    if (!dvp) {
+        throw Base::RuntimeError(
+            "The projection editor could not find the drawing page view"
+        );
+    }
     m_mdi = dvp->getMDIViewPage();
 
     connectWidgets();
@@ -87,6 +134,42 @@ TaskProjGroup::TaskProjGroup(TechDraw::DrawView* featView, bool mode) :
     saveGroupState();
 
     blockUpdate = false;
+}
+
+void TaskProjGroup::captureCurrentView()
+{
+    m_viewIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawView>(view);
+    m_groupIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawProjGroup>(
+            multiView
+        );
+}
+
+bool TaskProjGroup::resolveTargets()
+{
+    auto* document = m_documentIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    auto* currentView = m_viewIdentity.resolve();
+    if (!document || !page || !currentView
+        || page->getDocument() != document
+        || currentView->getDocument() != document
+        || currentView->findParentPage() != page) {
+        return false;
+    }
+
+    TechDraw::DrawProjGroup* currentGroup = nullptr;
+    if (m_groupIdentity.id() >= 0) {
+        currentGroup = m_groupIdentity.resolve();
+        if (!currentGroup || currentGroup != currentView) {
+            return false;
+        }
+    }
+
+    m_page = page;
+    view = currentView;
+    multiView = currentGroup;
+    return true;
 }
 
 void TaskProjGroup::connectWidgets()
@@ -253,32 +336,71 @@ void TaskProjGroup::restoreGroupState()
 
 void TaskProjGroup::viewToggled(bool toggle)
 {
+    if (!resolveTargets()) {
+        return;
+    }
     Gui::WaitCursor wc;
     bool changed = false;
     // Obtain name of checkbox
-    int index = sender()->objectName().mid(7).toInt();
+    auto* checkbox = qobject_cast<QCheckBox*>(sender());
+    if (!checkbox) {
+        return;
+    }
+    bool validIndex = false;
+    int index = checkbox->objectName().mid(7).toInt(&validIndex);
+    if (!validIndex || index < 0 || index >= 10) {
+        return;
+    }
     const char *viewNameCStr = viewChkIndexToCStr(index);
+    if (!viewNameCStr) {
+        return;
+    }
 
     if (!blockCheckboxes) {
         if (multiView) {
             // Check if only front is left. If so switch to normal view.
-            if (multiView->Views.getValues().size() == 2 && !toggle) {
+            if (multiView->Views.getValues().size() == 2 && !toggle
+                && strcmp(viewNameCStr, "Front") != 0) {
                 turnProjGroupToView();
                 wc.restoreCursor();
                 return;
             }
         }
         else {
-            // If toggle then we remove the view object and create a proj group instead.
+            if (!toggle) {
+                const QSignalBlocker blocker(checkbox);
+                checkbox->setChecked(true);
+                return;
+            }
+            // Adding a secondary direction turns the standalone view into a
+            // projection group while retaining that view as its anchor.
             turnViewToProjGroup();
             changed = true;
         }
     }
 
     if (toggle && !multiView->hasProjection(viewNameCStr)) {
-        Gui::Command::doCommand(Gui::Command::Doc,
-                                "App.activeDocument().%s.addProjection('%s')",
-                                multiView->getNameInDocument(), viewNameCStr);
+        const std::string groupCommand =
+            Gui::Command::getObjectCmd(multiView);
+        auto* projection =
+            dynamic_cast<TechDraw::DrawProjGroupItem*>(
+                Gui::Command::runDocumentObjectCommand(
+                    Gui::Command::Doc,
+                    *m_documentIdentity.resolve(),
+                    QStringLiteral("%1.addProjection('%2')")
+                        .arg(
+                            QString::fromStdString(groupCommand),
+                            QString::fromLatin1(viewNameCStr)
+                        )
+                        .toUtf8(),
+                    TechDraw::DrawProjGroupItem::getClassTypeId()
+                )
+            );
+        if (!projection || projection->getPGroup() != multiView) {
+            throw Base::RuntimeError(
+                "The projection factory returned an invalid group item"
+            );
+        }
         changed = true;
     }
     else if (!toggle && multiView->hasProjection(viewNameCStr)) {
@@ -286,13 +408,23 @@ void TaskProjGroup::viewToggled(bool toggle)
             multiView->removeProjection( viewNameCStr );
             changed = true;
         }
+        else {
+            const QSignalBlocker blocker(checkbox);
+            checkbox->setChecked(true);
+        }
     }
 
     if (changed) {
         // necessary to prevent position problems
-        Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_page->getDocument());
-        auto* vppg = static_cast<ViewProviderProjGroup*>(activeGui->getViewProvider(multiView));
-        vppg->regroupSubViews();
+        Gui::Document* activeGui = m_documentIdentity.guiDocument();
+        auto* vppg = activeGui
+            ? dynamic_cast<ViewProviderProjGroup*>(
+                  activeGui->getViewProvider(multiView)
+              )
+            : nullptr;
+        if (vppg) {
+            vppg->regroupSubViews();
+        }
         if (view->ScaleType.isValue("Automatic")) {
             double scale = view->getScale();
             setFractionalScale(scale);
@@ -305,15 +437,58 @@ void TaskProjGroup::viewToggled(bool toggle)
 
 void TaskProjGroup::turnViewToProjGroup()
 {
-    App::Document* doc = view->getDocument();
+    if (!resolveTargets() || multiView) {
+        return;
+    }
+    auto* viewPart = dynamic_cast<TechDraw::DrawViewPart*>(view);
+    if (!viewPart) {
+        throw Base::TypeError(
+            "Only a part view can become a projection group"
+        );
+    }
+    App::Document* doc = m_documentIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!doc || !page) {
+        throw Base::RuntimeError(
+            "The projection target is no longer available"
+        );
+    }
 
     std::string multiViewName = doc->getUniqueObjectName("ProjGroup");
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().addObject('TechDraw::DrawProjGroup', '%s')", multiViewName.c_str());
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().%s.addView(App.activeDocument().%s)", view->findParentPage()->getNameInDocument(), multiViewName.c_str());
-
-    auto* viewPart = static_cast<TechDraw::DrawViewPart*>(view);
-
-    multiView = static_cast<TechDraw::DrawProjGroup*>(doc->getObject(multiViewName.c_str()));
+    const std::string documentName =
+        Base::InterpreterSingleton::strToPython(doc->getName());
+    const std::string pageCommand =
+        Gui::Command::getObjectCmd(page);
+    const QString groupFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject"
+            "('TechDraw::DrawProjGroup', '%2')"
+        )
+            .arg(
+                QString::fromStdString(documentName),
+                QString::fromStdString(multiViewName)
+            );
+    multiView = dynamic_cast<TechDraw::DrawProjGroup*>(
+        Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            *doc,
+            groupFactory.toUtf8(),
+            TechDraw::DrawProjGroup::getClassTypeId()
+        )
+    );
+    if (!multiView) {
+        throw Base::RuntimeError(
+            "The projection group could not be created"
+        );
+    }
+    const std::string groupCommand =
+        Gui::Command::getObjectCmd(multiView);
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.addView(%s)",
+        pageCommand.c_str(),
+        groupCommand.c_str()
+    );
     multiView->Source.setValues(viewPart->Source.getValues());
     multiView->XSource.setValues(viewPart->XSource.getValues());
     multiView->X.setValue(viewPart->X.getValue());
@@ -340,13 +515,22 @@ void TaskProjGroup::turnViewToProjGroup()
     m_page->requestPaint();
     view = multiView;
     m_page->removeView(viewPart);   // prevent multiple entries in tree
+    captureCurrentView();
 
     updateUi();
 }
 
 void TaskProjGroup::turnProjGroupToView()
 {
+    if (!resolveTargets() || !multiView) {
+        return;
+    }
     TechDraw::DrawViewPart* viewPart = multiView->getAnchor();
+    if (!viewPart || viewPart->getDocument() != m_documentIdentity.resolve()) {
+        throw Base::RuntimeError(
+            "The projection group has no live anchor view"
+        );
+    }
     viewPart->Scale.setValue(multiView->Scale.getValue());
     viewPart->ScaleType.setValue(multiView->ScaleType.getValue());
     viewPart->Scale.setStatus(App::Property::Hidden, false);
@@ -361,11 +545,29 @@ void TaskProjGroup::turnProjGroupToView()
     // remove viewPart from views before deleting the group.
     multiView->removeView(viewPart);
 
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().removeObject('%s')", multiView->getNameInDocument());
+    auto* document = m_documentIdentity.resolve();
+    const std::string documentName =
+        Base::InterpreterSingleton::strToPython(
+            document->getName()
+        );
+    const std::string groupName =
+        Base::InterpreterSingleton::strToPython(
+            multiView->getNameInDocument()
+        );
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "App.getDocument('%s').removeObject('%s')",
+        documentName.c_str(),
+        groupName.c_str()
+    );
 
     viewPart->recomputeFeature();
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_page->getDocument());
-    auto* vpView = static_cast<ViewProviderProjGroupItem*>(activeGui->getViewProvider(viewPart));
+    Gui::Document* activeGui = m_documentIdentity.guiDocument();
+    auto* vpView = activeGui
+        ? dynamic_cast<ViewProviderProjGroupItem*>(
+              activeGui->getViewProvider(viewPart)
+          )
+        : nullptr;
     if (vpView) {
         vpView->updateIcon();
         vpView->fixSceneDependencies();
@@ -373,45 +575,73 @@ void TaskProjGroup::turnProjGroupToView()
 
     view = viewPart;
     multiView = nullptr;
+    captureCurrentView();
 
     updateUi();
 }
 
 void TaskProjGroup::customDirectionClicked()
 {
-    auto* dirEditDlg = new DirectionEditDialog();
+    if (!resolveTargets()) {
+        return;
+    }
+    DirectionEditDialog dirEditDlg(this);
 
     if (multiView) {
-        dirEditDlg->setDirection(multiView->getAnchor()->Direction.getValue());
-        dirEditDlg->setAngle(0.0);
+        auto* anchor = multiView->getAnchor();
+        if (!anchor) {
+            return;
+        }
+        dirEditDlg.setDirection(anchor->Direction.getValue());
+        dirEditDlg.setAngle(0.0);
     }
     else {
-        auto* viewPart = static_cast<TechDraw::DrawViewPart*>(view);
-        dirEditDlg->setDirection(viewPart->Direction.getValue());
-        dirEditDlg->setAngle(0.0);
+        auto* viewPart =
+            dynamic_cast<TechDraw::DrawViewPart*>(view);
+        if (!viewPart) {
+            return;
+        }
+        dirEditDlg.setDirection(viewPart->Direction.getValue());
+        dirEditDlg.setAngle(0.0);
     }
 
-    if (dirEditDlg->exec() == QDialog::Accepted) {
+    if (dirEditDlg.exec() == QDialog::Accepted
+        && resolveTargets()) {
+        Base::Vector3d direction = dirEditDlg.getDirection();
+        if (direction.IsNull()) {
+            QMessageBox::warning(
+                this,
+                tr("Invalid Direction"),
+                tr("The projection direction cannot be zero.")
+            );
+            return;
+        }
+        direction.Normalize();
         if (multiView) {
-            multiView->getAnchor()->Direction.setValue(dirEditDlg->getDirection());
-            multiView->spin(Base::toRadians(dirEditDlg->getAngle()));
+            auto* anchor = multiView->getAnchor();
+            if (!anchor) {
+                return;
+            }
+            anchor->Direction.setValue(direction);
+            multiView->spin(Base::toRadians(dirEditDlg.getAngle()));
         }
         else {
-            auto* viewPart = static_cast<TechDraw::DrawViewPart*>(view);
-            viewPart->Direction.setValue(dirEditDlg->getDirection());
-            viewPart->spin(Base::toRadians(dirEditDlg->getAngle()));
+            auto* viewPart =
+                dynamic_cast<TechDraw::DrawViewPart*>(view);
+            if (!viewPart) {
+                return;
+            }
+            viewPart->Direction.setValue(direction);
+            viewPart->spin(Base::toRadians(dirEditDlg.getAngle()));
         }
 
         setUiPrimary();
     }
-
-
-    delete dirEditDlg;
 }
 
 void TaskProjGroup::rotateButtonClicked()
 {
-    if ( view && ui ) {
+    if (resolveTargets() && ui) {
         const QObject *clicked = sender();
 
         auto handleCameraButton = [&]() {
@@ -419,6 +649,9 @@ void TaskProjGroup::rotateButtonClicked()
             App::DocumentObject* obj = nullptr;
             auto selection = Gui::Command::getSelection().getSelectionEx();
             for (auto& sel : selection) {
+                if (!sel.getObject()) {
+                    continue;
+                }
                 for (auto& sub : sel.getSubNames()) {
                     if (TechDraw::DrawUtil::getGeomTypeFromName(sub) == "Face") {
                         obj = sel.getObject();
@@ -438,6 +671,10 @@ void TaskProjGroup::rotateButtonClicked()
         };
 
         if (multiView) {
+            auto* anchor = multiView->getAnchor();
+            if (!anchor) {
+                return;
+            }
             //change Front View Dir by 90
             if (clicked == ui->butTopRotate) multiView->rotate(RotationMotion::Up);
             else if (clicked == ui->butDownRotate) multiView->rotate(RotationMotion::Down);
@@ -446,21 +683,25 @@ void TaskProjGroup::rotateButtonClicked()
             else if (clicked == ui->butCWRotate) multiView->spin(SpinDirection::CW);
             else if (clicked == ui->butCCWRotate) multiView->spin(SpinDirection::CCW);
             else if (clicked == ui->butFront) {
-                multiView->getAnchor()->Direction.setValue(Base::Vector3d(0.0, -1.0, 0.0));
-                multiView->getAnchor()->RotationVector.setValue(Base::Vector3d(1.0, 0.0, 0.0));
-                multiView->getAnchor()->XDirection.setValue(Base::Vector3d(1.0, 0.0, 0.0));
+                anchor->Direction.setValue(Base::Vector3d(0.0, -1.0, 0.0));
+                anchor->RotationVector.setValue(Base::Vector3d(1.0, 0.0, 0.0));
+                anchor->XDirection.setValue(Base::Vector3d(1.0, 0.0, 0.0));
                 multiView->updateSecondaryDirs();
             }
             else if (clicked == ui->butCam) {
                 std::pair<Base::Vector3d, Base::Vector3d> dirs = handleCameraButton();
-                multiView->getAnchor()->Direction.setValue(dirs.first);
-                multiView->getAnchor()->RotationVector.setValue(dirs.second);
-                multiView->getAnchor()->XDirection.setValue(dirs.second);
+                anchor->Direction.setValue(dirs.first);
+                anchor->RotationVector.setValue(dirs.second);
+                anchor->XDirection.setValue(dirs.second);
                 multiView->updateSecondaryDirs();
             }
         }
         else {
-            auto* viewPart = static_cast<TechDraw::DrawViewPart*>(view);
+            auto* viewPart =
+                dynamic_cast<TechDraw::DrawViewPart*>(view);
+            if (!viewPart) {
+                return;
+            }
             if (clicked == ui->butTopRotate) viewPart->rotate(RotationMotion::Up);
             else if (clicked == ui->butDownRotate) viewPart->rotate(RotationMotion::Down);
             else if (clicked == ui->butRightRotate) viewPart->rotate(RotationMotion::Right);
@@ -487,7 +728,7 @@ void TaskProjGroup::rotateButtonClicked()
 
 void TaskProjGroup::projectionTypeChanged(int index)
 {
-    if(blockUpdate || !multiView) {
+    if(blockUpdate || !resolveTargets() || !multiView) {
         return;
     }
 
@@ -516,7 +757,7 @@ void TaskProjGroup::projectionTypeChanged(int index)
 
 void TaskProjGroup::scaleTypeChanged(int index)
 {
-    if (blockUpdate) {
+    if (blockUpdate || !resolveTargets()) {
         return;
     }
 
@@ -554,7 +795,7 @@ void TaskProjGroup::scaleTypeChanged(int index)
 
 void TaskProjGroup::AutoDistributeClicked(bool clicked)
 {
-    if (blockUpdate || !multiView) {
+    if (blockUpdate || !resolveTargets() || !multiView) {
         return;
     }
     multiView->AutoDistribute.setValue(clicked);
@@ -563,7 +804,7 @@ void TaskProjGroup::AutoDistributeClicked(bool clicked)
 
 void TaskProjGroup::spacingChanged()
 {
-    if (blockUpdate || !multiView) {
+    if (blockUpdate || !resolveTargets() || !multiView) {
         return;
     }
 
@@ -576,6 +817,9 @@ void TaskProjGroup::spacingChanged()
 
 void TaskProjGroup::updateTask()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     // Update the scale type
     blockUpdate = true;
     ui->cmbScaleType->setCurrentIndex(view->ScaleType.getValue());
@@ -601,7 +845,7 @@ void TaskProjGroup::setFractionalScale(double newScale)
 void TaskProjGroup::scaleManuallyChanged(int unused)
 {
     Q_UNUSED(unused);
-    if(blockUpdate) {
+    if(blockUpdate || !resolveTargets()) {
         return;
     }
     if (!view->ScaleType.isValue("Custom")) {  //ignore if not custom!
@@ -613,8 +857,14 @@ void TaskProjGroup::scaleManuallyChanged(int unused)
 
     double scale = (double) numerator / (double) denominator;
 
-    Gui::Command::doCommand(Gui::Command::Doc, "App.activeDocument().%s.Scale = %f", view->getNameInDocument()
-                                                                                     , scale);
+    const std::string viewCommand =
+        Gui::Command::getObjectCmd(view);
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.Scale = %f",
+        viewCommand.c_str(),
+        scale
+    );
     view->recomputeFeature();
 }
 
@@ -778,75 +1028,94 @@ void TaskProjGroup::saveButtons(QPushButton* btnOK,
 
 bool TaskProjGroup::apply()
 {
+    if (!resolveTargets()) {
+        return false;
+    }
     if (multiView) {
         multiView->recomputeChildren();
     }
     view->recomputeFeature();
 
-    return true;
+    return !view->isError() && (!multiView || !multiView->isError());
 }
 
 bool TaskProjGroup::accept()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_page->getDocument());
-    if (!doc) {
+    if (!resolveTargets()) {
         return false;
     }
-    auto viewCheck = m_page->getDocument()->getObject(m_viewName.c_str());
-    if (!viewCheck) {
-        // view has been deleted while this dialog is open
+
+    if (!apply()) {
         return false;
     }
 
     if (multiView) {
-        multiView->recomputeChildren();
+        auto* timeline = App::DocumentTimeline::get(
+            m_documentIdentity.resolve()
+        );
+        if (!timeline) {
+            return false;
+        }
+        const bool newRoot =
+            m_createMode
+            || multiView->getID() != m_initialGroupId;
+        std::vector<App::DocumentObject*> timelineBlock;
+        for (auto* projection : multiView->Views.getValues()) {
+            if (!projection
+                || projection->getDocument()
+                    != m_documentIdentity.resolve()
+                || !m_documentIdentity.resolve()->containsObject(
+                    projection
+                )
+                || App::DocumentTimeline::timelineOwner(projection)
+                    != multiView
+                || !timeline
+                        ->isProvisionallyEnrolledByCurrentTransaction(
+                            projection
+                        )
+                || (!newRoot
+                    && m_initialProjectionIds.contains(
+                        projection->getID()
+                    ))) {
+                continue;
+            }
+            timelineBlock.push_back(projection);
+        }
+        if (newRoot) {
+            timelineBlock.push_back(multiView);
+        }
+        if (!timelineBlock.empty()) {
+            try {
+                timeline->finalizeProvisionalOperationBlock(
+                    multiView,
+                    timelineBlock
+                );
+            }
+            catch (const Base::Exception& error) {
+                QMessageBox::critical(
+                    this,
+                    tr("Projection Group Failed"),
+                    QString::fromUtf8(error.what())
+                );
+                return false;
+            }
+        }
     }
-    view->recomputeFeature();
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    TaskInternal::updateExactDocument(m_documentIdentity.resolve());
+    TaskInternal::resetExactEdit(m_documentIdentity.resolve());
 
     return true;
 }
 
 bool TaskProjGroup::reject()
 {
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_page->getDocument());
-    if (!doc) {
-        return false;
-    }
-
-    auto viewCheck = m_page->getDocument()->getObject(m_viewName.c_str());
-    if (!viewCheck) {
-        // view has been deleted while this dialog is open
-        return false;
-    }
-
-    if (getCreateMode()) {
-        //remove the object completely from the document
-        const char* viewName = view->getNameInDocument();
-        const char* PageName = view->findParentPage()->getNameInDocument();
-
-        if (multiView) {
-            Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().%s.purgeProjections()",
-                viewName);
-            Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().%s.removeView(App.activeDocument().%s)",
-                PageName, viewName);
-        }
-        Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().removeObject('%s')", viewName);
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    }
-    else {
-        //set the DPG and its views back to entry state.
-        if (doc->hasPendingCommand()) {
-            doc->abortCommand();
-        }
-        // Restore views to initial spacing
-        if (multiView) {
-            multiView->autoPositionChildren();
-        }
-    }
-    Gui::Command::runCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    return false;
+    // TaskView owns the exact transaction for both creation and editing.
+    // Cancel aborts that transaction after the editor is torn down, so this
+    // callback must not delete provisional objects or broadly abort whatever
+    // transaction happens to be current.
+    TaskInternal::resetExactEdit(m_documentIdentity.resolve());
+    return true;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -855,12 +1124,23 @@ TaskDlgProjGroup::TaskDlgProjGroup(TechDraw::DrawView* featView, bool mode)
     : viewProvider(nullptr)
     , view(featView)
 {
-    //viewProvider = dynamic_cast<const ViewProviderDrawingView *>(featView);
+    if (featView && Gui::Application::Instance) {
+        if (auto* guiDocument =
+                Gui::Application::Instance->getDocument(
+                    featView->getDocument()
+                )) {
+            viewProvider =
+                dynamic_cast<const ViewProviderDrawingView*>(
+                    guiDocument->getViewProvider(featView)
+                );
+        }
+    }
     widget  = new TaskProjGroup(featView, mode);
     taskbox = new Gui::TaskView::TaskBox(Gui::BitmapFactory().pixmap("actions/TechDraw_ProjectionGroup"),
                                          widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 void TaskDlgProjGroup::update()
@@ -883,14 +1163,9 @@ void TaskDlgProjGroup::modifyStandardButtons(QDialogButtonBox* box)
 //==== calls from the TaskView ===============================================================
 void TaskDlgProjGroup::open()
 {
-    if (!widget->getCreateMode())  {    //this is an edit session, start a transaction
-        if (dynamic_cast<TechDraw::DrawProjGroup*>(view)) {
-            App::GetApplication().setActiveTransaction(App::TransactionName{.name="Edit Projection Group", .temporary=true});
-        }
-        else {
-            App::GetApplication().setActiveTransaction(App::TransactionName{.name="Edit Part View", .temporary=true});
-        }
-    }
+    // Creation arrives with the command's exact transaction; editing arrives
+    // through ViewProviderDocumentObject::startDefaultEditMode(). In both
+    // cases TaskView has already adopted and locked that transaction.
 }
 
 void TaskDlgProjGroup::clicked(int i)
@@ -903,14 +1178,12 @@ void TaskDlgProjGroup::clicked(int i)
 
 bool TaskDlgProjGroup::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgProjGroup::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 
@@ -970,7 +1243,7 @@ void DirectionEditDialog::createUI() {
     auto* xLayout = new QHBoxLayout;
     auto* xLabel = new QLabel(QStringLiteral("X: "));
     xSpinBox = new Gui::QuantitySpinBox;
-    xSpinBox->setUnit(Base::Unit::Length);
+    xSpinBox->setUnit(Base::Unit());
     xLayout->addWidget(xLabel);
     xLayout->addWidget(xSpinBox);
 
@@ -978,7 +1251,7 @@ void DirectionEditDialog::createUI() {
     auto* yLayout = new QHBoxLayout;
     auto* yLabel = new QLabel(QStringLiteral("Y: "));
     ySpinBox = new Gui::QuantitySpinBox;
-    ySpinBox->setUnit(Base::Unit::Length);
+    ySpinBox->setUnit(Base::Unit());
     yLayout->addWidget(yLabel);
     yLayout->addWidget(ySpinBox);
 
@@ -986,7 +1259,7 @@ void DirectionEditDialog::createUI() {
     auto* zLayout = new QHBoxLayout;
     auto* zLabel = new QLabel(QStringLiteral("Z: "));
     zSpinBox = new Gui::QuantitySpinBox;
-    zSpinBox->setUnit(Base::Unit::Length);
+    zSpinBox->setUnit(Base::Unit());
     zLayout->addWidget(zLabel);
     zLayout->addWidget(zSpinBox);
 

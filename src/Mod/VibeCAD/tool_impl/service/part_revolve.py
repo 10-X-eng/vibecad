@@ -156,7 +156,12 @@ def run(
         revolution.Angle = float(angle_degrees)
         revolution.Symmetric = bool(symmetric)
         revolution.Solid = bool(solid)
-        domain_runtime.adopt_part_result(revolution)
+        domain_runtime.adopt_part_result(
+            revolution,
+            replaced_inputs=(
+                [base] if visibility_before.get("visible") is True else []
+            ),
+        )
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):

@@ -50,10 +50,10 @@ ViewProviderFemConstraintPressure::~ViewProviderFemConstraintPressure() = defaul
 bool ViewProviderFemConstraintPressure::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
-        Gui::Control().closeDialog();
+        Gui::Control().closeDialog(getObject()->getDocument());
         // clear the selection (convenience)
         Gui::Selection().clearSelection();
-        Gui::Control().showDialog(new TaskDlgFemConstraintPressure(this));
+        Gui::Control().showDialog(new TaskDlgFemConstraintPressure(this), getObject()->getDocument());
 
         return true;
     }

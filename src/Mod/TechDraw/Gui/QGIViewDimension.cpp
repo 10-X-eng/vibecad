@@ -55,6 +55,7 @@
 #include "QGIDimLines.h"
 #include "QGIVertex.h"
 #include "QGCustomSvg.h"
+#include "TaskDocumentGuard.h"
 #include "TaskSelectLineAttributes.h"
 #include "ViewProviderDimension.h"
 #include "ZVALUE.h"
@@ -332,15 +333,31 @@ void QGIViewDimension::datumLabelDragFinished()
         return;
     }
 
-    double x = Rez::appX(datumLabel->X()), y = Rez::appX(datumLabel->Y());
+    const double x = Rez::appX(datumLabel->X());
+    const double y = -Rez::appX(datumLabel->Y());
+    constexpr double tolerance = 0.001;
+    if (DrawUtil::fpCompare(dim->X.getValue(), x, tolerance)
+        && DrawUtil::fpCompare(dim->Y.getValue(), y, tolerance)) {
+        return;
+    }
 
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Drag Dimension"));
-
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.X = %f",
-                            dim->getNameInDocument(), x);
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.%s.Y = %f",
-                            dim->getNameInDocument(), -y);
-    Gui::Command::commitCommand(tid);
+    try {
+        App::Document* document = dim->getDocument();
+        TaskInternal::OwnedDocumentTransaction transaction(
+            document,
+            QT_TRANSLATE_NOOP("Command", "Drag Dimension")
+        );
+        dim->X.setValue(x);
+        dim->Y.setValue(y);
+        TaskInternal::updateExactDocument(document);
+        transaction.commit();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().warning(
+            "Could not store the drawing-dimension position: %s\n",
+            error.what()
+        );
+    }
 }
 
 //this is for formatting and finding centers, not display

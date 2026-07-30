@@ -25,6 +25,7 @@
 import FreeCAD
 import FreeCADGui
 import Path
+from Path.CommandBoundary import ensure_task_transaction
 from Path.Tool.toolbit.ui import ToolBitEditorPanel
 
 
@@ -37,17 +38,12 @@ class TaskPanel:
         self.obj = vobj.Object
         self.editor = ToolBitEditorPanel(self.obj, self.editor.form)
         self.deleteOnReject = deleteOnReject
-        FreeCAD.ActiveDocument.openTransaction("Edit ToolBit")
+        ensure_task_transaction("Edit ToolBit")
 
     def reject(self):
         FreeCAD.ActiveDocument.abortTransaction()
         self.editor.reject()
         FreeCADGui.Control.closeDialog()
-        if self.deleteOnReject:
-            FreeCAD.ActiveDocument.openTransaction("Uncreate ToolBit")
-            self.editor.reject()
-            FreeCAD.ActiveDocument.removeObject(self.obj.Name)
-            FreeCAD.ActiveDocument.commitTransaction()
         FreeCAD.ActiveDocument.recompute()
 
     def accept(self):

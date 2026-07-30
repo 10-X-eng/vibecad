@@ -35,6 +35,10 @@ namespace Gui
 class SelectionObject;
 class StatusWidget;
 }  // namespace Gui
+namespace Part
+{
+class Sweep;
+}
 namespace PartGui
 {
 
@@ -48,6 +52,7 @@ public:
 
     bool accept();
     bool reject();
+    Part::Sweep* lastAcceptedResult() const noexcept;
 
 private:
     void onCurrentItemChanged(QTreeWidgetItem*, QTreeWidgetItem*);

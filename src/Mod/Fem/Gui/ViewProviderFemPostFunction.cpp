@@ -130,8 +130,8 @@ ViewProviderFemPostFunction::~ViewProviderFemPostFunction()
 
 bool ViewProviderFemPostFunction::doubleClicked()
 {
-    Gui::Application::Instance->activeDocument()->setEdit(this, (int)ViewProvider::Default);
-    return true;
+    Gui::Document* document = getDocument();
+    return document && document->setEdit(this, static_cast<int>(ViewProvider::Default));
 }
 
 std::vector<std::string> ViewProviderFemPostFunction::getDisplayModes() const
@@ -144,8 +144,12 @@ std::vector<std::string> ViewProviderFemPostFunction::getDisplayModes() const
 bool ViewProviderFemPostFunction::setEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default || ModNum == 1) {
+        App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
+        if (!document) {
+            return false;
+        }
 
-        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog();
+        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog(document);
         TaskDlgPost* postDlg = qobject_cast<TaskDlgPost*>(dlg);
         if (postDlg && postDlg->getView() != this) {
             postDlg = nullptr;  // another pad left open its task panel
@@ -158,7 +162,10 @@ bool ViewProviderFemPostFunction::setEdit(int ModNum)
             msgBox.setDefaultButton(QMessageBox::Yes);
             int ret = msgBox.exec();
             if (ret == QMessageBox::Yes) {
-                Gui::Control().reject();
+                Gui::Control().reject(document);
+                if (Gui::Control().activeDialog(document)) {
+                    return false;
+                }
             }
             else {
                 return false;
@@ -167,13 +174,13 @@ bool ViewProviderFemPostFunction::setEdit(int ModNum)
 
         // start the edit dialog
         if (postDlg) {
-            Gui::Control().showDialog(postDlg);
+            Gui::Control().showDialog(postDlg, document);
         }
         else {
             postDlg = new TaskDlgPost(this);
             auto panel = new TaskPostFunction(this);
             postDlg->addTaskBox(panel->windowIcon().pixmap(32), panel);
-            Gui::Control().showDialog(postDlg);
+            Gui::Control().showDialog(postDlg, document);
         }
 
         return true;
@@ -187,7 +194,9 @@ void ViewProviderFemPostFunction::unsetEdit(int ModNum)
 {
     if (ModNum == ViewProvider::Default) {
         // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
+        if (auto* object = getObject()) {
+            Gui::Control().closeDialog(object->getDocument());
+        }
     }
     else {
         ViewProviderDocumentObject::unsetEdit(ModNum);

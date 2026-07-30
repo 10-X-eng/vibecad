@@ -46,6 +46,7 @@ def make_polar_array(
     center=App.Vector(0, 0, 0),
     axis=None,
     use_link=True,
+    hide_base=True,
 ):
     """Create a polar array from the given object.
 
@@ -90,6 +91,10 @@ def make_polar_array(
         If `use_link` is `False` the original shape is copied many times.
         In this case the `Fuse` property is able to fuse
         all copies into a single object, if they touch each other.
+
+    hide_base: bool, optional
+        If it is `True`, hide `base_object` after creating the array.
+        It defaults to `True`.
 
     Returns
     -------
@@ -137,7 +142,12 @@ def make_polar_array(
 
     use_link = bool(use_link)
     new_obj = make_array.make_array(
-        base_object, arg1=center, arg2=angle, arg3=number, use_link=use_link
+        base_object,
+        arg1=center,
+        arg2=angle,
+        arg3=number,
+        use_link=use_link,
+        hide_base=hide_base,
     )
     new_obj.Axis = axis
     return new_obj

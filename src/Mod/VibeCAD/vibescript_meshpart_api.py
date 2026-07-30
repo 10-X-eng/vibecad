@@ -302,18 +302,34 @@ def _reject_irrelevant(
 class MeshPartDomainAPI:
     """Immutable BREP/mesh conversion API injected into MeshPart source."""
 
-    __slots__ = ()
+    __slots__ = ("_domain",)
 
-    domain = "meshpart"
     exported_names = _EXPORTS
 
-    def __init__(self, exports: Iterable[str], output_types: Iterable[str]) -> None:
+    def __init__(
+        self,
+        exports: Iterable[str],
+        output_types: Iterable[str],
+        *,
+        domain: str = "meshpart",
+    ) -> None:
         if tuple(dict.fromkeys(str(item) for item in exports)) != _EXPORTS:
             raise RuntimeError(f"MeshPart pack exports must be exactly {_EXPORTS!r}.")
         if tuple(dict.fromkeys(str(item) for item in output_types)) != _OUTPUT_TYPES:
             raise RuntimeError(
                 f"MeshPart pack output types must be exactly {_OUTPUT_TYPES!r}."
             )
+        clean_domain = str(domain or "").strip().lower()
+        if clean_domain not in {"mesh", "meshpart"}:
+            raise RuntimeError(
+                "MeshPart conversion values may belong only to the Mesh or "
+                "MeshPart VibeScript domains."
+            )
+        object.__setattr__(self, "_domain", clean_domain)
+
+    @property
+    def domain(self) -> str:
+        return self._domain
 
     def mesh_from_shape(
         self,

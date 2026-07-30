@@ -57,6 +57,10 @@ public:
     void attach(App::DocumentObject*) override;
     bool onDelete(const std::vector<std::string>&) override;
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     std::vector<std::string> getDisplayModes() const override;
     void setDisplayMode(const char* ModeName) override;
 

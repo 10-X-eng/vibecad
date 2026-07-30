@@ -310,18 +310,28 @@ def get_point(target, args, noTracker=False):
 
     if hasattr(Gui, "Snapper"):
         point = Gui.Snapper.snap(
-            args["Position"], lastpoint=last, active=smod, constrain=cmod, noTracker=noTracker
+            args["Position"],
+            lastpoint=last,
+            active=smod,
+            constrain=cmod,
+            noTracker=noTracker,
+            view=getattr(target, "view", None),
         )
         info = Gui.Snapper.snapInfo
         mask = Gui.Snapper.affinity
     if point is None:
-        p = Gui.ActiveDocument.ActiveView.getCursorPos()
-        point = Gui.ActiveDocument.ActiveView.getPoint(p)
-        info = Gui.ActiveDocument.ActiveView.getObjectInfo(p)
+        view = getattr(target, "view", None) or gui_utils.get_3d_view()
+        if view is None:
+            return None, None, None
+        p = view.getCursorPos()
+        point = view.getPoint(p)
+        info = view.getObjectInfo(p)
         mask = None
 
     ctrlPoint = App.Vector(point)
-    wp = WorkingPlane.get_working_plane(update=False)
+    wp = getattr(target, "wp", None)
+    if wp is None:
+        wp = WorkingPlane.get_working_plane(update=False)
     if target.node:
         if target.featureName == "Rectangle":
             ui.displayPoint(point, target.node[0], plane=wp, mask=mask)

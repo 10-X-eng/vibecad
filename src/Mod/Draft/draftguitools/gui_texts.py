@@ -130,7 +130,11 @@ class Text(gui_base_original.Creator):
             "Draft.autogroup(_text_)",
             "FreeCAD.ActiveDocument.recompute()",
         ]
-        self.commit(translate("draft", "Create Text"), _cmd_list)
+        self.commit(
+            translate("draft", "Create Text"),
+            _cmd_list,
+            inputs=(),
+        )
         self.finish(cont=None)
 
     def action(self, arg):
@@ -155,7 +159,7 @@ class Text(gui_base_original.Creator):
             if arg["State"] == "DOWN" and arg["Button"] == "BUTTON1":
                 if self.point:
                     self.active = False
-                    Gui.Snapper.off()
+                    Gui.Snapper.off(view=self.view)
                     self.node.append(self.point)
                     self.ui.textUi()
                     self.ui.textValue.setFocus()

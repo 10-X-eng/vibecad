@@ -22,10 +22,17 @@
  **************************************************************************/
 
 #include <QPointer>
+#include <memory>
+#include <ranges>
 
-
+#include <App/Application.h>
+#include <App/Document.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
+#include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
+#include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
 
@@ -36,10 +43,86 @@
 #include "MaterialSave.h"
 #include "MaterialsEditor.h"
 #include "ModelSelect.h"
+#include "SelectionTargetIdentity.h"
 #include "TaskMigrateExternal.h"
 
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+namespace
+{
+App::Document* activeMutationDocument()
+{
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->activeDocument()
+        : nullptr;
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!document
+        || Gui::Control().activeDialog(document)
+        || document->getBookedTransactionID() != App::NullTransaction
+        || document->hasPendingTransaction()
+        || document->isTransactionLocked()
+        || document->transacting()
+        || App::GetApplication().getGlobalTransaction()
+            != App::NullTransaction) {
+        return nullptr;
+    }
+
+    const auto selection = Gui::Selection().getCompleteSelection();
+    if (selection.empty()
+        || std::ranges::any_of(
+            selection,
+            [document](const auto& selected) {
+                if (selected.pDoc != document
+                    || selected.pObject == nullptr) {
+                    return true;
+                }
+                const auto target =
+                    MatGui::SelectionTargetIdentity::capture(
+                        selected.pObject
+                    );
+                return !target
+                    || target->resolveObject() != selected.pObject;
+            }
+        )) {
+        return nullptr;
+    }
+    return document;
+}
+
+bool hasSingleInspectableSelection()
+{
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->activeDocument()
+        : nullptr;
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!document || Gui::Control().activeDialog(document)) {
+        return false;
+    }
+
+    const auto selection = Gui::Selection().getCompleteSelection();
+    if (selection.size() != 1 || selection.front().pDoc != document
+        || !selection.front().pObject) {
+        return false;
+    }
+    const auto target = MatGui::SelectionTargetIdentity::capture(
+        selection.front().pObject
+    );
+    return target && target->resolveObject()
+        == selection.front().pObject;
+}
+
+template<typename Task>
+void showExactMaterialTask(App::Document& document)
+{
+    auto task = std::make_unique<Task>(document);
+    auto* taskPointer = task.get();
+    Gui::Control().showDialog(taskPointer, &document);
+    if (Gui::Control().activeDialog(&document) == taskPointer) {
+        task.release();
+    }
+}
+}
 
 //===========================================================================
 // Material_Edit
@@ -97,12 +180,24 @@ StdCmdSetAppearance::StdCmdSetAppearance()
 void StdCmdSetAppearance::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new MatGui::TaskDisplayProperties());
+    auto* document = activeMutationDocument();
+    if (!document) {
+        return;
+    }
+    try {
+        showExactMaterialTask<MatGui::TaskDisplayProperties>(*document);
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not start appearance editor: %s\n",
+            error.what()
+        );
+    }
 }
 
 bool StdCmdSetAppearance::isActive()
 {
-    return (Gui::Control().activeDialog() == nullptr) && (Gui::Selection().size() != 0);
+    return activeMutationDocument() != nullptr;
 }
 
 //===========================================================================
@@ -126,12 +221,24 @@ StdCmdSetMaterial::StdCmdSetMaterial()
 void StdCmdSetMaterial::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    Gui::Control().showDialog(new MatGui::TaskMaterial());
+    auto* document = activeMutationDocument();
+    if (!document) {
+        return;
+    }
+    try {
+        showExactMaterialTask<MatGui::TaskMaterial>(*document);
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not start material editor: %s\n",
+            error.what()
+        );
+    }
 }
 
 bool StdCmdSetMaterial::isActive()
 {
-    return (Gui::Control().activeDialog() == nullptr) && (Gui::Selection().size() != 0);
+    return activeMutationDocument() != nullptr;
 }
 
 //===========================================================================
@@ -153,12 +260,15 @@ CmdInspectAppearance::CmdInspectAppearance()
 void CmdInspectAppearance::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    if (!hasSingleInspectableSelection()) {
+        return;
+    }
     Gui::Control().showDialog(new MatGui::TaskInspectAppearance());
 }
 
 bool CmdInspectAppearance::isActive()
 {
-    return (Gui::Control().activeDialog() == nullptr);
+    return hasSingleInspectableSelection();
 }
 
 //===========================================================================
@@ -180,12 +290,15 @@ CmdInspectMaterial::CmdInspectMaterial()
 void CmdInspectMaterial::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    if (!hasSingleInspectableSelection()) {
+        return;
+    }
     Gui::Control().showDialog(new MatGui::TaskInspectMaterial());
 }
 
 bool CmdInspectMaterial::isActive()
 {
-    return (Gui::Control().activeDialog() == nullptr);
+    return hasSingleInspectableSelection();
 }
 
 //===========================================================================

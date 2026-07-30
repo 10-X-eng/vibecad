@@ -76,7 +76,12 @@ _OPERATION_OUTPUT_TYPES: dict[str, str] = {
 }
 
 _DOMAIN_OPERATION_OUTPUT_TYPES: dict[str, dict[str, str]] = {
-    "mesh": {"from_object": "mesh"},
+    "mesh": {
+        "from_object": "mesh",
+        "union": "mesh",
+        "difference": "mesh",
+        "intersection": "mesh",
+    },
     "surface": {
         # Boundary builders are intermediate domain values; only the pack's
         # declared output types may appear at the top-level result contract.
@@ -90,6 +95,7 @@ _DOMAIN_OPERATION_OUTPUT_TYPES: dict[str, dict[str, str]] = {
         "connector": "joint",
         "joint": "joint",
         "solve": "solver_diagnostics",
+        "mechanism_check": "mechanism_verification",
         "motion": "motion",
         "simulation": "simulation",
         "exploded_view": "exploded_view",

@@ -29,6 +29,24 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 import uuid
 
+from VibeCADDocumentReferences import (
+    DocumentReferenceError,
+    is_document_reference,
+    normalize_document_reference,
+    resolve_reference_target,
+)
+from VibeCADMechanismEngine import (
+    MECHANISM_SCENARIO_SCHEMA,
+    MECHANISM_SOLVE_REPORT_SCHEMA,
+    MECHANISM_STATIC_CHECK_SCHEMA,
+    evaluate_static_mechanism_check,
+    mechanism_scenario_sha256,
+    normalize_mechanism_scenario,
+    normalize_mechanism_solve_report,
+    normalize_mechanism_static_check,
+    normalize_mechanism_verification_report,
+)
+from VibeCADMechanismGeometry import measure_static_mechanism_pairs
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
 from vibescript_domain_api import create_domain_api
@@ -68,6 +86,7 @@ _PARTDESIGN_SAVED_SOURCE_COMPATIBILITY_METHODS = frozenset(
 )
 _PARTDESIGN_LOFT_SUBTRACTIVE_COMPATIBILITY = "loft_subtractive"
 _MAX_REFERENCE_MESH_SEGMENTS = 4096
+_MAX_MESH_TRACE_OPERATIONS = 4096
 _MAX_REFERENCE_POINTS = 2_000_000
 _MAX_REFERENCE_FACT_SUBELEMENTS = 32
 _REVERSE_FIT_METRIC_ABSOLUTE_TOLERANCE = 1.0e-7
@@ -112,7 +131,10 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
         "vibescript_assembly_worker.py",
         "vibescript_part_worker.py",
         "VibeCADAssemblyBOM.py",
+        "VibeCADDocumentReferences.py",
         "VibeCADFasteners.py",
+        "VibeCADMechanismEngine.py",
+        "VibeCADMechanismGeometry.py",
         "fasteners-provenance.json",
     ),
     "sketcher": (
@@ -141,6 +163,9 @@ _DOMAIN_WORKER_BUNDLES: dict[str, tuple[str, ...]] = {
     "mesh": (
         "vibescript_mesh_api.py",
         "vibescript_mesh_worker.py",
+        "vibescript_meshpart_api.py",
+        "vibescript_meshpart_worker.py",
+        "vibescript_part_worker.py",
     ),
     "meshpart": (
         "vibescript_meshpart_api.py",
@@ -487,7 +512,7 @@ def _load_captured_manifest(
 
 
 def _assembly_live_output_state(obj: Any) -> dict[str, Any]:
-    """Capture bounded accepted evidence used by model-facing inspect_program."""
+    """Capture bounded accepted evidence used by source inspection."""
 
     output_type = str(getattr(obj, "VibeCADVibeScriptOutputType", "") or "")
     property_names = {
@@ -715,7 +740,7 @@ def capture_operation_state(
             tool_name,
             "DOMAIN_SURFACE_CHANGED",
             "surface",
-            "The active workbench and modeling engine no longer authorize this domain.",
+            "The active workbench no longer authorizes this API.",
             observed=resolution.summary(),
         )
     scope = service.project_scope_snapshot()
@@ -799,35 +824,28 @@ def _validate_stable_references(
         return
     if not isinstance(value, dict):
         return
-    if set(value) != {"document_uid", "object_name"}:
+    if not is_document_reference(value):
         for key, item in value.items():
             _validate_stable_references(item, captured, f"{path}.{key}")
         return
-    document_uid = str(value.get("document_uid") or "")
-    object_name = str(value.get("object_name") or "")
+    try:
+        clean = normalize_document_reference(value)
+    except DocumentReferenceError as exc:
+        raise ValueError(f"{path} has an invalid stable reference: {exc}") from exc
+    document_uid = clean["document_uid"]
+    object_name = clean["object_name"]
+    if (
+        str(getattr(captured.get("pack"), "domain", "") or "") == "assembly"
+        and document_uid != str(captured.get("document_uid") or "")
+    ):
+        # External identities are authenticated on the document thread during
+        # capture.  A portable path may load the saved source document there.
+        return
     if document_uid != str(captured.get("document_uid") or ""):
         raise ValueError(f"{path} refers to a different document uid.")
     names = {str(item.get("name") or "") for item in captured["document_objects"]}
     if object_name not in names:
         raise ValueError(f"{path} refers to missing object {object_name!r}.")
-
-
-def _apply_replacements(source: str, replacements: Any) -> str:
-    if not isinstance(replacements, list) or not replacements:
-        raise ValueError("replacements must be a non-empty array.")
-    result = source
-    for index, replacement in enumerate(replacements):
-        if not isinstance(replacement, dict) or set(replacement) != {"old", "new"}:
-            raise ValueError(f"replacements[{index}] must contain exactly old and new.")
-        old = str(replacement["old"])
-        new = str(replacement["new"])
-        count = result.count(old)
-        if count != 1:
-            raise ValueError(
-                f"replacements[{index}].old must occur exactly once; found {count}."
-            )
-        result = result.replace(old, new, 1)
-    return result
 
 
 def _merge_patch(base: Mapping[str, Any], patch: Any) -> dict[str, Any]:
@@ -923,7 +941,7 @@ def _input_references(value: Any) -> list[dict[str, str]]:
     """Return unique stable references in deterministic input traversal order."""
 
     result: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    indexes: dict[tuple[str, str], int] = {}
 
     def walk(item: Any) -> None:
         if isinstance(item, list):
@@ -932,15 +950,24 @@ def _input_references(value: Any) -> list[dict[str, str]]:
             return
         if not isinstance(item, dict):
             return
-        if set(item) == {"document_uid", "object_name"}:
-            reference = {
-                "document_uid": str(item.get("document_uid") or ""),
-                "object_name": str(item.get("object_name") or ""),
-            }
+        if is_document_reference(item):
+            reference = normalize_document_reference(item)
             key = (reference["document_uid"], reference["object_name"])
-            if key not in seen:
-                seen.add(key)
+            existing_index = indexes.get(key)
+            if existing_index is None:
+                indexes[key] = len(result)
                 result.append(reference)
+                return
+            existing = result[existing_index]
+            existing_path = existing.get("document_path")
+            incoming_path = reference.get("document_path")
+            if existing_path and incoming_path and existing_path != incoming_path:
+                raise ValueError(
+                    f"Document object {key[1]!r} in {key[0]!r} is referenced with "
+                    "conflicting document_path locators."
+                )
+            if not existing_path and incoming_path:
+                existing["document_path"] = incoming_path
             return
         for child in item.values():
             walk(child)
@@ -1193,7 +1220,7 @@ def capture_reference_inputs(
         str(expected.get("surface_id") or ""),
     ):
         raise RuntimeError(
-            "The workbench or modeling engine changed before reference capture."
+            "The active workbench changed before reference capture."
         )
     doc = service._active_document()
     if doc is None or str(getattr(doc, "Name", "") or "") != prepared["document_name"]:
@@ -1209,12 +1236,35 @@ def capture_reference_inputs(
     snapshots: list[dict[str, Any]] = []
     for index, reference in enumerate(requirements):
         object_name = str(reference["object_name"])
-        obj = doc.getObject(object_name)
+        if domain == "assembly":
+            try:
+                obj = resolve_reference_target(
+                    doc,
+                    reference,
+                    f"Assembly input reference {object_name!r}",
+                )
+            except DocumentReferenceError as exc:
+                raise RuntimeError(str(exc)) from exc
+        else:
+            obj = doc.getObject(object_name)
         if obj is None:
             raise RuntimeError(
                 f"{prepared['pack'].title} input reference {object_name!r} "
                 "disappeared before capture."
             )
+        if domain == "assembly" and getattr(obj, "Document", None) is not doc:
+            if not str(getattr(doc, "FileName", "") or "").strip():
+                raise RuntimeError(
+                    "External Assembly components require the Assembly document "
+                    "to be saved before building."
+                )
+            if not str(
+                getattr(getattr(obj, "Document", None), "FileName", "") or ""
+            ).strip():
+                raise RuntimeError(
+                    f"External Assembly component {object_name!r} belongs to an "
+                    "unsaved source document."
+                )
         if domain in {
             "assembly",
             "draft",
@@ -1323,8 +1373,7 @@ def capture_reference_inputs(
             reference_contract = _assembly_reference_contract(service, obj)
             snapshots.append(
                 {
-                    "document_uid": str(reference["document_uid"]),
-                    "object_name": object_name,
+                    **dict(reference),
                     "label": str(getattr(obj, "Label", "") or ""),
                     "type_id": type_id,
                     "reference_artifact_kind": "points_asc",
@@ -1383,8 +1432,7 @@ def capture_reference_inputs(
             mesh_contract = _assembly_reference_contract(service, obj)
             snapshots.append(
                 {
-                    "document_uid": str(reference["document_uid"]),
-                    "object_name": object_name,
+                    **dict(reference),
                     "label": str(getattr(obj, "Label", "") or ""),
                     "type_id": type_id,
                     "reference_artifact_kind": "mesh_bms",
@@ -1395,12 +1443,6 @@ def capture_reference_inputs(
                 }
             )
             continue
-        if domain == "mesh":
-            raise RuntimeError(
-                f"Mesh input reference {object_name!r} ({type_id}) must be a native "
-                "Mesh::Feature with at least one facet; choose an eligible reference "
-                "from document_meshes and keep document_uid/object_name unchanged."
-            )
         if domain == "reverse_engineering":
             raise RuntimeError(
                 f"Reverse Engineering input reference {object_name!r} ({type_id}) "
@@ -1431,6 +1473,7 @@ def capture_reference_inputs(
                 "assembly",
                 "sketcher",
                 "surface",
+                "mesh",
                 "meshpart",
                 "points",
                 "reverse_engineering",
@@ -1461,8 +1504,7 @@ def capture_reference_inputs(
             )
         snapshots.append(
             {
-                "document_uid": str(reference["document_uid"]),
-                "object_name": object_name,
+                **dict(reference),
                 "label": str(getattr(obj, "Label", "") or ""),
                 "type_id": str(getattr(obj, "TypeId", "") or ""),
                 "shape_type": str(getattr(shape, "ShapeType", "") or ""),
@@ -1909,6 +1951,11 @@ def finalize_candidate(
                         f"Reference capture returned unsupported artifact kind "
                         f"{artifact_kind!r}."
                     )
+                if snapshot.get("document_path"):
+                    metadata["document_path"] = str(snapshot["document_path"])
+                    worker_reference["document_path"] = str(
+                        snapshot["document_path"]
+                    )
                 if reference_contract_sha256:
                     metadata["reference_contract_sha256"] = reference_contract_sha256
                 resolved_references.append(metadata)
@@ -2062,7 +2109,12 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                     f"The {pack.title} VibeScript program changed after inspection.",
                     requested={"expected_revision": expected_revision},
                     observed={"current_revision": base_revision},
-                    required_changes=[{"inspect_program": program_id}],
+                    required_changes=[
+                        {
+                            "tool": "vibescript.read_source",
+                            "arguments": {"source_id": program_id},
+                        }
+                    ],
                 )
             if manifest.get("migration_required") and operation != "reconfigure_program":
                 action = f"vibescript.{pack.domain}.reconfigure_program"
@@ -2106,7 +2158,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             inputs = manifest.get("inputs")
             expected_outputs = manifest.get("expected_outputs")
             if operation == "edit_source":
-                source = _apply_replacements(source, arguments.get("replacements"))
+                source = str(arguments.get("source") or "")
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -3398,6 +3450,16 @@ def _mesh_definition_chain(definition: Mapping[str, Any]) -> list[Mapping[str, A
     if operation in {"mesh", "from_object"}:
         return [definition]
     arguments = list(definition.get("arguments") or [])
+    if operation in {"union", "difference", "intersection"}:
+        if len(arguments) != 2 or any(
+            not isinstance(argument, dict) for argument in arguments
+        ):
+            raise ValueError(f"Mesh api.{operation} lost its operand definitions.")
+        return [
+            *_mesh_definition_chain(arguments[0]),
+            *_mesh_definition_chain(arguments[1]),
+            definition,
+        ]
     if len(arguments) != 1 or not isinstance(arguments[0], dict):
         raise ValueError(f"Mesh api.{operation} lost its source definition.")
     return [*_mesh_definition_chain(arguments[0]), definition]
@@ -3417,7 +3479,10 @@ def _validate_mesh_trace(
     observed: Mapping[str, Any],
     source_references: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> None:
-    if not isinstance(trace, list) or not 1 <= len(trace) <= 33:
+    if (
+        not isinstance(trace, list)
+        or not 1 <= len(trace) <= _MAX_MESH_TRACE_OPERATIONS
+    ):
         raise ValueError(f"Mesh output {output_name!r} operation trace is malformed.")
     definitions = _mesh_definition_chain(definition)
     operations = _mesh_definition_operations(definition)
@@ -3443,6 +3508,36 @@ def _validate_mesh_trace(
         },
         "repair": {"operation", "applied", "before", "after"},
         "diagnostics": {"operation", "requirements", "result"},
+        "union": {
+            "operation",
+            "first_definition_sha256",
+            "second_definition_sha256",
+            "first",
+            "second",
+            "tessellation",
+            "backend",
+            "result",
+        },
+        "difference": {
+            "operation",
+            "first_definition_sha256",
+            "second_definition_sha256",
+            "first",
+            "second",
+            "tessellation",
+            "backend",
+            "result",
+        },
+        "intersection": {
+            "operation",
+            "first_definition_sha256",
+            "second_definition_sha256",
+            "first",
+            "second",
+            "tessellation",
+            "backend",
+            "result",
+        },
     }
     quick_fields = {
         "points",
@@ -3466,7 +3561,11 @@ def _validate_mesh_trace(
                 f"Mesh output {output_name!r} trace item {index} has malformed fields."
             )
         for key in ("result", "before", "after"):
-            if key not in item or operation == "diagnostics":
+            if (
+                key not in item
+                or operation == "diagnostics"
+                or operation in {"union", "difference", "intersection"}
+            ):
                 continue
             counts = item[key]
             if (
@@ -3570,6 +3669,195 @@ def _validate_mesh_trace(
                 raise ValueError(
                     f"Mesh output {output_name!r} transform changed topology counts."
                 )
+        elif operation in {"union", "difference", "intersection"}:
+            arguments = list(operation_definition.get("arguments") or [])
+            if len(arguments) != 2 or any(
+                not isinstance(argument, Mapping) for argument in arguments
+            ):
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} lost its operands."
+                )
+
+            def definition_sha256(value: Mapping[str, Any]) -> str:
+                encoded = json.dumps(
+                    value,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+                return hashlib.sha256(encoded).hexdigest()
+
+            if (
+                item["first_definition_sha256"]
+                != definition_sha256(arguments[0])
+                or item["second_definition_sha256"]
+                != definition_sha256(arguments[1])
+            ):
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} changed an operand."
+                )
+            expected_tessellation = {
+                "linear_deflection": float(properties["linear_deflection"]),
+                "angular_deflection_degrees": float(
+                    properties["angular_deflection_degrees"]
+                ),
+                "relative": bool(properties["relative"]),
+            }
+            _mesh_values_match(
+                item["tessellation"],
+                expected_tessellation,
+                path=f"outputs.{output_name}.operation_trace[{index}].tessellation",
+            )
+            if item["backend"] != "MeshPart::Boolean/OpenCASCADE":
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} changed its OCC backend."
+                )
+            boolean_fact_fields = {
+                "points",
+                "facets",
+                "open_edges",
+                "components",
+                "is_solid",
+                "volume_mm3",
+                "bounds",
+            }
+            for operand_name in ("first", "second", "result"):
+                facts = item[operand_name]
+                if not isinstance(facts, dict) or set(facts) != boolean_fact_fields:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name} is malformed."
+                    )
+                for field in ("points", "facets", "open_edges", "components"):
+                    if type(facts[field]) is not int or facts[field] < 0:
+                        raise ValueError(
+                            f"Mesh output {output_name!r} trace "
+                            f"{index}.{operand_name}.{field} is malformed."
+                        )
+                if type(facts["is_solid"]) is not bool:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name}.is_solid is malformed."
+                    )
+                _finite_float(
+                    facts["volume_mm3"],
+                    path=(
+                        f"outputs.{output_name}.operation_trace"
+                        f"[{index}].{operand_name}.volume_mm3"
+                    ),
+                )
+                bounds = facts["bounds"]
+                if not isinstance(bounds, dict) or set(bounds) != {
+                    "minimum",
+                    "maximum",
+                }:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name}.bounds is malformed."
+                    )
+                for bound_name in ("minimum", "maximum"):
+                    vector = bounds[bound_name]
+                    if not isinstance(vector, list) or len(vector) != 3:
+                        raise ValueError(
+                            f"Mesh output {output_name!r} trace "
+                            f"{index}.{operand_name}.bounds.{bound_name} is malformed."
+                        )
+                    for coordinate, value in enumerate(vector):
+                        _finite_float(
+                            value,
+                            path=(
+                                f"outputs.{output_name}.operation_trace"
+                                f"[{index}].{operand_name}.bounds.{bound_name}"
+                                f"[{coordinate}]"
+                            ),
+                        )
+                if (
+                    facts["points"] <= 0
+                    or facts["facets"] <= 0
+                    or facts["components"] <= 0
+                    or facts["open_edges"] != 0
+                    or facts["is_solid"] is not True
+                    or abs(float(facts["volume_mm3"])) <= 1.0e-12
+                    or any(
+                        minimum > maximum
+                        for minimum, maximum in zip(
+                            bounds["minimum"],
+                            bounds["maximum"],
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace "
+                        f"{index}.{operand_name} is not a valid solid mesh."
+                    )
+
+            first_definitions = _mesh_definition_chain(arguments[0])
+            second_definitions = _mesh_definition_chain(arguments[1])
+            first_terminal_index = index - len(second_definitions) - 1
+            second_terminal_index = index - 1
+            if (
+                first_terminal_index < 0
+                or second_terminal_index < 0
+                or first_terminal_index >= len(trace)
+                or second_terminal_index >= len(trace)
+            ):
+                raise ValueError(
+                    f"Mesh output {output_name!r} trace {index} has invalid branches."
+                )
+
+            def terminal_quick_counts(
+                trace_item: Mapping[str, Any],
+                terminal_definition: Mapping[str, Any],
+            ) -> dict[str, int]:
+                terminal_operation = str(
+                    terminal_definition.get("operation") or ""
+                )
+                key = (
+                    "result"
+                    if terminal_operation
+                    in {
+                        "mesh",
+                        "from_object",
+                        "diagnostics",
+                        "union",
+                        "difference",
+                        "intersection",
+                    }
+                    else "after"
+                )
+                raw_counts = trace_item.get(key)
+                if not isinstance(raw_counts, Mapping):
+                    raise ValueError(
+                        f"Mesh output {output_name!r} boolean branch lost its "
+                        "terminal topology."
+                    )
+                return {
+                    field: int(raw_counts[field])
+                    for field in (
+                        "points",
+                        "facets",
+                        "open_edges",
+                        "components",
+                    )
+                }
+
+            for operand_name, terminal_index, branch_definitions in (
+                ("first", first_terminal_index, first_definitions),
+                ("second", second_terminal_index, second_definitions),
+            ):
+                expected_counts = terminal_quick_counts(
+                    trace[terminal_index],
+                    branch_definitions[-1],
+                )
+                reported_counts = {
+                    field: item[operand_name][field] for field in expected_counts
+                }
+                if reported_counts != expected_counts:
+                    raise ValueError(
+                        f"Mesh output {output_name!r} trace {index} changed its "
+                        f"{operand_name} operand topology."
+                    )
         elif operation == "repair":
             expected_applied = [
                 name
@@ -3596,7 +3884,7 @@ def _validate_mesh_trace(
                 raise ValueError(
                     f"Mesh output {output_name!r} trace {index} changed repair passes."
                 )
-        else:
+        elif operation == "diagnostics":
             expected_requirements = {
                 key: properties[key]
                 for key in (
@@ -3631,6 +3919,21 @@ def _validate_mesh_trace(
         _mesh_values_match(
             terminal["result"],
             observed,
+            path=f"outputs.{output_name}.operation_trace[-1].result",
+        )
+    elif terminal_operation in {"union", "difference", "intersection"}:
+        expected_result = {
+            "points": int(observed["points"]),
+            "facets": int(observed["facets"]),
+            "open_edges": int(observed["open_edges"]),
+            "components": int(observed["components"]),
+            "is_solid": bool(observed["is_solid"]),
+            "volume_mm3": float(observed["volume_mm3"]),
+            "bounds": dict(observed["bounds"]),
+        }
+        _mesh_values_match(
+            terminal["result"],
+            expected_result,
             path=f"outputs.{output_name}.operation_trace[-1].result",
         )
     else:
@@ -3706,6 +4009,21 @@ def _validate_mesh_execution(
         if detached is None:
             raise ValueError(f"Mesh output {name!r} has no detached native Mesh.")
         observed = mesh_diagnostics(detached)
+        if any(
+            operation in {"union", "difference", "intersection"}
+            for operation in _mesh_definition_operations(definition)
+        ) and (
+            not observed["is_solid"]
+            or int(observed["open_edges"]) != 0
+            or observed["has_non_manifolds"]
+            or observed["has_invalid_neighbourhood"]
+            or observed["has_non_uniform_orientation"]
+            or observed["has_self_intersections"]
+            or abs(float(observed["volume_mm3"])) <= 1.0e-12
+        ):
+            raise ValueError(
+                f"Mesh output {name!r} is not a valid closed manifold boolean solid."
+            )
         _validate_mesh_trace(
             data["operation_trace"],
             definition,
@@ -3766,6 +4084,8 @@ def _validate_meshpart_execution(
     prepared: Mapping[str, Any],
     execution: Mapping[str, Any],
     outputs: list[dict[str, Any]],
+    *,
+    definition_domain: str = "meshpart",
 ) -> dict[str, Any]:
     """Reauthorize MeshPart artifacts, source snapshots, and conversion reports."""
 
@@ -3859,6 +4179,7 @@ def _validate_meshpart_execution(
             expected_output_type=output_type,
             require_domain_value=False,
             context=f"outputs.{name}.definition",
+            definition_domain=definition_domain,
         )
         operation = str(definition["operation"])
         properties = dict(definition["properties"])
@@ -4268,6 +4589,60 @@ def _validate_meshpart_execution(
             "The MeshPart worker global validation summary is inconsistent."
         )
     return dict(validation)
+
+
+def _validate_mesh_workbench_execution(
+    prepared: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    outputs: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate both operation families exposed by the shipped Mesh surface."""
+
+    expected = list(prepared["expected_outputs"])
+    if len(expected) != len(outputs):
+        raise ValueError("The Mesh worker changed the declared output count.")
+
+    native_expected: list[dict[str, Any]] = []
+    native_outputs: list[dict[str, Any]] = []
+    conversion_expected: list[dict[str, Any]] = []
+    conversion_outputs: list[dict[str, Any]] = []
+    for declaration, item in zip(expected, outputs, strict=True):
+        has_mesh_data = isinstance(item.get("mesh_data"), dict)
+        has_conversion_data = isinstance(item.get("meshpart_data"), dict)
+        if has_mesh_data is has_conversion_data:
+            raise ValueError(
+                f"Mesh output {declaration['name']!r} must contain exactly one "
+                "native-operation or conversion validation record."
+            )
+        if has_mesh_data:
+            native_expected.append(declaration)
+            native_outputs.append(item)
+        else:
+            conversion_expected.append(declaration)
+            conversion_outputs.append(item)
+
+    mesh_validation = None
+    if native_outputs:
+        mesh_validation = _validate_mesh_execution(
+            {**dict(prepared), "expected_outputs": native_expected},
+            execution,
+            native_outputs,
+        )
+    elif execution.get("mesh_validation") is not None:
+        raise ValueError("The Mesh worker reported native outputs that do not exist.")
+
+    meshpart_validation = None
+    if conversion_outputs:
+        meshpart_validation = _validate_meshpart_execution(
+            {**dict(prepared), "expected_outputs": conversion_expected},
+            execution,
+            conversion_outputs,
+            definition_domain="mesh",
+        )
+    elif execution.get("meshpart_validation") is not None:
+        raise ValueError("The Mesh worker reported conversion outputs that do not exist.")
+
+    return mesh_validation, meshpart_validation
 
 
 def _point_facts_match(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
@@ -7157,6 +7532,491 @@ def _assembly_catalog_fastener_contract(
     return identity, source, {**source, **contract}
 
 
+def _assembly_shared_mechanism_scenario(
+    *,
+    assembly_item: Mapping[str, Any],
+    diagnostics_item: Mapping[str, Any],
+    component_names: Sequence[str],
+    joint_names: Sequence[str],
+    motion_names: Sequence[str],
+    simulation_item: Mapping[str, Any] | None,
+    by_name: Mapping[str, Mapping[str, Any]],
+    joint_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Independently adapt serialized Assembly outputs to the shared contract."""
+
+    assembly_definition = dict(assembly_item["definition"])
+    assembly_properties = dict(assembly_definition["properties"])
+    components = []
+    for name in component_names:
+        definition = dict(by_name[name]["definition"])
+        operation = str(definition["operation"])
+        arguments = list(definition["arguments"])
+        properties = dict(definition["properties"])
+        if operation == "component":
+            source = {"kind": "document_object", **dict(arguments[0])}
+            flexible = bool(properties.get("flexible", False))
+        elif operation == "fastener":
+            source = {
+                "kind": "standard_fastener",
+                "standard": str(arguments[0]),
+                "nominal_thread": str(arguments[1]),
+                "length_mm": properties.get("length_mm"),
+                "model_thread": bool(properties.get("model_thread")),
+                "left_handed": bool(properties.get("left_handed")),
+                "options": dict(properties.get("options") or {}),
+            }
+            flexible = False
+        else:
+            raise ValueError(
+                f"Component output {name!r} cannot enter the shared mechanism scenario."
+            )
+        components.append(
+            {
+                "id": name,
+                "label": str(properties.get("label") or ""),
+                "source": source,
+                "initial_placement": dict(properties.get("placement") or {}),
+                "grounded": bool(properties.get("grounded")),
+                "flexible": flexible,
+            }
+        )
+
+    joints = []
+    for name in joint_names:
+        definition = dict(by_name[name]["definition"])
+        properties = dict(definition["properties"])
+        connectors = []
+        for connector in list(joint_records[name]["connectors"]):
+            connector_index = int(connector["index"]) - 1
+            connector_definition = dict(
+                list(definition["arguments"])[connector_index]
+            )
+            connector_properties = dict(connector_definition["properties"])
+            connectors.append(
+                {
+                    "component_id": str(connector["component_output"]),
+                    "selection": dict(
+                        connector_properties.get("selection") or {}
+                    ),
+                    "occurrence_path": connector_properties.get(
+                        "occurrence_path"
+                    ),
+                    "anchor": connector_properties.get("anchor"),
+                    "offset": dict(connector_properties.get("offset") or {}),
+                }
+            )
+        joints.append(
+            {
+                "id": name,
+                "label": str(properties.get("label") or ""),
+                "kind": str(properties.get("kind") or ""),
+                "connectors": connectors,
+                "parameters": dict(properties.get("parameters") or {}),
+                "length_limits_mm": properties.get("length_limits_mm"),
+                "angle_limits_degrees": properties.get(
+                    "angle_limits_degrees"
+                ),
+                "suppressed": bool(properties.get("suppressed")),
+            }
+        )
+
+    motions = []
+    for name in motion_names:
+        definition = dict(by_name[name]["definition"])
+        properties = dict(definition["properties"])
+        data = dict(by_name[name]["assembly_data"])
+        motions.append(
+            {
+                "id": name,
+                "label": str(properties.get("label") or ""),
+                "joint_id": str(data["joint_output"]),
+                "motion_type": str(properties["motion_type"]),
+                "formula": str(properties["formula"]),
+            }
+        )
+    simulation = None
+    if simulation_item is not None:
+        definition = dict(simulation_item["definition"])
+        properties = dict(definition["properties"])
+        simulation = {
+            "id": str(simulation_item["name"]),
+            "label": str(properties.get("label") or ""),
+            "motion_ids": list(motion_names),
+            "start_time_s": properties.get("start_time_s"),
+            "end_time_s": properties.get("end_time_s"),
+            "time_step_s": properties.get("time_step_s"),
+            "error_tolerance": properties.get("error_tolerance"),
+            "frames_per_second": properties.get("frames_per_second"),
+        }
+    diagnostics_definition = dict(diagnostics_item["definition"])
+    diagnostics_properties = dict(diagnostics_definition["properties"])
+    return normalize_mechanism_scenario(
+        {
+            "schema": MECHANISM_SCENARIO_SCHEMA,
+            "assembly": {
+                "id": str(assembly_item["name"]),
+                "label": str(assembly_properties.get("label") or ""),
+            },
+            "components": components,
+            "joints": joints,
+            "solve": {
+                "id": str(diagnostics_item["name"]),
+                "label": str(diagnostics_properties.get("label") or ""),
+                "require_solved": bool(
+                    diagnostics_properties.get("require_solved", True)
+                ),
+            },
+            "motions": motions,
+            "simulation": simulation,
+        }
+    )
+
+
+def _validate_assembly_mechanism_verifications(
+    prepared: Mapping[str, Any],
+    verifications: Sequence[dict[str, Any]],
+    *,
+    scenario: Mapping[str, Any],
+    solve_report: Mapping[str, Any],
+    assembly_item: Mapping[str, Any],
+    assembly_definition: Mapping[str, Any],
+    by_name: Mapping[str, dict[str, Any]],
+    component_names: Sequence[str],
+    component_placements: Mapping[str, Mapping[str, Any]],
+    component_sources: Mapping[str, Mapping[str, Any]],
+    component_metadata: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Recompute exact static reports from authenticated host-side BREPs."""
+
+    if not verifications:
+        return []
+
+    import Part
+
+    worker_references = {
+        (
+            str(item.get("document_uid") or ""),
+            str(item.get("object_name") or ""),
+        ): item
+        for item in list(
+            dict(prepared.get("worker_request") or {}).get(
+                "document_references"
+            )
+            or []
+        )
+        if isinstance(item, Mapping)
+    }
+    source_shapes: dict[tuple[str, str], Any] = {}
+    geometry_components: dict[str, dict[str, Any]] = {}
+    geometry_interfaces: dict[str, dict[str, list[str]]] = {}
+    for component_name in component_names:
+        component_item = by_name[component_name]
+        data = component_metadata[component_name]
+        source = data.get("source")
+        definition = component_item.get("definition")
+        if not isinstance(source, Mapping) or not isinstance(definition, Mapping):
+            raise ValueError(
+                f"Component output {component_name!r} has no static-verification source."
+            )
+        key = (
+            str(source.get("document_uid") or ""),
+            str(source.get("object_name") or ""),
+        )
+        operation = str(definition.get("operation") or "")
+        descriptor = (
+            data.get("source_brep")
+            if operation == "fastener"
+            else worker_references.get(key)
+        )
+        resolved = component_sources.get(component_name)
+        if not isinstance(descriptor, Mapping) or not isinstance(
+            resolved,
+            Mapping,
+        ):
+            raise ValueError(
+                f"Component output {component_name!r} has no authenticated static BREP."
+            )
+        path = _staged_artifact_path(
+            prepared,
+            descriptor.get("artifact_path"),
+            context=f"Component output {component_name!r} static-verification source",
+        )
+        digest = _sha256_file(path)
+        descriptor_digest = str(
+            descriptor.get(
+                "artifact_sha256"
+                if operation == "fastener"
+                else "brep_sha256"
+            )
+            or ""
+        )
+        resolved_digest = (
+            descriptor_digest
+            if operation == "fastener"
+            else str(resolved.get("brep_sha256") or "")
+        )
+        if digest != descriptor_digest or digest != resolved_digest:
+            raise ValueError(
+                f"Component output {component_name!r} static BREP changed after "
+                "revision binding."
+            )
+        shape = source_shapes.get(key)
+        if shape is None:
+            shape = Part.Shape()
+            shape.importBrep(str(path))
+            if (
+                shape.isNull()
+                or not shape.isValid()
+                or len(list(shape.Solids)) < 1
+            ):
+                raise ValueError(
+                    f"Component output {component_name!r} static BREP is invalid."
+                )
+            source_shapes[key] = shape
+        placement = _assembly_native_placement_from_matrix(
+            component_placements[component_name]["matrix"],
+            f"Component output {component_name!r} solved placement",
+        )
+        geometry_components[component_name] = {
+            "shape": shape,
+            "placement": {
+                "position": [
+                    float(placement.Base.x),
+                    float(placement.Base.y),
+                    float(placement.Base.z),
+                ],
+                "rotation": [
+                    float(value) for value in placement.Rotation.Q
+                ],
+            },
+        }
+        published = dict(resolved.get("published_interfaces") or {})
+        geometry_interfaces[component_name] = {
+            str(name): [
+                str(subelement)
+                for subelement in list(raw.get("subelements") or [])
+            ]
+            for name, raw in published.items()
+            if isinstance(raw, Mapping)
+            and list(raw.get("subelements") or [])
+        }
+
+    summaries: list[dict[str, Any]] = []
+    for verification_item in verifications:
+        output_name = str(verification_item["name"])
+        definition = verification_item.get("definition")
+        data = verification_item.get("assembly_data")
+        if (
+            not isinstance(definition, dict)
+            or definition.get("domain") != "assembly"
+            or definition.get("operation") != "mechanism_check"
+            or definition.get("output_type") != "mechanism_verification"
+            or definition.get("arguments") != [assembly_definition]
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} has an invalid "
+                "declarative definition."
+            )
+        if not isinstance(data, dict) or set(data) != {
+            "assembly_output",
+            "static_check",
+            "report",
+        }:
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} has malformed "
+                "native evidence."
+            )
+        if str(data.get("assembly_output") or "") != str(assembly_item["name"]):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} belongs to the "
+                "wrong assembly."
+            )
+        properties = definition.get("properties")
+        if (
+            not isinstance(properties, dict)
+            or not {"requirements", "contacts"} <= set(properties)
+            or set(properties) - {"requirements", "contacts", "label"}
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} has malformed "
+                "properties."
+            )
+        static_check = normalize_mechanism_static_check(
+            scenario,
+            data.get("static_check"),
+        )
+        if (
+            static_check["schema"] != MECHANISM_STATIC_CHECK_SCHEMA
+            or static_check["id"] != output_name
+            or static_check["label"] != str(properties.get("label") or "")
+            or static_check["scenario_sha256"]
+            != mechanism_scenario_sha256(scenario)
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} changed its "
+                "static-check identity."
+            )
+        definition_requirements = properties.get("requirements")
+        definition_contacts = properties.get("contacts")
+        if (
+            not isinstance(definition_requirements, list)
+            or not isinstance(definition_contacts, list)
+            or len(definition_requirements) != len(static_check["requirements"])
+            or len(definition_contacts) != len(static_check["contacts"])
+        ):
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} changed its "
+                "declaration counts."
+            )
+        for kind, definitions, declarations in (
+            (
+                "requirement",
+                definition_requirements,
+                static_check["requirements"],
+            ),
+            ("contact", definition_contacts, static_check["contacts"]),
+        ):
+            for index, (raw_definition, declaration) in enumerate(
+                zip(definitions, declarations, strict=True)
+            ):
+                context = (
+                    f"Mechanism verification output {output_name!r} "
+                    f"{kind} {index}"
+                )
+                if not isinstance(raw_definition, dict):
+                    raise ValueError(f"{context} is malformed.")
+                first_name = str(declaration["first_component"])
+                second_name = str(declaration["second_component"])
+                if (
+                    first_name not in by_name
+                    or second_name not in by_name
+                    or raw_definition.get("first")
+                    != by_name[first_name].get("definition")
+                    or raw_definition.get("second")
+                    != by_name[second_name].get("definition")
+                ):
+                    raise ValueError(
+                        f"{context} changed its exact component graph values."
+                    )
+                expected_scalar = {
+                    key: value
+                    for key, value in declaration.items()
+                    if key
+                    not in {
+                        "id",
+                        "first_component",
+                        "second_component",
+                    }
+                }
+                observed_scalar = {
+                    key: value
+                    for key, value in raw_definition.items()
+                    if key not in {"first", "second"}
+                }
+                if observed_scalar != expected_scalar:
+                    raise ValueError(
+                        f"{context} changed its declared policy or tolerance."
+                    )
+                if (
+                    bool(component_metadata[first_name].get("flexible"))
+                    or bool(component_metadata[second_name].get("flexible"))
+                ):
+                    raise ValueError(
+                        f"{context} cannot certify a flexible component as one "
+                        "rigid static shape."
+                    )
+
+        geometry_declarations = []
+        for declaration in [
+            *static_check["requirements"],
+            *[
+                item
+                for item in static_check["contacts"]
+                if item["policy"] != "ignored"
+            ],
+        ]:
+            policy = str(declaration.get("policy") or "")
+            first_interface = (
+                str(declaration["first_interface"])
+                if policy in {"allowed", "required"}
+                else None
+            )
+            second_interface = (
+                str(declaration["second_interface"])
+                if policy in {"allowed", "required"}
+                else None
+            )
+            if first_interface is not None:
+                for component_name, interface_name in (
+                    (
+                        str(declaration["first_component"]),
+                        first_interface,
+                    ),
+                    (
+                        str(declaration["second_component"]),
+                        second_interface,
+                    ),
+                ):
+                    if interface_name not in geometry_interfaces.get(
+                        component_name,
+                        {},
+                    ):
+                        raise ValueError(
+                            f"Mechanism verification output {output_name!r} names "
+                            f"interface {interface_name!r} without authenticated "
+                            "contact subelements."
+                        )
+            geometry_declarations.append(
+                {
+                    "declaration_id": str(declaration["id"]),
+                    "first_component": str(declaration["first_component"]),
+                    "second_component": str(declaration["second_component"]),
+                    "tolerance_mm": float(declaration["tolerance_mm"]),
+                    "first_interface": first_interface,
+                    "second_interface": second_interface,
+                }
+            )
+        geometry_evidence = measure_static_mechanism_pairs(
+            geometry_components,
+            geometry_declarations,
+            interfaces=geometry_interfaces,
+        )
+        expected_report = evaluate_static_mechanism_check(
+            scenario,
+            solve_report,
+            static_check,
+            geometry_evidence,
+        )
+        reported = normalize_mechanism_verification_report(
+            scenario,
+            solve_report,
+            static_check,
+            data.get("report"),
+        )
+        if reported != expected_report:
+            raise ValueError(
+                f"Mechanism verification output {output_name!r} does not match "
+                "the independently recomputed exact BREP evidence."
+            )
+        summary = {
+            "verification_output": output_name,
+            "verdict": str(reported["verdict"]),
+            "declaration_count": int(
+                reported["summary"]["declaration_count"]
+            ),
+            "pass_count": int(reported["summary"]["pass_count"]),
+            "fail_count": int(reported["summary"]["fail_count"]),
+            "indeterminate_count": int(
+                reported["summary"]["indeterminate_count"]
+            ),
+            "ignored_count": int(reported["summary"]["ignored_count"]),
+            "static_check_sha256": str(reported["static_check_sha256"]),
+        }
+        summaries.append(summary)
+    return summaries
+
+
 def _validate_assembly_execution(
     prepared: Mapping[str, Any],
     execution: Mapping[str, Any],
@@ -7184,6 +8044,7 @@ def _validate_assembly_execution(
     joints = by_type.get("joint", [])
     motions = by_type.get("motion", [])
     simulations = by_type.get("simulation", [])
+    verifications = by_type.get("mechanism_verification", [])
     exploded_views = by_type.get("exploded_view", [])
     boms = by_type.get("bom", [])
     if not components:
@@ -7194,6 +8055,11 @@ def _validate_assembly_execution(
         raise ValueError(
             "Assembly motion outputs require exactly one simulation output, and a "
             "simulation requires at least one motion output."
+        )
+    if len(verifications) > 8:
+        raise ValueError(
+            "An Assembly candidate may contain at most eight "
+            "mechanism_verification outputs."
         )
     assembly_item = by_type["assembly"][0]
     diagnostics_item = by_type["solver_diagnostics"][0]
@@ -7234,6 +8100,7 @@ def _validate_assembly_execution(
         diagnostics_item["name"]
     ):
         raise ValueError("The assembly graph points to the wrong diagnostics output.")
+    graph_motion_names: list[str] = []
     if simulations:
         graph_motion_names = [
             str(item) for item in list(assembly_data.get("motion_outputs") or [])
@@ -7282,6 +8149,26 @@ def _validate_assembly_execution(
             )
     elif "bom_outputs" in assembly_data:
         raise ValueError("The assembly graph reports an undeclared BOM.")
+    returned_verification_names = [str(item["name"]) for item in verifications]
+    if verifications:
+        graph_verification_names = [
+            str(item)
+            for item in list(
+                assembly_data.get("mechanism_verification_outputs") or []
+            )
+        ]
+        if (
+            len(graph_verification_names) != len(set(graph_verification_names))
+            or graph_verification_names != returned_verification_names
+        ):
+            raise ValueError(
+                "The assembly graph mechanism verifications do not exactly match "
+                "returned outputs in declaration order."
+            )
+    elif "mechanism_verification_outputs" in assembly_data:
+        raise ValueError(
+            "The assembly graph reports an undeclared mechanism verification."
+        )
     graph_component_definitions = assembly_properties.get("components")
     graph_joint_definitions = assembly_properties.get("joints")
     if not isinstance(graph_component_definitions, list) or len(
@@ -7358,10 +8245,10 @@ def _validate_assembly_execution(
         if not isinstance(arguments, list) or not isinstance(properties, dict):
             raise ValueError(f"Component output {name!r} has a malformed definition.")
         source = data.get("source")
-        if not isinstance(source, dict) or set(source) != {
-            "document_uid",
-            "object_name",
-        }:
+        if not isinstance(source, dict) or (
+            operation == "fastener"
+            and set(source) != {"document_uid", "object_name"}
+        ) or (operation == "component" and not is_document_reference(source)):
             raise ValueError(
                 f"Component output {name!r} has an invalid source identity."
             )
@@ -7379,6 +8266,7 @@ def _validate_assembly_execution(
                     f"Component output {name!r} changed its catalog source identity."
                 )
         else:
+            source = normalize_document_reference(source)
             if len(arguments) != 1 or source != arguments[0]:
                 raise ValueError(
                     f"Component output {name!r} source changed after source evaluation."
@@ -7389,6 +8277,15 @@ def _validate_assembly_execution(
                 raise ValueError(
                     f"Component output {name!r} uses an unauthenticated source "
                     f"{key[1]!r}."
+                )
+            if (
+                source.get("document_path")
+                and str(resolved.get("document_path") or "")
+                != source["document_path"]
+            ):
+                raise ValueError(
+                    f"Component output {name!r} changed its authenticated "
+                    "document_path."
                 )
         facts = data.get("source_facts")
         if not isinstance(facts, dict) or int(facts.get("solids") or 0) < 1:
@@ -8045,6 +8942,7 @@ def _validate_assembly_execution(
     )
 
     simulation_summary = None
+    motion_records: list[dict[str, Any]] = []
     if simulations:
         simulation_item = simulations[0]
         simulation_name = str(simulation_item["name"])
@@ -8125,7 +9023,6 @@ def _validate_assembly_execution(
                 "schedule."
             )
 
-        motion_records: list[dict[str, Any]] = []
         seen_drives: set[tuple[str, str]] = set()
         for motion_name in graph_motion_names:
             item = by_name[motion_name]
@@ -8472,6 +9369,67 @@ def _validate_assembly_execution(
             "The Assembly worker claimed a required solution without a clean native "
             "solver result."
         )
+    mechanism_scenario = _assembly_shared_mechanism_scenario(
+        assembly_item=assembly_item,
+        diagnostics_item=diagnostics_item,
+        component_names=component_names,
+        joint_names=joint_names,
+        motion_names=graph_motion_names,
+        simulation_item=(simulations[0] if simulations else None),
+        by_name=by_name,
+        joint_records=joint_records,
+    )
+    mechanism_solve_report = normalize_mechanism_solve_report(
+        mechanism_scenario,
+        {
+            "schema": MECHANISM_SOLVE_REPORT_SCHEMA,
+            "scenario_sha256": mechanism_scenario_sha256(
+                mechanism_scenario
+            ),
+            "status": expected_status,
+            "solver_code": solver_code,
+            "solver_verdict": expected_verdict,
+            "require_solved": require_solved,
+            "component_count": len(components),
+            "joint_count": len(joints),
+            "grounded_components": grounded,
+            "native_diagnostics": native,
+            "component_placements": component_placements,
+            "component_occurrences": {
+                name: list(
+                    component_metadata[name].get("solved_occurrences") or []
+                )
+                for name in component_names
+            },
+            "joint_dependency_issues": expected_dependency_issues,
+        },
+    )
+    verification_summaries = _validate_assembly_mechanism_verifications(
+        prepared,
+        verifications,
+        scenario=mechanism_scenario,
+        solve_report=mechanism_solve_report,
+        assembly_item=assembly_item,
+        assembly_definition=assembly_definition,
+        by_name=by_name,
+        component_names=component_names,
+        component_placements=component_placements,
+        component_sources=component_sources,
+        component_metadata=component_metadata,
+    )
+    if verification_summaries:
+        if (
+            diagnostics.get("verifications") != verification_summaries
+            or validation.get("verifications") != verification_summaries
+        ):
+            raise ValueError(
+                "The Assembly mechanism-verification summaries are inconsistent "
+                "across worker outputs."
+            )
+    elif "verifications" in diagnostics or "verifications" in validation:
+        raise ValueError(
+            "The Assembly diagnostics report undeclared mechanism verifications."
+        )
     expected_validation = {
         "status": expected_status,
         "solver_code": solver_code,
@@ -8490,6 +9448,8 @@ def _validate_assembly_execution(
         expected_validation["exploded_views"] = exploded_view_summaries
     if bom_summaries:
         expected_validation["boms"] = bom_summaries
+    if verification_summaries:
+        expected_validation["verifications"] = verification_summaries
     for field, expected_value in expected_validation.items():
         if validation.get(field) != expected_value:
             raise ValueError(
@@ -11041,27 +12001,56 @@ def _validate_definition_value(
             _validate_definition_value(item, prepared, f"{path}[{index}]", depth + 1)
         return
     if isinstance(value, dict):
-        if set(value) == {"document_uid", "object_name"}:
+        if is_document_reference(value):
+            clean_reference = normalize_document_reference(value)
             if (
                 prepared["pack"].domain == "assembly"
-                and str(value["document_uid"]) == "freecad-fasteners"
+                and clean_reference["document_uid"] == "freecad-fasteners"
                 and re.fullmatch(
                     r"freecad-fasteners:[0-9a-f]{64}",
-                    str(value["object_name"]),
+                    clean_reference["object_name"],
                 )
             ):
                 # This non-document identity is independently bound to an exact
                 # bundled catalog definition and generated BREP by
                 # _validate_assembly_execution before structured-data traversal.
                 return
-            if str(value["document_uid"]) != str(prepared["document_uid"]):
+            if prepared["pack"].domain == "assembly":
+                authenticated = next(
+                    (
+                        item
+                        for item in list(
+                            prepared.get("resolved_references") or []
+                        )
+                        if str(item.get("document_uid") or "")
+                        == clean_reference["document_uid"]
+                        and str(item.get("object_name") or "")
+                        == clean_reference["object_name"]
+                    ),
+                    None,
+                )
+                if authenticated is None:
+                    raise ValueError(
+                        f"{path} refers to an unauthenticated Assembly component."
+                    )
+                if (
+                    clean_reference.get("document_path")
+                    and str(authenticated.get("document_path") or "")
+                    != clean_reference["document_path"]
+                ):
+                    raise ValueError(
+                        f"{path} changed the authenticated component document_path."
+                    )
+                return
+            if clean_reference["document_uid"] != str(prepared["document_uid"]):
                 raise ValueError(f"{path} refers to a different document.")
             names = {
                 str(item.get("name") or "") for item in prepared["document_objects"]
             }
-            if str(value["object_name"]) not in names:
+            if clean_reference["object_name"] not in names:
                 raise ValueError(
-                    f"{path} refers to missing object {value['object_name']!r}."
+                    f"{path} refers to missing object "
+                    f"{clean_reference['object_name']!r}."
                 )
             return
         for key, item in value.items():
@@ -14787,7 +15776,7 @@ def validate_candidate(
             validated,
         )
     elif pack.domain == "mesh":
-        mesh_validation = _validate_mesh_execution(
+        mesh_validation, meshpart_validation = _validate_mesh_workbench_execution(
             prepared,
             execution,
             validated,
@@ -15067,7 +16056,7 @@ def capture_editor_inspection_state(service: Any, domain: str, program_id: str) 
             tool_name,
             "DOMAIN_SURFACE_CHANGED",
             "surface",
-            "The active workbench and modeling engine no longer authorize this editor domain.",
+            "The active workbench no longer authorizes this editor API.",
             observed=resolution.summary(),
         )
     scope = service.project_scope_snapshot()
@@ -15230,9 +16219,10 @@ class DeclarativeDomainAdapter:
             "instructions": self.pack.instructions,
             "model_operating_contract": {
                 "context_first": (
-                    "Use exact facts already returned in the current turn. Inspect only "
-                    "when a required program, reference, API contract, source, or revision "
-                    "is missing; never invent stable values."
+                    "Each editable_sources item is one part or program. Use its exact "
+                    "source_id with vibescript.read_source before changing that code. "
+                    "Use vibescript.read_api when an exact callable or signature is "
+                    "missing. Never invent source ids, revisions, or API calls."
                 ),
                 "mutation_selection": {
                     "edit_source": (
@@ -15250,7 +16240,7 @@ class DeclarativeDomainAdapter:
                 },
                 "revision_rule": (
                     "Guard every mutation with the latest working_revision returned by a write "
-                    "or inspect_program. After a failed candidate this is the failed candidate "
+                    "or vibescript.read_source. After a failed candidate this is the failed candidate "
                     "revision, not the still-live accepted_revision."
                 ),
                 "input_schema_templates": {
@@ -15358,7 +16348,7 @@ class DeclarativeDomainAdapter:
                 **({"migration_required": True} if migration_required else {}),
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
-                    "source_only": f"vibescript.{self.pack.domain}.edit_source",
+                    "source_only": "vibescript.edit_source",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
                     "contract_or_outputs": (
                         f"vibescript.{self.pack.domain}.reconfigure_program"
@@ -15670,9 +16660,9 @@ class PartDomainAdapter(DeclarativeDomainAdapter):
                         "Part operation."
                     ),
                     "rule": (
-                        "The model cannot switch workbench or engine. Explain the required "
-                        "handoff and ask the human to switch; never call or describe another "
-                        "domain from this Part surface."
+                        "The active workbench determines the available API. Use only this Part "
+                        "API and describe any required follow-on work without calling another "
+                        "workbench's tools."
                     ),
                 },
                 "recommended_patterns": [
@@ -15809,8 +16799,8 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "planar profiles. This preserves editable Body history."
                     ),
                     "planar_profile_rule": (
-                        "Any planar section, including an offset loft section, is an api.sketch "
-                        "with plane and z_offset_mm; it is not a *_3d curve or api.wire."
+                        "Every planar feature profile is an api.sketch with plane and "
+                        "z_offset_mm; it is not a *_3d curve or api.wire."
                     ),
                     "direct_topology_exception": (
                         "Use direct OCC topology only for nonplanar, imported, repair, "
@@ -15925,8 +16915,13 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "publish": "api.body for one solid Body; api.publish for standalone topology",
                     "redundancy_contract": (
-                        "Use extrude for linear material changes, revolve for axial material "
-                        "changes, and boolean for union, subtraction, or intersection."
+                        "Use api.extrude for straight constant-cross-section additions and cuts, "
+                        "api.revolve for axial features, api.sweep when a profile follows a path, "
+                        "and api.loft only when the cross-section itself genuinely changes between "
+                        "section planes. Do not use api.loft as a shortcut for a wedge, dovetail, "
+                        "simple taper, or diagonal transition that api.sketch plus api.extrude, "
+                        "api.draft, api.chamfer, or a sketch cut expresses directly. Use "
+                        "api.boolean for union, subtraction, or intersection."
                     ),
                 },
                 "semantic_interfaces": {
@@ -15973,8 +16968,9 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "is needed for a Part Design output."
                     ),
                     "rule": (
-                        "The model cannot switch workbenches; ask the human to activate another "
-                        "domain only when the requested output belongs there."
+                        "The active workbench determines the available API. Use this Part Design "
+                        "API for the complete part, and describe follow-on work only when the "
+                        "requested output belongs to another workbench."
                     ),
                 },
                 "error_contract": {
@@ -16323,9 +17319,9 @@ class SketcherDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "surface": "Use Surface for surface fills, blends, extensions, and shell work.",
                     "rule": (
-                        "The model cannot switch workbench or engine. Explain the required "
-                        "handoff and ask the human to switch; never call or describe another "
-                        "domain from this Sketcher surface."
+                        "The active workbench determines the available API. Use only this "
+                        "Sketcher API and describe any required follow-on work without calling "
+                        "another workbench's tools."
                     ),
                 },
                 "support_contract": {
@@ -16741,9 +17737,9 @@ class DraftDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only Draft "
-                        "objects in this surface and state the required human handoff when the next "
-                        "step belongs to Sketcher, Part, Part Design, or TechDraw."
+                        "The active workbench determines the available API. Author Draft objects "
+                        "here and describe follow-on work when the next result belongs to "
+                        "Sketcher, Part, Part Design, or TechDraw."
                     ),
                     "use_draft_for": (
                         "editable 2D/3D construction geometry, simple planar faces, repeated "
@@ -17054,9 +18050,9 @@ class SurfaceDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only Surface "
-                        "graph operations here and state the required human handoff when the next "
-                        "step belongs to Sketcher, Part, Part Design, Draft, Mesh, or TechDraw."
+                        "The active workbench determines the available API. Author Surface graph "
+                        "operations here and describe follow-on work when the next result belongs "
+                        "to Sketcher, Part, Part Design, Draft, Mesh, or TechDraw."
                     ),
                     "use_surface_for": (
                         "freeform faces, continuity-controlled patches, blends, extensions, "
@@ -17324,9 +18320,9 @@ class SpreadsheetDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Author only native sheets "
-                        "in this surface; state the exact human handoff when an accepted alias or result "
-                        "must be consumed by a geometry, analysis, manufacturing, or drawing workbench."
+                        "The active workbench determines the available API. Author native sheets "
+                        "here and describe where an accepted alias or result must be consumed by "
+                        "geometry, analysis, manufacturing, or drawing tools."
                     ),
                     "use_spreadsheet_for": (
                         "parameter sets, unit-aware calculations, schedules, tabular reports, and stable "
@@ -17606,10 +18602,10 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. This surface only "
+                        "The active workbench determines the available API. This Material API "
                         "assigns physical material state and display appearance to existing native "
-                        "objects; state the exact human handoff when geometry, analysis, assembly, "
-                        "manufacturing, or drawings are still required."
+                        "objects; describe follow-on geometry, analysis, assembly, manufacturing, "
+                        "or drawing work when required."
                     ),
                     "robot_or_vehicle": (
                         "Part Design/Part creates components, Assembly composes them, Material owns "
@@ -17701,7 +18697,7 @@ class MaterialDomainAdapter(DeclarativeDomainAdapter):
 
 @dataclass
 class MeshDomainAdapter(DeclarativeDomainAdapter):
-    """Dedicated adapter for isolated native Mesh generation and repair."""
+    """Adapter for native Mesh operations and explicit BREP conversion."""
 
     production_ready: bool = True
 
@@ -17716,12 +18712,20 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "volume": "cubic millimetres",
                     "rotation": "normalized quaternion [x,y,z,w]",
                     "scale": "positive dimensionless [x,y,z]",
+                    "boolean_linear_deflection": "millimetres",
+                    "boolean_angular_deflection": "degrees",
+                    "conversion_tolerance": "millimetres",
+                    "facet_and_segment_indices": "1-based",
                 },
                 "evaluation_model": (
                     "The model builds one immutable mesh graph from either bounded triangles "
                     "or an authenticated placement-baked Mesh::Feature snapshot. The isolated "
-                    "FreeCADCmd worker performs every native transform, repair, analysis, and "
-                    "BMS operation; the document thread only publishes validated native state."
+                    "FreeCADCmd worker performs native transforms, OCC solid booleans through "
+                    "MeshPart::Boolean, remeshing, repair, analysis, and explicit BREP/mesh "
+                    "conversion. CSG operands and "
+                    "booleans remain in memory with no external executable or interchange "
+                    "temp files. Validated results are exported as authenticated BMS or typed "
+                    "BREP artifacts; the document thread only publishes validated native state."
                 ),
                 "input_reference_schema": {
                     "type": "object",
@@ -17748,6 +18752,18 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "Use only when geometry itself must be baked to a new coordinate frame. "
                         "Scale about the origin, rotate by [x,y,z,w], then translate."
                     ),
+                    "union": (
+                        "Combine two valid closed mesh solids. Use this explicit call for union; "
+                        "disconnected valid result solids are preserved."
+                    ),
+                    "difference": (
+                        "Remove the second valid closed mesh solid from the first. A disjoint "
+                        "second operand validly returns the unchanged first solid."
+                    ),
+                    "intersection": (
+                        "Keep only positive solid volume shared by two valid closed mesh solids. "
+                        "Touching faces or edges are not a solid intersection."
+                    ),
                     "repair": (
                         "Use only when diagnostics identify a defect or the request explicitly "
                         "requires simplification. Select the minimum relevant passes."
@@ -17757,13 +18773,25 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "requirement must reject a bad candidate; every output already carries "
                         "the same full diagnostics for inspection."
                     ),
+                    "mesh_from_shape": (
+                        "Convert an eligible document BREP to a native mesh. Use standard "
+                        "deflection unless the request supplies a quantitative edge, area, "
+                        "local-length, or Netgen requirement."
+                    ),
+                    "shape_from_mesh": (
+                        "Convert an eligible document mesh to one declared OCC solid, shell, "
+                        "face, wire, or compound. State surface versus boundary representation "
+                        "whenever compound would otherwise be ambiguous."
+                    ),
                 },
                 "redundancy_contract": (
-                    "The five exports have non-overlapping model roles: construct, acquire an "
-                    "existing object, bake a transform, mutate/repair, and enforce requirements. "
-                    "Do not emit identity transforms, default-only diagnostics, or speculative "
-                    "repair passes. One api.repair call consolidates every selected native repair "
-                    "pass; there are no separate model-facing cleanup tools."
+                    "The ten exports have distinct roles: construct, acquire, transform, union, "
+                    "subtract, intersect, repair, verify, BREP-to-mesh conversion, and "
+                    "mesh-to-BREP conversion. Each boolean and conversion direction is a named "
+                    "call; there is no operation enum. Do not emit identity transforms, "
+                    "default-only diagnostics, speculative repair passes, or round-trip "
+                    "conversions. One api.repair call consolidates every selected native repair "
+                    "pass."
                 ),
                 "operation_contracts": {
                     "mesh": (
@@ -17779,6 +18807,20 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "bakes translation, normalized quaternion rotation, and strictly "
                         "positive non-uniform scale into a detached native mesh"
                     ),
+                    "union": (
+                        "converts both placement-baked, closed manifold meshes into typed OCC "
+                        "solids, fuses them, preserves disconnected result solids and nested "
+                        "cavities, then remeshes the result with explicit deflection controls"
+                    ),
+                    "difference": (
+                        "computes first minus second as an OCC solid boolean, preserves first "
+                        "when second is disjoint, and rejects only an empty result that cannot "
+                        "be published as a solid mesh"
+                    ),
+                    "intersection": (
+                        "computes the OCC common volume and rejects disjoint or merely touching "
+                        "operands because they produce no positive solid volume"
+                    ),
                     "repair": (
                         "runs selected duplicate-point, duplicate-facet, degeneration, "
                         "non-manifold edge/point, self-intersection, bounded hole-fill, normal "
@@ -17790,6 +18832,14 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "characteristic, components, boundary edges, orientation, manifold, "
                         "self-intersection, corruption, index, neighbourhood, and range checks; "
                         "intersection details are sampled only for meshes of at most 128 facets"
+                    ),
+                    "mesh_from_shape": (
+                        "meshes one authenticated whole BREP or one FaceN/ShellN/SolidN "
+                        "selection using exactly one explicit native mesher method"
+                    ),
+                    "shape_from_mesh": (
+                        "converts one authenticated full mesh, facet subset, or preserved "
+                        "segment into exactly one declared OCC topology class"
                     ),
                 },
                 "repair_order": [
@@ -17837,6 +18887,8 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "Apply api.transform only when baked geometry coordinates must change.",
                         "Apply one api.repair only for evidenced defects or an explicit reduction "
                         "goal, with the smallest pass set.",
+                        "Combine valid closed solids with the exact api.union, api.difference, "
+                        "or api.intersection call that states the intended result.",
                         "Add api.diagnostics only as a final rejection gate, then return that "
                         "value; otherwise return the latest mesh value directly.",
                     ],
@@ -17849,9 +18901,17 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "data is therefore for compact explicit designs; use from_object for "
                         "eligible existing meshes and never invent omitted facets."
                     ),
+                    "conversion_sources": (
+                        "Both conversion calls consume authenticated document references rather "
+                        "than another graph value. Publish and verify an intermediate result "
+                        "before a genuinely necessary representation round trip."
+                    ),
                 },
                 "publication_contract": {
-                    "native_type": "stable Mesh::Feature with an assigned native Mesh.Mesh",
+                    "native_type": (
+                        "stable Mesh::Feature for mesh outputs and stable Part::Feature for "
+                        "solid, shell, face, wire, or compound outputs"
+                    ),
                     "identity": (
                         "program/output ids update the same native object in place; output "
                         "retirement and deletion reject foreign live references"
@@ -17859,7 +18919,9 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "validation": (
                         "the host authenticates the BMS digest, imports a detached Mesh, "
                         "independently recomputes diagnostics, and compares native counts, "
-                        "area, volume, and bounds after assignment"
+                        "area, volume, and bounds after assignment. Boolean traces bind both "
+                        "operand definitions, tessellation controls, OCC backend, operand "
+                        "topology, and final artifact facts."
                     ),
                     "rollback": (
                         "publication and deletion failures explicitly recreate the accepted "
@@ -17867,16 +18929,20 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "asynchronous_boundary": (
                         "mesh construction, repair, self-intersection analysis, validation, "
-                        "and BMS I/O occur off the document thread; publication only assigns "
-                        "already-validated detached native state"
+                        "OCC booleans, remeshing, and BMS I/O occur off the document thread; "
+                        "publication only assigns already-validated detached native state"
                     ),
                 },
                 "domain_context": {
                     "document_meshes": (
                         "bounded stable references, native point/facet/edge/segment counts, "
                         "bounds, and compact accepted validation summaries. Copy reference "
-                        "verbatim into inputs for api.from_object; do not address an object by "
-                        "label or reconstruct it from the summary"
+                        "verbatim into inputs for api.from_object or api.shape_from_mesh; do not "
+                        "address an object by label or reconstruct it from the summary"
+                    ),
+                    "document_shape_sources": (
+                        "bounded BREP facts and copy-ready references for api.mesh_from_shape; "
+                        "use only entries explicitly marked eligible"
                     ),
                     "programs": (
                         "bounded persisted contracts, working/accepted revisions, candidate "
@@ -17885,7 +18951,7 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "model_verification_contract": {
                     "accepted_evidence": (
-                        "inspect_program and live output validation expose the authenticated "
+                        "vibescript.read_source and live output validation expose the authenticated "
                         "artifact digest, terminal operation, exact operation_trace, and full "
                         "native diagnostics. For repair, compare each trace item's before/after "
                         "counts and applied pass list; for from_object, verify source identity, "
@@ -17894,8 +18960,9 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                     "success_criteria": (
                         "Check the metrics implied by intent: solid/closed/manifold/orientation "
                         "for printable solids, open edges and components for surfaces, bounds "
-                        "after transforms, and facet change after decimation. Do not claim repair "
-                        "from a successful tool call alone."
+                        "after transforms, facet change after decimation, mesher backend and "
+                        "segments after meshing, and exact OCC topology after conversion. Do not "
+                        "claim repair or conversion quality from a successful tool call alone."
                     ),
                     "failure_repair": (
                         "Read domain_failure_stage, observed.details, correction, and "
@@ -17907,19 +18974,19 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Finish only native "
-                        "Mesh construction, transform, repair, and validation here, then state the "
-                        "exact human workbench handoff for a different representation or task."
+                        "The active workbench determines the available API. Complete native Mesh "
+                        "construction, transform, boolean, repair, validation, and explicit "
+                        "BREP conversion here, then describe follow-on work for a different task."
                     ),
                     "conversions": (
-                        "MeshPart converts BREP to mesh or mesh to typed BREP. Points and Reverse "
-                        "Engineering handle point-cloud and reconstruction workflows. Material "
-                        "handles physical cards or display appearance."
+                        "api.mesh_from_shape and api.shape_from_mesh expose the useful MeshPart "
+                        "conversion capability directly in this shipped Mesh workbench. Points "
+                        "and Reverse Engineering handle point-cloud and reconstruction workflows."
                     ),
                     "unsupported_here": (
-                        "This API does not import raw filesystem paths, mesh a BREP, reconstruct "
-                        "CAD surfaces, assign material cards, or run FEM/CAM. Preserve the mesh "
-                        "and request the corresponding human-activated workbench."
+                        "This API does not import raw filesystem paths, fit or reconstruct CAD "
+                        "surfaces, assign material cards, or run FEM/CAM. Preserve validated "
+                        "geometry and describe the corresponding follow-on work."
                     ),
                 },
                 "recommended_patterns": [
@@ -17955,12 +19022,45 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         ),
                         "expected_outputs": [{"name": "Mesh", "type": "mesh"}],
                     },
+                    {
+                        "goal": "subtract one positioned closed mesh from another",
+                        "source": (
+                            "base = api.from_object(inputs['base'], label='Base')\n"
+                            "tool = api.from_object(inputs['tool'], label='Cutting Tool')\n"
+                            "cut = api.difference(base, tool, linear_deflection=0.1, "
+                            "angular_deflection_degrees=28.64788975654116, "
+                            "relative=False, label='Cut Mesh')\n"
+                            "result = {'Mesh': cut}"
+                        ),
+                        "expected_outputs": [{"name": "Mesh", "type": "mesh"}],
+                    },
+                    {
+                        "goal": "mesh one authenticated solid with stable face groups",
+                        "source": (
+                            "converted = api.mesh_from_shape(inputs['shape'], "
+                            "method='standard', linear_deflection=0.25, "
+                            "angular_deflection_degrees=15, preserve_face_groups=True, "
+                            "label='Body Mesh')\nresult = {'Mesh': converted}"
+                        ),
+                        "expected_outputs": [{"name": "Mesh", "type": "mesh"}],
+                    },
+                    {
+                        "goal": "convert one repaired closed mesh to a refined solid",
+                        "source": (
+                            "converted = api.shape_from_mesh(inputs['mesh'], "
+                            "output_type='solid', tolerance=0.01, "
+                            "harmonize_normals=True, refine=True, label='Recovered Solid')\n"
+                            "result = {'Solid': converted}"
+                        ),
+                        "expected_outputs": [{"name": "Solid", "type": "solid"}],
+                    },
                 ],
                 "error_contract": {
                     "source": (
                         "argument errors name api.operation and the exact triangle, vector, "
-                        "reference, quaternion, repair option, diagnostic bound, or label path, "
-                        "and propagate source_validation plus one exact correction"
+                        "reference, quaternion, repair option, diagnostic bound, conversion "
+                        "method, topology selector, tolerance, or label path, and propagate "
+                        "source_validation plus one exact correction"
                     ),
                     "native": (
                         "every worker failure retains its exact reference, definition, native-"
@@ -17968,8 +19068,9 @@ class MeshDomainAdapter(DeclarativeDomainAdapter):
                         "observations, and one actionable correction"
                     ),
                     "publication": (
-                        "artifact/hash mismatch, diagnostics drift, native-type drift, assigned "
-                        "mesh mismatch, and external-reference conflicts reject the candidate"
+                        "artifact/hash mismatch, diagnostics or topology drift, native-type "
+                        "drift, assigned-kernel mismatch, and external-reference conflicts "
+                        "reject the candidate"
                     ),
                 },
             }
@@ -18194,9 +19295,9 @@ class MeshPartDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Perform only "
-                        "BREP/mesh conversion here and state the exact human workbench handoff "
-                        "for source repair, modeling, inspection, analysis, or appearance."
+                        "The active workbench determines the available API. Perform BREP/mesh "
+                        "conversion here and describe follow-on source repair, modeling, "
+                        "inspection, analysis, or appearance work."
                     ),
                     "before_conversion": (
                         "Mesh repairs and topology diagnostics belong to Mesh; BREP creation and "
@@ -18468,9 +19569,9 @@ class PointsDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Finish only point-cloud "
-                        "ingestion, transform, filtering, sampling, and native publication here, then "
-                        "state the exact human-activated workbench needed for another representation."
+                        "The active workbench determines the available API. Complete point-cloud "
+                        "ingestion, transform, filtering, sampling, and native publication here, "
+                        "then describe follow-on work for another representation."
                     ),
                     "next_domains": {
                         "Reverse Engineering": "curve/surface fitting, segmentation, or reconstruction",
@@ -18761,9 +19862,9 @@ class ReverseEngineeringDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish only fitting, "
-                        "reconstruction, segmentation, and deviation evidence here, then request the "
-                        "exact human-activated workbench for downstream work."
+                        "The active workbench determines the available API. Complete fitting, "
+                        "reconstruction, segmentation, and deviation evidence here, then describe "
+                        "the downstream work that remains."
                     ),
                     "next_domains": {
                         "Points": "crop, clean, transform, or downsample source scans",
@@ -19050,9 +20151,9 @@ class InspectionDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish only nominal-versus-actual solve, "
-                        "metrics, groups, and reports here, then request the exact human-activated workbench "
-                        "for source correction or downstream use."
+                        "The active workbench determines the available API. Complete the "
+                        "nominal-versus-actual solve, metrics, groups, and reports here, then "
+                        "describe any source correction or downstream work."
                     ),
                     "source_preparation": {
                         "Points": "transform, crop, clean, or downsample actual point clouds",
@@ -19442,8 +20543,9 @@ class RobotDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish and verify the Robot-domain graph, "
-                        "then request the exact human-activated workbench needed for the next deliverable."
+                        "The active workbench determines the available API. Complete and verify "
+                        "the Robot graph here, then describe the work required for the next "
+                        "deliverable."
                     ),
                     "complete_robot": {
                         "Part Design/Part": "design link, housing, flange, end-effector, and fixture geometry",
@@ -19810,8 +20912,9 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish and inspect this FEM graph, "
-                        "then request the exact human-activated workbench for the next deliverable."
+                        "The active workbench determines the available API. Complete and inspect "
+                        "this FEM graph here, then describe the work required for the next "
+                        "deliverable."
                     ),
                     "upstream": {
                         "Part Design/Part": "stable load-bearing geometry and semantic interfaces",
@@ -20256,8 +21359,8 @@ class CAMDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or engine. Finish and inspect this CAM graph, "
-                        "then request the exact human-activated workbench for upstream or downstream work."
+                        "The active workbench determines the available API. Complete and inspect "
+                        "this CAM graph here, then describe any upstream or downstream work."
                     ),
                     "upstream": {
                         "Part Design/Part": "accepted manufacturable solid geometry and semantic machining faces",
@@ -20580,8 +21683,9 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                         "external release workflow": "explicitly export/review the accepted native page outside this VibeScript contract",
                     },
                     "rule": (
-                        "If geometry, analysis, manufacturing, or release work is needed, explain the "
-                        "handoff and ask the human to switch workbenches; never call another domain's tools."
+                        "The active workbench determines the available API. When geometry, "
+                        "analysis, manufacturing, or release work is needed, describe it without "
+                        "calling another workbench's tools."
                     ),
                 },
                 "recommended_patterns": [
@@ -20645,6 +21749,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
         description.update(
             {
                 "api_contract": "vibecad-vibescript-assembly-api-v1",
+                "mechanism_verification_contract": (
+                    "vibecad-mechanism-verification-report-v1"
+                ),
                 "units": {
                     "length": "millimetres",
                     "angle": "degrees",
@@ -20668,16 +21775,21 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     "are authenticated snapshots of stable input references. FreeCADCmd "
                     "creates real native links, grounds components, derives connector frames, "
                     "creates native joints, solves, and derives simulations, exploded-view "
-                    "moves, and native bills of materials from that exact graph. It returns "
-                    "placements, line endpoints, table cells, and diagnostics. The document "
-                    "thread only applies independently reauthorized, precomputed state."
+                    "moves, native bills of materials, and exact static pair evidence from "
+                    "that graph. It returns placements, geometry witnesses, line endpoints, "
+                    "table cells, and diagnostics. The document thread only applies "
+                    "independently reauthorized, precomputed state."
                 ),
                 "input_reference_contract": {
                     "purpose": (
                         "Pass component sources through inputs. The host detaches each exact "
                         "Shape, hashes the BREP and semantic-interface contract into the "
                         "program revision, and marks accepted Assembly outputs stale if a "
-                        "source changes. Raw document access from source is unavailable. "
+                        "source changes. Use component_catalog.search to find open or saved "
+                        "project components. Its optional document_path is portable relative "
+                        "to the saved Assembly file and loads the exact native source document. "
+                        "The legacy document_uid/object_name reference remains valid. Raw "
+                        "document access from source is unavailable. "
                         "Catalog fasteners are created directly with api.fastener and do "
                         "not require an input reference."
                     ),
@@ -20687,6 +21799,14 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "properties": {
                             "document_uid": {"type": "string", "minLength": 1},
                             "object_name": {"type": "string", "minLength": 1},
+                            "document_path": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "Optional forward-slash .FCStd path below the saved "
+                                    "Assembly document directory."
+                                ),
+                            },
                         },
                         "required": ["document_uid", "object_name"],
                         "additionalProperties": False,
@@ -20701,8 +21821,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "graph_contract": {
                     "component": (
-                        "Create each authored-source occurrence once with api.component or "
-                        "each exact standard-hardware occurrence with api.fastener. Set "
+                        "Create one authored-source occurrence with api.component, or several "
+                        "occurrences of one source with api.instances. Create each exact "
+                        "standard-hardware occurrence with api.fastener. Set "
                         "grounded=True on at least one fixed base and reuse that exact "
                         "variable in connectors."
                     ),
@@ -20718,17 +21839,20 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "api.simulation value that consumes the returned assembly. If an "
                         "exploded presentation is requested, return each api.exploded_view "
                         "value exactly once. If a bill of materials is requested, return each "
-                        "api.bill_of_materials value exactly once. Every derived value must "
-                        "consume that same assembly variable."
+                        "api.bill_of_materials value exactly once. Return each "
+                        "api.mechanism_check value once. Every derived value must consume "
+                        "that same assembly variable."
                     ),
                 },
                 "operation_selection": {
                     "source_occurrence": "api.component",
+                    "repeated_source_occurrences": "api.instances",
                     "standard_hardware_occurrence": "api.fastener",
                     "joint_coordinate_system": "api.connector",
                     "mechanical_relationship": "api.joint",
                     "complete_mechanism_graph": "api.assembly",
                     "native_validation_and_diagnostics": "api.solve",
+                    "exact_static_pair_verification": "api.mechanism_check",
                     "one_driven_degree_of_freedom": "api.motion",
                     "time_series_kinematics": "api.simulation",
                     "named_disassembly_presentation": "api.exploded_view",
@@ -20740,14 +21864,75 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "is publishable."
                     ),
                 },
+                "static_mechanism_verification": {
+                    "operation": "api.mechanism_check",
+                    "scope": (
+                        "Exact BREP checks at the solved static state. This does not "
+                        "certify motion between states."
+                    ),
+                    "requirements": {
+                        "collision_free": (
+                            "Declare first, second, and positive tolerance_mm."
+                        ),
+                        "minimum_clearance": (
+                            "Declare first, second, nonnegative minimum_mm, and "
+                            "positive tolerance_mm."
+                        ),
+                    },
+                    "contact_policies": {
+                        "prohibited": (
+                            "Touching within tolerance or positive-volume overlap fails."
+                        ),
+                        "clearance": (
+                            "Separation below minimum_clearance_mm, accounting only for "
+                            "the declared tolerance_mm, fails."
+                        ),
+                        "allowed": (
+                            "Contact may occur only on first_interface and "
+                            "second_interface; positive-volume overlap still fails."
+                        ),
+                        "required": (
+                            "The two named interfaces must contact within tolerance; "
+                            "positive-volume overlap or contact elsewhere fails."
+                        ),
+                        "ignored": (
+                            "Exclude the exact pair and provide a non-empty reason."
+                        ),
+                    },
+                    "identity": (
+                        "Pass the exact component variables from api.assembly. A pair may "
+                        "be declared once across requirements and contacts."
+                    ),
+                    "tolerances": (
+                        "Every evaluated declaration supplies tolerance_mm. There is no "
+                        "default tolerance and no inferred fit or collision exemption."
+                    ),
+                    "interfaces": (
+                        "allowed and required need published semantic interfaces backed "
+                        "by explicit FaceN, EdgeN, or VertexN contact subelements."
+                    ),
+                    "current_limit": (
+                        "This static contract evaluates rigid component occurrences. A "
+                        "flexible occurrence reports an explicit unsupported-scope error "
+                        "instead of a false pass."
+                    ),
+                    "publication": (
+                        "The result is a portable v1 report under the Assembly Verification "
+                        "group with scenario, solve, requirement, engine, verdict, and exact "
+                        "witness evidence. Pass, fail, and indeterminate reports are all "
+                        "published so the failed pair and evidence remain inspectable."
+                    ),
+                },
                 "model_workflow": [
                     {
                         "step": 1,
                         "action": "discover",
                         "instruction": (
                             "Read component_candidates from the Assembly domain context. "
-                            "Choose only entries with eligible_component_shape=true and "
-                            "copy each candidate's reference object into program inputs. "
+                            "For project reuse, call component_catalog.search and copy one "
+                            "returned reference into program inputs. Current-document "
+                            "component_candidates remain available; choose only entries with "
+                            "eligible_component_shape=true. "
                             "Use flexible=True only when eligible_flexible_subassembly=true. "
                             "For internal connectors or detailed BOMs, require "
                             "eligible_detailed_bom_hierarchy=true and copy exact "
@@ -21126,6 +22311,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "status": "supported",
                         "features": [
                             "repeated links to one source",
+                            "portable links to saved project component documents",
+                            "api.instances for concise repeated occurrences with individual identities",
                             "initial and solved placements",
                             "grounding",
                             "rigid native subassembly links",
@@ -21177,6 +22364,18 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "nested-source invalidation for labels, placements, and BOM properties",
                         ],
                     },
+                    "static_mechanism_verification": {
+                        "status": "supported",
+                        "features": [
+                            "explicit rigid component pairs only",
+                            "exact BREP distance and positive-volume common",
+                            "declared per-pair tolerances",
+                            "prohibited, clearance, allowed, required, and ignored contact policies",
+                            "semantic-interface contact confinement",
+                            "pass, fail, and indeterminate verdicts with witnesses",
+                            "portable v1 reports under Verification",
+                        ],
+                    },
                     "not_yet_provider_exposed": [],
                 },
                 "solver_codes": {
@@ -21193,6 +22392,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "assembly": "Assembly::AssemblyObject",
                         "component": "App::Link or Assembly::AssemblyLink for a subassembly",
                         "joint": "native JointObject in Assembly::JointGroup",
+                        "mechanism_verification": (
+                            "stable App::FeaturePython in the Assembly Verification group"
+                        ),
                         "motion": "stable App::FeaturePython native motion-property contract",
                         "simulation": (
                             "stable App::FeaturePython in Assembly::SimulationGroup"
@@ -21206,15 +22408,17 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     },
                     "identity": (
                         "Program/output ids update the same assembly, component, joint, motion, "
-                        "simulation, exploded-view, BOM, and diagnostics objects in place. "
+                        "simulation, mechanism-verification, exploded-view, BOM, and "
+                        "diagnostics objects in place. "
                         "Compatible exploded moves retain stable index identities. A component "
                         "cannot change between App::Link and Assembly::AssemblyLink without a "
                         "new output identity."
                     ),
                     "asynchronous_boundary": (
                         "BREP transfer, connector derivation, presolve, solver work, and "
-                        "kinematic trace, exploded-view, and native BOM generation run in the "
-                        "isolated worker. Live joints receive detached precomputed JCS placements "
+                        "kinematic trace, exact static BREP verification, exploded-view, and "
+                        "native BOM generation run in the isolated worker. Live joints receive "
+                        "detached precomputed JCS placements "
                         "and live simulations receive only authenticated settings and previews. "
                         "Live exploded views receive only precomputed move transforms and stable "
                         "references; live BOMs receive only literal precomputed cells. Publication "
@@ -21225,10 +22429,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The model cannot switch workbench or modeling engine. Finish and "
-                        "inspect the Assembly graph available on this surface, then state the "
-                        "exact handoff and ask the human to switch; never call another "
-                        "domain's tools."
+                        "The active workbench determines the available API. Complete and inspect "
+                        "the Assembly graph here, then describe follow-on work without calling "
+                        "another workbench's tools."
                     ),
                     "handoff_examples": {
                         "Part Design/Part": (

@@ -156,21 +156,35 @@ class Fillet(gui_base_original.Creator):
             return
 
         Gui.addModule("Draft")
+        Gui.addModule("draftutils.timeline")
 
-        cmd = "Draft.make_fillet(sels, radius=" + str(rad)
-        if chamfer:
-            cmd += ", chamfer=True"
-        if delete:
-            cmd += ", delete=True"
+        selected_edges = ", ".join(
+            "("
+            + "FreeCAD.ActiveDocument.getObject("
+            + repr(selected.Object.Name)
+            + "), "
+            + repr(tuple(selected.SubElementNames))
+            + ")"
+            for selected in sels
+        )
+        cmd = "draftutils.timeline.fillet(sels, radius=" + str(rad)
+        cmd += ", chamfer=" + str(chamfer)
+        cmd += ", replace_inputs=" + str(delete)
         cmd += ")"
         cmd_list = [
-            "sels = FreeCADGui.Selection.getSelectionEx('', 0)",
+            "sels = draftutils.timeline.selection_references(["
+            + selected_edges
+            + "])",
             "fillet = " + cmd,
             "Draft.autogroup(fillet)",
             "FreeCAD.ActiveDocument.recompute()",
         ]
 
-        self.commit(translate("draft", "Create Fillet"), cmd_list)
+        self.commit(
+            translate("draft", "Create Fillet"),
+            cmd_list,
+            inputs=(selected.Object for selected in sels),
+        )
         self.finish()
 
 

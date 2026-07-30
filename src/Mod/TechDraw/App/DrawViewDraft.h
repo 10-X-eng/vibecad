@@ -66,6 +66,9 @@ public:
     short mustExecute() const override;
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+
 /*    virtual void onChanged(const App::Property* prop) override;*/
     Base::BoundBox3d bbox;
     std::string getSVGHead();

@@ -81,6 +81,10 @@ public:
 
     static std::string gethideMeshShowPartStr();
     static std::string gethideMeshShowPartStr(const std::string showConstr);
+    static std::string gethideMeshShowPartStr(
+        const std::string& documentName,
+        const std::string& showConstr
+    );
 
 protected:
     void onChanged(const App::Property* prop) override;

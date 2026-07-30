@@ -23,6 +23,7 @@
 
 import FreeCAD
 import Path
+from Path.CommandBoundary import is_timeline_input_usable
 
 translate = FreeCAD.Qt.translate
 
@@ -48,6 +49,33 @@ def selection(verbose=False):
             if verbose:
                 Path.Log.warning(
                     translate("CAM_Dressup", "The selected object is not an operation or dressup\n")
+                )
+            return None
+        if not is_timeline_input_usable(
+            selected[0],
+            FreeCAD.ActiveDocument,
+        ):
+            if verbose:
+                Path.Log.warning(
+                    translate(
+                        "CAM_Dressup",
+                        "The selected toolpath is unavailable at the current History position\n",
+                    )
+                )
+            return None
+        import PathScripts.PathUtils as PathUtils
+
+        job = PathUtils.findParentJob(selected[0])
+        if job is not None and not is_timeline_input_usable(
+            job,
+            FreeCAD.ActiveDocument,
+        ):
+            if verbose:
+                Path.Log.warning(
+                    translate(
+                        "CAM_Dressup",
+                        "The selected toolpath's Job is unavailable at the current History position\n",
+                    )
                 )
             return None
         return selected[0]

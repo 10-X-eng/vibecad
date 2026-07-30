@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from tool_impl.service import (
+    domain_runtime,
     model_boolean,
     model_chamfer,
     model_extrude,
@@ -22,6 +25,62 @@ from tool_impl.service import (
     model_sweep,
     model_thickness,
 )
+
+
+def test_part_result_adoption_keeps_old_callers_and_tracks_exact_replacements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adopted: list[Any] = []
+    replacements: list[tuple[Any, list[Any]]] = []
+    result = object()
+    visible_input = object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PartDesignGui",
+        SimpleNamespace(
+            adoptPartResult=lambda obj: adopted.append(obj) or "Body",
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(
+            setModelingReplacedInputs=lambda obj, inputs: (
+                replacements.append((obj, list(inputs))) or True
+            ),
+        ),
+    )
+
+    assert domain_runtime.adopt_part_result(result) == "Body"
+    assert adopted == [result]
+    assert replacements == []
+
+    assert (
+        domain_runtime.adopt_part_result(
+            result,
+            replaced_inputs=[visible_input],
+        )
+        == "Body"
+    )
+    assert adopted == [result, result]
+    assert replacements == [(result, [visible_input])]
+
+
+def test_empty_replacement_set_does_not_create_timeline_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Any] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(
+            setModelingReplacedInputs=lambda *_args: calls.append(_args),
+        ),
+    )
+
+    assert domain_runtime.mark_modeling_replaced_inputs(object(), []) is False
+    assert calls == []
 
 
 def _recorder(monkeypatch: pytest.MonkeyPatch, module: Any) -> list[dict[str, Any]]:

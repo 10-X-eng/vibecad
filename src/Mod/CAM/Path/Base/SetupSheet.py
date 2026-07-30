@@ -401,6 +401,7 @@ class SetupSheet:
             Path.Log.info("SetupSheet has no support for {}".format(opName))
 
     def onDocumentRestored(self, obj):
+        self.obj = obj
 
         if not hasattr(obj, "CoolantModes"):
             obj.addProperty(
@@ -434,8 +435,20 @@ class SetupSheet:
             obj.CollisionAvoidanceStrategy = self.DefaultCollisionAvoidanceStrategy
 
 
-def Create(name="SetupSheet"):
-    obj = FreeCAD.ActiveDocument.addObject("App::FeaturePython", name)
+def Create(name="SetupSheet", document=None, timelineOwner=None):
+    document = document or FreeCAD.ActiveDocument
+    if document is None:
+        raise RuntimeError("A SetupSheet requires a document")
+    if (
+        timelineOwner is not None
+        and getattr(timelineOwner, "Document", None) is not document
+    ):
+        raise RuntimeError(
+            "A SetupSheet and its timeline owner must share a document"
+        )
+    obj = document.addObject("App::FeaturePython", name)
+    if timelineOwner is not None:
+        PathUtil.markTimelineResource(obj, timelineOwner)
     obj.Proxy = SetupSheet(obj)
     return obj
 

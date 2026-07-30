@@ -464,6 +464,7 @@ class ObjectProfile(PathAreaOp.ObjectOp):
     def areaOpShapes(self, obj):
         """areaOpShapes(obj) ... returns envelope for all base shapes or wires"""
 
+        self.document = obj.Document
         shapes = []
         self.isDebug = True if Path.Log.getLevel(Path.Log.thisModule()) == 4 else False
         self.inaccessibleMsg = translate(
@@ -474,11 +475,11 @@ class ObjectProfile(PathAreaOp.ObjectOp):
 
         if self.isDebug:
             for grpNm in ("tmpDebugGrp", "tmpDebugGrp001"):
-                if hasattr(FreeCAD.ActiveDocument, grpNm):
-                    for go in FreeCAD.ActiveDocument.getObject(grpNm).Group:
-                        FreeCAD.ActiveDocument.removeObject(go.Name)
-                    FreeCAD.ActiveDocument.removeObject(grpNm)
-            self.tmpGrp = FreeCAD.ActiveDocument.addObject(
+                if self.document.getObject(grpNm):
+                    for go in self.document.getObject(grpNm).Group:
+                        self.document.removeObject(go.Name)
+                    self.document.removeObject(grpNm)
+            self.tmpGrp = self.document.addObject(
                 "App::DocumentObjectGroup", "tmpDebugGrp"
             )
             tmpGrpNm = self.tmpGrp.Name
@@ -513,7 +514,9 @@ class ObjectProfile(PathAreaOp.ObjectOp):
             if FreeCAD.GuiUp:
                 import FreeCADGui
 
-                FreeCADGui.ActiveDocument.getObject(tmpGrpNm).Visibility = False
+                FreeCADGui.getDocument(self.document.Name).getObject(
+                    tmpGrpNm
+                ).Visibility = False
             self.tmpGrp.purgeTouched()
 
         return shapes
@@ -1468,7 +1471,10 @@ class ObjectProfile(PathAreaOp.ObjectOp):
     # Method to add temporary debug object
     def _addDebugObject(self, objName, objShape):
         if self.isDebug:
-            newDocObj = FreeCAD.ActiveDocument.addObject("Part::Feature", "tmp_" + objName)
+            newDocObj = self.document.addObject(
+                "Part::Feature",
+                "tmp_" + objName,
+            )
             newDocObj.Shape = objShape
             newDocObj.purgeTouched()
             self.tmpGrp.addObject(newDocObj)
@@ -1482,7 +1488,6 @@ def SetupProperties():
 
 def Create(name, obj=None, parentJob=None):
     """Create(name) ... Creates and returns a Profile based on faces operation."""
-    if obj is None:
-        obj = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", name)
+    obj = PathOp.createOperationObject(name, obj, parentJob)
     obj.Proxy = ObjectProfile(obj, name, parentJob)
     return obj

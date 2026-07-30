@@ -83,6 +83,12 @@ void ControlPy::init_type()
         "activeTaskDialog() --> TaskDialog or None"
     );
     add_varargs_method(
+        "ownsCommandTransaction",
+        &ControlPy::ownsCommandTransaction,
+        "check whether the current GUI command owns an exact document transaction\n"
+        "ownsCommandTransaction(guiDocument, transactionId) --> bool"
+    );
+    add_varargs_method(
         "closeDialog",
         &ControlPy::closeDialog,
         "close the active dialog\n"
@@ -191,6 +197,23 @@ Py::Object ControlPy::activeTaskDialog(const Py::Tuple& args)
 
     Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog(doc);
     return (dlg ? Py::asObject(new TaskDialogPy(dlg)) : Py::None());
+}
+
+Py::Object ControlPy::ownsCommandTransaction(const Py::Tuple& args)
+{
+    PyObject* docPy = nullptr;
+    int transactionId = App::NullTransaction;
+    if (!PyArg_ParseTuple(args.ptr(), "O!i", &(Gui::DocumentPy::Type), &docPy, &transactionId)) {
+        throw Py::Exception();
+    }
+
+    auto* document = static_cast<Gui::DocumentPy*>(docPy)->getDocumentPtr()->getDocument();
+    auto* dialog = Gui::Control().activeDialog(document);
+    return Py::Boolean(
+        (TaskDialog::ownedEnclosingTransactionId(document) == transactionId
+         || (dialog && dialog->ownsCommandTransaction(transactionId)))
+        && transactionId != App::NullTransaction
+    );
 }
 
 Py::Object ControlPy::closeDialog(const Py::Tuple& args)
@@ -503,6 +526,11 @@ void TaskDialogPy::init_type()
         &TaskDialogPy::needsFullSpace,
         "Indicates whether the task dialog fully requires the available space -> bool"
     );
+    add_varargs_method(
+        "ownsCommandTransaction",
+        &TaskDialogPy::ownsCommandTransaction,
+        "Return whether common TaskView finalizes the exact transaction -> bool"
+    );
     add_varargs_method("accept", &TaskDialogPy::accept, "Accept the task dialog");
     add_varargs_method("reject", &TaskDialogPy::reject, "Reject the task dialog");
     behaviors().readyType();
@@ -676,6 +704,15 @@ Py::Object TaskDialogPy::needsFullSpace(const Py::Tuple& args)
         throw Py::Exception();
     }
     return Py::Boolean(dialog->needsFullSpace());
+}
+
+Py::Object TaskDialogPy::ownsCommandTransaction(const Py::Tuple& args)
+{
+    int transactionId = App::NullTransaction;
+    if (!PyArg_ParseTuple(args.ptr(), "i", &transactionId)) {
+        throw Py::Exception();
+    }
+    return Py::Boolean(dialog->ownsCommandTransaction(transactionId));
 }
 
 namespace
@@ -872,6 +909,10 @@ bool TaskDialogPython::accept()
     catch (Py::Exception&) {
         Base::PyException e;  // extract the Python error text
         e.reportException();
+        // A failed Python finalizer did not accept the model. Keep the panel
+        // and its adopted transaction live so the user can correct or cancel
+        // it; falling through to TaskDialog::accept() would report success.
+        return false;
     }
 
     return TaskDialog::accept();
@@ -891,6 +932,10 @@ bool TaskDialogPython::reject()
     catch (Py::Exception&) {
         Base::PyException e;  // extract the Python error text
         e.reportException();
+        // Reject teardown did not finish. Keep the panel and transaction live
+        // instead of rolling back underneath callbacks or widgets that may
+        // still reference provisional objects.
+        return false;
     }
 
     return TaskDialog::reject();

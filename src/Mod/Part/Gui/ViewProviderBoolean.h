@@ -48,6 +48,7 @@ public:
     QIcon getIcon() const override;
     void updateData(const App::Property*) override;
     bool onDelete(const std::vector<std::string>&) override;
+    bool onDeleteOwnedTimelineResource(App::DocumentObject*) override;
 };
 
 /// ViewProvider for the MultiFuse feature
@@ -66,6 +67,7 @@ public:
     QIcon getIcon() const override;
     void updateData(const App::Property*) override;
     bool onDelete(const std::vector<std::string>&) override;
+    bool onDeleteOwnedTimelineResource(App::DocumentObject*) override;
 
     /// drag and drop
     bool canDragObjects() const override;
@@ -92,6 +94,7 @@ public:
     QIcon getIcon() const override;
     void updateData(const App::Property*) override;
     bool onDelete(const std::vector<std::string>&) override;
+    bool onDeleteOwnedTimelineResource(App::DocumentObject*) override;
 
     /// drag and drop
     bool canDragObjects() const override;

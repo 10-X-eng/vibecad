@@ -27,6 +27,10 @@
 #include <QMessageBox>
 #include <QMetaObject>
 
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 #include <App/Application.h>
 #include <App/DocumentObject.h>
@@ -46,6 +50,7 @@
 #include "ui_TaskPipeScaling.h"
 #include <ui_DlgReference.h>
 
+#include "TaskDialogState.h"
 #include "TaskPipeParameters.h"
 #include "TaskFeaturePick.h"
 #include "TaskSketchBasedParameters.h"
@@ -56,6 +61,128 @@ Q_DECLARE_METATYPE(App::PropertyLinkSubList::SubSet)
 
 using namespace PartDesignGui;
 using namespace Gui;
+
+namespace
+{
+std::unordered_map<
+    const TaskPipeParameters*,
+    TaskInternal::VisibilitySnapshot>
+    pipeInputVisibility;
+std::unordered_map<
+    const PartDesign::Pipe*,
+    const TaskPipeParameters*>
+    pipeTaskOwners;
+
+void rememberPipeInputVisibility(
+    const TaskPipeParameters* task,
+    App::DocumentObject* object
+)
+{
+    if (const auto state = pipeInputVisibility.find(task);
+        state != pipeInputVisibility.end()) {
+        state->second.captureObject(object);
+    }
+}
+
+void rememberPipeInputVisibility(
+    const PartDesign::Pipe* pipe,
+    App::DocumentObject* object
+)
+{
+    if (const auto owner = pipeTaskOwners.find(pipe);
+        owner != pipeTaskOwners.end()) {
+        rememberPipeInputVisibility(owner->second, object);
+    }
+}
+
+void restorePipeInputVisibility(
+    const TaskPipeParameters* task,
+    App::Document* document
+)
+{
+    if (const auto state = pipeInputVisibility.find(task);
+        state != pipeInputVisibility.end()) {
+        state->second.restore(document);
+    }
+}
+
+QVariant pipeSectionIdentity(
+    const App::PropertyLinkSubList::SubSet& section
+)
+{
+    QVariantMap identity;
+    if (!section.first || !section.first->isAttachedToDocument()) {
+        return identity;
+    }
+    identity.insert(
+        QStringLiteral("document"),
+        QString::fromLatin1(section.first->getDocument()->getName())
+    );
+    identity.insert(
+        QStringLiteral("object"),
+        QString::fromLatin1(section.first->getNameInDocument())
+    );
+    identity.insert(
+        QStringLiteral("id"),
+        QVariant::fromValue<qlonglong>(section.first->getID())
+    );
+    QStringList subNames;
+    for (const auto& subName : section.second) {
+        subNames.push_back(QString::fromStdString(subName));
+    }
+    identity.insert(QStringLiteral("subNames"), subNames);
+    return identity;
+}
+
+bool resolvePipeSection(
+    const QVariant& value,
+    App::PropertyLinkSubList::SubSet& section
+)
+{
+    const QVariantMap identity = value.toMap();
+    const QString documentName =
+        identity.value(QStringLiteral("document")).toString();
+    const QString objectName =
+        identity.value(QStringLiteral("object")).toString();
+    const qlonglong objectId =
+        identity.value(QStringLiteral("id"), -1).toLongLong();
+    if (documentName.isEmpty() || objectName.isEmpty()
+        || objectId < 0) {
+        return false;
+    }
+
+    App::Document* document = nullptr;
+    try {
+        document = App::GetApplication().getDocument(
+            documentName.toLatin1().constData()
+        );
+    }
+    catch (...) {
+    }
+    auto* object = document
+        ? document->getObject(objectName.toLatin1().constData())
+        : nullptr;
+    if (!object || object->getID() != objectId) {
+        return false;
+    }
+
+    std::vector<std::string> subNames;
+    for (const auto& subName :
+         identity.value(QStringLiteral("subNames")).toStringList()) {
+        subNames.push_back(subName.toStdString());
+    }
+    section = {object, std::move(subNames)};
+    return true;
+}
+
+bool samePipeSection(
+    const App::PropertyLinkSubList::SubSet& left,
+    const App::PropertyLinkSubList::SubSet& right
+)
+{
+    return left.first == right.first && left.second == right.second;
+}
+}
 
 /* TRANSLATOR PartDesignGui::TaskPipeParameters */
 
@@ -70,6 +197,10 @@ TaskPipeParameters::TaskPipeParameters(ViewProviderPipe* PipeView, bool /*newObj
     , ui(new Ui_TaskPipeParameters)
     , stateHandler(nullptr)
 {
+    pipeInputVisibility.insert_or_assign(
+        this,
+        TaskInternal::VisibilitySnapshot()
+    );
     // we need a separate container widget to add all controls to
     proxy = new QWidget(this);
     ui->setupUi(proxy);
@@ -111,31 +242,44 @@ TaskPipeParameters::TaskPipeParameters(ViewProviderPipe* PipeView, bool /*newObj
     this->groupLayout()->addWidget(proxy);
 
     PartDesign::Pipe* pipe = PipeView->getObject<PartDesign::Pipe>();
+    pipeTaskOwners.insert_or_assign(pipe, this);
     Gui::Document* doc = PipeView->getDocument();
 
     // make sure the user sees all important things and load the values
     // also save visibility state to reset it later when pipe is closed
     // first the spine
     if (pipe->Spine.getValue()) {
+        rememberPipeInputVisibility(this, pipe->Spine.getValue());
         auto* spineVP = doc->getViewProvider(pipe->Spine.getValue());
-        spineShow = spineVP->isShow();
-        spineVP->setVisible(true);
+        if (spineVP) {
+            spineVP->setVisible(true);
+        }
         ui->spineBaseEdit->setText(QString::fromUtf8(pipe->Spine.getValue()->Label.getValue()));
     }
     // the profile
     if (pipe->Profile.getValue()) {
+        rememberPipeInputVisibility(this, pipe->Profile.getValue());
         auto* profileVP = doc->getViewProvider(pipe->Profile.getValue());
-        profileShow = profileVP->isShow();
-        profileVP->setVisible(true);
+        if (profileVP) {
+            profileVP->setVisible(true);
+        }
         ui->profileBaseEdit->setText(
             make2DLabel(pipe->Profile.getValue(), pipe->Profile.getSubValues())
         );
     }
     // the auxiliary spine
     if (pipe->AuxiliarySpine.getValue()) {
+        rememberPipeInputVisibility(
+            this,
+            pipe->AuxiliarySpine.getValue()
+        );
         auto* svp = doc->getViewProvider(pipe->AuxiliarySpine.getValue());
-        auxSpineShow = svp->isShow();
-        svp->show();
+        if (svp) {
+            svp->show();
+        }
+    }
+    for (auto* section : pipe->Sections.getValues()) {
+        rememberPipeInputVisibility(this, section);
     }
     // the spine edges
     std::vector<std::string> strings = pipe->Spine.getSubValues();
@@ -160,10 +304,10 @@ TaskPipeParameters::TaskPipeParameters(ViewProviderPipe* PipeView, bool /*newObj
 TaskPipeParameters::~TaskPipeParameters()
 {
     try {
-        if (auto pipe = getObject<PartDesign::Pipe>()) {
-            // setting visibility to true is needed when preselecting profile and path prior to
-            // invoking sweep
-            Gui::cmdGuiObject(pipe, "Visibility = True");
+        if (getObject<PartDesign::Pipe>()) {
+            // Destruction is task teardown, not a model operation.  It must
+            // never emit a macro line or overwrite visibility restored by
+            // Accept/Cancel.
             getViewObject<ViewProviderPipe>()->highlightReferences(ViewProviderPipe::Spine, false);
             getViewObject<ViewProviderPipe>()->highlightReferences(ViewProviderPipe::Profile, false);
         }
@@ -178,6 +322,10 @@ TaskPipeParameters::~TaskPipeParameters()
         Base::PyException e;  // extract the Python error text
         e.reportException();
     }
+    std::erase_if(pipeTaskOwners, [this](const auto& entry) {
+        return entry.second == this;
+    });
+    pipeInputVisibility.erase(this);
 }
 
 void TaskPipeParameters::updateUI()
@@ -269,8 +417,14 @@ void TaskPipeParameters::onProfileButton(bool checked)
             Gui::Document* doc = getGuiDocument();
 
             if (pipe->Profile.getValue()) {
+                rememberPipeInputVisibility(
+                    this,
+                    pipe->Profile.getValue()
+                );
                 auto* pvp = doc->getViewProvider(pipe->Profile.getValue());
-                pvp->setVisible(true);
+                if (pvp) {
+                    pvp->setVisible(true);
+                }
             }
         }
     }
@@ -342,11 +496,16 @@ bool TaskPipeParameters::referenceSelected(const SelectionChanges& msg) const
                 auto pipe = getObject<PartDesign::Pipe>();
                 Gui::Document* doc = getGuiDocument();
 
+                rememberPipeInputVisibility(
+                    this,
+                    pipe->Profile.getValue()
+                );
                 getViewObject<ViewProviderPipe>()->highlightReferences(ViewProviderPipe::Profile, false);
 
                 bool success = true;
                 App::DocumentObject* profile = pipe->getDocument()->getObject(msg.pObjectName);
                 if (profile) {
+                    rememberPipeInputVisibility(this, profile);
                     std::vector<App::DocumentObject*> sections = pipe->Sections.getValues();
 
                     // cannot use the same object for profile and section
@@ -371,6 +530,13 @@ bool TaskPipeParameters::referenceSelected(const SelectionChanges& msg) const
                 // change the references
                 const std::string subName(msg.pSubName);
                 const auto pipe = getObject<PartDesign::Pipe>();
+                auto* selected =
+                    getAppDocument()->getObject(msg.pObjectName);
+                rememberPipeInputVisibility(
+                    this,
+                    pipe->Spine.getValue()
+                );
+                rememberPipeInputVisibility(this, selected);
                 std::vector<std::string> refs = pipe->Spine.getSubValues();
                 const auto f = std::ranges::find(refs, subName);
 
@@ -398,7 +564,7 @@ bool TaskPipeParameters::referenceSelected(const SelectionChanges& msg) const
                     }
                 }
 
-                pipe->Spine.setValue(getAppDocument()->getObject(msg.pObjectName), refs);
+                pipe->Spine.setValue(selected, refs);
                 return true;
             }
             default:
@@ -421,56 +587,53 @@ void TaskPipeParameters::exitSelectionMode()
 {
     // commenting because this should be handled by buttonToggled signal
     // selectionMode = none;
-    Gui::Selection().clearSelection();
+    if (auto* pipe = getObject<PartDesign::Pipe>()) {
+        Gui::Selection().clearSelection(
+            pipe->getDocument()->getName()
+        );
+    }
 }
 
 void TaskPipeParameters::setVisibilityOfSpineAndProfile()
 {
-    if (auto pipe = getObject<PartDesign::Pipe>()) {
-        Gui::Document* doc = getGuiDocument();
-
-        // set visibility to the state when the pipe was opened
-        for (auto obj : pipe->Sections.getValues()) {
-            auto* sectionVP = doc->getViewProvider(obj);
-            sectionVP->setVisible(profileShow);
-        }
-        if (pipe->Spine.getValue()) {
-            auto* spineVP = doc->getViewProvider(pipe->Spine.getValue());
-            spineVP->setVisible(spineShow);
-            spineShow = false;
-        }
-        if (pipe->Profile.getValue()) {
-            auto* profileVP = doc->getViewProvider(pipe->Profile.getValue());
-            profileVP->setVisible(profileShow);
-            profileShow = false;
-        }
-        if (pipe->AuxiliarySpine.getValue()) {
-            auto* svp = doc->getViewProvider(pipe->AuxiliarySpine.getValue());
-            svp->setVisible(auxSpineShow);
-            auxSpineShow = false;
-        }
-    }
+    restorePipeInputVisibility(this, getAppDocument());
 }
 
 bool TaskPipeParameters::accept()
 {
-    // see what to do with external references
-    // check the prerequisites for the selected objects
-    // the user has to decide which option we should take if external references are used
-    auto pipe = getObject<PartDesign::Pipe>();
-    auto pcActiveBody = PartDesignGui::getBodyFor(pipe, false);
-    if (!pcActiveBody) {
+    auto* pipe = getObject<PartDesign::Pipe>();
+    auto* activeBody = PartDesignGui::getBodyFor(pipe, false);
+    if (!pipe || !pipe->getDocument() || !activeBody
+        || !activeBody->hasObject(pipe)) {
         QMessageBox::warning(this, tr("Input Error"), tr("No active body"));
         return false;
     }
-    // auto pcActivePart = PartDesignGui::getPartFor (pcActiveBody, false);
-    std::vector<App::DocumentObject*> copies;
 
-    bool extReference = false;
+    auto* document = pipe->getDocument();
+    const App::PropertyLinkSubList::SubSet originalSpine {
+        pipe->Spine.getValue(),
+        pipe->Spine.getSubValues(),
+    };
+    const App::PropertyLinkSubList::SubSet originalAuxiliarySpine {
+        pipe->AuxiliarySpine.getValue(),
+        pipe->AuxiliarySpine.getSubValues(),
+    };
+    const auto originalSections = pipe->Sections.getSubListValues();
+    const auto originalBodyGroup = activeBody->Group.getValues();
+    auto* originalBodyTip = activeBody->Tip.getValue();
+
+    std::unordered_set<long> objectsBeforeAttempt;
+    for (auto* object : document->getObjects()) {
+        if (object) {
+            objectsBeforeAttempt.insert(object->getID());
+        }
+    }
+
     App::DocumentObject* spine = pipe->Spine.getValue();
     App::DocumentObject* auxSpine = pipe->AuxiliarySpine.getValue();
 
-    // If a spine isn't set but user entered a label then search for the appropriate document object
+    // Resolve a manually entered internal label before deciding whether the
+    // reference must be imported.
     QString label = ui->spineBaseEdit->text();
     if (!spine && !label.isEmpty()) {
         QByteArray ba = label.toUtf8();
@@ -485,25 +648,22 @@ bool TaskPipeParameters::accept()
         }
     }
 
-    if (spine && !pcActiveBody->hasObject(spine) && !pcActiveBody->getOrigin()->hasObject(spine)) {
-        extReference = true;
-    }
-    else if (
-        auxSpine && !pcActiveBody->hasObject(auxSpine)
-        && !pcActiveBody->getOrigin()->hasObject(auxSpine)
-    ) {
-        extReference = true;
-    }
-    else {
-        for (App::DocumentObject* obj : pipe->Sections.getValues()) {
-            if (!pcActiveBody->hasObject(obj) && !pcActiveBody->getOrigin()->hasObject(obj)) {
-                extReference = true;
-                break;
-            }
-        }
+    const auto isExternal = [activeBody](App::DocumentObject* object) {
+        return object && !activeBody->hasObject(object)
+            && !activeBody->getOrigin()->hasObject(object);
+    };
+    bool externalReference =
+        isExternal(spine) || isExternal(auxSpine);
+    if (!externalReference) {
+        externalReference = std::ranges::any_of(
+            pipe->Sections.getValues(),
+            isExternal
+        );
     }
 
-    if (extReference) {
+    bool makeIndependentCopies = false;
+    bool copyExternalReferences = false;
+    if (externalReference) {
         QDialog dia(Gui::getMainWindow());
         Ui_DlgReference dlg;
         dlg.setupUi(&dia);
@@ -512,79 +672,201 @@ bool TaskPipeParameters::accept()
         if (result == QDialog::DialogCode::Rejected) {
             return false;
         }
+        copyExternalReferences = !dlg.radioXRef->isChecked();
+        makeIndependentCopies = dlg.radioIndependent->isChecked();
+    }
 
-        if (!dlg.radioXRef->isChecked()) {
-            if (!pcActiveBody->hasObject(spine) && !pcActiveBody->getOrigin()->hasObject(spine)) {
-                pipe->Spine.setValue(
-                    PartDesignGui::TaskFeaturePick::makeCopy(spine, "", dlg.radioIndependent->isChecked()),
-                    pipe->Spine.getSubValues()
+    std::vector<App::DocumentObject*> copies;
+    auto restoreAttempt = [&]() noexcept {
+        try {
+            pipe->Spine.setValue(originalSpine.first, originalSpine.second);
+            pipe->AuxiliarySpine.setValue(
+                originalAuxiliarySpine.first,
+                originalAuxiliarySpine.second
+            );
+            pipe->Sections.setSubListValues(originalSections);
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().error(
+                "Could not restore failed Pipe references: %s\n",
+                error.what()
+            );
+        }
+
+        // Remove every object created by this acceptance attempt.  Comparing
+        // document IDs also catches a helper whose factory threw after adding
+        // the object but before returning its pointer.
+        std::vector<std::pair<long, std::string>> createdObjects;
+        for (auto* object : document->getObjects()) {
+            if (object && object->getNameInDocument()
+                && !objectsBeforeAttempt.contains(object->getID())) {
+                createdObjects.emplace_back(
+                    object->getID(),
+                    object->getNameInDocument()
                 );
-                copies.push_back(pipe->Spine.getValue());
             }
-            else if (
-                !pcActiveBody->hasObject(auxSpine) && !pcActiveBody->getOrigin()->hasObject(auxSpine)
-            ) {
+        }
+        for (auto item = createdObjects.rbegin();
+             item != createdObjects.rend();
+             ++item) {
+            try {
+                auto* object = document->getObjectByID(item->first);
+                if (object && object->getNameInDocument()
+                    && item->second == object->getNameInDocument()) {
+                    document->removeObject(item->second.c_str());
+                }
+            }
+            catch (const Base::Exception& error) {
+                Base::Console().error(
+                    "Could not remove failed Pipe helper '%s': %s\n",
+                    item->second.c_str(),
+                    error.what()
+                );
+            }
+        }
+
+        try {
+            activeBody->Group.setValues(originalBodyGroup);
+            activeBody->Tip.setValue(originalBodyTip);
+        }
+        catch (const Base::Exception& error) {
+            Base::Console().error(
+                "Could not restore Body after failed Pipe: %s\n",
+                error.what()
+            );
+        }
+        setVisibilityOfSpineAndProfile();
+        try {
+            document->recomputeFeature(pipe);
+        }
+        catch (...) {
+        }
+    };
+
+    TaskInternal::AcceptedMacro acceptedMacro;
+    const auto failAttempt = [&](const QString& message) {
+        acceptedMacro.discard();
+        restoreAttempt();
+        QMessageBox::warning(this, tr("Input Error"), message);
+        return false;
+    };
+    try {
+        const auto makeCopy = [&](App::DocumentObject* source) {
+            auto* copy = PartDesignGui::TaskFeaturePick::makeCopy(
+                source,
+                "",
+                makeIndependentCopies,
+                document
+            );
+            if (!copy || copy->getDocument() != document) {
+                throw Base::RuntimeError(
+                    "Could not create a local copy of an external Pipe reference"
+                );
+            }
+            copies.push_back(copy);
+            return copy;
+        };
+
+        if (copyExternalReferences) {
+            // Spine and AuxiliarySpine are independent properties.  Both must
+            // be imported when both are external.
+            if (isExternal(spine)) {
+                auto* copy = makeCopy(spine);
+                pipe->Spine.setValue(copy, pipe->Spine.getSubValues());
+            }
+            if (isExternal(auxSpine)) {
+                auto* copy = makeCopy(auxSpine);
                 pipe->AuxiliarySpine.setValue(
-                    PartDesignGui::TaskFeaturePick::makeCopy(
-                        auxSpine,
-                        "",
-                        dlg.radioIndependent->isChecked()
-                    ),
+                    copy,
                     pipe->AuxiliarySpine.getSubValues()
                 );
-                copies.push_back(pipe->AuxiliarySpine.getValue());
             }
 
-            std::vector<App::PropertyLinkSubList::SubSet> subSets;
-            for (auto& subSet : pipe->Sections.getSubListValues()) {
-                if (!pcActiveBody->hasObject(subSet.first)
-                    && !pcActiveBody->getOrigin()->hasObject(subSet.first)) {
-                    subSets.emplace_back(
-                        PartDesignGui::TaskFeaturePick::makeCopy(
-                            subSet.first,
-                            "",
-                            dlg.radioIndependent->isChecked()
-                        ),
-                        subSet.second
-                    );
-                    copies.push_back(subSets.back().first);
-                }
-                else {
-                    subSets.push_back(subSet);
-                }
+            std::vector<App::PropertyLinkSubList::SubSet> sections;
+            sections.reserve(pipe->Sections.getSize());
+            for (const auto& section : pipe->Sections.getSubListValues()) {
+                sections.emplace_back(
+                    isExternal(section.first)
+                        ? makeCopy(section.first)
+                        : section.first,
+                    section.second
+                );
             }
-
-            pipe->Sections.setSubListValues(subSets);
+            pipe->Sections.setSubListValues(sections);
         }
-    }
 
-    try {
-        setVisibilityOfSpineAndProfile();
-
-        App::DocumentObject* spine = pipe->Spine.getValue();
-        std::vector<std::string> subNames = pipe->Spine.getSubValues();
-        App::PropertyLinkT propT(spine, subNames);
-        Gui::cmdAppObjectArgs(pipe, "Spine = %s", propT.getPropertyPython());
+        // Helpers become real Body members before the Pipe is validated or
+        // committed.  Insert them immediately before the Pipe so a reference
+        // can never replace the Body's final result/TIP.
+        for (auto* copy : copies) {
+            if (!activeBody->hasObject(copy)) {
+                activeBody->insertObject(copy, pipe, false);
+            }
+            // Imported paths and sections are support references, not
+            // competing viewport results.
+            copy->Visibility.setValue(false);
+        }
 
         Gui::cmdAppDocument(pipe, "recompute()");
-        if (!getObject()->isValid()) {
-            throw Base::RuntimeError(getObject()->getStatusString());
+        if (!pipe->isValid() || pipe->Shape.getShape().isNull()
+            || !pipe->Shape.getShape().isValid()) {
+            const char* status = pipe->getStatusString();
+            throw Base::RuntimeError(
+                status && *status
+                    ? status
+                    : "Pipe did not produce valid geometry"
+            );
         }
-        Gui::cmdGuiDocument(pipe, "resetEdit()");
-        pipe->getDocument()->commitTransaction();
 
-        // we need to add the copied features to the body after the command action, as otherwise
-        // FreeCAD crashes unexplainably
-        for (auto obj : copies) {
-            pcActiveBody->addObject(obj);
-        }
+        App::PropertyLinkT spineProperty(
+            pipe->Spine.getValue(),
+            pipe->Spine.getSubValues()
+        );
+        Gui::cmdAppObjectArgs(
+            pipe,
+            "Spine = %s",
+            spineProperty.getPropertyPython()
+        );
+        App::PropertyLinkT auxiliaryProperty(
+            pipe->AuxiliarySpine.getValue(),
+            pipe->AuxiliarySpine.getSubValues()
+        );
+        Gui::cmdAppObjectArgs(
+            pipe,
+            "AuxiliarySpine = %s",
+            auxiliaryProperty.getPropertyPython()
+        );
+        Gui::cmdAppObjectArgs(
+            pipe,
+            "Sections = %s",
+            pipe->Sections.getPyReprString().c_str()
+        );
+
+        setVisibilityOfSpineAndProfile();
+        Gui::cmdGuiDocument(pipe, "resetEdit()");
     }
     catch (const Base::Exception& e) {
-        pipe->getDocument()->abortTransaction();
-        QMessageBox::warning(this, tr("Input Error"), QApplication::translate("Exception", e.what()));
-        return false;
+        return failAttempt(
+            QApplication::translate("Exception", e.what())
+        );
+    }
+    catch (const Standard_Failure& e) {
+        return failAttempt(
+            QString::fromUtf8(
+                e.GetMessageString()
+                    ? e.GetMessageString()
+                    : "OpenCascade rejected the Pipe geometry"
+            )
+        );
+    }
+    catch (const std::exception& e) {
+        return failAttempt(QString::fromUtf8(e.what()));
+    }
+    catch (...) {
+        return failAttempt(tr("Pipe creation failed."));
     }
 
+    acceptedMacro.publish();
     return true;
 }
 
@@ -691,7 +973,11 @@ void TaskPipeOrientation::clearButtons()
 
 void TaskPipeOrientation::exitSelectionMode()
 {
-    Gui::Selection().clearSelection();
+    if (auto* pipe = getObject<PartDesign::Pipe>()) {
+        Gui::Selection().clearSelection(
+            pipe->getDocument()->getName()
+        );
+    }
 }
 
 void TaskPipeOrientation::onClearButton()
@@ -700,7 +986,12 @@ void TaskPipeOrientation::onClearButton()
     ui->profileBaseEdit->clear();
     if (auto view = getViewObject<ViewProviderPipe>()) {
         view->highlightReferences(ViewProviderPipe::AuxiliarySpine, false);
-        getObject<PartDesign::Pipe>()->AuxiliarySpine.setValue(nullptr);
+        auto* pipe = getObject<PartDesign::Pipe>();
+        rememberPipeInputVisibility(
+            pipe,
+            pipe->AuxiliarySpine.getValue()
+        );
+        pipe->AuxiliarySpine.setValue(nullptr);
     }
 }
 
@@ -810,6 +1101,13 @@ bool TaskPipeOrientation::referenceSelected(const SelectionChanges& msg) const
         if (const auto pipe = getObject<PartDesign::Pipe>()) {
             // change the references
             const std::string subName(msg.pSubName);
+            auto* selected =
+                pipe->getDocument()->getObject(msg.pObjectName);
+            rememberPipeInputVisibility(
+                pipe,
+                pipe->AuxiliarySpine.getValue()
+            );
+            rememberPipeInputVisibility(pipe, selected);
             std::vector<std::string> refs = pipe->AuxiliarySpine.getSubValues();
             const auto f = std::ranges::find(refs, subName);
 
@@ -831,8 +1129,7 @@ bool TaskPipeOrientation::referenceSelected(const SelectionChanges& msg) const
                 refs.erase(f);
             }
 
-            App::Document* doc = pipe->getDocument();
-            pipe->AuxiliarySpine.setValue(doc->getObject(msg.pObjectName), refs);
+            pipe->AuxiliarySpine.setValue(selected, refs);
             return true;
         }
     }
@@ -935,14 +1232,15 @@ TaskPipeScaling::TaskPipeScaling(ViewProviderPipe* PipeView, bool /*newObj*/, QW
     this->groupLayout()->addWidget(proxy);
 
     PartDesign::Pipe* pipe = PipeView->getObject<PartDesign::Pipe>();
-    for (auto& subSet : pipe->Sections.getSubListValues()) {
-        Gui::Application::Instance->showViewProvider(subSet.first);
-        QString label = make2DLabel(subSet.first, subSet.second);
-        QListWidgetItem* item = new QListWidgetItem();
-        item->setText(label);
-        item->setData(Qt::UserRole, QVariant::fromValue(subSet));
-        ui->listWidgetReferences->addItem(item);
+    // Reveal the task's existing section inputs once, at task entry. A later
+    // property or label refresh must not force geometry back on after the user
+    // has hidden it.
+    for (const auto& section : pipe->Sections.getSubListValues()) {
+        if (section.first && section.first->isAttachedToDocument()) {
+            Gui::Application::Instance->showViewProvider(section.first);
+        }
     }
+    rebuildSectionRows();
 
     ui->comboBoxScaling->setCurrentIndex(pipe->Transformation.getValue());
 
@@ -967,6 +1265,52 @@ TaskPipeScaling::~TaskPipeScaling()
     }
 }
 
+void TaskPipeScaling::rebuildSectionRows()
+{
+    ui->listWidgetReferences->clear();
+    auto* pipe = getObject<PartDesign::Pipe>();
+    if (!pipe) {
+        return;
+    }
+    for (const auto& section : pipe->Sections.getSubListValues()) {
+        if (!section.first || !section.first->isAttachedToDocument()) {
+            continue;
+        }
+        auto* item = new QListWidgetItem(
+            make2DLabel(section.first, section.second)
+        );
+        item->setData(Qt::UserRole, pipeSectionIdentity(section));
+        ui->listWidgetReferences->addItem(item);
+    }
+}
+
+void TaskPipeScaling::slotChangedObject(
+    const Gui::ViewProviderDocumentObject& object,
+    const App::Property& property
+)
+{
+    auto* pipe = getObject<PartDesign::Pipe>();
+    if (pipe && object.getObject() == pipe
+        && &property == &pipe->Sections) {
+        rebuildSectionRows();
+    }
+}
+
+void TaskPipeScaling::slotRelabelObject(
+    const Gui::ViewProviderDocumentObject& object
+)
+{
+    auto* pipe = getObject<PartDesign::Pipe>();
+    if (!pipe) {
+        return;
+    }
+    const auto sections = pipe->Sections.getValues();
+    if (std::ranges::find(sections, object.getObject())
+        != sections.end()) {
+        rebuildSectionRows();
+    }
+}
+
 void TaskPipeScaling::indexesMoved()
 {
     QAbstractItemModel* model = qobject_cast<QAbstractItemModel*>(sender());
@@ -975,14 +1319,41 @@ void TaskPipeScaling::indexesMoved()
     }
 
     if (auto pipe = getObject<PartDesign::Pipe>()) {
-        auto originals = pipe->Sections.getSubListValues();
-        int rows = model->rowCount();
-        for (int i = 0; i < rows; i++) {
-            QModelIndex index = model->index(i, 0);
-            originals[i] = index.data(Qt::UserRole).value<App::PropertyLinkSubList::SubSet>();
+        auto remaining = pipe->Sections.getSubListValues();
+        if (model->rowCount()
+            != static_cast<int>(remaining.size())) {
+            rebuildSectionRows();
+            return;
         }
 
-        pipe->Sections.setSubListValues(originals);
+        std::vector<App::PropertyLinkSubList::SubSet> reordered;
+        reordered.reserve(remaining.size());
+        for (int row = 0; row < model->rowCount(); ++row) {
+            App::PropertyLinkSubList::SubSet section;
+            if (!resolvePipeSection(
+                    model->index(row, 0).data(Qt::UserRole),
+                    section
+                )
+                || section.first->getDocument()
+                    != pipe->getDocument()) {
+                rebuildSectionRows();
+                return;
+            }
+            const auto found = std::ranges::find_if(
+                remaining,
+                [&section](const auto& candidate) {
+                    return samePipeSection(candidate, section);
+                }
+            );
+            if (found == remaining.end()) {
+                rebuildSectionRows();
+                return;
+            }
+            reordered.push_back(*found);
+            remaining.erase(found);
+        }
+
+        pipe->Sections.setSubListValues(reordered);
         recomputeFeature();
         updateUI(ui->stackedWidget->currentIndex());
     }
@@ -996,7 +1367,11 @@ void TaskPipeScaling::clearButtons()
 
 void TaskPipeScaling::exitSelectionMode()
 {
-    Gui::Selection().clearSelection();
+    if (auto* pipe = getObject<PartDesign::Pipe>()) {
+        Gui::Selection().clearSelection(
+            pipe->getDocument()->getName()
+        );
+    }
 }
 
 void TaskPipeScaling::onScalingChanged(int idx)
@@ -1018,24 +1393,15 @@ void TaskPipeScaling::onSelectionChanged(const SelectionChanges& msg)
             App::Document* document = App::GetApplication().getDocument(msg.pDocName);
             App::DocumentObject* object = document ? document->getObject(msg.pObjectName) : nullptr;
             if (object) {
-                QString label = make2DLabel(object, {msg.pSubName});
-                if (stateHandler->getSelectionMode()
-                    == StateHandlerTaskPipe::SelectionModes::refSectionAdd) {
-                    QListWidgetItem* item = new QListWidgetItem();
-                    item->setText(label);
-                    item->setData(
-                        Qt::UserRole,
-                        QVariant::fromValue(
-                            std::make_pair(object, std::vector<std::string>(1, msg.pSubName))
-                        )
-                    );
-                    ui->listWidgetReferences->addItem(item);
-                }
-                else if (
-                    stateHandler->getSelectionMode()
-                    == StateHandlerTaskPipe::SelectionModes::refSectionRemove
-                ) {
-                    removeFromListWidget(ui->listWidgetReferences, label);
+                const auto mode = stateHandler->getSelectionMode();
+                if (mode
+                        == StateHandlerTaskPipe::SelectionModes::refSectionAdd
+                    || mode
+                        == StateHandlerTaskPipe::SelectionModes::refSectionRemove) {
+                    // The live Sections property is authoritative. This also
+                    // avoids confusing two inputs with the same display
+                    // label.
+                    rebuildSectionRows();
                 }
             }
 
@@ -1068,6 +1434,7 @@ bool TaskPipeScaling::referenceSelected(const SelectionChanges& msg) const
         if (const auto pipe = getObject<PartDesign::Pipe>()) {
             std::vector<App::DocumentObject*> refs = pipe->Sections.getValues();
             App::DocumentObject* obj = pipe->getDocument()->getObject(msg.pObjectName);
+            rememberPipeInputVisibility(pipe, obj);
             const auto f = std::ranges::find(refs, obj);
 
             if (selectionMode == StateHandlerTaskPipe::SelectionModes::refSectionAdd) {
@@ -1107,26 +1474,38 @@ void TaskPipeScaling::removeFromListWidget(QListWidget* widget, QString name)
 
 void TaskPipeScaling::onDeleteSection()
 {
-    // Delete the selected profile
-    int row = ui->listWidgetReferences->currentRow();
-    QListWidgetItem* item = ui->listWidgetReferences->takeItem(row);
-    if (item) {
-        QByteArray data(
-            item->data(Qt::UserRole).value<App::PropertyLinkSubList::SubSet>().first->getNameInDocument()
-        );
-        delete item;
-
-        if (const auto pipe = getObject<PartDesign::Pipe>()) {
-            std::vector<App::DocumentObject*> refs = pipe->Sections.getValues();
-            App::DocumentObject* obj = pipe->getDocument()->getObject(data.constData());
-
-            if (const auto f = std::ranges::find(refs.begin(), refs.end(), obj); f != refs.end()) {
-                pipe->Sections.removeValue(obj);
-                clearButtons();
-                recomputeFeature();
-            }
-        }
+    const int row = ui->listWidgetReferences->currentRow();
+    auto* item = row >= 0
+        ? ui->listWidgetReferences->item(row)
+        : nullptr;
+    auto* pipe = getObject<PartDesign::Pipe>();
+    if (!item || !pipe) {
+        return;
     }
+
+    App::PropertyLinkSubList::SubSet selected;
+    if (!resolvePipeSection(item->data(Qt::UserRole), selected)
+        || selected.first->getDocument() != pipe->getDocument()) {
+        rebuildSectionRows();
+        return;
+    }
+
+    auto sections = pipe->Sections.getSubListValues();
+    const auto found = std::ranges::find_if(
+        sections,
+        [&selected](const auto& section) {
+            return samePipeSection(section, selected);
+        }
+    );
+    if (found == sections.end()) {
+        rebuildSectionRows();
+        return;
+    }
+    sections.erase(found);
+    pipe->Sections.setSubListValues(sections);
+    rebuildSectionRows();
+    clearButtons();
+    recomputeFeature();
 }
 
 void TaskPipeScaling::updateUI(int idx)
@@ -1136,8 +1515,13 @@ void TaskPipeScaling::updateUI(int idx)
         ui->stackedWidget->widget(i)->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     }
 
-    if (idx < ui->stackedWidget->count()) {
-        ui->stackedWidget->widget(idx)->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    if (idx >= 0 && idx < ui->stackedWidget->count()) {
+        if (auto* page = ui->stackedWidget->widget(idx)) {
+            page->setSizePolicy(
+                QSizePolicy::Expanding,
+                QSizePolicy::Expanding
+            );
+        }
     }
 }
 
@@ -1198,13 +1582,20 @@ void TaskDlgPipeParameters::onButtonToggled(QAbstractButton* button, bool checke
 {
     int id = buttonGroup->id(button);
 
+    auto clearTaskSelection = [this]() {
+        if (auto* pipe = getObject<PartDesign::Pipe>()) {
+            Gui::Selection().clearSelection(
+                pipe->getDocument()->getName()
+            );
+        }
+    };
     if (checked) {
         // hideObject();
-        Gui::Selection().clearSelection();
+        clearTaskSelection();
         stateHandler->selectionMode = static_cast<StateHandlerTaskPipe::SelectionModes>(id);
     }
     else {
-        Gui::Selection().clearSelection();
+        clearTaskSelection();
         if (stateHandler->selectionMode == static_cast<StateHandlerTaskPipe::SelectionModes>(id)) {
             stateHandler->selectionMode = StateHandlerTaskPipe::SelectionModes::none;
         }

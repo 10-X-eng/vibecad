@@ -27,7 +27,6 @@ import FreeCADGui as Gui
 from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
 from VibeCADEditState import active_edit_object, active_edit_state
-from VibeCADProject import DEFAULT_MODELING_ENGINE
 from VibeCADPromptStarters import (
     BUILTIN_PROMPT_STARTERS,
     CATEGORY_ORDER,
@@ -35,6 +34,7 @@ from VibeCADPromptStarters import (
 )
 from VibeCADSession import (
     _format_document_delta,
+    normalize_interaction_mode,
     rebuild_intent_memory,
     run_prompt,
     run_sketch_close_continuation,
@@ -78,6 +78,7 @@ _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
 _PREFERENCES_PATH = "User parameter:BaseApp/Preferences/VibeCAD"
 _COMPOSER_ICON_ONLY_BREAKPOINT = 500
+_QT_WIDGET_MAXIMUM_SIZE = 16777215
 
 
 class _AssistantRunController:
@@ -738,13 +739,23 @@ def _split_transcript_role(text: str) -> tuple[str | None, str]:
     return None, raw
 
 
-def _transcript_block_html(text: str, image_paths: list[str] | None = None) -> str:
+def _transcript_block_html(
+    text: str,
+    image_paths: list[str] | None = None,
+    *,
+    tooltip: str = "",
+) -> str:
     """Render one conversation turn as markdown-backed HTML plus thumbnails.
 
     Missing or unreadable image files degrade to text-only output.
     """
     role, body = _split_transcript_role(str(text))
-    parts = ['<div style="margin:0 0 10px 0;">']
+    title = (
+        f' title="{html.escape(str(tooltip), quote=True)}"'
+        if str(tooltip).strip()
+        else ""
+    )
+    parts = [f'<div{title} style="margin:0 0 10px 0;">']
     if role:
         escaped_role = re.sub(r"([\\`*_{}\[\]()#+.!|>-])", r"\\\1", role)
         body = f"**{escaped_role}:**\n\n{body}"
@@ -790,12 +801,20 @@ def _append_transcript_block(output: Any, block_html: str) -> None:
     output.append(block_html)
 
 
-def _append_output(text: str, image_paths: list[str] | None = None) -> None:
+def _append_output(
+    text: str,
+    image_paths: list[str] | None = None,
+    *,
+    tooltip: str = "",
+) -> None:
     output = _find_child("QTextBrowser", "VibeConversation")
     if output is None:
         _print(text)
         return
-    _append_transcript_block(output, _transcript_block_html(text, image_paths))
+    _append_transcript_block(
+        output,
+        _transcript_block_html(text, image_paths, tooltip=tooltip),
+    )
     _scroll_to_end(output)
 
 
@@ -988,10 +1007,59 @@ def _saved_conversation_blocks(conversation: list[dict[str, Any]]) -> list[str]:
         label = labels.get(role)
         if label is None or not content:
             continue
+        tooltip = ""
+        if role == "assistant":
+            metadata = entry.get("metadata")
+            runtime = (
+                metadata.get("provider_runtime")
+                if isinstance(metadata, dict)
+                else None
+            )
+            if isinstance(runtime, dict):
+                tooltip = _provider_runtime_tooltip(runtime)
         blocks.append(
-            _transcript_block_html(f"{label}:\n{content}", _turn_image_paths(entry))
+            _transcript_block_html(
+                f"{label}:\n{content}",
+                _turn_image_paths(entry),
+                tooltip=tooltip,
+            )
         )
     return blocks
+
+
+def _provider_runtime_text(runtime: Any) -> str:
+    if not isinstance(runtime, dict):
+        return ""
+    provider_id = str(runtime.get("provider_id") or "").strip()
+    if provider_id == "offline":
+        return "Offline"
+    model = str(runtime.get("requested_model") or "").strip()
+    if not model:
+        provider_label = str(
+            runtime.get("provider_label") or runtime.get("provider_id") or "Provider"
+        ).strip()
+        model = f"{provider_label} default"
+    effort = str(runtime.get("reasoning_effort") or "").strip()
+    return f"{model} · {effort}" if effort else model
+
+
+def _provider_runtime_tooltip(runtime: dict[str, Any]) -> str:
+    provider_label = str(
+        runtime.get("provider_label") or runtime.get("provider_id") or "Provider"
+    ).strip()
+    model = str(runtime.get("requested_model") or "").strip()
+    lines = [f"Provider: {provider_label}"]
+    if model:
+        lines.append(f"Requested model: {model}")
+    else:
+        lines.append("Model: provider default")
+    effort = str(runtime.get("reasoning_effort") or "").strip()
+    if effort:
+        lines.append(f"Reasoning: {effort}")
+    fallback = runtime.get("model_fallback_allowed")
+    if isinstance(fallback, bool):
+        lines.append(f"Model fallback: {'allowed' if fallback else 'disabled'}")
+    return "\n".join(lines)
 
 
 def _render_saved_conversation(dock: Any | None = None) -> None:
@@ -1062,154 +1130,8 @@ def _refresh_conversation_selector(dock: Any | None = None) -> None:
     selector.blockSignals(previous_blocked)
 
 
-def _refresh_modeling_engine_selector(dock: Any | None = None) -> None:
-    selector = _find_child("QComboBox", "VibeModelingEngine", dock)
-    if selector is None:
-        return
-    service = get_service()
-    try:
-        workbench = service.active_workbench_name()
-        state = service.modeling_engine_state(workbench)
-        pack = get_tool_pack(workbench)
-        active = pack is not None and workbench not in {
-            "NoneWorkbench",
-            "TestWorkbench",
-        }
-    except Exception as exc:
-        selector.setVisible(False)
-        _warn(f"VibeCAD modeling-engine state failed: {exc}")
-        return
-    selected = str(state.get("selected") or DEFAULT_MODELING_ENGINE)
-    build123d_enabled = bool(state.get("build123d_preference_enabled"))
-    openscad_enabled = bool(state.get("openscad_preference_enabled"))
-    vibescript_enabled = bool(state.get("vibescript_preference_enabled"))
-    scripted_engines = {"build123d", "openscad", "vibescript"}
-    selector.setVisible(active)
-    if not selector.isVisible():
-        return
-
-    available = set(state.get("available_engines") or [])
-    build_state = dict(state.get("build123d") or {})
-    openscad_state = dict(state.get("openscad") or {})
-    vibescript_state = dict(state.get("vibescript") or {})
-    previous_blocked = selector.blockSignals(True)
-    try:
-        selector.clear()
-        selector.addItem("Native", "native")
-        if active and workbench == "PartDesignWorkbench" and "build123d" in available:
-            selector.addItem("build123d", "build123d")
-        elif selected == "build123d" and workbench != "PartDesignWorkbench":
-            selector.addItem("build123d (Part Design only)", "")
-            item = selector.model().item(selector.count() - 1)
-            if item is not None:
-                item.setEnabled(False)
-                item.setToolTip(
-                    "The automatic change to VibeScript is waiting for the "
-                    "active edit session or AI run to finish."
-                )
-        elif workbench == "PartDesignWorkbench" and (selected == "build123d" or build123d_enabled):
-            selector.addItem("build123d unavailable", "")
-            item = selector.model().item(selector.count() - 1)
-            if item is not None:
-                item.setEnabled(False)
-                item.setToolTip(str(build_state.get("error") or "Runtime unavailable"))
-        if active and workbench == "PartDesignWorkbench" and "openscad" in available:
-            selector.addItem("OpenSCAD", "openscad")
-        elif selected == "openscad" and workbench != "PartDesignWorkbench":
-            selector.addItem("OpenSCAD (Part Design only)", "")
-            item = selector.model().item(selector.count() - 1)
-            if item is not None:
-                item.setEnabled(False)
-                item.setToolTip(
-                    "The automatic change to VibeScript is waiting for the "
-                    "active edit session or AI run to finish."
-                )
-        elif workbench == "PartDesignWorkbench" and (selected == "openscad" or openscad_enabled):
-            selector.addItem("OpenSCAD unavailable", "")
-            item = selector.model().item(selector.count() - 1)
-            if item is not None:
-                item.setEnabled(False)
-                item.setToolTip(
-                    str(openscad_state.get("error") or "Runtime unavailable")
-                )
-        if "vibescript" in available:
-            selector.addItem("VibeScript", "vibescript")
-        elif selected == "vibescript" or vibescript_enabled:
-            selector.addItem("VibeScript unavailable", "")
-            item = selector.model().item(selector.count() - 1)
-            if item is not None:
-                item.setEnabled(False)
-                item.setToolTip(
-                    str(vibescript_state.get("error") or "Engine unavailable")
-                )
-        index = selector.findData(selected)
-        if index >= 0:
-            selector.setCurrentIndex(index)
-        elif selected in scripted_engines:
-            unavailable_text = {
-                "build123d": (
-                    "build123d unavailable"
-                    if workbench == "PartDesignWorkbench"
-                    else "build123d (Part Design only)"
-                ),
-                "openscad": (
-                    "OpenSCAD unavailable"
-                    if workbench == "PartDesignWorkbench"
-                    else "OpenSCAD (Part Design only)"
-                ),
-                "vibescript": "VibeScript unavailable",
-            }[selected]
-            unavailable_index = selector.findText(unavailable_text)
-            if unavailable_index >= 0:
-                selector.setCurrentIndex(unavailable_index)
-        selector.setToolTip(
-            "Global modeling engine for this saved CAD document. The human "
-            "controls this setting; AI tools cannot change it."
-        )
-    finally:
-        selector.blockSignals(previous_blocked)
-
-
-def _modeling_engine_changed(index: int) -> None:
-    dock = _find_dock()
-    selector = _find_child("QComboBox", "VibeModelingEngine", dock)
-    if selector is None or index < 0:
-        return
-    engine = str(selector.itemData(index) or "").strip()
-    if not engine:
-        _refresh_modeling_engine_selector(dock)
-        return
-    if _is_assistant_run_active():
-        _refresh_modeling_engine_selector(dock)
-        return
-    service = get_service()
-    try:
-        if engine == service.modeling_engine():
-            return
-        service.set_modeling_engine(engine)
-    except Exception as exc:
-        _set_status_line(f"Could not select modeling engine: {exc}", dock=dock)
-        _refresh_modeling_engine_selector(dock)
-        return
-    _set_status_line(f"Modeling engine: {engine}", dock=dock)
-    _refresh_modeling_engine_selector(dock)
-    try:
-        from VibeCADScriptedEditor import (
-            refresh_scripted_model_editor,
-            show_scripted_model_editor,
-        )
-
-        if engine in {"build123d", "openscad", "vibescript"}:
-            show_scripted_model_editor()
-        else:
-            refresh_scripted_model_editor()
-    except Exception as exc:
-        _warn(f"VibeCAD scripted editor engine refresh failed: {exc}")
-
-
 def apply_modeling_preferences() -> None:
-    """Refresh engine availability after the Preferences page is applied."""
-    _refresh_modeling_engine_selector(_find_dock())
+    """Refresh the VibeScript editor after Preferences are applied."""
     try:
         from VibeCADScriptedEditor import refresh_scripted_model_editor
 
@@ -1299,7 +1221,9 @@ def _append_conversation(
         _append_thinking(clean)
         return
     image_paths = _turn_image_paths({"metadata": metadata}) if metadata else []
-    _append_output(f"{role}:\n{clean}", image_paths)
+    runtime = metadata.get("provider_runtime") if isinstance(metadata, dict) else None
+    tooltip = _provider_runtime_tooltip(runtime) if isinstance(runtime, dict) else ""
+    _append_output(f"{role}:\n{clean}", image_paths, tooltip=tooltip)
     if persist:
         _record_conversation_turn(role, clean, metadata=metadata)
 
@@ -1619,7 +1543,12 @@ def _format_progress_event(event: dict[str, Any]) -> str:
             f" | total {float(event.get('elapsed_seconds', 0) or 0):.1f}s"
         )
     if name == "provider_turn_started":
-        base = "Thinking about the next CAD move..."
+        model = _provider_runtime_text(event.get("provider_runtime"))
+        base = (
+            f"Thinking with {model}..."
+            if model
+            else "Thinking about the next CAD move..."
+        )
         delta = _format_document_delta(event.get("document_delta"))
         if delta and not delta.startswith("not available"):
             return f"{base} | {delta}"
@@ -1795,6 +1724,7 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "intent_memory_update_started",
     "intent_memory_update_completed",
     "intent_memory_update_failed",
+    "provider_turn_started",
 }
 
 
@@ -2144,7 +2074,7 @@ def _update_composer_button_presentation(
     *,
     busy: bool | None = None,
 ) -> None:
-    """Use labels only when the assistant composer has room for them."""
+    """Use complete labels only when the assistant composer can fit them."""
 
     try:
         from PySide import QtWidgets
@@ -2152,7 +2082,23 @@ def _update_composer_button_presentation(
         return
     if container is None:
         return
-    compact = int(container.width()) < _COMPOSER_ICON_ONLY_BREAKPOINT
+    if bool(container.property("VibePresentationUpdateActive")):
+        return
+    container.setProperty("VibePresentationUpdateActive", True)
+    try:
+        _apply_composer_button_presentation(container, QtWidgets, busy=busy)
+    finally:
+        container.setProperty("VibePresentationUpdateActive", False)
+
+
+def _apply_composer_button_presentation(
+    container: Any,
+    QtWidgets: Any,
+    *,
+    busy: bool | None,
+) -> None:
+    """Apply one non-reentrant responsive composer presentation update."""
+
     is_busy = _is_assistant_run_active() if busy is None else bool(busy)
     labels = {
         "VibeAttachView": (
@@ -2176,15 +2122,57 @@ def _update_composer_button_presentation(
             "Stop after the current provider or tool step",
         ),
     }
+    buttons = []
     for object_name, (label, tooltip) in labels.items():
         button = container.findChild(QtWidgets.QPushButton, object_name)
         if button is None:
             continue
+        buttons.append((button, label))
         button.setAccessibleName(label)
+        button.setAccessibleDescription(tooltip)
         button.setToolTip(tooltip)
-        button.setText("" if compact else label)
+
+        # Measure the complete row, not merely the container width against a
+        # fixed guess. Reset the compact width first so sizeHint() reflects the
+        # real label. This prevents Qt from eliding the two longer attachment
+        # labels at intermediate dock widths.
+        button.setMinimumWidth(0)
+        button.setMaximumWidth(_QT_WIDGET_MAXIMUM_SIZE)
+        button.setText(label)
+        button.setProperty("VibeCompactMode", False)
+        button.updateGeometry()
+
+    layout = container.layout()
+    if layout is not None:
+        layout.invalidate()
+        full_label_width = int(layout.sizeHint().width())
+    else:
+        full_label_width = _COMPOSER_ICON_ONLY_BREAKPOINT
+    full_label_width = max(_COMPOSER_ICON_ONLY_BREAKPOINT, full_label_width)
+    compact = int(container.width()) < full_label_width
+
+    if compact:
+        for button, _label in buttons:
+            button.setText("")
+            button.updateGeometry()
+
+        # Compact actions are deliberately square and equal-sized; otherwise
+        # QPushButton's platform minimums leave a row of mismatched empty
+        # button chrome around the icons.
+        action_extent = max(
+            (int(button.sizeHint().height()) for button, _label in buttons),
+            default=0,
+        )
+        for button, _label in buttons:
+            button.setMinimumWidth(action_extent)
+            button.setMaximumWidth(action_extent)
+
+    for button, _label in buttons:
         button.setProperty("VibeCompactMode", compact)
         button.updateGeometry()
+    if layout is not None:
+        layout.invalidate()
+    container.setProperty("VibeFullLabelRequiredWidth", full_label_width)
     container.setProperty("VibeCompactMode", compact)
 
 
@@ -2389,7 +2377,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
     prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
-    engine_selector = _find_child("QComboBox", "VibeModelingEngine", dock)
+    interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
     if send_button is not None:
@@ -2408,8 +2396,22 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         new_conversation.setEnabled(document_ready and not busy)
     if prompt_starters is not None:
         prompt_starters.setEnabled(document_ready and not busy)
-    if engine_selector is not None:
-        engine_selector.setEnabled(document_ready and not busy)
+    if interaction_mode is not None:
+        try:
+            supports_plan = get_service().provider_name() in {"openai", "chatgpt"}
+        except Exception:
+            supports_plan = False
+        if not supports_plan and interaction_mode.currentData() == "plan":
+            interaction_mode.setCurrentIndex(0)
+        interaction_mode.setEnabled(document_ready and not busy and supports_plan)
+        interaction_mode.setToolTip(
+            (
+                "Build can change the active document; Plan inspects it without "
+                "making changes"
+            )
+            if supports_plan
+            else "Plan mode requires an OpenAI provider running through Codex"
+        )
     if composer_buttons is not None:
         _update_composer_button_presentation(
             composer_buttons,
@@ -2510,6 +2512,7 @@ def _execute_assistant_run(
     *,
     prompt: str | None = None,
     continuation_event: dict[str, Any] | None = None,
+    interaction_mode: str = "build",
 ) -> None:
     global _assistant_run_thread
     if _is_assistant_run_active():
@@ -2521,6 +2524,11 @@ def _execute_assistant_run(
         )
         return
     clean_prompt = str(prompt or "").strip()
+    clean_interaction_mode = (
+        "build"
+        if continuation_event is not None
+        else normalize_interaction_mode(interaction_mode)
+    )
     if bool(clean_prompt) == bool(continuation_event):
         raise ValueError(
             "A VibeCAD run requires exactly one user prompt or continuation event."
@@ -2561,7 +2569,16 @@ def _execute_assistant_run(
             text = str(event.get("text") or "").strip()
             if text:
                 displayed_provider_texts.append(text)
-                _append_conversation("VibeCAD", text)
+                runtime = event.get("provider_runtime")
+                _append_conversation(
+                    "VibeCAD",
+                    text,
+                    metadata=(
+                        {"provider_runtime": dict(runtime)}
+                        if isinstance(runtime, dict)
+                        else None
+                    ),
+                )
         _handle_progress_event(current_dock, event)
 
     def _progress(event: dict[str, Any]) -> None:
@@ -2597,17 +2614,6 @@ def _execute_assistant_run(
             run_succeeded = response.error is None and not _cancelled()
 
         _assistant_run_controller.finish(run_id)
-        try:
-            transition = service.coerce_modeling_engine_for_workbench(
-                service.active_workbench_name()
-            )
-            if transition.get("changed"):
-                terminal_status = (
-                    f"{transition.get('previous_engine')} is Part Design-only; "
-                    "global modeling engine changed to VibeScript."
-                )
-        except Exception as exc:
-            _warn(f"VibeCAD deferred engine transition failed: {exc}")
         _cancel_question_round()
         if run_succeeded:
             try:
@@ -2623,7 +2629,6 @@ def _execute_assistant_run(
             current_dock,
             text=terminal_status or None,
         )
-        _refresh_modeling_engine_selector(current_dock)
         try:
             from VibeCADScriptedEditor import refresh_scripted_model_editor
 
@@ -2651,7 +2656,11 @@ def _execute_assistant_run(
                     **common_arguments,
                 )
             else:
-                response = run_prompt(clean_prompt, **common_arguments)
+                response = run_prompt(
+                    clean_prompt,
+                    interaction_mode=clean_interaction_mode,
+                    **common_arguments,
+                )
         except BaseException as exc:
             _dispatch_to_document_thread(
                 lambda failure=exc: _complete_run(None, failure)
@@ -2770,9 +2779,18 @@ def _run_prompt_from_panel() -> None:
 
     # The background session persists the prompt after capturing only the
     # active document identity on the GUI thread.
+    interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
+    selected_mode = (
+        interaction_mode.currentData() if interaction_mode is not None else "build"
+    )
     _append_conversation("User", prompt)
     prompt_box.clear()
-    _execute_assistant_run(dock, service, prompt=prompt)
+    _execute_assistant_run(
+        dock,
+        service,
+        prompt=prompt,
+        interaction_mode=normalize_interaction_mode(selected_mode),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2809,7 +2827,61 @@ def _document_restore_active(document: Any | None = None) -> bool:
             document = App.ActiveDocument
         except Exception:
             document = None
-    return document is not None and bool(getattr(document, "Restoring", False))
+    if document is None:
+        return False
+    try:
+        return bool(getattr(document, "Restoring", False))
+    except (ReferenceError, RuntimeError):
+        # A queued GUI callback can outlive the Python wrapper for a document
+        # that the user has already closed. A dead wrapper is not restoring.
+        return False
+
+
+def _document_recompute_active(document: Any) -> bool:
+    """Return whether native recompute teardown still owns the document."""
+
+    try:
+        return bool(getattr(document, "Recomputing", False))
+    except Exception:
+        return False
+
+
+def _document_render_refresh_blocked(document: Any) -> bool:
+    """Return whether restored-document presentation work must be deferred."""
+
+    return _document_restore_active(document) or _document_recompute_active(document)
+
+
+def _live_document_for_storage_key(
+    document_key: str,
+    document_name: str = "",
+) -> Any | None:
+    """Resolve a queued document callback without retaining a stale wrapper."""
+
+    try:
+        live_documents = dict(App.listDocuments())
+    except Exception:
+        return None
+
+    candidates = []
+    if document_name:
+        named_document = live_documents.get(document_name)
+        if named_document is not None:
+            candidates.append(named_document)
+    candidates.extend(
+        document
+        for name, document in live_documents.items()
+        if name != document_name
+    )
+    for candidate in candidates:
+        try:
+            if _document_storage_key(candidate) == document_key:
+                return candidate
+        except (ReferenceError, RuntimeError):
+            continue
+        except Exception:
+            continue
+    return None
 
 
 def _pending_document_objects(document: Any) -> list[Any]:
@@ -2818,9 +2890,127 @@ def _pending_document_objects(document: Any) -> list[Any]:
     pending = []
     for obj in list(getattr(document, "Objects", []) or []):
         state = {str(item) for item in list(getattr(obj, "State", []) or [])}
-        if "Touched" in state:
+        if "Touched" in state and _timeline_object_is_active(document, obj):
             pending.append(obj)
     return pending
+
+
+def _timeline_resource_owner(document: Any, obj: Any) -> Any | None:
+    """Resolve one exact persisted timeline-resource ownership edge."""
+
+    try:
+        if str(getattr(obj, "VibeCADTimelineRole", "")) != "resource":
+            return None
+        property_type = getattr(obj, "getTypeIdOfProperty", None)
+        if callable(property_type) and (
+            property_type("VibeCADTimelineOwner")
+            != "App::PropertyLinkHidden"
+        ):
+            return None
+        owner = getattr(obj, "VibeCADTimelineOwner", None)
+        if owner is None or owner is obj:
+            return None
+        if getattr(owner, "Document", None) is not document:
+            return None
+        if owner not in list(getattr(document, "Objects", []) or []):
+            return None
+        return owner
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return None
+
+
+def _timeline_object_is_active(document: Any, obj: Any) -> bool:
+    """Mirror the native effective timeline activity used by recompute."""
+
+    try:
+        get_object = getattr(document, "getObject", None)
+        timeline = (
+            get_object("VibeCADTimeline")
+            if callable(get_object)
+            else None
+        )
+        if timeline is None:
+            return True
+
+        owners = []
+        visited = {id(obj)}
+        effective_operation = obj
+        while True:
+            is_resource = (
+                str(
+                    getattr(
+                        effective_operation,
+                        "VibeCADTimelineRole",
+                        "",
+                    )
+                )
+                == "resource"
+            )
+            owner = _timeline_resource_owner(
+                document,
+                effective_operation,
+            )
+            if owner is None:
+                if is_resource:
+                    return False
+                break
+            if id(owner) in visited:
+                return False
+            visited.add(id(owner))
+            owners.append(owner)
+            effective_operation = owner
+
+        operations = list(getattr(timeline, "Operations", []) or [])
+        try:
+            operation_index = operations.index(effective_operation)
+        except ValueError:
+            return True
+
+        position = max(
+            0,
+            min(int(getattr(timeline, "Position", 0)), len(operations)),
+        )
+        if operation_index >= position:
+            return False
+
+        suppression = list(
+            getattr(timeline, "SuppressionAtEnd", []) or []
+        )
+        for owner in owners:
+            try:
+                owner_index = operations.index(owner)
+            except ValueError:
+                continue
+            if (
+                owner_index < len(suppression)
+                and bool(suppression[owner_index])
+            ):
+                return False
+        return True
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        # Malformed or legacy metadata must not hide genuinely pending work.
+        return True
+
+
+def _document_geometry_problems(
+    document: Any,
+    recompute_candidates: list[Any],
+) -> list[str]:
+    """Return true errors plus active work that recompute could not finish."""
+
+    candidate_ids = {id(obj) for obj in recompute_candidates}
+    unresolved = []
+    for obj in list(getattr(document, "Objects", []) or []):
+        state = {str(item) for item in list(getattr(obj, "State", []) or [])}
+        problem_state = state.intersection({"Invalid", "Error"})
+        if id(obj) in candidate_ids and "Touched" in state:
+            problem_state.add("Touched")
+        if problem_state:
+            unresolved.append(
+                f"{str(getattr(obj, 'Name', ''))} "
+                f"({', '.join(sorted(problem_state))})"
+            )
+    return unresolved
 
 
 def _redraw_document_view(document: Any) -> None:
@@ -2833,7 +3023,9 @@ def _redraw_document_view(document: Any) -> None:
             update_gui = getattr(Gui, "updateGui", None)
             if callable(update_gui):
                 update_gui()
-            view.redraw()
+            redraw = getattr(view, "redraw", None)
+            if callable(redraw):
+                redraw()
     except Exception as exc:
         _warn(f"VibeCAD restored-document redraw failed: {exc}")
 
@@ -2841,8 +3033,19 @@ def _redraw_document_view(document: Any) -> None:
 def _recompute_pending_document_geometry(document: Any) -> bool:
     """Make restored document geometry render-ready before user interaction."""
 
+    # A zero-delay restore callback can run from the progress event loop of an
+    # unrelated, already-active recompute. Native Document::recompute rejects
+    # recursive entry, so leave the pending geometry to the owning recompute.
+    if _document_recompute_active(document):
+        return False
     pending = _pending_document_objects(document)
     if not pending:
+        unresolved = _document_geometry_problems(document, [])
+        if unresolved:
+            _warn(
+                "VibeCAD restored document contains invalid geometry: "
+                + ", ".join(unresolved)
+            )
         return False
     try:
         gui_document = Gui.getDocument(str(document.Name))
@@ -2852,6 +3055,8 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
     except Exception:
         gui_document = None
         was_modified = None
+    if _document_recompute_active(document):
+        return False
     try:
         document.recompute()
     except Exception as exc:
@@ -2862,13 +3067,7 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
         )
         return False
 
-    unresolved = []
-    for obj in pending:
-        state = {str(item) for item in list(getattr(obj, "State", []) or [])}
-        if state.intersection({"Touched", "Invalid", "Error"}):
-            unresolved.append(
-                f"{str(getattr(obj, 'Name', ''))} ({', '.join(sorted(state))})"
-            )
+    unresolved = _document_geometry_problems(document, pending)
     if unresolved:
         _warn(
             "VibeCAD restored-document recompute left invalid geometry: "
@@ -2898,6 +3097,20 @@ def _restore_partdesign_history_rendering(document: Any) -> bool:
     return bool(result.get("changed_objects"))
 
 
+def _migrate_standard_fastener_timeline_resources(document: Any) -> bool:
+    """Restore the owner edge for unambiguous legacy Assembly fasteners."""
+
+    try:
+        from VibeCADFastenersGui import (
+            migrate_assembly_fastener_timeline_resources,
+        )
+
+        return bool(migrate_assembly_fastener_timeline_resources(document))
+    except Exception as exc:
+        _warn(f"VibeCAD standard-fastener timeline migration failed: {exc}")
+        return False
+
+
 def _refresh_assistant_for_document_change() -> None:
     document = App.ActiveDocument
     if document is not None:
@@ -2924,7 +3137,6 @@ def _refresh_assistant_for_document_change() -> None:
     _clear_thinking(dock)
     _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
-    _refresh_modeling_engine_selector(dock)
     _refresh_reference_chips(dock)
     _refresh_view_status(dock)
     _render_assistant_run_state(dock)
@@ -2999,6 +3211,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
 
     try:
         document_key = _document_storage_key(document)
+        document_name = str(document.Name)
     except Exception as exc:
         _warn(f"VibeCAD restored-document scheduling failed: {exc}")
         return
@@ -3009,62 +3222,139 @@ def _schedule_document_render_after_restore(document: Any) -> None:
     try:
         from PySide import QtCore
 
-        def render_when_restored() -> None:
-            if _document_restore_active(document):
-                QtCore.QTimer.singleShot(100, render_when_restored)
-                return
+        presentation_complete = False
+        presentation_changed = False
+        resource_migration_complete = False
+        modified_state_captured = False
+        was_modified = None
+
+        def finish_refresh() -> None:
             _pending_document_render_refreshes.discard(document_key)
-            try:
-                live_documents = dict(App.listDocuments())
-            except Exception:
-                live_documents = {}
-            live_document = live_documents.get(str(getattr(document, "Name", "")))
-            if live_document is None:
+
+        def defer_until_stable(callback) -> None:
+            QtCore.QTimer.singleShot(100, callback)
+
+        def capture_modified_state(live_document: Any) -> None:
+            nonlocal modified_state_captured, was_modified
+            if modified_state_captured:
                 return
-            if _document_storage_key(live_document) != document_key:
-                return
+            modified_state_captured = True
             try:
                 gui_document = Gui.getDocument(str(live_document.Name))
                 was_modified = (
-                    bool(gui_document.Modified)
-                    if gui_document is not None
-                    else None
+                    bool(gui_document.Modified) if gui_document is not None else None
                 )
             except Exception:
-                gui_document = None
                 was_modified = None
-            presentation_changed = _restore_partdesign_history_rendering(
-                live_document
+
+        def restore_modified_state(live_document: Any) -> None:
+            if was_modified is not False:
+                return
+            try:
+                gui_document = Gui.getDocument(str(live_document.Name))
+                if gui_document is not None:
+                    gui_document.Modified = False
+            except Exception as exc:
+                _warn(f"VibeCAD restored-document modified-state reset failed: {exc}")
+
+        def redraw_when_stable() -> None:
+            live_document = _live_document_for_storage_key(
+                document_key,
+                document_name,
             )
-            geometry_recomputed = _recompute_pending_document_geometry(
-                live_document
+            if live_document is None:
+                finish_refresh()
+                return
+            if _document_render_refresh_blocked(live_document):
+                defer_until_stable(redraw_when_stable)
+                return
+            try:
+                _redraw_document_view(live_document)
+                restore_modified_state(live_document)
+            finally:
+                finish_refresh()
+
+        def render_when_stable() -> None:
+            nonlocal presentation_complete, presentation_changed
+            nonlocal resource_migration_complete
+            live_document = _live_document_for_storage_key(
+                document_key,
+                document_name,
             )
+            if live_document is None:
+                finish_refresh()
+                return
+            if _document_render_refresh_blocked(live_document):
+                defer_until_stable(render_when_stable)
+                return
+
+            capture_modified_state(live_document)
+            if not resource_migration_complete:
+                presentation_changed = (
+                    _migrate_standard_fastener_timeline_resources(live_document)
+                    or presentation_changed
+                )
+                resource_migration_complete = True
+            if not presentation_complete:
+                presentation_changed = (
+                    _restore_partdesign_history_rendering(live_document)
+                    or presentation_changed
+                )
+                presentation_complete = True
+
+            # Presentation changes can synchronously activate native document
+            # work. Resolve the wrapper again and do not start recompute until
+            # that work, including signalRecomputed teardown, has completed.
+            live_document = _live_document_for_storage_key(
+                document_key,
+                document_name,
+            )
+            if live_document is None:
+                finish_refresh()
+                return
+            if _document_render_refresh_blocked(live_document):
+                defer_until_stable(render_when_stable)
+                return
+
+            geometry_recomputed = _recompute_pending_document_geometry(live_document)
+            if not geometry_recomputed and _document_recompute_active(live_document):
+                defer_until_stable(render_when_stable)
+                return
             if presentation_changed and not geometry_recomputed:
                 _redraw_document_view(live_document)
-            if gui_document is not None and was_modified is False:
-                try:
-                    gui_document.Modified = False
-                except Exception as exc:
-                    _warn(
-                        "VibeCAD restored-document modified-state reset failed: "
-                        f"{exc}"
-                    )
+            restore_modified_state(live_document)
             if presentation_changed or geometry_recomputed:
-                QtCore.QTimer.singleShot(
-                    0,
-                    lambda doc=live_document: _redraw_document_view(doc),
-                )
+                QtCore.QTimer.singleShot(0, redraw_when_stable)
+                return
+            finish_refresh()
 
-        QtCore.QTimer.singleShot(0, render_when_restored)
+        QtCore.QTimer.singleShot(0, render_when_stable)
     except Exception as exc:
-        _pending_document_render_refreshes.discard(document_key)
-        if _document_restore_active(document):
+        live_document = _live_document_for_storage_key(
+            document_key,
+            document_name,
+        )
+        if live_document is None:
+            _pending_document_render_refreshes.discard(document_key)
+            return
+        if _document_render_refresh_blocked(live_document):
+            _pending_document_render_refreshes.discard(document_key)
             _warn(f"VibeCAD restored-document scheduling failed: {exc}")
             return
-        presentation_changed = _restore_partdesign_history_rendering(document)
-        geometry_recomputed = _recompute_pending_document_geometry(document)
+        presentation_changed = _migrate_standard_fastener_timeline_resources(
+            live_document
+        )
+        presentation_changed = (
+            _restore_partdesign_history_rendering(live_document) or presentation_changed
+        )
+        if _document_render_refresh_blocked(live_document):
+            _pending_document_render_refreshes.discard(document_key)
+            _warn(f"VibeCAD restored-document scheduling failed: {exc}")
+            return
+        geometry_recomputed = _recompute_pending_document_geometry(live_document)
         if presentation_changed and not geometry_recomputed:
-            _redraw_document_view(document)
+            _redraw_document_view(live_document)
+        _pending_document_render_refreshes.discard(document_key)
 
 
 def _snapshot_active_document_conversation(doc: Any) -> None:
@@ -3158,21 +3448,9 @@ class _VibeCADDocumentObserver:
 
     def slotStartSaveDocument(self, doc, filepath) -> None:
         _snapshot_active_document_conversation(doc)
-        try:
-            from VibeCADScriptedEditor import suspend_preview_for_save
-
-            suspend_preview_for_save(doc)
-        except Exception as exc:
-            _warn(f"VibeCAD preview cleanup before save failed: {exc}")
 
     def slotFinishSaveDocument(self, doc, filepath) -> None:
         _move_saved_document_conversation(doc, str(filepath))
-        try:
-            from VibeCADScriptedEditor import restore_preview_after_save
-
-            restore_preview_after_save(doc)
-        except Exception as exc:
-            _warn(f"VibeCAD preview restore after save failed: {exc}")
         _schedule_assistant_document_refresh()
 
     def slotDeletedDocument(self, doc) -> None:
@@ -3182,12 +3460,6 @@ class _VibeCADDocumentObserver:
         _sketch_close_continuation_controller.clear_for_document(document_key)
         _document_save_conversations.pop(document_key, None)
         _document_save_references.pop(document_key, None)
-        try:
-            from VibeCADScriptedEditor import remove_all_previews
-
-            remove_all_previews(doc)
-        except Exception as exc:
-            _warn(f"VibeCAD preview cleanup for deleted document failed: {exc}")
         _schedule_assistant_document_refresh()
 
 
@@ -3302,14 +3574,6 @@ def _build_panel_widget():
         _activate_conversation_from_selector
     )
     conversation_header_layout.addWidget(conversation_selector, 1)
-
-    engine_selector = QtWidgets.QComboBox(conversation_header)
-    engine_selector.setObjectName("VibeModelingEngine")
-    engine_selector.setMinimumContentsLength(9)
-    engine_selector.setMaximumWidth(138)
-    engine_selector.setVisible(False)
-    engine_selector.currentIndexChanged.connect(_modeling_engine_changed)
-    conversation_header_layout.addWidget(engine_selector)
 
     new_conversation = QtWidgets.QToolButton(conversation_header)
     new_conversation.setObjectName("VibeNewConversation")
@@ -3453,6 +3717,15 @@ def _build_panel_widget():
     )
     prompt_starters.setMenu(prompt_starter_menu)
 
+    interaction_mode = QtWidgets.QComboBox(composer_buttons)
+    interaction_mode.setObjectName("VibeInteractionMode")
+    interaction_mode.addItem("Build", "build")
+    interaction_mode.addItem("Plan", "plan")
+    interaction_mode.setToolTip(
+        "Build can change the active document; Plan inspects it without making changes"
+    )
+    interaction_mode.setAccessibleName("Interaction mode")
+
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
@@ -3473,6 +3746,7 @@ def _build_panel_widget():
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
+    buttons_layout.addWidget(interaction_mode)
     buttons_layout.addWidget(send_button)
     buttons_layout.addWidget(stop_button)
     _install_composer_width_filter(composer_buttons)
@@ -3564,7 +3838,6 @@ def _show_panel(text: str = "") -> None:
     else:
         _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
-    _refresh_modeling_engine_selector(dock)
     _refresh_view_status(dock)
     _refresh_reference_chips(dock)
     _render_questions(dock)
@@ -3581,19 +3854,7 @@ def show_assistant_for_active_workbench() -> None:
 
 
 def _on_workbench_activated(workbench_name: str) -> None:
-    clean_workbench = str(workbench_name)
-    transition: dict[str, Any] = {"changed": False}
-    if _is_assistant_run_active():
-        transition = {
-            "changed": False,
-            "deferred": True,
-            "reason": "An AI run is active.",
-        }
-    else:
-        try:
-            transition = get_service().coerce_modeling_engine_for_workbench(clean_workbench)
-        except Exception as exc:
-            _warn(f"VibeCAD global engine transition failed: {exc}")
+    del workbench_name
     try:
         from PySide import QtCore
     except Exception:
@@ -3607,13 +3868,6 @@ def _on_workbench_activated(workbench_name: str) -> None:
                 _bind_context_debug_dock(context_debug_dock)
             if _assistant_panel_is_built(dock):
                 _refresh_view_status(dock)
-                _refresh_modeling_engine_selector(dock)
-                if transition.get("changed"):
-                    _set_status_line(
-                        f"{transition.get('previous_engine')} is Part Design-only; "
-                        "global modeling engine changed to VibeScript.",
-                        dock=dock,
-                    )
                 try:
                     from VibeCADScriptedEditor import refresh_scripted_model_editor
 
@@ -3713,7 +3967,7 @@ class OpenPreferencesCommand(_BaseCommand):
 
 class OpenScriptedModelCommand(_BaseCommand):
     menu_text = "Model Code Editor"
-    tooltip = "Open the build123d, OpenSCAD, and VibeScript model code editor"
+    tooltip = "Open the VibeScript model code editor"
     pixmap = ICON_ACTIVITY
 
     def Activated(self) -> None:

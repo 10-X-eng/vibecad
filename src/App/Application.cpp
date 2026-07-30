@@ -120,6 +120,7 @@
 #include "DocumentObjectGroupPy.h"
 #include "DocumentObserver.h"
 #include "DocumentPy.h"
+#include "DocumentTimeline.h"
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
 #include "FeaturePython.h"
@@ -692,11 +693,40 @@ bool Application::closeDocument(const char* name)
     if (pos == DocMap.end()) // no such document
         return false;
 
+    // Give scoped transaction owners one synchronous boundary at which to
+    // roll back and release their own critical lock. The document remains
+    // registered and fully live while observers run.
+    signalBeforeCloseDocument(*pos->second);
+
+    // A transaction lock marks a synchronous critical section whose property
+    // and view-provider callbacks still hold pointers into this document.
+    // Closing it here would invalidate those callbacks and the lock owner
+    // before it can validate or roll back the mutation.
+    if (pos->second->isTransactionLocked()) {
+        Base::Console().warning(
+            "Cannot close document '%s' while a critical transaction is locked\n",
+            name
+        );
+        return false;
+    }
+
     Base::ConsoleRefreshDisabler disabler;
+
+    // Property-link teardown happens synchronously from delete observers
+    // while the document is still registered with the application. Mark
+    // that lifecycle boundary explicitly so domain objects do not mistake
+    // teardown callbacks for user edits which require a transaction.
+    pos->second->setStatus(Document::Closing, true);
 
     // Trigger observers before removing the document from the internal map.
     // Some observers might rely on this document still being there.
-    signalDeleteDocument(*pos->second);
+    try {
+        signalDeleteDocument(*pos->second);
+    }
+    catch (...) {
+        pos->second->setStatus(Document::Closing, false);
+        throw;
+    }
 
     // For exception-safety use a smart pointer
     if (_pActiveDoc == pos->second) {
@@ -2350,6 +2380,7 @@ void Application::initTypes()
     // Document classes
     App::TransactionalObject       ::init();
     App::DocumentObject            ::init();
+    App::DocumentTimeline          ::init();
     App::GeoFeature                ::init();
 
     // Test features

@@ -87,6 +87,7 @@ public:
     }
 
     App::DocumentObjectExecReturn* execute() override;
+    short mustExecute() const override;
     void onChanged(const App::Property* prop) override;
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts
     and redraw the joints Args : enableRedo : This store initial positions to enable undo while
@@ -281,6 +282,8 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    void captureTimelineState() noexcept;
+
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
     std::unordered_map<App::DocumentObject*, MbDPartData> objectPartMap;
@@ -289,6 +292,8 @@ private:
     std::vector<App::DocumentObject*> motions;
 
     std::vector<std::pair<App::DocumentObject*, Base::Placement>> previousPositions;
+    long lastTimelinePosition {-1};
+    std::vector<App::DocumentObject*> lastTimelineOperations;
 
     bool bundleFixed;
 

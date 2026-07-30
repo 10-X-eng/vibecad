@@ -537,3 +537,291 @@ class Document(PropertyContainer):
         the next transaction will stick to if no change has occurred yet
         """
         ...
+
+    def reorderTimelineOperationBlocksAfter(
+        self,
+        operations: Sequence[DocumentObject],
+        target: DocumentObject,
+        /,
+    ) -> bool:
+        """
+        Move complete semantic timeline blocks after the target block.
+
+        The caller must own the document's active transaction and the history
+        marker must be at the current end. Each operation moves together with
+        all recursively owned resources. Invalid ownership or a resulting
+        forward dependency is rejected without changing the timeline.
+
+        Returns:
+            True when the order changed, or False when it already matched.
+        """
+        ...
+
+    def reorderTimelineOperationBlocksBefore(
+        self,
+        operations: Sequence[DocumentObject],
+        target: DocumentObject,
+        /,
+    ) -> bool:
+        """
+        Move complete semantic timeline blocks before the target block.
+
+        The caller must own the document's active transaction and the history
+        marker must be at the current end. Each operation moves together with
+        all recursively owned resources. Invalid ownership or a resulting
+        forward dependency is rejected without changing the timeline.
+
+        Returns:
+            True when the order changed, or False when it already matched.
+        """
+        ...
+
+    def adoptImportedTimelineOperations(
+        self,
+        objects: Sequence[DocumentObject],
+        source_order: Sequence[DocumentObject] = (),
+        source_visibility: Sequence[bool] = (),
+        source_suppression: Sequence[bool] = (),
+        /,
+    ) -> None:
+        """
+        Adopt fully restored objects into the native document timeline.
+
+        Call this once, inside the caller-owned transaction, after the
+        imported objects have their final grouping, visibility, owner, editor,
+        and replacement metadata. ``source_order`` must contain the imported
+        identities in the source document's timeline order. When supplied,
+        ``source_visibility`` and ``source_suppression`` are the parallel
+        accepted end-of-history states from that source timeline. Temporary
+        documents deliberately ignore this operation.
+        """
+        ...
+
+    def finalizeProvisionalTimelineOperationBlock(
+        self,
+        operation: DocumentObject,
+        ordered_new_objects: Sequence[DocumentObject],
+        /,
+    ) -> None:
+        """
+        Finalize one native command's provisionally enrolled semantic block.
+
+        Call this after role, owner, editor, replacement, grouping, and display
+        metadata are final, but before committing the caller-owned
+        transaction. Every ordered object must have been auto-enrolled by that
+        same transaction. A newly created operation is listed last; for an
+        existing active operation, list only its newly created resources.
+        """
+        ...
+
+    def publishProvisionalTimelineOperationBlock(
+        self,
+        operation: DocumentObject,
+        ordered_resources: Sequence[DocumentObject],
+        resource_owners: Sequence[DocumentObject] = (),
+        /,
+    ) -> None:
+        """
+        Atomically publish one exact current-transaction semantic block.
+
+        Use this for newly created groups or containers which are not eligible
+        for History until their semantic metadata exists. Every object must
+        have exact creation provenance from the current caller-owned
+        transaction. ``ordered_resources`` is canonical nested post-order.
+        ``resource_owners`` is either empty (all resources belong directly to
+        ``operation``) or exactly parallel and explicitly names each resource
+        owner. Rejection changes neither metadata nor History.
+        """
+        ...
+
+    def adoptExistingTimelineOperationBlock(
+        self,
+        operation: DocumentObject,
+        ordered_resources: Sequence[DocumentObject],
+        resource_owners: Sequence[DocumentObject] = (),
+        /,
+    ) -> None:
+        """
+        Adopt one exact pre-existing semantic operation/resource block.
+
+        Every identity must be a pre-existing independent History operation
+        and the supplied identities must occupy one contiguous segment wholly
+        before or after the current marker. ``ordered_resources`` is canonical
+        nested post-order. ``resource_owners`` is either empty (all resources
+        belong directly to ``operation``) or exactly parallel. The operation
+        preserves object identities, display state, suppression, and marker
+        position while atomically applying role, owner, and canonical block
+        order.
+        """
+        ...
+
+    def classifyProvisionalTimelineInternalObject(
+        self,
+        object: DocumentObject,
+        /,
+    ) -> None:
+        """
+        Remove one exact same-transaction provisional object from History.
+
+        The object becomes persistent internal document state. Its role is
+        hidden and locked. Changing that same role back to ``"operation"``
+        before the transaction ends enrolls the exact identity again at the
+        active-history boundary. Invalid identity or transaction input does
+        not change the timeline.
+        """
+        ...
+
+    def classifyExistingTimelineLeafInternalObject(
+        self,
+        object: DocumentObject,
+        /,
+    ) -> None:
+        """
+        Reclassify one exact pre-existing standalone History leaf as internal.
+
+        This migration-only method requires an active caller-owned
+        transaction. It rejects provisional objects, owned semantic blocks,
+        and objects with replacement or editor contracts.
+        """
+        ...
+
+    def isProvisionallyEnrolledInTimelineByCurrentTransaction(
+        self,
+        object: DocumentObject,
+        /,
+    ) -> bool:
+        """
+        Return whether ``object`` is an exact current-transaction enrollment.
+
+        ``object`` must be a live object in this document. This read-only
+        query lets a caller validate ownership before assigning semantic role
+        or owner metadata; it never weakens finalization validation.
+        """
+        ...
+
+    def isApplyingTimelineState(self) -> bool:
+        """
+        Return whether native History is applying a validated state change.
+
+        View providers can use this during visibility callbacks to avoid
+        overriding the exact child states being restored by History.
+        """
+        ...
+
+    def isObjectUsableAtCurrentTimelinePosition(
+        self,
+        object: DocumentObject,
+        /,
+    ) -> bool:
+        """
+        Return whether ``object`` is usable at this document's History marker.
+
+        The exact object must still belong to this document. Future,
+        suppressed, explicitly internal, and malformed semantic-resource
+        objects return ``False``. Visibility is irrelevant. Links are not
+        followed; callers which consume a linked definition must validate
+        that exact definition in its own document as well.
+        """
+        ...
+
+    def stageTimelineOperationSegmentReplacement(
+        self,
+        old_root_segments: Sequence[Sequence[DocumentObject]],
+        /,
+    ) -> None:
+        """
+        Stage exact chronological semantic segments before deleting them.
+
+        Each inner sequence declares one contiguous segment of adjacent,
+        canonical resource-first/root-last blocks. Segments must be disjoint
+        and supplied in document-history order.
+        """
+        ...
+
+    def finalizeProvisionalTimelineOperationSegmentReplacement(
+        self,
+        mappings: Sequence[
+            tuple[
+                int,
+                Sequence[Sequence[DocumentObject]],
+                Sequence[int],
+                Sequence[int],
+                int,
+            ]
+        ],
+        /,
+    ) -> None:
+        """
+        Atomically finalize an exact many-to-many staged segment replacement.
+
+        Every mapping tuple is:
+        ``(staged_segment_index, ordered_new_blocks,
+        state_source_indices, consumer_replacement_indices,
+        active_root_count)``.
+
+        New blocks are canonical resource-first/root-last sequences.
+        ``state_source_indices`` parallels their flattened members and uses an
+        old flattened member index or ``-1`` for accepted live state.
+        ``consumer_replacement_indices`` parallels old flattened members and
+        names the flattened new target already used by every retained direct
+        consumer; ``-1`` is allowed only when no retained consumer existed.
+        ``active_root_count`` is ``-1`` for wholly active/future segments and
+        otherwise explicitly states the new active-root boundary.
+        """
+        ...
+
+    def stageTimelineOperationResourceReconciliation(
+        self,
+        owner: DocumentObject,
+        old_resource_roots: Sequence[DocumentObject],
+        /,
+    ) -> None:
+        """
+        Stage one owner's complete pre-existing resource graph.
+
+        ``owner`` must be one pre-existing tracked semantic root.
+        ``old_resource_roots`` lists disjoint canonical subtree roots, in
+        history order, whose recursive expansion covers every resource owned
+        by ``owner``. Staging is read-only and requires one caller-owned
+        transaction.
+        """
+        ...
+
+    def finalizeProvisionalTimelineOperationResourceReconciliation(
+        self,
+        owner: DocumentObject,
+        ordered_final_resources: Sequence[DocumentObject],
+        state_source_indices: Sequence[int],
+        consumer_replacement_indices: Sequence[int],
+        /,
+    ) -> None:
+        """
+        Atomically reconcile one surviving owner's complete resource graph.
+
+        ``ordered_final_resources`` is the exact final canonical nested
+        resource-first/owner-last graph before ``owner``. Every member is
+        either the same staged old identity or an exact current-transaction
+        provisional identity. ``state_source_indices`` is parallel to the
+        final graph and uses a staged old-resource index or ``-1`` for
+        accepted live state. ``consumer_replacement_indices`` is parallel to
+        the staged old graph and names the final-resource index already used
+        by each old identity's retained consumers; ``-1`` is valid only when
+        no retained consumer existed. Omitted old identities become internal,
+        owner-null resources which the caller may safely delete afterward.
+        """
+        ...
+
+    def semanticTimelineCopyClosure(
+        self,
+        objects: Sequence[DocumentObject],
+        /,
+    ) -> tuple[DocumentObject, ...]:
+        """
+        Return complete tracked semantic blocks in document history order.
+
+        Every input must be a live object in this document and already belong
+        to its native timeline. Selected resources resolve to their visible
+        operation; recursively owned resources and declared replacement-input
+        blocks are included. This method is read-only.
+        """
+        ...

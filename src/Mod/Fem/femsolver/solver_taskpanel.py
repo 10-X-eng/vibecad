@@ -35,13 +35,17 @@ import FreeCADGui as Gui
 
 import femsolver.report
 import femsolver.run
+from femtaskpanels import base_femtaskpanel
 
 _UPDATE_INTERVAL = 50
 _REPORT_TITLE = "Run Report"
 _REPORT_ERR = "Failed to run. Please try again after all of the following errors are resolved."
 
 
-class ControlTaskPanel(QtCore.QObject):
+class ControlTaskPanel(
+    base_femtaskpanel._BaseTaskPanel,
+    QtCore.QObject,
+):
 
     machineChanged = QtCore.Signal(object)
     machineStarted = QtCore.Signal(object)
@@ -52,7 +56,11 @@ class ControlTaskPanel(QtCore.QObject):
     machineStateChanged = QtCore.Signal(float)
 
     def __init__(self, machine):
-        super().__init__()
+        QtCore.QObject.__init__(self)
+        base_femtaskpanel._BaseTaskPanel.__init__(
+            self,
+            machine.solver,
+        )
         self.form = ControlWidget()
         self._machine = None
 
@@ -151,7 +159,7 @@ class ControlTaskPanel(QtCore.QObject):
         return QtGui.QDialogButtonBox.Close
 
     def reject(self):
-        Gui.ActiveDocument.resetEdit()
+        return base_femtaskpanel._BaseTaskPanel.reject(self)
 
     def _connectMachine(self, machine):
         self._disconnectMachine()
@@ -163,11 +171,13 @@ class ControlTaskPanel(QtCore.QObject):
 
     def _disconnectMachine(self):
         if self.machine is not None:
-            self.machine.signalStatus.remove(self._statusProxy)
-            self.machine.signalStatusCleared.add(self._statusClearedProxy)
-            self.machine.signalStarted.remove(self._startedProxy)
-            self.machine.signalStopped.remove(self._stoppedProxy)
-            self.machine.signalState.remove(self._stateProxy)
+            self.machine.signalStatus.discard(self._statusProxy)
+            self.machine.signalStatusCleared.discard(
+                self._statusClearedProxy
+            )
+            self.machine.signalStarted.discard(self._startedProxy)
+            self.machine.signalStopped.discard(self._stoppedProxy)
+            self.machine.signalState.discard(self._stateProxy)
 
     def _startedProxy(self):
         self.machineStarted.emit(self.machine)

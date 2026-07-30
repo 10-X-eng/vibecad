@@ -26,6 +26,7 @@
 #include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
 
 #include "TaskDlgCreateNodeSet.h"
@@ -66,20 +67,20 @@ void TaskDlgCreateNodeSet::open()
 bool TaskDlgCreateNodeSet::accept()
 {
     try {
+        App::Document* document = FemSetNodesObject->getDocument();
         FemSetNodesObject->Nodes.setValues(param->tempSet);
         FemSetNodesObject->recomputeFeature();
-        // Gui::Document* doc = Gui::Application::Instance->activeDocument();
-        // if(doc)
-        //     doc->resetEdit();
         param->MeshViewProvider->resetHighlightNodes();
         FemSetNodesObject->Label.setValue(name->name);
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
-        FemSetNodesObject->getDocument()->commitTransaction();
+        // Leave the editor on its owning document. The common task boundary
+        // commits the exact transaction only after editor teardown succeeds.
+        Gui::cmdGuiDocument(document, "resetEdit()");
 
         return true;
     }
     catch (const Base::Exception& e) {
-        FemSetNodesObject->getDocument()->abortTransaction();
+        // Keep the transaction and panel alive so the input can be corrected.
+        // Cancel remains the only path that rolls the provisional edit back.
         Base::Console().warning("TaskDlgCreateNodeSet::accept(): %s\n", e.what());
     }
 
@@ -88,13 +89,12 @@ bool TaskDlgCreateNodeSet::accept()
 
 bool TaskDlgCreateNodeSet::reject()
 {
-    FemSetNodesObject->execute();
-    // Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    // if(doc)
-    //     doc->resetEdit();
+    App::Document* document = FemSetNodesObject->getDocument();
     param->MeshViewProvider->resetHighlightNodes();
-    FemSetNodesObject->getDocument()->abortTransaction();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
+    // TaskView has already marked this exact edit transaction for rollback.
+    // Resetting the captured document tears down the panel before rollback
+    // can delete a newly-created set object.
+    Gui::cmdGuiDocument(document, "resetEdit()");
 
     return true;
 }

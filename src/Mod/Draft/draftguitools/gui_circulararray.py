@@ -81,8 +81,11 @@ class CircularArray(gui_base.GuiCommandBase):
         # of the interface, to be able to call a function from within it.
         self.ui.source_command = self
         Gui.Snapper.setPointConstraintProvider(self.ui)
-        task = Gui.Control.showDialog(self.ui)
-        task.setDocumentName(Gui.ActiveDocument.Document.Name)
+        task = Gui.Control.showDialog(
+            self.ui,
+            Gui.getDocument(self.doc.Name),
+        )
+        task.setDocumentName(self.doc.Name)
         task.setAutoCloseOnDeletedDocument(True)
 
     def move(self, event_cb):
@@ -94,7 +97,7 @@ class CircularArray(gui_base.GuiCommandBase):
         event = event_cb.getEvent()
         mousepos = event.getPosition().getValue()
         ctrl = event.wasCtrlDown()
-        self.point = Gui.Snapper.snap(mousepos, active=ctrl)
+        self.point = Gui.Snapper.snap(mousepos, active=ctrl, view=self.view)
         if self.ui:
             self.ui.display_point(self.point)
 
@@ -133,8 +136,7 @@ class CircularArray(gui_base.GuiCommandBase):
         self.callback_move = None
         self.callback_click = None
         Gui.Snapper.clearPointConstraintProvider(self.ui)
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        self.close_task_dialog()
         self.finish()
 
 

@@ -23,3 +23,8 @@
 #**************************************************************************
 
 from materialtests.TestMaterialDocument import DocumentTestCases
+from materialtests.TestMaterialGuiTimeline import MaterialGuiTimelineTest
+from materialtests.TestMaterialTrackingSource import MaterialTrackingSourceTest
+
+True if MaterialGuiTimelineTest else False
+True if MaterialTrackingSourceTest else False

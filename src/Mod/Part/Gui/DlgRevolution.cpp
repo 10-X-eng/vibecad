@@ -39,6 +39,8 @@
 #include <App/DocumentObject.h>
 #include <App/Link.h>
 #include <App/Part.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -52,10 +54,61 @@
 #include <Mod/Part/App/Part2DObject.h>
 
 #include "DlgRevolution.h"
+#include "ModelingSelection.h"
 #include "ui_DlgRevolution.h"
 
 
 using namespace PartGui;
+
+namespace
+{
+constexpr int sourceNameRole = Qt::UserRole;
+constexpr int sourceIdRole = Qt::UserRole + 1;
+constexpr int sourceAddressRole = Qt::UserRole + 2;
+
+App::Document* resolveRetainedTaskDocument(
+    const std::string& name,
+    App::Document* address,
+    const std::string& uid
+) noexcept
+{
+    if (name.empty() || !address || uid.empty()) {
+        return nullptr;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(name.c_str());
+        return document == address && document->Uid.getValueStr() == uid ? document : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+App::DocumentObject* resolveRetainedTaskSource(
+    App::Document& document,
+    const QTreeWidgetItem& item
+) noexcept
+{
+    try {
+        const auto name = item.data(0, sourceNameRole).toString().toLatin1();
+        const long id = item.data(0, sourceIdRole).toLongLong();
+        const auto address = reinterpret_cast<App::DocumentObject*>(
+            static_cast<quintptr>(item.data(0, sourceAddressRole).toULongLong())
+        );
+        auto* object = id >= 0 ? document.getObjectByID(id) : nullptr;
+        return object && object == address && object->getID() == id
+                && document.containsObject(object) && object->getNameInDocument()
+                && name == object->getNameInDocument()
+                && document.getObject(name.constData()) == object
+                && PartGui::isModelingObjectActive(object)
+            ? object
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+}
 
 class DlgRevolution::EdgeSelection: public Gui::SelectionFilterGate
 {
@@ -133,9 +186,13 @@ DlgRevolution::DlgRevolution(QWidget* parent, Qt::WindowFlags fl)
     findShapes();
 
     Gui::ItemViewSelection sel(ui->treeWidget);
-    sel.applyFrom(Gui::Selection().getObjectsOfType(Part::Feature::getClassTypeId()));
-    sel.applyFrom(Gui::Selection().getObjectsOfType(App::Link::getClassTypeId()));
-    sel.applyFrom(Gui::Selection().getObjectsOfType(App::Part::getClassTypeId()));
+    auto modelingSelection =
+        PartGui::getModelingSelection(document.c_str());
+    std::vector<App::DocumentObject*> selectedObjects;
+    for (auto& selected : modelingSelection) {
+        selectedObjects.push_back(selected.getObject());
+    }
+    sel.applyFrom(selectedObjects);
 
     connect(ui->txtAxisLink, &QLineEdit::textChanged, this, &DlgRevolution::onAxisLinkTextChanged);
 
@@ -194,11 +251,19 @@ void DlgRevolution::getAxisLink(App::PropertyLinkSub& lnk) const
     }
     else {
         QStringList parts = text.split(QChar::fromLatin1(':'));
-        App::DocumentObject* obj = App::GetApplication().getActiveDocument()->getObject(
-            parts[0].toLatin1()
-        );
+        auto* doc = App::GetApplication().getDocument(document.c_str());
+        if (!doc) {
+            throw Base::RuntimeError("Document lost");
+        }
+        App::DocumentObject* obj = doc->getObject(parts[0].toLatin1());
         if (!obj) {
             throw Base::ValueError(tr("Object not found: %1").arg(parts[0]).toUtf8().constData());
+        }
+        obj = PartGui::resolveModelingObject(obj);
+        if (!obj) {
+            throw Base::ValueError(
+                tr("Selected Body has no Tip: %1").arg(parts[0]).toUtf8().constData()
+            );
         }
         lnk.setValue(obj);
         if (parts.size() == 1) {
@@ -262,16 +327,20 @@ void DlgRevolution::setAxisLink(const char* objname, const char* subname)
 std::vector<App::DocumentObject*> DlgRevolution::getShapesToRevolve() const
 {
     QList<QTreeWidgetItem*> items = ui->treeWidget->selectedItems();
-    App::Document* doc = App::GetApplication().getActiveDocument();
+    App::Document* doc = resolveRetainedTaskDocument(document, documentAddress, documentUid);
     if (!doc) {
-        throw Base::RuntimeError("Document lost");
+        throw Base::RuntimeError(
+            "The document used to start this revolution task is no longer available"
+        );
     }
 
     std::vector<App::DocumentObject*> objects;
     for (auto item : items) {
-        App::DocumentObject* obj = doc->getObject(item->data(0, Qt::UserRole).toString().toLatin1());
+        App::DocumentObject* obj = item ? resolveRetainedTaskSource(*doc, *item) : nullptr;
         if (!obj) {
-            throw Base::RuntimeError("Object not found");
+            throw Base::RuntimeError(
+                "Selected revolution source is no longer the active object used to start this task"
+            );
         }
         objects.push_back(obj);
     }
@@ -379,9 +448,14 @@ void DlgRevolution::findShapes()
     if (!activeDoc) {
         return;
     }
+    document = activeDoc->getName();
+    documentAddress = activeDoc;
+    documentUid = activeDoc->Uid.getValueStr();
     Gui::Document* activeGui = Gui::Application::Instance->getDocument(activeDoc);
 
-    std::vector<App::DocumentObject*> objs = activeDoc->getObjectsOfType<App::DocumentObject>();
+    const auto objs = PartGui::resolveModelingObjects(
+        activeDoc->getObjectsOfType<App::DocumentObject>()
+    );
 
     for (auto obj : objs) {
         Part::TopoShape topoShape = Part::Feature::getTopoShape(
@@ -408,7 +482,13 @@ void DlgRevolution::findShapes()
         // So allowed are: vertex, edge, wire, face, shell and compound
         QTreeWidgetItem* item = new QTreeWidgetItem(ui->treeWidget);
         item->setText(0, QString::fromUtf8(obj->Label.getValue()));
-        item->setData(0, Qt::UserRole, QString::fromLatin1(obj->getNameInDocument()));
+        item->setData(0, sourceNameRole, QString::fromLatin1(obj->getNameInDocument()));
+        item->setData(0, sourceIdRole, QVariant::fromValue<qlonglong>(obj->getID()));
+        item->setData(
+            0,
+            sourceAddressRole,
+            QVariant::fromValue<qulonglong>(reinterpret_cast<quintptr>(obj))
+        );
         Gui::ViewProvider* vp = activeGui->getViewProvider(obj);
         if (vp) {
             item->setIcon(0, vp->getIcon());
@@ -418,16 +498,35 @@ void DlgRevolution::findShapes()
 
 void DlgRevolution::accept()
 {
+    appliedResults.clear();
     if (!this->validate()) {
         return;
     }
+
     Gui::WaitCursor wc;
-    App::Document* activeDoc = App::GetApplication().getActiveDocument();
-    activeDoc->openTransaction("Revolve");
+    App::Document* activeDoc =
+        resolveRetainedTaskDocument(document, documentAddress, documentUid);
+    if (!activeDoc) {
+        QMessageBox::critical(
+            this,
+            windowTitle(),
+            tr("The document used to start this revolution task is no longer available.")
+        );
+        return;
+    }
 
     try {
-        QString shape, type, name, solid;
         QList<QTreeWidgetItem*> items = ui->treeWidget->selectedItems();
+        const auto sources = getShapesToRevolve();
+        if (sources.size() != static_cast<std::size_t>(items.size())) {
+            throw Base::RuntimeError("Revolution source selection changed while applying");
+        }
+
+        PartGui::ModelingTaskAttempt attempt(*activeDoc, "Revolve");
+
+        QString name, solid;
+        std::vector<App::DocumentObject*> results;
+        results.reserve(items.size());
         if (ui->checkSolid->isChecked()) {
             solid = QStringLiteral("True");
         }
@@ -439,15 +538,16 @@ void DlgRevolution::accept()
         this->getAxisLink(axisLink);
         QString strAxisLink;
         if (axisLink.getValue()) {
-            strAxisLink = QStringLiteral("(App.ActiveDocument.%1, %2)")
-                              .arg(
-                                  QString::fromLatin1(axisLink.getValue()->getNameInDocument()),
-                                  axisLink.getSubValues().size() == 1
-                                      ? QStringLiteral("\"%1\"").arg(
-                                            QString::fromLatin1(axisLink.getSubValues()[0].c_str())
-                                        )
-                                      : QString()
-                              );
+            strAxisLink
+                = QStringLiteral("(%1, %2)")
+                      .arg(
+                          QString::fromStdString(Gui::Command::getObjectCmd(axisLink.getValue())),
+                          axisLink.getSubValues().size() == 1
+                              ? QStringLiteral("\"%1\"").arg(
+                                    QString::fromLatin1(axisLink.getSubValues()[0].c_str())
+                                )
+                              : QString()
+                      );
         }
         else {
             strAxisLink = QStringLiteral("None");
@@ -461,55 +561,81 @@ void DlgRevolution::accept()
             symmetric = QStringLiteral("False");
         }
 
-        for (auto item : items) {
-            shape = item->data(0, Qt::UserRole).toString();
-            type = QStringLiteral("Part::Revolution");
+        for (qsizetype itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
             name = QString::fromLatin1(activeDoc->getUniqueObjectName("Revolve").c_str());
+            auto* sourceObj = sources[static_cast<std::size_t>(itemIndex)];
+            auto* presentation = PartGui::resolveModelingPresentationObject(sourceObj);
+            const bool replacesPresentation = presentation && presentation->Visibility.getValue();
             Base::Vector3d axis = this->getDirection();
             Base::Vector3d pos = this->getPosition();
 
-
-            QString code = QStringLiteral(
-                               "FreeCAD.ActiveDocument.addObject(\"%1\",\"%2\")\n"
-                               "FreeCAD.ActiveDocument.%2.Source = FreeCAD.ActiveDocument.%3\n"
-                               "FreeCAD.ActiveDocument.%2.Axis = (%4,%5,%6)\n"
-                               "FreeCAD.ActiveDocument.%2.Base = (%7,%8,%9)\n"
-                               "FreeCAD.ActiveDocument.%2.Angle = %10\n"
-                               "FreeCAD.ActiveDocument.%2.Solid = %11\n"
-                               "FreeCAD.ActiveDocument.%2.AxisLink = %12\n"
-                               "FreeCAD.ActiveDocument.%2.Symmetric = %13\n"
-                               "FreeCADGui.ActiveDocument.%3.Visibility = False\n"
-            )
-                               .arg(type, name, shape)       //%1, 2, 3
-                               .arg(axis.x, 0, 'f', 15)      //%4
-                               .arg(axis.y, 0, 'f', 15)      //%5
-                               .arg(axis.z, 0, 'f', 15)      //%6
-                               .arg(pos.x, 0, 'f', 15)       //%7
-                               .arg(pos.y, 0, 'f', 15)       //%8
-                               .arg(pos.z, 0, 'f', 15)       //%9
-                               .arg(getAngle(), 0, 'f', 15)  //%10
-                               .arg(
-                                   solid,        //%11
-                                   strAxisLink,  //%12
-                                   symmetric
-                               )  //%13
-                ;
-            Gui::Command::runCommand(Gui::Command::App, code.toLatin1());
-
-            auto newObj = activeDoc->getObject(name.toStdString().c_str());
-            auto sourceObj = activeDoc->getObject(shape.toStdString().c_str());
+            const QString factory = QStringLiteral("FreeCAD.getDocument(\"%1\").addObject("
+                                                   "\"Part::Revolution\",\"%2\")")
+                                        .arg(QString::fromLatin1(document.c_str()), name);
+            auto* newObj = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::App,
+                *activeDoc,
+                factory.toUtf8(),
+                Part::Revolution::getClassTypeId()
+            );
+            const QString resultObject = QString::fromStdString(Gui::Command::getObjectCmd(newObj));
+            const QString sourceObject = QString::fromStdString(Gui::Command::getObjectCmd(sourceObj));
+            const QString code = QStringLiteral("%1.Source = %2\n"
+                                                "%1.Axis = (%3,%4,%5)\n"
+                                                "%1.Base = (%6,%7,%8)\n"
+                                                "%1.Angle = %9\n"
+                                                "%1.Solid = %10\n"
+                                                "%1.AxisLink = %11\n"
+                                                "%1.Symmetric = %12")
+                                     .arg(resultObject, sourceObject)
+                                     .arg(axis.x, 0, 'f', 15)
+                                     .arg(axis.y, 0, 'f', 15)
+                                     .arg(axis.z, 0, 'f', 15)
+                                     .arg(pos.x, 0, 'f', 15)
+                                     .arg(pos.y, 0, 'f', 15)
+                                     .arg(pos.z, 0, 'f', 15)
+                                     .arg(getAngle(), 0, 'f', 15)
+                                     .arg(solid, strAxisLink, symmetric);
+            Gui::Command::runCommand(Gui::Command::App, code.toUtf8());
+            FCMD_OBJ_HIDE(sourceObj);
+            attempt.trackCreatedObject(*newObj);
+            if (replacesPresentation) {
+                attempt.trackReplacedInputs(*newObj, {presentation});
+            }
 
             if (!sourceObj->isDerivedFrom<Part::Part2DObject>()) {
                 Gui::Command::copyVisual(newObj, "ShapeAppearance", sourceObj);
                 Gui::Command::copyVisual(newObj, "LineColor", sourceObj);
                 Gui::Command::copyVisual(newObj, "PointColor", sourceObj);
             }
+            results.push_back(newObj);
         }
 
-        activeDoc->commitTransaction();
+        if (results.empty()) {
+            throw Base::RuntimeError("No revolution result was created");
+        }
+
         activeDoc->recompute();
+        for (auto* result : results) {
+            auto resultShape = Part::Feature::getTopoShape(result, Part::ShapeOption::NoFlag);
+            if (!result->isValid()) {
+                throw Base::RuntimeError(result->getStatusString());
+            }
+            if (resultShape.isNull() || resultShape.getShape().IsNull()) {
+                throw Base::RuntimeError(std::string(result->getFullLabel()) + " produced no shape");
+            }
+            if (!resultShape.isValid()) {
+                throw Base::RuntimeError(
+                    std::string(result->getFullLabel()) + " produced an invalid shape"
+                );
+            }
+        }
+
+        appliedResults = results;
+        attempt.commit();
     }
     catch (Base::Exception& err) {
+        appliedResults.clear();
         QMessageBox::critical(
             this,
             windowTitle(),
@@ -518,6 +644,7 @@ void DlgRevolution::accept()
         return;
     }
     catch (...) {
+        appliedResults.clear();
         QMessageBox::critical(
             this,
             windowTitle(),
@@ -669,7 +796,11 @@ TaskRevolution::TaskRevolution()
 bool TaskRevolution::accept()
 {
     widget->accept();
-    return (widget->result() == QDialog::Accepted);
+    const bool accepted = widget->result() == QDialog::Accepted;
+    if (accepted) {
+        markCommandInteractionStateDurable(widget->lastAppliedResults());
+    }
+    return accepted;
 }
 
 #include "moc_DlgRevolution.cpp"

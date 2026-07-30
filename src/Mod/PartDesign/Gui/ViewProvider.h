@@ -62,6 +62,10 @@ public:
     void attach(App::DocumentObject* pcObject) override;
 
     bool doubleClicked() override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return false;
+    }
     void onChanged(const App::Property* prop) override;
 
     Gui::ViewProvider* startEditing(int ModNum) override;

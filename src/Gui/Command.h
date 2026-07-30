@@ -390,6 +390,16 @@ public:
     {
         return true;
     }
+    /**
+     * Return whether this command can be invoked at the current user-action
+     * boundary.
+     *
+     * Unlike a command's domain-specific isActive(), this also enforces the
+     * shared GUI edit and exact-transaction boundary. A nested command may
+     * continue the exact transaction opened by its outer command; an
+     * unrelated ribbon action may never adopt a caller-owned transaction.
+     */
+    bool canInvoke();
     /// Get somtile called to check the state of the command
     void testActive();
     /// Enables or disables the command
@@ -475,8 +485,21 @@ public:
     /// Open a new Undo transaction on the active document
     int openCommand(App::TransactionName name);
     int openCommand(std::string name);
+    /// Open a new Undo transaction on one explicit document.
+    int openCommand(App::Document* document, App::TransactionName name);
+    int openCommand(App::Document* document, std::string name);
     static int openActiveDocumentCommand(App::TransactionName name, int tid = App::NullTransaction);
     static int openActiveDocumentCommand(std::string name, int tid = App::NullTransaction);
+    static int openDocumentCommand(
+        App::Document* document,
+        App::TransactionName name,
+        int tid = App::NullTransaction
+    );
+    static int openDocumentCommand(
+        App::Document* document,
+        std::string name,
+        int tid = App::NullTransaction
+    );
 
     void rename(const std::string& name);
 
@@ -495,6 +518,8 @@ public:
     static bool hasPendingCommand();
     /// Updates the (active) document (propagate changes)
     static void updateActive();
+    /// Updates one explicit document without depending on active-document state.
+    static void updateDocument(const App::Document* document);
     /// Checks if the active object of the active document is valid
     static bool isActiveObjectValid();
     /// Translate command
@@ -575,6 +600,30 @@ public:
      * @sa _doCommand()
      */
     static void _runCommand(const char* file, int line, DoCmd_Type eType, const QByteArray& sCmd);
+
+    /**
+     * Run one recorded Python factory expression and return its exact object.
+     *
+     * The expression is recorded as the macro command and evaluated exactly
+     * once while retaining its Python return wrapper. The returned object is
+     * validated against the expected document and optional type without
+     * consulting active-object state or recovering a generated name.
+     *
+     * @param document Document which must own the returned live object.
+     * @param expression A Python expression returning an App::DocumentObject.
+     * @param expectedType Optional required base type; a bad type accepts any
+     * App::DocumentObject.
+     */
+#define runDocumentObjectCommand(_type, _document, _expression, ...) \
+    _runDocumentObjectCommand(__FILE__, __LINE__, _type, _document, _expression, ##__VA_ARGS__)
+    static App::DocumentObject* _runDocumentObjectCommand(
+        const char* file,
+        int line,
+        DoCmd_Type eType,
+        App::Document& document,
+        const QByteArray& expression,
+        Base::Type expectedType = {}
+    );
 
     /// import an external (or own) module only once
     static void addModule(DoCmd_Type eType, const char* sModuleName);

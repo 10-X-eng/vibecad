@@ -29,6 +29,7 @@
 #include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/Control.h>
+#include <Mod/TechDraw/App/DrawViewBalloon.h>
 
 #include "TaskBalloon.h"
 #include "ui_TaskBalloon.h"
@@ -44,12 +45,29 @@ using namespace TechDrawGui;
 TaskBalloon::TaskBalloon(QGIViewBalloon *parent, ViewProviderBalloon *balloonVP) :
     ui(new Ui_TaskBalloon)
 {
+    auto* balloon =
+        parent ? parent->getBalloonFeat() : nullptr;
+    if (!balloon || !balloonVP
+        || balloonVP->getObject() != balloon
+        || balloon->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The balloon editor requires a live balloon and its owning "
+            "transaction"
+        );
+    }
     int i = 0;
     m_parent = parent;
     m_balloonVP = balloonVP;
     m_guiDocument = balloonVP->getDocument();
     m_appDocument = parent->getBalloonFeat()->getDocument();
     m_balloonName = parent->getBalloonFeat()->getNameInDocument();
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(m_appDocument);
+    m_balloonIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewBalloon>(
+            balloon
+        );
 
     ui->setupUi(this);
 
@@ -109,116 +127,170 @@ TaskBalloon::~TaskBalloon()
 {
 }
 
+TechDraw::DrawViewBalloon*
+TaskBalloon::resolveBalloon() const
+{
+    return m_balloonIdentity.resolve();
+}
+
+ViewProviderBalloon*
+TaskBalloon::resolveViewProvider() const
+{
+    auto* balloon = resolveBalloon();
+    return balloon && m_balloonVP
+        && m_balloonVP->getObject() == balloon
+        ? m_balloonVP
+        : nullptr;
+}
+
 bool TaskBalloon::accept()
 {
-    // re issue #9626 if the balloon is deleted while the task dialog is in progress we will fail
-    // trying to access the feature object or the viewprovider.  This should be prevented by
-    // change to ViewProviderBalloon
-    // see also reject()
-    App::DocumentObject* balloonFeature = m_appDocument->getObject(m_balloonName.c_str());
-    if(balloonFeature) {
-        // an object with our name still exists in the document
-        balloonFeature->purgeTouched();
-        m_guiDocument->commitCommand();
-    } else {
-        // see comment in reject(). this may not do what we want.
-        m_guiDocument->abortCommand();
+    auto* balloon = resolveBalloon();
+    if (!balloon || !resolveViewProvider()) {
+        return false;
     }
-
-    m_guiDocument->resetEdit();
+    balloon->purgeTouched();
+    TaskInternal::updateExactDocument(
+        m_documentIdentity.resolve()
+    );
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
 
     return true;
 }
 
 bool TaskBalloon::reject()
 {
-    // re issue #9626 - if the balloon is deleted while the dialog is in progress
-    // the delete transaction is still active and ?locked? so our "abortCommand"
-    // doesn't work properly and a pending transaction is still in place.  This
-    // causes a warning message from App::AutoTransaction (??) that can't be
-    // cleared.  Even closing the document will not clear the warning.
-    // A change to ViewProviderBalloon::onDelete should prevent this from
-    // happening from the Gui.  It is possible(?) that the balloon could be
-    // deleted by a script.
-    m_guiDocument->abortCommand();
-    App::DocumentObject* balloonFeature = m_appDocument->getObject(m_balloonName.c_str());
-    if(balloonFeature) {
-        // an object with our name still exists in the document
-        balloonFeature->recomputeFeature();
-        balloonFeature->purgeTouched();
-    }
-    m_guiDocument->resetEdit();
-    Gui::Command::updateActive();
-
+    // TaskView restores the exact retained edit transaction after teardown.
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
     return true;
 }
 
 void TaskBalloon::recomputeFeature()
 {
-    App::DocumentObject* objVP = m_balloonVP->getObject();
-    assert(objVP);
-    objVP->recomputeFeature();
+    if (auto* balloon = resolveBalloon()) {
+        balloon->recomputeFeature();
+    }
 }
 
 void TaskBalloon::onTextChanged()
 {
-    m_parent->getBalloonFeat()->Text.setValue(ui->leText->text().toUtf8().constData());
+    auto* balloon = resolveBalloon();
+    if (!balloon) {
+        return;
+    }
+    balloon->Text.setValue(
+        ui->leText->text().toUtf8().constData()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onColorChanged()
 {
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
+        return;
+    }
     Base::Color ac;
     ac.setValue<QColor>(ui->textColor->color());
-    m_balloonVP->Color.setValue(ac);
+    viewProvider->Color.setValue(ac);
     recomputeFeature();
 }
 
 void TaskBalloon::onFontsizeChanged()
 {
-    m_balloonVP->Fontsize.setValue(ui->qsbFontSize->value().getValue());
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
+        return;
+    }
+    viewProvider->Fontsize.setValue(
+        ui->qsbFontSize->value().getValue()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onBubbleShapeChanged()
 {
-    m_parent->getBalloonFeat()->BubbleShape.setValue(ui->comboBubbleShape->currentIndex());
+    auto* balloon = resolveBalloon();
+    if (!balloon) {
+        return;
+    }
+    balloon->BubbleShape.setValue(
+        ui->comboBubbleShape->currentIndex()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onShapeScaleChanged()
 {
-    m_parent->getBalloonFeat()->ShapeScale.setValue(ui->qsbShapeScale->value().getValue());
+    auto* balloon = resolveBalloon();
+    if (!balloon) {
+        return;
+    }
+    balloon->ShapeScale.setValue(
+        ui->qsbShapeScale->value().getValue()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onEndSymbolChanged()
 {
-    m_parent->getBalloonFeat()->EndType.setValue(ui->comboEndSymbol->currentIndex());
+    auto* balloon = resolveBalloon();
+    if (!balloon) {
+        return;
+    }
+    balloon->EndType.setValue(
+        ui->comboEndSymbol->currentIndex()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onEndSymbolScaleChanged()
 {
-    m_parent->getBalloonFeat()->EndTypeScale.setValue(ui->qsbSymbolScale->value().getValue());
+    auto* balloon = resolveBalloon();
+    if (!balloon) {
+        return;
+    }
+    balloon->EndTypeScale.setValue(
+        ui->qsbSymbolScale->value().getValue()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onLineVisibleChanged(bool isVisible)
 {
-    m_balloonVP->LineVisible.setValue(isVisible ? 1 : 0);
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
+        return;
+    }
+    viewProvider->LineVisible.setValue(isVisible ? 1 : 0);
     recomputeFeature();
 }
 
 void TaskBalloon::onLineWidthChanged()
 {
-    m_balloonVP->LineWidth.setValue(ui->qsbLineWidth->value().getValue());
+    auto* viewProvider = resolveViewProvider();
+    if (!viewProvider) {
+        return;
+    }
+    viewProvider->LineWidth.setValue(
+        ui->qsbLineWidth->value().getValue()
+    );
     recomputeFeature();
 }
 
 void TaskBalloon::onKinkLengthChanged()
 {
-    m_parent->getBalloonFeat()->KinkLength.setValue(ui->qsbKinkLength->value().getValue());
+    auto* balloon = resolveBalloon();
+    if (!balloon) {
+        return;
+    }
+    balloon->KinkLength.setValue(
+        ui->qsbKinkLength->value().getValue()
+    );
     recomputeFeature();
 }
 
@@ -255,14 +327,12 @@ void TaskDlgBalloon::clicked(int i)
 
 bool TaskDlgBalloon::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgBalloon::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskBalloon.cpp>

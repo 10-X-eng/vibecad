@@ -84,6 +84,7 @@ void DlgPageChooser::fillList(std::vector<std::string> labels, std::vector<std::
         auto qText = QStringLiteral("%1 (%2)").arg(qLabel, qName);
         auto* item = new QListWidgetItem(qText, ui->lwPages);
         item->setData(Qt::UserRole, qName);
+        item->setData(Qt::UserRole + 1, static_cast<int>(i));
     }
 }
 
@@ -95,6 +96,15 @@ std::string DlgPageChooser::getSelection() const
         return item->data(Qt::UserRole).toByteArray().constData();
     }
     return {};
+}
+
+int DlgPageChooser::getSelectionIndex() const
+{
+    const QList<QListWidgetItem*> selections = ui->lwPages->selectedItems();
+    if (selections.empty()) {
+        return -1;
+    }
+    return selections.front()->data(Qt::UserRole + 1).toInt();
 }
 
 

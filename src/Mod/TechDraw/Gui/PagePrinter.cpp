@@ -21,6 +21,8 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+
 #include <QApplication>
 #include <QMessageBox>
 #include <QPageLayout>
@@ -37,6 +39,7 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Stream.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
@@ -77,7 +80,7 @@ PaperAttributes PagePrinter::getPaperAttributes(TechDraw::DrawPage* dPage)
     }
     double width = A4Widthmm;
     double height = A4Heightmm;
-    auto pageTemplate(dynamic_cast<TechDraw::DrawTemplate*>(dPage->Template.getValue()));
+    auto* pageTemplate = dPage->getActiveTemplate();
     if (pageTemplate) {
         width = pageTemplate->Width.getValue();
         height = pageTemplate->Height.getValue();
@@ -88,7 +91,9 @@ PaperAttributes PagePrinter::getPaperAttributes(TechDraw::DrawPage* dPage)
         QPageSize::id(QSizeF(std::min(width, height), std::max(width, height)),
                       QPageSize::Millimeter, QPageSize::FuzzyOrientationMatch);
 
-    auto orientation = static_cast<QPageLayout::Orientation>(dPage->getOrientation());
+    auto orientation = pageTemplate
+        ? static_cast<QPageLayout::Orientation>(dPage->getOrientation())
+        : QPageLayout::Portrait;
     if (paperSizeId == QPageSize::Ledger) {
         // Ledger size paper orientation is reversed inside Qt
         orientation = (QPageLayout::Orientation)(1 - orientation);
@@ -137,6 +142,12 @@ void PagePrinter::printAll(QPrinter* printer, App::Document* doc)
     QPageLayout pageLayout = printer->pageLayout();
     std::vector<App::DocumentObject*> docObjs =
         doc->getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
+    std::erase_if(docObjs, [](const App::DocumentObject* page) {
+        return !DrawUtil::isActiveInDocumentTimeline(page);
+    });
+    if (docObjs.empty()) {
+        return;
+    }
     auto firstPage = docObjs.front();
 
     auto dPage = static_cast<TechDraw::DrawPage*>(firstPage);
@@ -210,6 +221,12 @@ void PagePrinter::printAllPdf(QPrinter* printer, App::Document* doc)
     // not be correct.
     std::vector<App::DocumentObject*> docObjs =
         doc->getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
+    std::erase_if(docObjs, [](const App::DocumentObject* page) {
+        return !DrawUtil::isActiveInDocumentTimeline(page);
+    });
+    if (docObjs.empty()) {
+        return;
+    }
     auto firstPage = docObjs.front();
 
     auto dPage = static_cast<TechDraw::DrawPage*>(firstPage);
@@ -298,6 +315,11 @@ void PagePrinter::printBannerPage(QPrinter* printer, QPainter& painter, QPageLay
 void PagePrinter::renderPage(ViewProviderPage* vpp, QPainter& painter, QRectF& sourceRect,
                              QRect& targetRect)
 {
+    if (!vpp || !DrawUtil::isActiveInDocumentTimeline(vpp->getDrawPage())) {
+        return;
+    }
+    vpp->getQGSPage()->fixOrphans(true);
+
     // Clear selection to avoid it being rendered to the file
     vpp->getQGSPage()->clearSelection();
     vpp->setTemplateMarkers(false);
@@ -322,6 +344,10 @@ void PagePrinter::renderPage(ViewProviderPage* vpp, QPainter& painter, QRectF& s
 /// print the Page associated with the view provider
 void PagePrinter::print(ViewProviderPage* vpPage, QPrinter* printer, bool isPreview)
 {
+    if (!vpPage || !printer
+        || !DrawUtil::isActiveInDocumentTimeline(vpPage->getDrawPage())) {
+        return;
+    }
     QPageLayout pageLayout = printer->pageLayout();
 
     TechDraw::DrawPage* dPage = vpPage->getDrawPage();
@@ -353,7 +379,8 @@ void PagePrinter::print(ViewProviderPage* vpPage, QPrinter* printer, bool isPrev
 /// print the Page associated with the ViewProvider as a Pdf file
 void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
 {
-    if (file.empty()) {
+    if (!vpPage || file.empty()
+        || !DrawUtil::isActiveInDocumentTimeline(vpPage->getDrawPage())) {
         return;
     }
 
@@ -381,8 +408,9 @@ void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
     // set up the page layout by modifying the default
     QPageLayout pageLayout = pdfWriter.pageLayout();
     auto dPage = vpPage->getDrawPage();
-    double width = dPage->getPageWidth();
-    double height = dPage->getPageHeight();
+    const auto paper = getPaperAttributes(dPage);
+    double width = paper.pageWidth();
+    double height = paper.pageHeight();
     makePageLayout(dPage, pageLayout, width, height);
     pdfWriter.setPageLayout(pageLayout);
 
@@ -412,6 +440,9 @@ void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
 //! save the page associated with the view provider as an svg file
 void PagePrinter::saveSVG(ViewProviderPage* vpPage, const std::string& file)
 {
+    if (!vpPage || !DrawUtil::isActiveInDocumentTimeline(vpPage->getDrawPage())) {
+        return;
+    }
     if (file.empty()) {
         Base::Console().warning("PagePrinter - no file specified\n");
         return;
@@ -421,6 +452,7 @@ void PagePrinter::saveSVG(ViewProviderPage* vpPage, const std::string& file)
     QString filename = QString::fromStdString(filespec);
 
     auto ourScene = vpPage->getQGSPage();
+    ourScene->fixOrphans(true);
     ourScene->setExportingSvg(true);
     auto ourDoc = vpPage->getDocument();
     auto docModifiedState = ourDoc->isModified();
@@ -436,18 +468,37 @@ void PagePrinter::saveSVG(ViewProviderPage* vpPage, const std::string& file)
 // Note: the dxf exporter does not modify the page, so we do not need to reset the modified flag
 void PagePrinter::saveDXF(ViewProviderPage* vpPage, const std::string& inFileName)
 {
+    if (!vpPage || inFileName.empty()) {
+        Base::Console().warning(
+            "PagePrinter - no drawing page or DXF file specified\n"
+        );
+        return;
+    }
     TechDraw::DrawPage* page = vpPage->getDrawPage();
-    std::string PageName = page->getNameInDocument();
+    Gui::Document* guiDocument = vpPage->getDocument();
+    App::Document* document = guiDocument
+        ? guiDocument->getDocument()
+        : nullptr;
+    if (!page || !document || page->getDocument() != document
+        || !DrawUtil::isActiveInDocumentTimeline(page)) {
+        Base::Console().warning(
+            "PagePrinter - drawing page is no longer available\n"
+        );
+        return;
+    }
 
     auto filespec = Base::Tools::escapeEncodeFilename(inFileName);
     filespec = DU::cleanFilespecBackslash(filespec);
-    vpPage->getDocument()->openCommand(QT_TRANSLATE_NOOP("Command", "Save page to DXF"));
+    const std::string pageCommand = Gui::Command::getObjectCmd(page);
+    const std::string fileCommand =
+        Base::InterpreterSingleton::strToPython(filespec);
     Gui::Command::doCommand(Gui::Command::Doc, "import TechDraw");
-    Gui::Command::doCommand(Gui::Command::Doc,
-                            "TechDraw.writeDXFPage(App.activeDocument().%s, u\"%s\")",
-                            PageName.c_str(),
-                            filespec.c_str());
-    vpPage->getDocument()->commitCommand();
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "TechDraw.writeDXFPage(%s, '%s')",
+        pageCommand.c_str(),
+        fileCommand.c_str()
+    );
 }
 
 // this one is somewhat superfluous (just a redirect).
@@ -465,4 +516,3 @@ PaperAttributes::PaperAttributes() :
 {
     // set default values to A4 Landscape
 }
-

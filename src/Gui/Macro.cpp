@@ -22,6 +22,10 @@
 
 
 #include <cassert>
+#include <map>
+#include <memory>
+#include <unordered_map>
+
 #include <QFile>
 #include <QTextStream>
 
@@ -219,6 +223,179 @@ MacroManager::~MacroManager()
 
 std::stack<std::function<void(MacroManager::LineType, const char*)>> MacroManager::redirectFuncs;
 
+namespace
+{
+using RedirectFunction =
+    std::function<void(MacroManager::LineType, const char*)>;
+
+struct RedirectRegistration
+{
+    std::size_t depth {0};
+    bool active {true};
+    RedirectFunction callback;
+    RedirectFunction previous;
+};
+
+using MacroRedirector = MacroManager::MacroRedirector;
+
+std::unordered_map<const MacroRedirector*, std::shared_ptr<RedirectRegistration>>&
+redirectsByOwner()
+{
+    // Redirectors can outlive MacroManager during process teardown. Keep the
+    // ownership index available for the same process lifetime as redirectFuncs.
+    static auto* registrations = new std::unordered_map<
+        const MacroRedirector*,
+        std::shared_ptr<RedirectRegistration>>;
+    return *registrations;
+}
+
+std::map<std::size_t, std::shared_ptr<RedirectRegistration>>&
+redirectsByDepth()
+{
+    static auto* registrations =
+        new std::map<std::size_t, std::shared_ptr<RedirectRegistration>>;
+    return *registrations;
+}
+
+void removeInactiveTopRedirects(
+    std::stack<RedirectFunction>& redirects
+)
+{
+    auto& byDepth = redirectsByDepth();
+    while (!redirects.empty()) {
+        const auto found = byDepth.find(redirects.size());
+        if (found == byDepth.end() || found->second->active) {
+            break;
+        }
+        redirects.pop();
+        byDepth.erase(found);
+    }
+}
+
+void registerRedirect(
+    const MacroRedirector* owner,
+    const RedirectFunction& callback,
+    std::stack<RedirectFunction>& redirects
+)
+{
+    removeInactiveTopRedirects(redirects);
+
+    auto registration = std::make_shared<RedirectRegistration>();
+    registration->depth = redirects.size() + 1;
+    registration->callback = callback;
+    registration->previous =
+        redirects.empty() ? RedirectFunction {} : redirects.top();
+
+    // The wrapper owns its registration. If an outer redirector is destroyed
+    // before an inner one, the wrapper remains safe and delegates to the
+    // callback which preceded it instead of dereferencing the retired owner.
+    redirects.push(
+        [registration](MacroManager::LineType type, const char* line) {
+            const RedirectFunction callback = registration->active
+                ? registration->callback
+                : registration->previous;
+            if (callback) {
+                callback(type, line);
+            }
+        }
+    );
+    redirectsByDepth()[registration->depth] = registration;
+    redirectsByOwner()[owner] = std::move(registration);
+}
+
+void unregisterRedirect(
+    const MacroRedirector* owner,
+    std::stack<RedirectFunction>& redirects
+)
+{
+    auto& byOwner = redirectsByOwner();
+    const auto found = byOwner.find(owner);
+    if (found == byOwner.end()) {
+        return;
+    }
+    found->second->active = false;
+    byOwner.erase(found);
+    removeInactiveTopRedirects(redirects);
+}
+
+RedirectFunction registeredCallback(const MacroRedirector* owner)
+{
+    const auto& byOwner = redirectsByOwner();
+    const auto found = byOwner.find(owner);
+    return found == byOwner.end()
+        ? RedirectFunction {}
+        : found->second->callback;
+}
+
+void transferRedirect(
+    const MacroRedirector* source,
+    const MacroRedirector* destination
+)
+{
+    auto& byOwner = redirectsByOwner();
+    const auto found = byOwner.find(source);
+    if (found == byOwner.end()) {
+        return;
+    }
+    auto registration = std::move(found->second);
+    byOwner.erase(found);
+    byOwner[destination] = std::move(registration);
+}
+}  // namespace
+
+MacroManager::MacroRedirector::MacroRedirector(
+    const std::function<void(LineType, const char*)>& func
+)
+{
+    registerRedirect(this, func, MacroManager::redirectFuncs);
+}
+
+MacroManager::MacroRedirector::MacroRedirector(
+    const MacroRedirector& other
+)
+{
+    registerRedirect(
+        this,
+        registeredCallback(&other),
+        MacroManager::redirectFuncs
+    );
+}
+
+MacroManager::MacroRedirector::MacroRedirector(
+    MacroRedirector&& other
+) noexcept
+{
+    transferRedirect(&other, this);
+}
+
+MacroManager::MacroRedirector&
+MacroManager::MacroRedirector::operator=(const MacroRedirector& other)
+{
+    if (this == &other) {
+        return *this;
+    }
+    const RedirectFunction callback = registeredCallback(&other);
+    unregisterRedirect(this, MacroManager::redirectFuncs);
+    registerRedirect(this, callback, MacroManager::redirectFuncs);
+    return *this;
+}
+
+MacroManager::MacroRedirector&
+MacroManager::MacroRedirector::operator=(MacroRedirector&& other) noexcept
+{
+    if (this == &other) {
+        return *this;
+    }
+    unregisterRedirect(this, MacroManager::redirectFuncs);
+    transferRedirect(&other, this);
+    return *this;
+}
+
+MacroManager::MacroRedirector::~MacroRedirector()
+{
+    unregisterRedirect(this, MacroManager::redirectFuncs);
+}
+
 void MacroManager::OnChange(Base::Subject<const char*>& rCaller, const char* sReason)
 {
     (void)rCaller;
@@ -270,6 +447,9 @@ void MacroManager::addLine(LineType Type, const char* sLine)
 {
     if (!sLine) {
         return;
+    }
+    if (!MacroOutputOption::isComment(Type)) {
+        ++submittedCommandLines;
     }
 
     std::function<void(LineType, const char*)> redirectFunc = redirectFuncs.empty()

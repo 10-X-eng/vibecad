@@ -23,9 +23,12 @@
 
 #include <BRep_Builder.hxx>
 #include <Precision.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS_Compound.hxx>
 
+#include <string_view>
 
+#include <App/Document.h>
 #include <Base/Console.h>  // for FC_LOG_LEVEL_INIT
 #include <Base/Placement.h>
 
@@ -46,7 +49,34 @@ FeatureArea::FeatureArea()
     : myInited(false)
 {
     ADD_PROPERTY(Sources, (nullptr));
-    ADD_PROPERTY(WorkPlane, (TopoDS_Shape()));
+    ADD_PROPERTY_TYPE(
+        WorkPlane,
+        (TopoDS_Shape()),
+        "Compatibility",
+        App::Prop_Hidden,
+        "Cached workplane shape retained for legacy callers"
+    );
+    ADD_PROPERTY_TYPE(
+        WorkPlaneSourceEnabled,
+        (false),
+        "Area",
+        App::Prop_Hidden,
+        "Use the exact linked model subelement as the authoritative workplane"
+    );
+    ADD_PROPERTY_TYPE(
+        WorkPlaneSource,
+        (nullptr),
+        "Area",
+        App::Prop_None,
+        "Exact model subelement defining the parametric workplane"
+    );
+    ADD_PROPERTY_TYPE(
+        WorkPlaneSourceCollection,
+        (""),
+        "Area",
+        App::Prop_Hidden,
+        "Optional containing subshape collection used by the workplane source"
+    );
 
     PARAM_PROP_ADD("Area", AREA_PARAMS_OPCODE);
     PARAM_PROP_ADD("Area", AREA_PARAMS_BASE);
@@ -77,6 +107,12 @@ App::DocumentObjectExecReturn* FeatureArea::execute()
     myInited = true;
 
     Base::TimeTracker tracker("FeatureArea::execute");
+    // Derived geometry must never outlive an invalid authoritative input.
+    // WorkPlane remains a legacy compatibility/cache property, but stale
+    // linked input cannot leave its previous result looking usable.
+    Shape.setValue(TopoDS_Shape());
+    myShapes.clear();
+    myArea.clean(true);
 
     std::vector<App::DocumentObject*> links = Sources.getValues();
     if (links.empty()) {
@@ -84,10 +120,8 @@ App::DocumentObjectExecReturn* FeatureArea::execute()
     }
 
     for (std::vector<App::DocumentObject*>::iterator it = links.begin(); it != links.end(); ++it) {
-        if (!(*it && (*it)->isDerivedFrom<Part::Feature>())) {
-            return new App::DocumentObjectExecReturn(
-                "Linked object is not a Part object (has no Shape)."
-            );
+        if (!(*it && (*it)->isDerivedFrom<Part::Feature>()) || !(*it)->isValid()) {
+            return new App::DocumentObjectExecReturn("Linked object is not a valid Part object.");
         }
         TopoDS_Shape shape = static_cast<Part::Feature*>(*it)->Shape.getShape().getShape();
         if (shape.IsNull()) {
@@ -101,10 +135,69 @@ App::DocumentObjectExecReturn* FeatureArea::execute()
     params.PARAM_FNAME(_param) = static_cast<PARAM_TYPE(_param)>(PARAM_FNAME(_param).getValue());
     PARAM_FOREACH(AREA_PROP_GET, AREA_PARAMS_CONF)
 
-    myArea.clean(true);
     myArea.setParams(params);
 
     TopoDS_Shape workPlane = WorkPlane.getShape().getShape();
+    if (WorkPlaneSourceEnabled.getValue()) {
+        auto* sourceObject = WorkPlaneSource.getValue();
+        if (!sourceObject) {
+            return new App::DocumentObjectExecReturn(
+                "Authoritative linked workplane source is missing"
+            );
+        }
+        auto* document = getDocument();
+        auto* source = freecad_cast<Part::Feature*>(sourceObject);
+        if (!document || !source || !source->isValid() || source->getDocument() != document
+            || !document->containsObject(source)) {
+            return new App::DocumentObjectExecReturn(
+                "Linked workplane source is not a live Part feature"
+            );
+        }
+        const std::string_view sourceCollection(WorkPlaneSourceCollection.getValue());
+        if (!sourceCollection.empty() && sourceCollection != "Wires") {
+            return new App::DocumentObjectExecReturn("Unsupported workplane source collection");
+        }
+        Part::TopoShape sourceShape = source->Shape.getShape();
+        const auto& subelements = WorkPlaneSource.getSubValues();
+        if (subelements.size() > 1) {
+            return new App::DocumentObjectExecReturn(
+                "Workplane source must contain at most one subelement"
+            );
+        }
+        if (!subelements.empty() && !subelements.front().empty()) {
+            const TopoDS_Shape selected = sourceShape.getSubShape(subelements.front().c_str());
+            sourceShape = Part::TopoShape(selected);
+            if (sourceCollection == "Wires" && !selected.IsNull()) {
+                for (TopExp_Explorer wire(source->Shape.getShape().getShape(), TopAbs_WIRE);
+                     wire.More();
+                     wire.Next()) {
+                    bool containsSelected = false;
+                    for (TopExp_Explorer edge(wire.Current(), TopAbs_EDGE); edge.More(); edge.Next()) {
+                        if (edge.Current().IsSame(selected)) {
+                            containsSelected = true;
+                            break;
+                        }
+                    }
+                    if (containsSelected) {
+                        sourceShape = Part::TopoShape(wire.Current());
+                        break;
+                    }
+                }
+            }
+        }
+        workPlane = sourceShape.getShape();
+        if (workPlane.IsNull()) {
+            return new App::DocumentObjectExecReturn("Linked workplane source is empty");
+        }
+        WorkPlane.setValue(workPlane);
+    }
+    else if (
+        WorkPlaneSource.getValue() || !std::string_view(WorkPlaneSourceCollection.getValue()).empty()
+    ) {
+        return new App::DocumentObjectExecReturn(
+            "Disabled workplane source retains authoritative link data"
+        );
+    }
     myArea.setPlane(workPlane);
 
     for (std::vector<App::DocumentObject*>::iterator it = links.begin(); it != links.end(); ++it) {

@@ -97,6 +97,8 @@ public:
     /// Is called by the tree if the user double click on the object
     bool doubleClicked() override;
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
+    /// Toggle the page's persistent recompute policy as one exact undoable edit.
+    bool toggleKeepUpdated();
     bool onDelete(const std::vector<std::string>& parms) override;
     void onChanged(const App::Property* prop) override;
     void updateData(const App::Property* prop) override;
@@ -111,6 +113,7 @@ public:
 // NOLINTBEGIN
     using Connection = fastsignals::scoped_connection;
     Connection connectGuiRepaint;
+    Connection connectTimelineChanged;
 // NOLINTEND
 
     void unsetEdit(int ModNum) override;

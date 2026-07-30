@@ -612,6 +612,26 @@ ViewProviderFeaturePythonImp::ValueT ViewProviderFeaturePythonImp::doubleClicked
     return Rejected;
 }
 
+ViewProviderFeaturePythonImp::ValueT ViewProviderFeaturePythonImp::supportsDocumentTimelineEdit() const
+{
+    FC_PY_CALL_CHECK(supportsDocumentTimelineEdit)
+
+    Base::PyGILStateLocker lock;
+    try {
+        Py::Boolean supported(Base::pyCall(py_supportsDocumentTimelineEdit.ptr()));
+        return static_cast<bool>(supported) ? Accepted : Rejected;
+    }
+    catch (Py::Exception&) {
+        if (PyErr_ExceptionMatches(PyExc_NotImplementedError)) {
+            PyErr_Clear();
+            return NotImplemented;
+        }
+        Base::PyException error;
+        error.reportException();
+    }
+    return Rejected;
+}
+
 bool ViewProviderFeaturePythonImp::setupContextMenu(QMenu* menu)
 {
     _FC_PY_CALL_CHECK(setupContextMenu, return (false));
@@ -782,7 +802,9 @@ void ViewProviderFeaturePythonImp::finishRestoring()
     try {
         Py::Object vp = Proxy.getValue();
         if (vp.isNone()) {
-            object->show();
+            // The App object's Visibility is the restored persistent state.
+            // ViewProviderDocumentObject::finishRestoring(), which runs next,
+            // synchronizes the view provider from that exact value.
             Proxy.setValue(Py::Long(1));
         }
         else {

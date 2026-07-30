@@ -56,7 +56,13 @@ class CommandCreateAssembly:
         }
 
     def IsActive(self):
-        if Gui.Control.activeDialog():
+        document = App.ActiveDocument
+        if (
+            document is None
+            or Gui.Control.activeDialog()
+            or document.getBookedTransactionID() != 0
+            or document.HasPendingTransaction
+        ):
             return False
 
         if Preferences.preferences().GetBool("EnforceOneAssemblyRule", True):
@@ -65,31 +71,101 @@ class CommandCreateAssembly:
             if UtilsAssembly.isThereOneRootAssembly() and not activeAssembly:
                 return False
 
-        return App.ActiveDocument is not None
+        return True
 
     def Activated(self):
-        Gui.ActiveDocument.openCommand("New assembly")
+        if not self.IsActive():
+            return
 
+        document = App.ActiveDocument
         activeAssembly = UtilsAssembly.activeAssembly()
-        Gui.addModule("UtilsAssembly")
-        if activeAssembly:
-            commands = (
-                "activeAssembly = UtilsAssembly.activeAssembly()\n"
-                'assembly = activeAssembly.newObject("Assembly::AssemblyObject", "Assembly")\n'
+        document_uid = str(
+            getattr(document, "Uid", "") or ""
+        )
+        gui_document = Gui.getDocument(document.Name)
+        if gui_document is None:
+            return
+        transaction = gui_document.openCommand("New assembly")
+        if transaction == 0:
+            return
+
+        try:
+            Gui.addModule("UtilsAssembly")
+            if activeAssembly:
+                commands = (
+                    f"document = App.getDocument({str(document.Name)!r})\n"
+                    f"activeAssembly = document.getObject("
+                    f"{str(activeAssembly.Name)!r})\n"
+                    'assembly = activeAssembly.newObject("Assembly::AssemblyObject", "Assembly")\n'
+                )
+            else:
+                commands = (
+                    f"document = App.getDocument({str(document.Name)!r})\n"
+                    'assembly = document.addObject("Assembly::AssemblyObject", "Assembly")\n'
+                )
+
+            commands = commands + 'assembly.Type = "Assembly"\n'
+            commands = commands + 'assembly.newObject("Assembly::JointGroup", "Joints")'
+            Gui.doCommand(commands)
+            created_assembly = Gui.doCommandEval("assembly")
+            if (
+                not UtilsAssembly._document_is_open(document)
+                or str(getattr(document, "Uid", "") or "")
+                != document_uid
+                or created_assembly is None
+                or created_assembly.Document is not document
+                or document.getObject(created_assembly.Name)
+                is not created_assembly
+                or int(created_assembly.ID) <= 0
+                or (
+                    activeAssembly is not None
+                    and (
+                        document.getObject(activeAssembly.Name)
+                        is not activeAssembly
+                        or not UtilsAssembly.isTimelineOperationActive(
+                            activeAssembly
+                        )
+                        or not activeAssembly.hasObject(
+                            created_assembly,
+                            True,
+                        )
+                    )
+                )
+                or document.getBookedTransactionID() != transaction
+            ):
+                raise RuntimeError(
+                    "The new-assembly command lost its exact document state"
+                )
+            created_name = str(created_assembly.Name)
+            created_id = int(created_assembly.ID)
+            App.closeActiveTransaction(False, transaction)
+        except Exception:
+            if document.getBookedTransactionID() == transaction:
+                App.closeActiveTransaction(True, transaction)
+            raise
+
+        if document.getBookedTransactionID() == transaction:
+            App.closeActiveTransaction(True, transaction)
+            raise RuntimeError("Could not commit the new assembly")
+        committed_assembly = document.getObject(created_name)
+        if (
+            committed_assembly is not created_assembly
+            or int(committed_assembly.ID) != created_id
+            or not UtilsAssembly.isTimelineOperationActive(
+                committed_assembly
             )
-        else:
-            commands = (
-                'assembly = App.ActiveDocument.addObject("Assembly::AssemblyObject", "Assembly")\n'
+        ):
+            raise RuntimeError(
+                "The committed assembly changed identity"
             )
 
-        commands = commands + 'assembly.Type = "Assembly"\n'
-        commands = commands + 'assembly.newObject("Assembly::JointGroup", "Joints")'
-
-        Gui.doCommand(commands)
+        # Assembly edit mode is persistent interaction state. Enter it only
+        # after the finite model-creation transaction is durably closed.
         if not activeAssembly:
-            Gui.doCommandGui("Gui.ActiveDocument.setEdit(assembly)")
-
-        Gui.ActiveDocument.commitCommand()
+            Gui.doCommandGui(
+                f"Gui.getDocument({str(document.Name)!r}).setEdit("
+                f"{created_name!r})"
+            )
 
 
 class ActivateAssemblyTaskPanel:
@@ -97,6 +173,24 @@ class ActivateAssemblyTaskPanel:
 
     def __init__(self, assemblies):
         self.assemblies = assemblies
+        self.document = assemblies[0].Document if assemblies else None
+        if self.document is None or any(
+            assembly.Document is not self.document
+            for assembly in assemblies
+        ):
+            raise RuntimeError(
+                "Activate Assembly requires assemblies from one document"
+            )
+        self.gui_document = Gui.getDocument(self.document.Name)
+        if self.gui_document is None:
+            raise RuntimeError("Activate Assembly has no GUI document")
+        self.document_uid = str(
+            getattr(self.document, "Uid", "") or ""
+        )
+        self.assembly_identities = tuple(
+            (str(assembly.Name), int(assembly.ID))
+            for assembly in assemblies
+        )
         self.form = QtWidgets.QWidget()
         self.form.setWindowTitle(translate("Assembly_ActivateAssembly", "Activate Assembly"))
 
@@ -115,9 +209,34 @@ class ActivateAssemblyTaskPanel:
 
     def accept(self):
         """Called when the user clicks OK."""
-        selected_name = self.combo.currentData()
-        if selected_name:
-            Gui.doCommand(f"Gui.ActiveDocument.setEdit('{selected_name}')")
+        selected_index = self.combo.currentIndex()
+        selected_identity = (
+            self.assembly_identities[selected_index]
+            if 0 <= selected_index < len(self.assembly_identities)
+            else None
+        )
+        selected = (
+            self.document.getObject(selected_identity[0])
+            if (
+                selected_identity is not None
+                and UtilsAssembly._document_is_open(self.document)
+                and str(
+                    getattr(self.document, "Uid", "") or ""
+                )
+                == self.document_uid
+            )
+            else None
+        )
+        if (
+            selected is not None
+            and int(selected.ID) == selected_identity[1]
+            and selected.isDerivedFrom("Assembly::AssemblyObject")
+            and UtilsAssembly.isTimelineOperationActive(selected)
+        ):
+            Gui.doCommand(
+                f"Gui.getDocument({str(self.document.Name)!r}).setEdit("
+                f"{str(selected.Name)!r})"
+            )
         return True
 
     def reject(self):
@@ -140,7 +259,13 @@ class CommandActivateAssembly:
         }
 
     def IsActive(self):
-        if Gui.Control.activeDialog() or App.ActiveDocument is None:
+        document = App.ActiveDocument
+        if (
+            Gui.Control.activeDialog()
+            or document is None
+            or document.getBookedTransactionID() != 0
+            or document.HasPendingTransaction
+        ):
             return False
 
         # Command is only active if no assembly is currently active
@@ -148,23 +273,45 @@ class CommandActivateAssembly:
             return False
 
         # And if there is at least one assembly in the document to activate
-        for obj in App.ActiveDocument.Objects:
-            if obj.isDerivedFrom("Assembly::AssemblyObject"):
+        for obj in document.Objects:
+            if (
+                obj.isDerivedFrom("Assembly::AssemblyObject")
+                and UtilsAssembly.isTimelineOperationActive(obj)
+            ):
                 return True
 
         return False
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         doc = App.ActiveDocument
-        assemblies = [o for o in doc.Objects if o.isDerivedFrom("Assembly::AssemblyObject")]
+        assemblies = [
+            obj
+            for obj in doc.Objects
+            if (
+                obj.isDerivedFrom("Assembly::AssemblyObject")
+                and UtilsAssembly.isTimelineOperationActive(obj)
+            )
+        ]
 
         if len(assemblies) == 1:
             # If there's only one, activate it directly without showing a dialog
-            Gui.doCommand(f"Gui.ActiveDocument.setEdit('{assemblies[0].Name}')")
+            Gui.doCommand(
+                f"Gui.getDocument({str(doc.Name)!r}).setEdit("
+                f"{str(assemblies[0].Name)!r})"
+            )
         elif len(assemblies) > 1:
             # If there are multiple, show a task panel to let the user choose
             self.task_panel = ActivateAssemblyTaskPanel(assemblies)
-            Gui.Control.showDialog(self.task_panel)
+            dialog = Gui.Control.showDialog(
+                self.task_panel,
+                self.task_panel.gui_document,
+            )
+            if dialog is not None:
+                dialog.setAutoCloseOnDeletedDocument(True)
+                dialog.setDocumentName(doc.Name)
 
 
 if App.GuiUp:

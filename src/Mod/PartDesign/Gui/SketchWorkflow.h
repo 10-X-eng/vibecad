@@ -61,6 +61,7 @@ private:
     Gui::Document* guidocument;
     App::Document* appdocument;
     PartDesign::Body* activeBody {nullptr};
+    App::DocumentObject* linkedBodyOccurrence {nullptr};
 };
 
 }  // namespace PartDesignGui

@@ -139,7 +139,14 @@ def _run_standalone(
         loft.Solid = bool(solid)
         loft.Ruled = bool(ruled)
         loft.Closed = bool(closed)
-        domain_runtime.adopt_part_result(loft)
+        domain_runtime.adopt_part_result(
+            loft,
+            replaced_inputs=[
+                section
+                for section in sections
+                if visibility_before[section.Name].get("visible") is True
+            ],
+        )
         active.recompute()
         for section in sections:
             view = getattr(section, "ViewObject", None)

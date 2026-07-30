@@ -22,21 +22,33 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <memory>
+#include <string_view>
+#include <unordered_set>
 
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <Inventor/nodes/SoCamera.h>
 #include <Inventor/nodes/SoOrthographicCamera.h>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QToolTip>
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
+#include <App/GeoFeatureGroupExtension.h>
 #include <App/Link.h>
 #include <App/Part.h>
+#include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/UnitsApi.h>
@@ -44,11 +56,14 @@
 #include <Gui/Command.h>
 #include <Gui/DockWindowManager.h>
 #include <Gui/Document.h>
+#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/PrefWidgets.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
+#include <Gui/ViewProviderDocumentObject.h>
 #include <Gui/ViewProviderGeometryObject.h>
+#include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/DatumFeature.h>
 #include <Mod/Part/App/FeatureCompound.h>
 #include <Mod/Part/App/FeaturePartBox.h>
@@ -58,7 +73,9 @@
 #include <Mod/Part/App/Part2DObject.h>
 #include <Mod/Part/App/PartFeatures.h>
 
+#include "ModelingSelection.h"
 #include "SectionCutting.h"
+#include "TaskResultValidation.h"
 #include "ui_SectionCutting.h"
 
 
@@ -81,9 +98,150 @@ struct Refresh
     static const bool YRange = true;
     static const bool ZRange = true;
 };
+
+constexpr const char* SectionCutSchemaProperty = "VibeCADSectionCutSchema";
+constexpr long SectionCutSchemaVersion = 1;
+constexpr const char* SectionCutLinksProperty =
+    "VibeCADSectionCutLinks";
+
+struct SectionResourceDescriptor
+{
+    const char* objectRole;
+    const char* propertyName;
+};
+
+constexpr std::array<SectionResourceDescriptor, 7>
+    SectionResourceDescriptors {{
+        {"SectionCutCompound", "VibeCADSectionCutCompound"},
+        {"SectionCutBoxX", "VibeCADSectionCutBoxX"},
+        {"SectionCutX", "VibeCADSectionCutX"},
+        {"SectionCutBoxY", "VibeCADSectionCutBoxY"},
+        {"SectionCutY", "VibeCADSectionCutY"},
+        {"SectionCutBoxZ", "VibeCADSectionCutBoxZ"},
+        {"SectionCutZ", "VibeCADSectionCutZ"},
+    }};
+
+int sectionResourceIndex(const char* objectRole)
+{
+    if (!objectRole) {
+        return -1;
+    }
+    const auto found = std::ranges::find_if(
+        SectionResourceDescriptors,
+        [objectRole](const SectionResourceDescriptor& descriptor) {
+            return std::strcmp(
+                       descriptor.objectRole,
+                       objectRole
+                   )
+                == 0;
+        }
+    );
+    return found == SectionResourceDescriptors.end()
+        ? -1
+        : static_cast<int>(
+              std::distance(
+                  SectionResourceDescriptors.begin(),
+                  found
+              )
+          );
+}
+
+bool isExactSectionCutOwner(const App::DocumentObject* object)
+{
+    const auto* schema = object
+        ? dynamic_cast<const App::PropertyInteger*>(
+              object->getPropertyByName(SectionCutSchemaProperty)
+          )
+        : nullptr;
+    const auto* role = object
+        ? dynamic_cast<const App::PropertyString*>(
+              object->getPropertyByName(App::DocumentTimeline::RolePropertyName)
+          )
+        : nullptr;
+    return object && object->isDerivedFrom<Part::Compound>() && schema
+        && schema->getValue() == SectionCutSchemaVersion && role
+        && std::string_view(role->getValue()) == App::DocumentTimeline::OperationRole;
+}
+
+bool isSectionCutPresentationSource(const App::DocumentObject* object)
+{
+    if (!object) {
+        return false;
+    }
+    if (object->isDerivedFrom<App::Part>()) {
+        return true;
+    }
+    if (object->isDerivedFrom<Part::BodyBase>()) {
+        return object->getPropertyByName("Shape") != nullptr;
+    }
+    if (object->isDerivedFrom<Part::Feature>()
+        && object->getPropertyByName("Shape")
+        && !object->isDerivedFrom<Part::Part2DObject>()
+        && !object->isDerivedFrom<Part::Datum>()
+        && !object->isDerivedFrom<Part::Compound>()) {
+        return App::GeoFeatureGroupExtension::getGroupOfObject(object)
+            == nullptr;
+    }
+    const auto* link = freecad_cast<const App::Link*>(object);
+    const auto* linked = link ? link->getLink() : nullptr;
+    return linked
+        && (linked->isDerivedFrom<Part::Feature>()
+            || linked->isDerivedFrom<Part::BodyBase>())
+        && linked->getPropertyByName("Shape");
+}
+
+void makeSectionCutMetadataInternal(App::Property* property)
+{
+    if (!property) {
+        return;
+    }
+    property->setStatus(App::Property::Hidden, true);
+    property->setStatus(App::Property::LockDynamic, true);
+    property->setStatus(App::Property::NoRecompute, true);
+}
 }  // namespace
 
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+void SectionCut::ExactObjectIdentity::capture(
+    App::DocumentObject* object
+)
+{
+    if (!object || !object->getNameInDocument()
+        || !object->isAttachedToDocument()) {
+        clear();
+        return;
+    }
+    objectId = object->getID();
+    documentUid =
+        object->getDocument()->Uid.getValueStr();
+    objectName = object->getNameInDocument();
+}
+
+void SectionCut::ExactObjectIdentity::clear()
+{
+    objectId = -1;
+    documentUid.clear();
+    objectName.clear();
+}
+
+App::DocumentObject* SectionCut::ExactObjectIdentity::resolve(
+    App::Document* document
+) const
+{
+    if (!document || objectId <= 0 || documentUid.empty()
+        || documentUid != document->Uid.getValueStr()
+        || objectName.empty()) {
+        return nullptr;
+    }
+    auto* object = document->getObjectByID(objectId);
+    return object && object->getDocument() == document
+        && document->containsObject(object)
+        && object->getNameInDocument()
+        && objectName == object->getNameInDocument()
+        ? object
+        : nullptr;
+}
+
 SectionCut::SectionCut(QWidget* parent)
     : QDialog(parent)
     , ui(new Ui_SectionCut)
@@ -101,16 +259,30 @@ SectionCut::SectionCut(QWidget* parent)
     if (!doc) {
         throw Base::RuntimeError("Section cut error: there is no document");
     }
+    documentUid = doc->Uid.getValueStr();
 
     std::vector<App::DocumentObject*> ObjectsList = doc->getObjects();
     if (ObjectsList.empty()) {
         throw Base::RuntimeError("Section cut error: there are no objects in the document");
     }
 
-    // now store those that are currently visible
-    for (auto anObject : ObjectsList) {
-        if (anObject->Visibility.getValue()) {
-            ObjectsListVisible.emplace_back(anObject);
+    loadSemanticSources();
+    if (!findSemanticOwner()) {
+        captureLegacyResources();
+    }
+    if (ObjectsListVisible.empty()) {
+        // A new section cut replaces exactly the shapes which were visible
+        // when the command opened. Timeline infrastructure and owned helper
+        // objects are never modeling inputs.
+        for (auto anObject : ObjectsList) {
+            if (anObject->Visibility.getValue()
+                && PartGui::isModelingObjectActive(anObject)
+                && isSectionCutPresentationSource(anObject)
+                && !anObject->isDerivedFrom<App::DocumentTimeline>()
+                && !App::DocumentTimeline::hasTimelineResourceRole(anObject)
+                && !isExactSectionCutOwner(anObject)) {
+                ObjectsListVisible.emplace_back(anObject);
+            }
         }
     }
 
@@ -119,14 +291,1048 @@ SectionCut::SectionCut(QWidget* parent)
     Base::BoundBox3d BoundCompound = collectObjects();
     initControls(BoundCompound);
 
-    // hide existing cuts to check if there are objects to be cut visible
-    hideCutObjects();
-
     initCutRanges();
 
     setupConnections();
 
     tryStartCutting();
+}
+
+bool SectionCut::atomicChangeActive() const
+{
+    return atomicChangeDepth != 0;
+}
+
+bool SectionCut::ownsLiveDocument() const
+{
+    if (!doc || documentUid.empty()) {
+        return false;
+    }
+    const auto& documents = App::GetApplication().getDocuments();
+    return std::ranges::find(documents, doc) != documents.end()
+        && doc->Uid.getValueStr() == documentUid;
+}
+
+bool SectionCut::runAtomicChange(
+    const char* transactionName,
+    const std::function<void()>& change,
+    bool publishResult
+)
+{
+    if (atomicChangeActive()) {
+        change();
+        return true;
+    }
+    auto* activeGuiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->activeDocument()
+        : nullptr;
+    if (!ownsLiveDocument() || !activeGuiDocument
+        || activeGuiDocument->getDocument() != doc
+        || !PartGui::canStartRetainedModelingTask(doc)) {
+        Base::Console().warning(
+            "Section cut edit was skipped because its document cannot own "
+            "an exact modeling transaction\n"
+        );
+        return false;
+    }
+
+    std::unique_ptr<Gui::ExactTransaction> transaction;
+    try {
+        newResourceIdentities.clear();
+        transaction = std::make_unique<Gui::ExactTransaction>(
+            *doc,
+            transactionName
+        );
+        ++atomicChangeDepth;
+        change();
+        if (publishResult) {
+            // Link and compound view providers may hide their inputs while
+            // the result graph is assembled. Restore the exact visible input
+            // state before crossing the pre-creation History boundary.
+            restoreVisibility();
+            publishSemanticResult();
+        }
+        doc->recompute();
+        if (publishResult) {
+            validateSemanticResult();
+            // Metadata classification itself publishes synchronous
+            // view-provider callbacks. Reassert the pre-creation input state
+            // at the final boundary as well.
+            restoreVisibility();
+            finalizeSemanticTimeline();
+            // Publication must see the exact pre-creation accepted state.
+            // Apply the replacement's final viewport state only after the
+            // semantic block has crossed that boundary.
+            setAcceptedVisibility(true);
+        }
+        --atomicChangeDepth;
+        if (!transaction->commit()) {
+            Base::Console().warning(
+                "The section cut transaction is waiting for its exact commit "
+                "boundary\n"
+            );
+        }
+        return true;
+    }
+    catch (Base::Exception& error) {
+        if (atomicChangeDepth != 0) {
+            --atomicChangeDepth;
+        }
+        if (transaction) {
+            (void)transaction->abort();
+        }
+        newResourceIdentities.clear();
+        error.reportException();
+    }
+    catch (const std::exception& error) {
+        if (atomicChangeDepth != 0) {
+            --atomicChangeDepth;
+        }
+        if (transaction) {
+            (void)transaction->abort();
+        }
+        newResourceIdentities.clear();
+        Base::Console().error("Section cut edit failed: %s\n", error.what());
+    }
+    catch (...) {
+        if (atomicChangeDepth != 0) {
+            --atomicChangeDepth;
+        }
+        if (transaction) {
+            (void)transaction->abort();
+        }
+        newResourceIdentities.clear();
+        Base::Console().error("Section cut edit failed with an unknown exception\n");
+    }
+    return false;
+}
+
+Part::Compound* SectionCut::findSemanticOwner() const
+{
+    if (!doc) {
+        return nullptr;
+    }
+
+    if (auto* cached = dynamic_cast<Part::Compound*>(
+            semanticOwnerIdentity.resolve(doc)
+        );
+        isExactSectionCutOwner(cached)) {
+        return cached;
+    }
+    semanticOwnerIdentity.clear();
+
+    auto* timeline = App::DocumentTimeline::get(doc);
+    if (!timeline) {
+        return nullptr;
+    }
+    Part::Compound* result = nullptr;
+    for (auto* object : timeline->Operations.getValues()) {
+        if (!isExactSectionCutOwner(object)) {
+            continue;
+        }
+        auto* candidate = static_cast<Part::Compound*>(object);
+        if (result && result != candidate) {
+            throw Base::RuntimeError(
+                "The document contains more than one persistent section cut"
+            );
+        }
+        result = candidate;
+    }
+    semanticOwnerIdentity.capture(result);
+    return result;
+}
+
+std::vector<App::DocumentObject*> SectionCut::exactSourceObjects() const
+{
+    std::vector<App::DocumentObject*> result;
+    result.reserve(ObjectsListVisible.size());
+    for (const auto& handle : ObjectsListVisible) {
+        auto* object = handle.getObject();
+        if (!object || !doc || object->getDocument() != doc
+            || !doc->containsObject(object)
+            || std::ranges::find(result, object) != result.end()) {
+            continue;
+        }
+        result.push_back(object);
+    }
+    return result;
+}
+
+void SectionCut::loadSemanticSources()
+{
+    ObjectsListVisible.clear();
+    auto* owner = findSemanticOwner();
+    if (!owner) {
+        return;
+    }
+    ensureSemanticResourceProperties(*owner);
+    clearLegacyResources();
+
+    const auto* property = dynamic_cast<const App::PropertyLinkListHidden*>(
+        owner->getPropertyByName(
+            App::DocumentTimeline::ReplacedInputsPropertyName
+        )
+    );
+    if (!property) {
+        throw Base::RuntimeError(
+            "The persistent section cut has no exact source contract"
+        );
+    }
+    std::unordered_set<long> sourceIds;
+    for (auto* source : property->getValues()) {
+        if (!source || source == owner || source->getDocument() != doc
+            || !doc->containsObject(source)
+            || !sourceIds.insert(source->getID()).second) {
+            throw Base::RuntimeError(
+                "The persistent section cut has an invalid source contract"
+            );
+        }
+        ObjectsListVisible.emplace_back(source);
+    }
+    if (ObjectsListVisible.empty()) {
+        throw Base::RuntimeError(
+            "The persistent section cut has no live source objects"
+        );
+    }
+}
+
+Part::Compound* SectionCut::ensureSemanticOwner()
+{
+    if (auto* owner = findSemanticOwner()) {
+        ensureSemanticResourceProperties(*owner);
+        return owner;
+    }
+    if (!doc) {
+        throw Base::RuntimeError(
+            "Cannot create a persistent section cut without a document"
+        );
+    }
+
+    auto* owner = doc->addObject<Part::Compound>("SectionCut");
+    if (!owner) {
+        throw Base::RuntimeError(
+            "The persistent section cut output could not be created"
+        );
+    }
+    owner->Label.setValue(QCoreApplication::translate("PartGui", "Section Cut").toUtf8().constData());
+
+    auto* schema = dynamic_cast<App::PropertyInteger*>(
+        owner->addDynamicProperty(
+            "App::PropertyInteger",
+            SectionCutSchemaProperty,
+            "Timeline",
+            "Persistent section-cut schema",
+            App::Prop_NoRecompute,
+            true,
+            true
+        )
+    );
+    auto* role = dynamic_cast<App::PropertyString*>(
+        owner->addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Timeline",
+            "Document timeline classification",
+            App::Prop_NoRecompute,
+            true,
+            true
+        )
+    );
+    auto* replaced = dynamic_cast<App::PropertyLinkListHidden*>(
+        owner->addDynamicProperty(
+            "App::PropertyLinkListHidden",
+            App::DocumentTimeline::ReplacedInputsPropertyName,
+            "Timeline",
+            "Visible input objects hidden by this operation",
+            App::Prop_NoRecompute,
+            true,
+            true
+        )
+    );
+    auto* editCommand = dynamic_cast<App::PropertyString*>(
+        owner->addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::EditCommandPropertyName,
+            "Timeline",
+            "Approved command which edits this operation",
+            App::Prop_NoRecompute,
+            true,
+            true
+        )
+    );
+    if (!schema || !role || !replaced || !editCommand) {
+        throw Base::RuntimeError(
+            "The persistent section cut metadata could not be created"
+        );
+    }
+    for (auto* property : std::array<App::Property*, 4> {
+             schema,
+             role,
+             replaced,
+             editCommand,
+         }) {
+        makeSectionCutMetadataInternal(property);
+    }
+
+    const auto sources = exactSourceObjects();
+    if (sources.empty()) {
+        throw Base::RuntimeError(
+            "A persistent section cut requires at least one exact source"
+        );
+    }
+    schema->setValue(SectionCutSchemaVersion);
+    role->setValue(App::DocumentTimeline::OperationRole);
+    replaced->setValues(sources);
+    editCommand->setValue("Part_SectionCut");
+    semanticOwnerIdentity.capture(owner);
+    ensureSemanticResourceProperties(*owner);
+    clearLegacyResources();
+
+    if (auto* view = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+            Gui::Application::Instance->getViewProvider(owner)
+        )) {
+        view->ShowInTree.setValue(true);
+    }
+    return owner;
+}
+
+void SectionCut::ensureSemanticResourceProperties(
+    Part::Compound& owner
+)
+{
+    for (const auto& descriptor : SectionResourceDescriptors) {
+        App::Property* property =
+            owner.getPropertyByName(descriptor.propertyName);
+        if (!property) {
+            property = owner.addDynamicProperty(
+                "App::PropertyLinkHidden",
+                descriptor.propertyName,
+                "Timeline",
+                "Exact persistent section-cut implementation resource",
+                App::Prop_NoRecompute,
+                true,
+                true
+            );
+        }
+        if (!dynamic_cast<App::PropertyLinkHidden*>(property)) {
+            throw Base::TypeError(
+                "A persistent section-cut resource link has an "
+                "incompatible type"
+            );
+        }
+        makeSectionCutMetadataInternal(property);
+    }
+
+    App::Property* links =
+        owner.getPropertyByName(SectionCutLinksProperty);
+    if (!links) {
+        links = owner.addDynamicProperty(
+            "App::PropertyLinkListHidden",
+            SectionCutLinksProperty,
+            "Timeline",
+            "Exact generated links owned by this persistent section cut",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    if (!dynamic_cast<App::PropertyLinkListHidden*>(links)) {
+        throw Base::TypeError(
+            "The persistent section-cut generated-link property has an "
+            "incompatible type"
+        );
+    }
+    makeSectionCutMetadataInternal(links);
+}
+
+App::DocumentObject* SectionCut::semanticResource(
+    const char* objectRole
+) const
+{
+    const int index = sectionResourceIndex(objectRole);
+    if (index < 0 || !doc) {
+        return nullptr;
+    }
+
+    if (auto* owner = findSemanticOwner()) {
+        const auto* property =
+            dynamic_cast<const App::PropertyLinkHidden*>(
+                owner->getPropertyByName(
+                    SectionResourceDescriptors[
+                        static_cast<std::size_t>(index)
+                    ]
+                        .propertyName
+                )
+            );
+        auto* resource = property ? property->getValue() : nullptr;
+        return resource && resource != owner
+            && resource->getDocument() == doc
+            && doc->containsObject(resource)
+            ? resource
+            : nullptr;
+    }
+
+    return legacyResourceIdentities[
+        static_cast<std::size_t>(index)
+    ]
+        .resolve(doc);
+}
+
+void SectionCut::setSemanticResource(
+    const char* objectRole,
+    App::DocumentObject* resource
+)
+{
+    const int index = sectionResourceIndex(objectRole);
+    if (index < 0) {
+        throw Base::ValueError(
+            "Unknown persistent section-cut resource role"
+        );
+    }
+    auto* owner = ensureSemanticOwner();
+    auto* property = dynamic_cast<App::PropertyLinkHidden*>(
+        owner->getPropertyByName(
+            SectionResourceDescriptors[
+                static_cast<std::size_t>(index)
+            ]
+                .propertyName
+        )
+    );
+    if (!property) {
+        throw Base::TypeError(
+            "The persistent section-cut resource link is unavailable"
+        );
+    }
+    if (resource
+        && (resource == owner || resource->getDocument() != doc
+            || !doc->containsObject(resource))) {
+        throw Base::ValueError(
+            "A persistent section-cut resource must be a distinct live "
+            "object from the owning document"
+        );
+    }
+    property->setValue(resource);
+    if (resource) {
+        markOwnedResource(*resource, *owner);
+        rememberNewResource(resource);
+    }
+}
+
+std::vector<App::DocumentObject*>
+SectionCut::semanticLinkResources() const
+{
+    if (!doc) {
+        return {};
+    }
+    if (auto* owner = findSemanticOwner()) {
+        const auto* property =
+            dynamic_cast<const App::PropertyLinkListHidden*>(
+                owner->getPropertyByName(SectionCutLinksProperty)
+            );
+        if (!property) {
+            return {};
+        }
+        std::vector<App::DocumentObject*> result;
+        for (auto* resource : property->getValues()) {
+            if (!resource || resource == owner
+                || resource->getDocument() != doc
+                || !doc->containsObject(resource)) {
+                return {};
+            }
+            result.push_back(resource);
+        }
+        return result;
+    }
+
+    std::vector<App::DocumentObject*> result;
+    result.reserve(legacyLinkIdentities.size());
+    for (const auto& identity : legacyLinkIdentities) {
+        auto* resource = identity.resolve(doc);
+        if (!resource) {
+            return {};
+        }
+        result.push_back(resource);
+    }
+    return result;
+}
+
+void SectionCut::setSemanticLinkResources(
+    const std::vector<App::DocumentObject*>& resources
+)
+{
+    auto* owner = ensureSemanticOwner();
+    auto* property =
+        dynamic_cast<App::PropertyLinkListHidden*>(
+            owner->getPropertyByName(SectionCutLinksProperty)
+        );
+    if (!property) {
+        throw Base::TypeError(
+            "The persistent section-cut generated-link property is "
+            "unavailable"
+        );
+    }
+
+    std::unordered_set<App::DocumentObject*> distinct;
+    for (auto* resource : resources) {
+        if (!resource || resource == owner
+            || resource->getDocument() != doc
+            || !doc->containsObject(resource)
+            || !distinct.insert(resource).second) {
+            throw Base::ValueError(
+                "Persistent section-cut generated links must be distinct "
+                "live objects from the owning document"
+            );
+        }
+    }
+    property->setValues(resources);
+    for (auto* resource : resources) {
+        markOwnedResource(*resource, *owner);
+        rememberNewResource(resource);
+    }
+}
+
+void SectionCut::rememberNewResource(
+    App::DocumentObject* resource
+)
+{
+    auto* timeline = doc ? App::DocumentTimeline::get(doc) : nullptr;
+    if (!resource || !timeline
+        || !timeline->isProvisionallyEnrolledByCurrentTransaction(
+            resource
+        )) {
+        return;
+    }
+    if (std::ranges::any_of(
+            newResourceIdentities,
+            [this, resource](const ExactObjectIdentity& identity) {
+                return identity.resolve(doc) == resource;
+            }
+        )) {
+        return;
+    }
+    ExactObjectIdentity identity;
+    identity.capture(resource);
+    newResourceIdentities.push_back(std::move(identity));
+}
+
+void SectionCut::clearLegacyResources()
+{
+    for (auto& identity : legacyResourceIdentities) {
+        identity.clear();
+    }
+    legacyLinkIdentities.clear();
+}
+
+void SectionCut::captureLegacyResources()
+{
+    clearLegacyResources();
+    if (!doc || findSemanticOwner()) {
+        return;
+    }
+
+    std::array<Part::Box*, 3> boxes {
+        dynamic_cast<Part::Box*>(
+            doc->getObject("SectionCutBoxX")
+        ),
+        dynamic_cast<Part::Box*>(
+            doc->getObject("SectionCutBoxY")
+        ),
+        dynamic_cast<Part::Box*>(
+            doc->getObject("SectionCutBoxZ")
+        ),
+    };
+    std::array<Part::Cut*, 3> cuts {
+        dynamic_cast<Part::Cut*>(
+            doc->getObject("SectionCutX")
+        ),
+        dynamic_cast<Part::Cut*>(
+            doc->getObject("SectionCutY")
+        ),
+        dynamic_cast<Part::Cut*>(
+            doc->getObject("SectionCutZ")
+        ),
+    };
+
+    App::DocumentObject* previous = nullptr;
+    App::DocumentObject* compound = nullptr;
+    bool foundAxis = false;
+    for (std::size_t axis = 0; axis < cuts.size(); ++axis) {
+        if (!boxes[axis] && !cuts[axis]) {
+            continue;
+        }
+        if (!boxes[axis] || !cuts[axis]
+            || cuts[axis]->Tool.getValue() != boxes[axis]) {
+            clearLegacyResources();
+            return;
+        }
+        auto* base = cuts[axis]->Base.getValue();
+        if (previous) {
+            if (base != previous) {
+                clearLegacyResources();
+                return;
+            }
+        }
+        else {
+            compound = base;
+        }
+        previous = cuts[axis];
+        foundAxis = true;
+    }
+    if (!foundAxis || !compound
+        || compound->getDocument() != doc
+        || !doc->containsObject(compound)
+        || doc->getObject("SectionCutCompound") != compound) {
+        clearLegacyResources();
+        return;
+    }
+
+    legacyResourceIdentities[0].capture(compound);
+    for (std::size_t axis = 0; axis < cuts.size(); ++axis) {
+        if (!cuts[axis]) {
+            continue;
+        }
+        legacyResourceIdentities[axis * 2 + 1].capture(
+            boxes[axis]
+        );
+        legacyResourceIdentities[axis * 2 + 2].capture(
+            cuts[axis]
+        );
+    }
+
+    std::vector<App::DocumentObject*> links;
+    if (auto* partCompound =
+            dynamic_cast<Part::Compound*>(compound)) {
+        links = partCompound->Links.getValues();
+    }
+    else if (auto* property =
+                 dynamic_cast<App::PropertyLinkList*>(
+                     compound->getPropertyByName("Objects")
+                 )) {
+        links = property->getValues();
+    }
+    if (links.empty()) {
+        clearLegacyResources();
+        return;
+    }
+    for (auto* link : links) {
+        if (!link || link->getDocument() != doc
+            || !doc->containsObject(link)) {
+            clearLegacyResources();
+            return;
+        }
+        ExactObjectIdentity identity;
+        identity.capture(link);
+        legacyLinkIdentities.push_back(std::move(identity));
+    }
+}
+
+App::DocumentObject* SectionCut::semanticTopResult() const
+{
+    for (const char* name : {CutZName, CutYName, CutXName, CompoundName}) {
+        if (auto* object = semanticResource(name)) {
+            return object;
+        }
+    }
+    return nullptr;
+}
+
+void SectionCut::markOwnedResource(
+    App::DocumentObject& resource,
+    Part::Compound& owner
+)
+{
+    if (&resource == &owner || resource.getDocument() != doc
+        || !doc->containsObject(&resource)) {
+        throw Base::RuntimeError(
+            "A section-cut resource must be a distinct live document object"
+        );
+    }
+
+    App::Property* roleProperty = resource.getPropertyByName(
+        App::DocumentTimeline::RolePropertyName
+    );
+    if (!roleProperty) {
+        roleProperty = resource.addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "Timeline",
+            "Document timeline classification",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* role = dynamic_cast<App::PropertyString*>(roleProperty);
+
+    App::Property* ownerProperty = resource.getPropertyByName(
+        App::DocumentTimeline::OwnerPropertyName
+    );
+    if (!ownerProperty) {
+        ownerProperty = resource.addDynamicProperty(
+            "App::PropertyLinkHidden",
+            App::DocumentTimeline::OwnerPropertyName,
+            "Timeline",
+            "Persistent section cut which owns this generated result",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* resourceOwner = dynamic_cast<App::PropertyLinkHidden*>(ownerProperty);
+    if (!role || !resourceOwner) {
+        throw Base::TypeError(
+            "Section-cut timeline metadata has an incompatible type"
+        );
+    }
+    makeSectionCutMetadataInternal(role);
+    makeSectionCutMetadataInternal(resourceOwner);
+
+    resourceOwner->setValue(&owner);
+    role->setValue(App::DocumentTimeline::ResourceRole);
+    resource.Visibility.setValue(false);
+    if (auto* view = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+            Gui::Application::Instance->getViewProvider(&resource)
+        )) {
+        view->ShowInTree.setValue(false);
+    }
+}
+
+void SectionCut::markReachableResources(
+    App::DocumentObject& top,
+    Part::Compound& owner
+)
+{
+    const auto sources = exactSourceObjects();
+    const std::unordered_set<App::DocumentObject*> sourceSet(
+        sources.begin(),
+        sources.end()
+    );
+    std::vector<App::DocumentObject*> pending {&top};
+    std::unordered_set<App::DocumentObject*> visited;
+    while (!pending.empty()) {
+        auto* object = pending.back();
+        pending.pop_back();
+        if (!object || object == &owner || sourceSet.contains(object)
+            || !visited.insert(object).second) {
+            continue;
+        }
+        if (object->getDocument() != doc || !doc->containsObject(object)) {
+            throw Base::RuntimeError(
+                "The section-cut result graph left its document"
+            );
+        }
+        markOwnedResource(*object, owner);
+        const auto dependencies = object->getOutList();
+        pending.insert(
+            pending.end(),
+            dependencies.begin(),
+            dependencies.end()
+        );
+    }
+}
+
+void SectionCut::publishSemanticResult()
+{
+    const auto sources = exactSourceObjects();
+    if (sources.empty()) {
+        throw Base::RuntimeError(
+            "A persistent section cut requires live source objects"
+        );
+    }
+
+    auto* top = semanticTopResult();
+    auto* owner = findSemanticOwner();
+    if (!top && !owner && !isCuttingEnabled()) {
+        return;
+    }
+    owner = owner ? owner : ensureSemanticOwner();
+
+    auto* schema = dynamic_cast<App::PropertyInteger*>(
+        owner->getPropertyByName(SectionCutSchemaProperty)
+    );
+    auto* role = dynamic_cast<App::PropertyString*>(
+        owner->getPropertyByName(
+            App::DocumentTimeline::RolePropertyName
+        )
+    );
+    auto* replaced = dynamic_cast<App::PropertyLinkListHidden*>(
+        owner->getPropertyByName(
+            App::DocumentTimeline::ReplacedInputsPropertyName
+        )
+    );
+    App::Property* editProperty = owner->getPropertyByName(
+        App::DocumentTimeline::EditCommandPropertyName
+    );
+    if (!editProperty) {
+        editProperty = owner->addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::EditCommandPropertyName,
+            "Timeline",
+            "Approved command which edits this operation",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* editCommand = dynamic_cast<App::PropertyString*>(editProperty);
+    if (!schema || !role || !replaced || !editCommand) {
+        throw Base::TypeError(
+            "The persistent section cut metadata has an incompatible type"
+        );
+    }
+    for (auto* property : std::array<App::Property*, 4> {
+             schema,
+             role,
+             replaced,
+             editCommand,
+         }) {
+        makeSectionCutMetadataInternal(property);
+    }
+    schema->setValue(SectionCutSchemaVersion);
+    role->setValue(App::DocumentTimeline::OperationRole);
+    replaced->setValues(sources);
+    editCommand->setValue("Part_SectionCut");
+
+    if (top) {
+        markReachableResources(*top, *owner);
+        owner->Links.setValues({top});
+        syncSemanticAppearance(*owner, *top);
+    }
+    else {
+        owner->Links.setValues(sources);
+    }
+
+}
+
+void SectionCut::validateSemanticResult() const
+{
+    auto* owner = findSemanticOwner();
+    if (!owner) {
+        if (!isCuttingEnabled()) {
+            return;
+        }
+        throw Base::RuntimeError(
+            "The section cut did not publish its semantic output"
+        );
+    }
+
+    const auto sources = exactSourceObjects();
+    const auto replacement =
+        App::DocumentTimeline::replacementInputContract(owner);
+    const auto* editCommand = dynamic_cast<const App::PropertyString*>(
+        owner->getPropertyByName(
+            App::DocumentTimeline::EditCommandPropertyName
+        )
+    );
+    if (!isExactSectionCutOwner(owner) || !replacement.declared
+        || !replacement.valid || replacement.inputs != sources
+        || !editCommand
+        || std::string_view(editCommand->getValue()) != "Part_SectionCut"
+        || owner->Links.getValues().empty()
+        || !hasCompleteCutGraph()) {
+        throw Base::RuntimeError(
+            "The section cut semantic contract is incomplete"
+        );
+    }
+
+    PartGui::TaskResultValidation::validatePartResult(owner);
+    for (auto* linked : owner->Links.getValues()) {
+        if (!linked || linked->getDocument() != doc
+            || !doc->containsObject(linked)) {
+            throw Base::RuntimeError(
+                "The section cut output references a stale result"
+            );
+        }
+    }
+
+    const std::unordered_set<App::DocumentObject*> sourceSet(
+        sources.begin(),
+        sources.end()
+    );
+    std::vector<App::DocumentObject*> pending = owner->Links.getValues();
+    std::unordered_set<App::DocumentObject*> visited;
+    while (!pending.empty()) {
+        auto* resource = pending.back();
+        pending.pop_back();
+        if (!resource || resource == owner || sourceSet.contains(resource)
+            || !visited.insert(resource).second) {
+            continue;
+        }
+        if (!App::DocumentTimeline::hasTimelineResourceRole(resource)
+            || App::DocumentTimeline::timelineOwner(resource) != owner
+            || resource->Visibility.getValue()) {
+            throw Base::RuntimeError(
+                "The section cut contains an unowned or visible implementation resource"
+            );
+        }
+        const auto dependencies = resource->getOutList();
+        pending.insert(
+            pending.end(),
+            dependencies.begin(),
+            dependencies.end()
+        );
+    }
+}
+
+void SectionCut::finalizeSemanticTimeline()
+{
+    auto* owner = findSemanticOwner();
+    if (!owner || !doc || owner->getDocument() != doc
+        || !doc->containsObject(owner)) {
+        return;
+    }
+    auto* timeline = App::DocumentTimeline::ensure(doc);
+    const bool newOwner =
+        timeline->isProvisionallyEnrolledByCurrentTransaction(owner);
+
+    std::vector<App::DocumentObject*> orderedNewResources;
+    orderedNewResources.reserve(newResourceIdentities.size());
+    for (const auto& identity : newResourceIdentities) {
+        auto* candidate = identity.resolve(doc);
+        if (!candidate
+            || !timeline->isProvisionallyEnrolledByCurrentTransaction(
+                candidate
+            )
+            || !App::DocumentTimeline::hasTimelineResourceRole(
+                candidate
+            )
+            || App::DocumentTimeline::timelineOwner(candidate)
+                != owner) {
+            throw Base::RuntimeError(
+                "The section cut lost an exact newly created resource "
+                "before its history boundary"
+            );
+        }
+        orderedNewResources.push_back(candidate);
+    }
+    if (newOwner) {
+        owner = findSemanticOwner();
+        if (!owner
+            || !timeline->isProvisionallyEnrolledByCurrentTransaction(
+                owner
+            )) {
+            throw Base::RuntimeError(
+                "The section cut lost its exact newly created operation "
+                "before publication"
+            );
+        }
+        // A newly created section cut is a complete current-transaction
+        // factory result. Publish it from the transaction's captured
+        // pre-creation boundary so its replaced sources are necessarily
+        // earlier semantic operations. The generic finalize path derives an
+        // insertion point from already-reclassified resources and can place
+        // this replacement block before one of its source operations.
+        timeline->publishProvisionalOperationBlock(
+            owner,
+            orderedNewResources
+        );
+    }
+    else if (!orderedNewResources.empty()) {
+        timeline->finalizeProvisionalOperationBlock(
+            owner,
+            orderedNewResources
+        );
+    }
+    newResourceIdentities.clear();
+}
+
+bool SectionCut::hasCompleteCutGraph() const
+{
+    auto* owner = findSemanticOwner();
+    if (!owner) {
+        return !isCuttingEnabled();
+    }
+
+    const auto requiresAxis = [this](
+                                  bool enabled,
+                                  const char* boxName,
+                                  const char* cutName
+                              ) {
+        return enabled
+            ? semanticResource(boxName)
+                && semanticResource(cutName)
+            : !semanticResource(boxName)
+                && !semanticResource(cutName);
+    };
+    if (!requiresAxis(ui->groupBoxX->isChecked(), BoxXName, CutXName)
+        || !requiresAxis(ui->groupBoxY->isChecked(), BoxYName, CutYName)
+        || !requiresAxis(ui->groupBoxZ->isChecked(), BoxZName, CutZName)) {
+        return false;
+    }
+
+    const auto links = owner->Links.getValues();
+    if (!isCuttingEnabled()) {
+        return links == exactSourceObjects();
+    }
+    auto* top = ui->groupBoxZ->isChecked()
+        ? semanticResource(CutZName)
+        : ui->groupBoxY->isChecked()
+        ? semanticResource(CutYName)
+        : semanticResource(CutXName);
+    return top && links.size() == 1 && links.front() == top
+        && App::DocumentTimeline::timelineOwner(top) == owner;
+}
+
+void SectionCut::syncSemanticAppearance(
+    Part::Compound& owner,
+    App::DocumentObject& result
+) const
+{
+    auto* ownerView = dynamic_cast<Gui::ViewProviderGeometryObject*>(
+        Gui::Application::Instance->getViewProvider(&owner)
+    );
+    auto* resultView = dynamic_cast<Gui::ViewProviderGeometryObject*>(
+        Gui::Application::Instance->getViewProvider(&result)
+    );
+    if (!ownerView || !resultView) {
+        throw Base::RuntimeError(
+            "The section cut output has no geometric view provider"
+        );
+    }
+    ownerView->ShapeAppearance.setValues(
+        resultView->ShapeAppearance.getValues()
+    );
+    ownerView->Transparency.setValue(
+        resultView->Transparency.getValue()
+    );
+}
+
+void SectionCut::setAcceptedVisibility(bool showCut)
+{
+    auto* owner = findSemanticOwner();
+    if (!owner) {
+        for (auto* source : exactSourceObjects()) {
+            source->Visibility.setValue(true);
+        }
+        return;
+    }
+    for (auto* source : exactSourceObjects()) {
+        source->Visibility.setValue(!showCut);
+    }
+    owner->Visibility.setValue(showCut);
+
+    const auto exactSources = exactSourceObjects();
+    const std::unordered_set<App::DocumentObject*> sources(
+        exactSources.begin(),
+        exactSources.end()
+    );
+    std::vector<App::DocumentObject*> pending = owner->Links.getValues();
+    std::unordered_set<App::DocumentObject*> visited;
+    while (!pending.empty()) {
+        auto* object = pending.back();
+        pending.pop_back();
+        if (!object || object == owner || sources.contains(object)
+            || !visited.insert(object).second) {
+            continue;
+        }
+        object->Visibility.setValue(false);
+        const auto dependencies = object->getOutList();
+        pending.insert(
+            pending.end(),
+            dependencies.begin(),
+            dependencies.end()
+        );
+    }
 }
 
 void SectionCut::initSpinBoxes()
@@ -263,11 +1469,27 @@ void SectionCut::initCutRanges()
 
 void SectionCut::tryStartCutting()
 {
-    // if there is a cut, perform it
-    if (hasBoxX || hasBoxY || hasBoxZ) {
-        ui->RefreshCutPB->setEnabled(false);
-        startCutting(true);
+    if (!(hasBoxX || hasBoxY || hasBoxZ)) {
+        return;
     }
+    ui->RefreshCutPB->setEnabled(false);
+
+    // A current document already contains the accepted parametric graph. Do
+    // not regenerate it merely because the editor was opened: that would
+    // replace stable resource identities and create a false history edit.
+    if (findSemanticOwner()) {
+        return;
+    }
+
+    // Adopt the old persistent-cut graph once. The exact transaction turns
+    // the previously visible sources into one durable semantic operation and
+    // makes every implementation object an owned resource.
+    runAtomicChange(
+        "Adopt persistent section cut",
+        [this]() {
+            startCutting(true);
+        }
+    );
 }
 
 void SectionCut::setAutoColoringChecked(bool on)
@@ -326,16 +1548,26 @@ void SectionCut::initBooleanFragmentControls(Gui::ViewProviderGeometryObject* co
 
 void SectionCut::collectAndShowLinks(const std::vector<App::DocumentObject*>& objects)
 {
+    const bool hasSemanticOwner = findSemanticOwner() != nullptr;
     // make parent objects of links visible to handle the case that
     // the cutting is started when only an existing cut was visible
     for (auto aCompoundObj : objects) {
         auto pcLink = dynamic_cast<App::Link*>(aCompoundObj);
         auto LinkedObject = pcLink ? pcLink->getLink() : nullptr;
         if (LinkedObject) {
-            // only if not already visible
-            if (!(LinkedObject->Visibility.getValue())) {
-                LinkedObject->Visibility.setValue(true);
+            const auto alreadyTracked = std::ranges::any_of(
+                ObjectsListVisible,
+                [LinkedObject](const App::DocumentObjectT& object) {
+                    return object.getObject() == LinkedObject;
+                }
+            );
+            if (!alreadyTracked) {
                 ObjectsListVisible.emplace_back(LinkedObject);
+            }
+            // Legacy cuts did not persist their original-source contract, so
+            // expose their links while the one-time adoption rebuilds them.
+            if (!hasSemanticOwner && !LinkedObject->Visibility.getValue()) {
+                LinkedObject->Visibility.setValue(true);
             }
         }
     }
@@ -344,15 +1576,22 @@ void SectionCut::collectAndShowLinks(const std::vector<App::DocumentObject*>& ob
 Base::BoundBox3d SectionCut::collectObjects()
 {
     Base::BoundBox3d BoundCompound;
-    if (doc->getObject(BoxXName) || doc->getObject(BoxYName) || doc->getObject(BoxZName)) {
+    if (findObject(BoxXName) || findObject(BoxYName)
+        || findObject(BoxZName)) {
 
         // automatic coloring must be disabled
         setAutoColoringChecked(false);
 
-        // get the object with the right name
-        if (auto compoundObject = doc->getObject(CompoundName)) {
+        if (auto* compoundObject = findObject(CompoundName)) {
+            if (!findSemanticOwner()) {
+                // The legacy implementation persisted only its generated
+                // dependency graph. Its direct CutLink targets are therefore
+                // the authoritative set of formerly visible sources.
+                ObjectsListVisible.clear();
+            }
             // to later store the childs
-            std::vector<App::DocumentObject*> compoundChilds;
+            std::vector<App::DocumentObject*> compoundChilds =
+                semanticLinkResources();
 
             // check if this is a BooleanFragments or a Part::Compound
             // Part::Compound is the case when there was only one object
@@ -361,7 +1600,10 @@ Base::BoundBox3d SectionCut::collectObjects()
             if (!pcCompoundPart && pcPartFeature) {
                 // for more security check for validity accessing its ViewProvider
                 auto pcCompoundBF = Gui::Application::Instance->getViewProvider(pcPartFeature);
-                compoundChilds = pcCompoundBF->claimChildren();
+                if (compoundChilds.empty()) {
+                    compoundChilds =
+                        pcCompoundBF->claimChildren();
+                }
                 BoundCompound = pcPartFeature->Shape.getBoundingBox();
 
                 auto pcCompoundBFGO = dynamic_cast<Gui::ViewProviderGeometryObject*>(pcCompoundBF);
@@ -369,7 +1611,11 @@ Base::BoundBox3d SectionCut::collectObjects()
             }
             else if (pcCompoundPart) {
                 BoundCompound = pcCompoundPart->Shape.getBoundingBox();
-                pcCompoundPart->Links.getLinks(compoundChilds);
+                if (compoundChilds.empty()) {
+                    pcCompoundPart->Links.getLinks(
+                        compoundChilds
+                    );
+                }
             }
 
             collectAndShowLinks(compoundChilds);
@@ -433,13 +1679,13 @@ void SectionCut::setupConnections()
 
 void SectionCut::hideCutObjects()
 {
-    if (auto obj = doc->getObject(CutXName)) {
+    if (auto obj = findObject(CutXName)) {
         obj->Visibility.setValue(false);
     }
-    if (auto obj = doc->getObject(CutYName)) {
+    if (auto obj = findObject(CutYName)) {
         obj->Visibility.setValue(false);
     }
-    if (auto obj = doc->getObject(CutZName)) {
+    if (auto obj = findObject(CutZName)) {
         obj->Visibility.setValue(false);
     }
 }
@@ -451,6 +1697,11 @@ void SectionCut::noDocumentActions()
     ui->groupBoxY->blockSignals(true);
     ui->groupBoxZ->blockSignals(true);
     doc = nullptr;
+    documentUid.clear();
+    semanticOwnerIdentity.clear();
+    newResourceIdentities.clear();
+    clearLegacyResources();
+    closeFinalized = true;
     // reset the cut group boxes
     ui->groupBoxX->setChecked(false);
     ui->groupBoxY->setChecked(false);
@@ -493,21 +1744,63 @@ void SectionCut::setAutoTransparency(int value)
 
 void SectionCut::deleteObejcts()
 {
-    App::DocumentObject* anObject = nullptr;
-
-    // lambda function to delete objects
-    auto deleteObject = [&](const char* objectName) {
-        anObject = doc->getObject(objectName);
+    auto deleteObject = [&](const char* objectRole) {
+        auto* object = findObject(objectRole);
+        if (!object) {
+            return;
+        }
         // the deleted object might have been visible before, thus check and delete it from the list
         auto found = std::find_if(
             ObjectsListVisible.begin(),
             ObjectsListVisible.end(),
-            [anObject](const App::DocumentObjectT& obj) { return (obj.getObject() == anObject); }
+            [object](const App::DocumentObjectT& obj) {
+                return obj.getObject() == object;
+            }
         );
         if (found != ObjectsListVisible.end()) {
             ObjectsListVisible.erase(found);
         }
-        doc->removeObject(objectName);
+        if (auto* owner = findSemanticOwner()) {
+            const int index = sectionResourceIndex(objectRole);
+            auto* property =
+                index >= 0
+                ? dynamic_cast<App::PropertyLinkHidden*>(
+                      owner->getPropertyByName(
+                          SectionResourceDescriptors[
+                              static_cast<std::size_t>(index)
+                          ]
+                              .propertyName
+                      )
+                  )
+                : nullptr;
+            if (!property || property->getValue() != object) {
+                throw Base::RuntimeError(
+                    "The section cut refused to delete an unbound "
+                    "implementation resource"
+                );
+            }
+            property->setValue(nullptr);
+        }
+        else {
+            const int index = sectionResourceIndex(objectRole);
+            if (index >= 0) {
+                legacyResourceIdentities[
+                    static_cast<std::size_t>(index)
+                ]
+                    .clear();
+            }
+        }
+        ExactObjectIdentity identity;
+        identity.capture(object);
+        const std::string objectName =
+            object->getNameInDocument();
+        doc->removeObject(objectName.c_str());
+        if (identity.resolve(doc)) {
+            throw Base::RuntimeError(
+                "A section-cut implementation resource could not be "
+                "deleted"
+            );
+        }
     };
 
     int compoundTransparency = -1;
@@ -526,42 +1819,41 @@ void SectionCut::deleteObejcts()
     // it is dangerous to deal with the fact that the user is free
     // to uncheck cutting planes and to add/remove objects while this dialog is open
     // We must remove in this order because the tree hierary of the features is Z->Y->X and Cut->Box
-    if (doc->getObject(CutZName)) {
+    if (auto* cut = findObject(CutZName)) {
         // the topmost cut transparency determines the overall transparency
-        storeTransparency(doc->getObject(CutZName));
+        storeTransparency(cut);
         deleteObject(CutZName);
     }
-    if (doc->getObject(BoxZName)) {
+    if (findObject(BoxZName)) {
         deleteObject(BoxZName);
     }
-    if (doc->getObject(CutYName)) {
-        storeTransparency(doc->getObject(CutYName));
+    if (auto* cut = findObject(CutYName)) {
+        storeTransparency(cut);
         deleteObject(CutYName);
     }
-    if (doc->getObject(BoxYName)) {
+    if (findObject(BoxYName)) {
         deleteObject(BoxYName);
     }
-    if (doc->getObject(CutXName)) {
-        storeTransparency(doc->getObject(CutXName));
+    if (auto* cut = findObject(CutXName)) {
+        storeTransparency(cut);
         deleteObject(CutXName);
     }
-    if (doc->getObject(BoxXName)) {
+    if (findObject(BoxXName)) {
         deleteObject(BoxXName);
     }
 }
 
 void SectionCut::deleteCompound()
 {
-    // get the object with the right name
-    if (auto compoundObject = doc->getObject(CompoundName)) {
-        App::DocumentObject* anObject = compoundObject;
+    if (auto* compoundObject = findObject(CompoundName)) {
         // to later store the childs
-        std::vector<App::DocumentObject*> compoundChilds;
+        std::vector<App::DocumentObject*> compoundChilds =
+            semanticLinkResources();
 
         // check if this is a BooleanFragments or a Part::Compound
         auto pcCompoundDelPart = dynamic_cast<Part::Compound*>(compoundObject);
         Gui::ViewProvider* pcCompoundDelBF {};
-        if (!pcCompoundDelPart) {
+        if (compoundChilds.empty() && !pcCompoundDelPart) {
             // check for BooleanFragments
             pcCompoundDelBF = Gui::Application::Instance->getViewProvider(compoundObject);
             if (!pcCompoundDelBF) {
@@ -572,7 +1864,7 @@ void SectionCut::deleteCompound()
             }
             compoundChilds = pcCompoundDelBF->claimChildren();
         }
-        else {
+        else if (compoundChilds.empty()) {
             pcCompoundDelPart->Links.getLinks(compoundChilds);
         }
 
@@ -580,26 +1872,70 @@ void SectionCut::deleteCompound()
         auto foundObj = std::find_if(
             ObjectsListVisible.begin(),
             ObjectsListVisible.end(),
-            [anObject](const App::DocumentObjectT& obj) { return (obj.getObject() == anObject); }
+            [compoundObject](const App::DocumentObjectT& obj) {
+                return obj.getObject() == compoundObject;
+            }
         );
         if (foundObj != ObjectsListVisible.end()) {
             ObjectsListVisible.erase(foundObj);
         }
-        doc->removeObject(CompoundName);
+        std::vector<ExactObjectIdentity> childIdentities;
+        childIdentities.reserve(compoundChilds.size());
+        for (auto* child : compoundChilds) {
+            ExactObjectIdentity identity;
+            identity.capture(child);
+            childIdentities.push_back(std::move(identity));
+        }
+        if (auto* owner = findSemanticOwner()) {
+            auto* compoundProperty =
+                dynamic_cast<App::PropertyLinkHidden*>(
+                    owner->getPropertyByName(
+                        SectionResourceDescriptors[0].propertyName
+                    )
+                );
+            auto* linksProperty =
+                dynamic_cast<App::PropertyLinkListHidden*>(
+                    owner->getPropertyByName(
+                        SectionCutLinksProperty
+                    )
+                );
+            if (!compoundProperty || !linksProperty
+                || compoundProperty->getValue()
+                    != compoundObject) {
+                throw Base::RuntimeError(
+                    "The section cut refused to delete an unbound "
+                    "compound graph"
+                );
+            }
+            compoundProperty->setValue(nullptr);
+            linksProperty->setValues({});
+        }
+        else {
+            legacyResourceIdentities[0].clear();
+            legacyLinkIdentities.clear();
+        }
+        const std::string compoundName =
+            compoundObject->getNameInDocument();
+        doc->removeObject(compoundName.c_str());
         // now delete the objects that have been part of the compound
-        for (auto aChild : compoundChilds) {
-            anObject = doc->getObject(aChild->getNameInDocument());
+        for (const auto& identity : childIdentities) {
+            auto* child = identity.resolve(doc);
+            if (!child) {
+                continue;
+            }
             auto foundObjInner = std::find_if(
                 ObjectsListVisible.begin(),
                 ObjectsListVisible.end(),
-                [anObject](const App::DocumentObjectT& objInner) {
-                    return (objInner.getObject() == anObject);
+                [child](const App::DocumentObjectT& objInner) {
+                    return objInner.getObject() == child;
                 }
             );
             if (foundObjInner != ObjectsListVisible.end()) {
                 ObjectsListVisible.erase((foundObjInner));
             }
-            doc->removeObject(aChild->getNameInDocument());
+            const std::string childName =
+                child->getNameInDocument();
+            doc->removeObject(childName.c_str());
         }
     }
 }
@@ -638,6 +1974,7 @@ Part::Box* SectionCut::createBox(const char* name, const Base::Vector3f& size)  
     pcBox->Length.setValue(size[0] + 1.0);
     pcBox->Width.setValue(size[1] + 1.0);
     pcBox->Height.setValue(size[2] + 1.0);
+    setSemanticResource(name, pcBox);
 
     return pcBox;
 }
@@ -819,6 +2156,7 @@ Part::Cut* SectionCut::createCut(const char* name)
             + std::string(" could not be added\n")
         );
     }
+    setSemanticResource(name, pcCut);
 
     return pcCut;
 }
@@ -843,8 +2181,9 @@ void SectionCut::startCutting(bool isInitial)
     }
     // the document might have been changed
     if (doc != Gui::Application::Instance->activeDocument()->getDocument()) {
-        // refresh documents list
-        onRefreshCutPBclicked();
+        throw Base::RuntimeError(
+            "Section cut error: the active document changed"
+        );
     }
 
     deleteObejcts();
@@ -856,12 +2195,7 @@ void SectionCut::startCutting(bool isInitial)
     // we enable the sliders because for assemblies we disabled them
     setSlidersEnabled(true);
 
-    try {
-        startObjectCutting(isInitial);
-    }
-    catch (const Base::Exception& e) {
-        e.reportException();
-    }
+    startObjectCutting(isInitial);
 }
 
 bool SectionCut::findObjects(std::vector<App::DocumentObject*>& objects)
@@ -885,7 +2219,12 @@ bool SectionCut::findObjects(std::vector<App::DocumentObject*>& objects)
             }
         }
         // get all shapes that are also Part::Features
-        if (object->getPropertyByName("Shape") != nullptr && object->isDerivedFrom<Part::Feature>()) {
+        if (object->isDerivedFrom<Part::BodyBase>()
+            && object->getPropertyByName("Shape")) {
+            objects.push_back(object);
+        }
+        else if (object->getPropertyByName("Shape") != nullptr
+                 && object->isDerivedFrom<Part::Feature>()) {
             // sort out 2D objects, datums, App:Parts, compounds and objects that are
             // part of a PartDesign body
             if (!object->isDerivedFrom<Part::Part2DObject>() && !object->isDerivedFrom<Part::Datum>()
@@ -897,7 +2236,7 @@ bool SectionCut::findObjects(std::vector<App::DocumentObject*>& objects)
         }
         // get Links that are derived from Part objects
         if (auto pcLink = dynamic_cast<App::Link*>(object)) {
-            auto linkedObject = doc->getObject(pcLink->LinkedObject.getObjectName());
+            auto* linkedObject = pcLink->getLink();
             if (linkedObject != nullptr && linkedObject->isDerivedFrom<Part::Feature>()) {
                 objects.push_back(object);
             }
@@ -1061,8 +2400,6 @@ std::vector<App::DocumentObject*> createLinks(
             }
         }
 
-        // hide the objects since only the cut should later be visible
-        itCuts->Visibility.setValue(false);
     }
     return links;
 }
@@ -1243,7 +2580,7 @@ App::DocumentObject* SectionCut::getCutYBase(
 {
     // if there is already a cut, we must take it as feature to be cut
     if (hasBoxX) {
-        return doc->getObject(CutXName);
+        return findObject(CutXName);
     }
 
     if (num == 1 || !(ui->groupBoxIntersecting->isChecked())) {
@@ -1260,11 +2597,11 @@ App::DocumentObject* SectionCut::getCutZBase(
 ) const
 {
     if (hasBoxY) {
-        return doc->getObject(CutYName);
+        return findObject(CutYName);
     }
 
     if (hasBoxX && !hasBoxY) {
-        return doc->getObject(CutXName);
+        return findObject(CutXName);
     }
 
     if (num == 1 || !(ui->groupBoxIntersecting->isChecked())) {
@@ -1349,6 +2686,7 @@ void SectionCut::createAllObjects(const std::vector<App::DocumentObject*>& Objec
     // create link objects for all found elements
     std::vector<App::DocumentObject*> ObjectsListLinks;
     ObjectsListLinks = createLinks(doc, ObjectsListCut);
+    setSemanticLinkResources(ObjectsListLinks);
 
     App::DocumentObject* CutCompoundBF = nullptr;
     Part::Compound* CutCompoundPart = nullptr;
@@ -1364,9 +2702,6 @@ void SectionCut::createAllObjects(const std::vector<App::DocumentObject*>& Objec
         // if there is only one object to be cut, we cannot create a BooleanFragments object
         CutCompoundPart = createCompound(ObjectsListLinks, compoundTransparency);
     }
-
-    // make all objects invisible so that only the compound remains
-    setObjectsVisible(false);
 
     auto [BoundingBoxSize, BoundingBoxOrigin] = adjustRanges();
 
@@ -1466,23 +2801,55 @@ SectionCut* SectionCut::makeDockWidget(QWidget* parent)
     return sectionCut;
 }
 
+void SectionCut::refreshForActiveDocument()
+{
+    onRefreshCutPBclicked();
+}
+
+bool SectionCut::finalizeClose()
+{
+    if (closeFinalized) {
+        return true;
+    }
+    if (!ownsLiveDocument()) {
+        closeFinalized = true;
+        return true;
+    }
+
+    const bool showCut =
+        ui->keepOnlyCutCB->isChecked() && findSemanticOwner();
+    if (!runAtomicChange(
+            "Finish persistent section cut",
+            [this, showCut]() {
+                setAcceptedVisibility(showCut);
+            },
+            false
+        )) {
+        return false;
+    }
+    closeFinalized = true;
+    return true;
+}
+
 /** Destroys the object and frees any allocated resources */
 SectionCut::~SectionCut()
 {
-    // there might be no document
-    if (!Gui::Application::Instance->activeDocument()) {
-        noDocumentActions();
+    if (closeFinalized || !ownsLiveDocument()) {
         return;
     }
-    if (!ui->keepOnlyCutCB->isChecked()) {
-        // make all objects visible that have been visible when the dialog was called
-        // because we made them invisible when we created cuts
-        setObjectsVisible(true);
+    if (!finalizeClose()) {
+        Base::Console().warning(
+            "Persistent section-cut visibility could not be finalized while "
+            "its editor was being destroyed\n"
+        );
     }
 }
 
 void SectionCut::reject()
 {
+    if (!finalizeClose()) {
+        return;
+    }
     QDialog::reject();
     auto dw = qobject_cast<QDockWidget*>(parent());
     if (dw) {
@@ -1492,18 +2859,32 @@ void SectionCut::reject()
 
 void SectionCut::onGroupBoxXtoggled()
 {
-    // reset the cut
-    startCutting();
+    runAtomicChange(
+        "Edit persistent section cut",
+        [this]() {
+            startCutting();
+        }
+    );
 }
 
 void SectionCut::onGroupBoxYtoggled()
 {
-    startCutting();
+    runAtomicChange(
+        "Edit persistent section cut",
+        [this]() {
+            startCutting();
+        }
+    );
 }
 
 void SectionCut::onGroupBoxZtoggled()
 {
-    startCutting();
+    runAtomicChange(
+        "Edit persistent section cut",
+        [this]() {
+            startCutting();
+        }
+    );
 }
 
 // helper function for the onFlip_clicked signal
@@ -1649,6 +3030,15 @@ void SectionCut::adjustYZRanges(SbBox3f CutBoundingBox)
 
 void SectionCut::onCutXvalueChanged(double val)
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Move persistent section cut",
+            [this, val]() {
+                onCutXvalueChanged(val);
+            }
+        );
+        return;
+    }
     CutValueHelper(val, ui->cutX, ui->cutXHS);
 
     // get the cut box
@@ -1795,6 +3185,15 @@ void SectionCut::onCutXHSChanged(int val)
 
 void SectionCut::onCutYvalueChanged(double val)
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Move persistent section cut",
+            [this, val]() {
+                onCutYvalueChanged(val);
+            }
+        );
+        return;
+    }
     CutValueHelper(val, ui->cutY, ui->cutYHS);
 
     auto CutBox = findObject(BoxYName);
@@ -1945,6 +3344,15 @@ void SectionCut::onCutYHSChanged(int val)
 
 void SectionCut::onCutZvalueChanged(double val)
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Move persistent section cut",
+            [this, val]() {
+                onCutZvalueChanged(val);
+            }
+        );
+        return;
+    }
     CutValueHelper(val, ui->cutZ, ui->cutZHS);
 
     auto CutBox = findObject(BoxZName);
@@ -2116,6 +3524,15 @@ void SectionCut::FlipClickedHelper(const char* BoxName)
 
 void SectionCut::onFlipXclicked()
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Flip persistent section cut",
+            [this]() {
+                onFlipXclicked();
+            }
+        );
+        return;
+    }
     FlipClickedHelper(BoxXName);
 
     if (auto CutObject = findOrCreateObject(CutXName)) {
@@ -2138,6 +3555,15 @@ void SectionCut::onFlipXclicked()
 
 void SectionCut::onFlipYclicked()
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Flip persistent section cut",
+            [this]() {
+                onFlipYclicked();
+            }
+        );
+        return;
+    }
     FlipClickedHelper(BoxYName);
 
     if (auto CutObject = findOrCreateObject(CutYName)) {
@@ -2154,6 +3580,15 @@ void SectionCut::onFlipYclicked()
 
 void SectionCut::onFlipZclicked()
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Flip persistent section cut",
+            [this]() {
+                onFlipZclicked();
+            }
+        );
+        return;
+    }
     FlipClickedHelper(BoxZName);
 
     if (auto CutObject = findOrCreateObject(CutZName)) {
@@ -2163,7 +3598,7 @@ void SectionCut::onFlipZclicked()
 
 Part::Box* SectionCut::findCutBox(const char* name) const
 {
-    if (auto obj = doc->getObject(name)) {
+    if (auto obj = semanticResource(name)) {
         auto pcBox = dynamic_cast<Part::Box*>(obj);
         if (!pcBox) {
             throw Base::RuntimeError("Section cut error: cut box is incorrectly named, cannot proceed");
@@ -2177,7 +3612,7 @@ Part::Box* SectionCut::findCutBox(const char* name) const
 
 App::DocumentObject* SectionCut::findObject(const char* objName) const
 {
-    return doc ? doc->getObject(objName) : nullptr;
+    return semanticResource(objName);
 }
 
 App::DocumentObject* SectionCut::findOrCreateObject(const char* objName)
@@ -2197,6 +3632,15 @@ App::DocumentObject* SectionCut::findOrCreateObject(const char* objName)
 // changes the cutface color
 void SectionCut::onCutColorclicked()
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Change persistent section cut appearance",
+            [this]() {
+                onCutColorclicked();
+            }
+        );
+        return;
+    }
     if (ui->groupBoxX->isChecked() || ui->groupBoxY->isChecked() || ui->groupBoxZ->isChecked()) {
         changeCutBoxColors();
     }
@@ -2217,41 +3661,50 @@ void SectionCut::changeCutBoxColors()
             boxVPGO->Transparency.setValue(boxTransparency);
         }
     };
-    if (doc->getObject(BoxXName)) {
-        setColorTransparency(doc->getObject(BoxXName));
+    if (auto* box = findObject(BoxXName)) {
+        setColorTransparency(box);
     }
-    if (doc->getObject(BoxYName)) {
-        setColorTransparency(doc->getObject(BoxYName));
+    if (auto* box = findObject(BoxYName)) {
+        setColorTransparency(box);
     }
-    if (doc->getObject(BoxZName)) {
-        setColorTransparency(doc->getObject(BoxZName));
+    if (auto* box = findObject(BoxZName)) {
+        setColorTransparency(box);
     }
 
     // we must recompute the topmost cut to make the color visible
     // we must hereby first recompute ewvery cut non-recursively in the order X -> Y -> Z
     // eventually recompute the topmost cut recursively
-    if (doc->getObject(CutXName)) {
-        doc->getObject(CutXName)->recomputeFeature(false);
+    if (auto* cut = findObject(CutXName)) {
+        cut->recomputeFeature(false);
     }
-    if (doc->getObject(CutYName)) {
-        doc->getObject(CutYName)->recomputeFeature(false);
+    if (auto* cut = findObject(CutYName)) {
+        cut->recomputeFeature(false);
     }
-    if (doc->getObject(CutZName)) {
-        doc->getObject(CutZName)->recomputeFeature(false);
+    if (auto* cut = findObject(CutZName)) {
+        cut->recomputeFeature(false);
     }
-    if (doc->getObject(CutZName)) {
-        doc->getObject(CutZName)->recomputeFeature(true);
+    if (auto* cut = findObject(CutZName)) {
+        cut->recomputeFeature(true);
     }
-    else if (doc->getObject(CutYName)) {
-        doc->getObject(CutYName)->recomputeFeature(true);
+    else if (auto* cut = findObject(CutYName)) {
+        cut->recomputeFeature(true);
     }
-    else if (doc->getObject(CutXName)) {
-        doc->getObject(CutXName)->recomputeFeature(true);
+    else if (auto* cut = findObject(CutXName)) {
+        cut->recomputeFeature(true);
     }
 }
 
 void SectionCut::onTransparencyHSMoved(int val)
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Change persistent section cut appearance",
+            [this, val]() {
+                onTransparencyHSMoved(val);
+            }
+        );
+        return;
+    }
     ui->CutTransparencyHS->setToolTip(QString::number(val) + QStringLiteral(" %"));
     // highlight the tooltip
     QToolTip::showText(QCursor::pos(), QString::number(val) + QStringLiteral(" %"), nullptr);
@@ -2268,6 +3721,15 @@ void SectionCut::onTransparencyHSChanged(int val)
 // change from/to BooleanFragments compound
 void SectionCut::onGroupBoxIntersectingToggled()
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Edit persistent section cut",
+            [this]() {
+                onGroupBoxIntersectingToggled();
+            }
+        );
+        return;
+    }
     // re-cut
     if (ui->groupBoxX->isChecked() || ui->groupBoxY->isChecked() || ui->groupBoxZ->isChecked()) {
         startCutting();
@@ -2277,6 +3739,15 @@ void SectionCut::onGroupBoxIntersectingToggled()
 // changes the BooleanFragments color
 void SectionCut::onBFragColorclicked()
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Change persistent section cut appearance",
+            [this]() {
+                onBFragColorclicked();
+            }
+        );
+        return;
+    }
     // when there is no cut yet, there is nothing to do
     if (!(ui->groupBoxX->isChecked() || ui->groupBoxY->isChecked() || ui->groupBoxZ->isChecked())) {
         return;
@@ -2284,26 +3755,23 @@ void SectionCut::onBFragColorclicked()
 
     setBooleanFragmentsColor();
     // we must recompute the topmost cut to make the color visible
-    if (doc->getObject(CutZName)) {
-        doc->getObject(CutZName)->recomputeFeature(true);
+    if (auto* cut = findObject(CutZName)) {
+        cut->recomputeFeature(true);
     }
-    else if (doc->getObject(CutYName)) {
-        doc->getObject(CutYName)->recomputeFeature(true);
+    else if (auto* cut = findObject(CutYName)) {
+        cut->recomputeFeature(true);
     }
-    else if (doc->getObject(CutXName)) {
-        doc->getObject(CutXName)->recomputeFeature(true);
+    else if (auto* cut = findObject(CutXName)) {
+        cut->recomputeFeature(true);
     }
 }
 
 // sets BooleanFragments color
 void SectionCut::setBooleanFragmentsColor()
 {
-    App::DocumentObject* compoundObject {};
-    if (doc->getObject(CompoundName)) {
-        // get the object with the right name
-        compoundObject = doc->getObject(CompoundName);
-    }
-    else {
+    App::DocumentObject* compoundObject =
+        findObject(CompoundName);
+    if (!compoundObject) {
         Base::Console().error("Section cut error: compound is incorrectly named, cannot proceed\n");
         return;
     }
@@ -2330,6 +3798,15 @@ void SectionCut::setBooleanFragmentsColor()
 
 void SectionCut::onBFragTransparencyHSMoved(int val)
 {
+    if (!atomicChangeActive()) {
+        runAtomicChange(
+            "Change persistent section cut appearance",
+            [this, val]() {
+                onBFragTransparencyHSMoved(val);
+            }
+        );
+        return;
+    }
     // lambda to set transparency
     auto setTransparency = [&](App::DocumentObject* cutObject) {
         Gui::ViewProvider* CutVP = Gui::Application::Instance->getViewProvider(cutObject);
@@ -2363,14 +3840,14 @@ void SectionCut::onBFragTransparencyHSMoved(int val)
     if (ui->groupBoxX->isChecked() || ui->groupBoxY->isChecked() || ui->groupBoxZ->isChecked()) {
         setBooleanFragmentsColor();
         // we must set the transparency to every cut and recompute in the order X -> Y -> Z
-        if (doc->getObject(CutXName)) {
-            setTransparency(doc->getObject(CutXName));
+        if (auto* cut = findObject(CutXName)) {
+            setTransparency(cut);
         }
-        if (doc->getObject(CutYName)) {
-            setTransparency(doc->getObject(CutYName));
+        if (auto* cut = findObject(CutYName)) {
+            setTransparency(cut);
         }
-        if (doc->getObject(CutZName)) {
-            setTransparency(doc->getObject(CutZName));
+        if (auto* cut = findObject(CutZName)) {
+            setTransparency(cut);
         }
     }
 }
@@ -2383,55 +3860,111 @@ void SectionCut::onBFragTransparencyHSChanged(int val)
 // refreshes the list of document objects and the visible objects
 void SectionCut::onRefreshCutPBclicked()
 {
-    // get document
-    auto docGui = Gui::Application::Instance->activeDocument();
-    if (!docGui) {
-        Base::Console().error("Section cut error: there is no document\n");
-        return;
-    }
-    doc = docGui->getDocument();
-    // get all objects in the document
-    std::vector<App::DocumentObject*> ObjectsList = doc->getObjects();
-    if (ObjectsList.empty()) {
-        Base::Console().error("Section cut error: there are no objects in the document\n");
-        return;
-    }
-    // empty the ObjectsListVisible
-    ObjectsListVisible.clear();
-    // now store those that are currently visible
-    for (auto anObject : ObjectsList) {
-        if (anObject->Visibility.getValue()) {
-            ObjectsListVisible.emplace_back(anObject);
+    try {
+        auto* docGui = Gui::Application::Instance
+            ? Gui::Application::Instance->activeDocument()
+            : nullptr;
+        auto* activeDocument = docGui ? docGui->getDocument() : nullptr;
+        if (!activeDocument) {
+            noDocumentActions();
+            Base::Console().error(
+                "Section cut error: there is no document\n"
+            );
+            return;
         }
+
+        const auto objects = activeDocument->getObjects();
+        if (objects.empty()) {
+            Base::Console().error(
+                "Section cut error: there are no objects in the document\n"
+            );
+            return;
+        }
+
+        doc = activeDocument;
+        documentUid = doc->Uid.getValueStr();
+        closeFinalized = false;
+        semanticOwnerIdentity.clear();
+        newResourceIdentities.clear();
+        clearLegacyResources();
+        loadSemanticSources();
+        if (!findSemanticOwner()) {
+            captureLegacyResources();
+        }
+        if (ObjectsListVisible.empty()) {
+            for (auto* object : objects) {
+                if (object->Visibility.getValue()
+                    && PartGui::isModelingObjectActive(object)
+                    && isSectionCutPresentationSource(object)
+                    && !object->isDerivedFrom<App::DocumentTimeline>()
+                    && !App::DocumentTimeline::hasTimelineResourceRole(
+                        object
+                    )
+                    && !isExactSectionCutOwner(object)) {
+                    ObjectsListVisible.emplace_back(object);
+                }
+            }
+        }
+
+        {
+            const QSignalBlocker blockGroupX(ui->groupBoxX);
+            const QSignalBlocker blockGroupY(ui->groupBoxY);
+            const QSignalBlocker blockGroupZ(ui->groupBoxZ);
+            const QSignalBlocker blockCutX(ui->cutX);
+            const QSignalBlocker blockCutY(ui->cutY);
+            const QSignalBlocker blockCutZ(ui->cutZ);
+            const QSignalBlocker blockSliderX(ui->cutXHS);
+            const QSignalBlocker blockSliderY(ui->cutYHS);
+            const QSignalBlocker blockSliderZ(ui->cutZHS);
+            const QSignalBlocker blockFlipX(ui->flipX);
+            const QSignalBlocker blockFlipY(ui->flipY);
+            const QSignalBlocker blockFlipZ(ui->flipZ);
+            const QSignalBlocker blockIntersection(
+                ui->groupBoxIntersecting
+            );
+            const QSignalBlocker blockCutColor(ui->CutColor);
+            const QSignalBlocker blockCutTransparency(
+                ui->CutTransparencyHS
+            );
+            const QSignalBlocker blockFragmentColor(ui->BFragColor);
+            const QSignalBlocker blockFragmentTransparency(
+                ui->BFragTransparencyHS
+            );
+
+            hasBoxX = findObject(BoxXName)
+                && findObject(CutXName);
+            hasBoxY = findObject(BoxYName)
+                && findObject(CutYName);
+            hasBoxZ = findObject(BoxZName)
+                && findObject(CutZName);
+            ui->groupBoxX->setChecked(hasBoxX);
+            ui->groupBoxY->setChecked(hasBoxY);
+            ui->groupBoxZ->setChecked(hasBoxZ);
+
+            std::vector<App::DocumentObject*> cutObjects;
+            (void)findObjects(cutObjects);
+            filterObjects(cutObjects);
+            ui->groupBoxIntersecting->setEnabled(
+                cutObjects.size() > 1
+            );
+            ui->RefreshCutPB->setEnabled(
+                !(hasBoxX || hasBoxY || hasBoxZ)
+            );
+
+            const Base::BoundBox3d bounds = collectObjects();
+            initControls(bounds);
+            initCutRanges();
+        }
+        tryStartCutting();
     }
-    // disable intersection option because BooleanFragments requires at least 2 objects
-    ui->groupBoxIntersecting->setEnabled(ObjectsListVisible.size() > 1);
-    // reset defaults
-    hasBoxX = false;
-    hasBoxY = false;
-    hasBoxZ = false;
-    // we can have existing cuts
-    if (doc->getObject(CutZName)) {
-        hasBoxZ = true;
-        ui->groupBoxZ->blockSignals(true);
-        ui->groupBoxZ->setChecked(true);
-        ui->groupBoxZ->blockSignals(false);
+    catch (Base::Exception& error) {
+        error.reportException();
     }
-    if (doc->getObject(CutYName)) {
-        hasBoxY = true;
-        ui->groupBoxY->blockSignals(true);
-        ui->groupBoxY->setChecked(true);
-        ui->groupBoxY->blockSignals(false);
-    }
-    if (doc->getObject(CutXName)) {
-        hasBoxX = true;
-        ui->groupBoxX->blockSignals(true);
-        ui->groupBoxX->setChecked(true);
-        ui->groupBoxX->blockSignals(false);
-    }
-    // if there is a cut, disable the button
-    if (hasBoxX || hasBoxY || hasBoxZ) {
-        ui->RefreshCutPB->setEnabled(false);
+    catch (const std::exception& error) {
+        Base::Console().error(
+            "Section cut refresh failed: %s\n",
+            error.what()
+        );
     }
 }
 
@@ -2535,19 +4068,23 @@ App::DocumentObject* SectionCut::CreateBooleanFragments(App::Document* doc)
     // create the object
     Gui::Command::doCommand(Gui::Command::Doc, "import FreeCAD");
     Gui::Command::doCommand(Gui::Command::Doc, "from BOPTools import SplitFeatures");
-    Gui::Command::doCommand(
+    auto* object = Gui::Command::runDocumentObjectCommand(
         Gui::Command::Doc,
-        "SplitFeatures.makeBooleanFragments(name=\"%s\")",
-        CompoundName
+        *doc,
+        QStringLiteral(
+            "SplitFeatures.makeBooleanFragments(name=\"%1\")"
+        )
+            .arg(QString::fromLatin1(CompoundName))
+            .toUtf8(),
+        App::DocumentObject::getClassTypeId()
     );
-    // check for success
-    App::DocumentObject* object = doc->getObject(CompoundName);
     if (!object) {
         Base::Console().error((std::string("Section cut error: ") + std::string(CompoundName)
                                + std::string(" could not be added\n"))
                                   .c_str());
         return nullptr;
     }
+    setSemanticResource(CompoundName, object);
     return object;
     // NOLINTEND
 }
@@ -2593,6 +4130,7 @@ Part::Compound* SectionCut::createCompound(const std::vector<App::DocumentObject
                                   + std::string(" could not be added\n"))
                                      .c_str());
     }
+    setSemanticResource(CompoundName, CutCompoundPart);
 
     // add the link to the compound
     CutCompoundPart->Links.setValue(links);

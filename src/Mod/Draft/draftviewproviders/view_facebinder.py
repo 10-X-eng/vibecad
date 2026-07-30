@@ -52,16 +52,14 @@ class ViewProviderFacebinder(ViewProviderDraft):
         taskd = DraftGui.FacebinderTaskPanel()
         taskd.obj = vobj.Object
         taskd.update()
-        Gui.Control.showDialog(taskd)
+        Gui.Control.showDialog(taskd, vobj.Document)
         return True
 
     def unsetEdit(self, vobj, mode):
         if mode != 0:
             return None
 
-        # There is no finish or reject function:
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        Gui.Control.closeDialog(vobj.Document)
         return True
 
 

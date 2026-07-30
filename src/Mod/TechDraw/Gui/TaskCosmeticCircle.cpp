@@ -51,18 +51,23 @@ TaskCosmeticCircle::TaskCosmeticCircle(TechDraw::DrawViewPart* partFeat,
                                    std::string circleName) :
     ui(new Ui_TaskCosmeticCircle),
     m_partFeat(partFeat),
+    m_partIdentity(partFeat),
     m_circleName(circleName),
     m_ce(nullptr),
-    m_saveCE(nullptr),
     m_createMode(false)
 {
-    //existence of partFeat is checked in calling command
-
+    if (!partFeat) {
+        throw Base::TypeError(
+            "The cosmetic-circle editor requires a live drawing view"
+        );
+    }
     m_ce = m_partFeat->getCosmeticEdgeBySelection(m_circleName);
     if (!m_ce) {
-        Base::Console().error("TaskCosmeticCircle - bad parameters. Cannot proceed.\n");
-        return;
+        throw Base::TypeError(
+            "The selected edge is not an editable cosmetic circle"
+        );
     }
+    m_tag = m_ce->getTagAsString();
 
     ui->setupUi(this);
 
@@ -80,13 +85,17 @@ TaskCosmeticCircle::TaskCosmeticCircle(TechDraw::DrawViewPart* partFeat,
                                    std::vector<Base::Vector3d> points, bool is3d) :
     ui(new Ui_TaskCosmeticCircle),
     m_partFeat(partFeat),
+    m_partIdentity(partFeat),
     m_ce(nullptr),
-    m_saveCE(nullptr),
     m_createMode(true),
     m_is3d(is3d),
     m_points(points)
 {
-    //existence of partFeat is checked in calling command
+    if (!partFeat || points.empty()) {
+        throw Base::TypeError(
+            "A cosmetic circle requires one live view and a center point"
+        );
+    }
 
     ui->setupUi(this);
 
@@ -100,9 +109,6 @@ TaskCosmeticCircle::TaskCosmeticCircle(TechDraw::DrawViewPart* partFeat,
 
 TaskCosmeticCircle::~TaskCosmeticCircle()
 {
-    if (m_saveCE) {
-        delete m_saveCE;
-    }
 }
 
 void TaskCosmeticCircle::updateTask()
@@ -153,11 +159,18 @@ void TaskCosmeticCircle::setUiPrimary()
     ui->qsbCenterX->setValue(displayCenter.x);
     ui->qsbCenterY->setUnit(Base::Unit::Length);
     ui->qsbCenterY->setValue(displayCenter.y);
-    ui->qsbCenterY->setUnit(Base::Unit::Length);
+    ui->qsbCenterZ->setUnit(Base::Unit::Length);
     ui->qsbCenterZ->setValue(displayCenter.z);
 
-    double radius = (mathPoints[1] - mathPoints[0]).Length() / m_partFeat->getScale();
-    ui->qsbRadius->setValue(radius);
+    // The shipped command is a one-point circle: preserve the explicit
+    // radius default from the task UI.  A second selected point, when
+    // supplied by another caller, defines the initial radius.
+    if (mathPoints.size() > 1) {
+        double radius =
+            (mathPoints[1] - mathPoints[0]).Length()
+            / m_partFeat->getScale();
+        ui->qsbRadius->setValue(radius);
+    }
 
     ui->qsbStartAngle->setValue(0);
     ui->qsbEndAngle->setValue(360);
@@ -224,10 +237,6 @@ void TaskCosmeticCircle::enableArcWidgets(bool newState)
 //******************************************************************************
 void TaskCosmeticCircle::createCosmeticCircle(void)
 {
-//    Base::Console().message("TCL::createCosmeticCircle()\n");
-
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Cosmetic Circle"));
-
     // point from Page/View is conventional coordinates (Y+ up), unscaled, unrotated, but centered (Csriz)
     // this is Canonical form with out inversion.
     // point from 3d is OXYZ and needs to be projected.
@@ -252,9 +261,15 @@ void TaskCosmeticCircle::createCosmeticCircle(void)
     // after all the calculations are done, we invert the geometry
     m_tag = m_partFeat->addCosmeticEdge(bg->inverted());
     m_ce = m_partFeat->getCosmeticEdge(m_tag);
+    if (!m_ce) {
+        throw Base::RuntimeError(
+            "The cosmetic circle was not added to its drawing view"
+        );
+    }
     m_ce->setFormat(LineFormat::getCurrentLineFormat());
-
-    Gui::Command::commitCommand(tid);
+    m_partFeat->CosmeticEdges.setValues(
+        m_partFeat->CosmeticEdges.getValues()
+    );
 }
 
 void TaskCosmeticCircle::updateCosmeticCircle(void)
@@ -291,31 +306,59 @@ bool TaskCosmeticCircle::accept()
                                 ui->qsbRadius->value().getValue());
         return false;
     }
-    if (m_createMode) {
-        createCosmeticCircle();
-        m_partFeat->add1CEToGE(m_tag);
-        m_partFeat->refreshCEGeoms();
-        m_partFeat->requestPaint();
-    } else {
-        //update mode
-        int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Update Cosmetic Circle"));
-        updateCosmeticCircle();
-        m_partFeat->refreshCEGeoms();
-        m_partFeat->requestPaint();
-        Gui::Command::updateActive();
-        Gui::Command::commitCommand(tid);
+    auto* partFeature = m_partIdentity.resolve();
+    if (!partFeature) {
+        return false;
     }
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            partFeature->getDocument(),
+            m_createMode
+                ? "Create Cosmetic Circle"
+                : "Update Cosmetic Circle"
+        );
+        m_partFeat = partFeature;
+        if (m_createMode) {
+            createCosmeticCircle();
+            partFeature->add1CEToGE(m_tag);
+        } else {
+            partFeature->CosmeticEdges.setValues(
+                partFeature->CosmeticEdges.getValues()
+            );
+            m_ce = partFeature->getCosmeticEdge(m_tag);
+            if (!m_ce) {
+                throw Base::RuntimeError(
+                    "The cosmetic circle no longer exists"
+                );
+            }
+            updateCosmeticCircle();
+            partFeature->CosmeticEdges.setValues(
+                partFeature->CosmeticEdges.getValues()
+            );
+        }
+        partFeature->refreshCEGeoms();
+        partFeature->requestPaint();
+        TaskInternal::updateExactDocument(partFeature->getDocument());
+        transaction.commit();
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not apply cosmetic circle: %s\n",
+            error.what()
+        );
+        return false;
+    }
+
+    TaskInternal::resetExactEdit(partFeature->getDocument());
 
     return true;
 }
 
 bool TaskCosmeticCircle::reject()
 {
-    //there's nothing to do.
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    return false;
+    TaskInternal::resetExactEdit(m_partIdentity.resolveDocument());
+    return true;
 }
 ////////////////////////////////////////////////////////////////////////////////
 TaskDlgCosmeticCircle::TaskDlgCosmeticCircle(TechDraw::DrawViewPart* partFeat,
@@ -361,15 +404,12 @@ void TaskDlgCosmeticCircle::clicked(int)
 
 bool TaskDlgCosmeticCircle::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgCosmeticCircle::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskCosmeticCircle.cpp>
-

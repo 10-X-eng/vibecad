@@ -109,8 +109,7 @@ public:
      * @param[in] sWhy The reason for the failed execution.
      * @param[in] WhichObject The object that caused the failed execution.
      */
-    explicit DocumentObjectExecReturn(const std::string& sWhy,
-                                      DocumentObject* WhichObject = nullptr)
+    explicit DocumentObjectExecReturn(const std::string& sWhy, DocumentObject* WhichObject = nullptr)
         : Why(sWhy)
         , Which(WhichObject)
     {}
@@ -489,9 +488,9 @@ public:
     /// Options for computing the OutList
     enum OutListOption
     {
-        OutListNoExpression = 1, ///< Do not include links from the expression engine.
-        OutListNoHidden = 2, ///< Do not hide any link (i.e. include links with LinkScopeHidden).
-        OutListNoXLinked = 4, ///< Do not include links from PropertyXLink properties.
+        OutListNoExpression = 1,  ///< Do not include links from the expression engine.
+        OutListNoHidden = 2,   ///< Do not hide any link (i.e. include links with LinkScopeHidden).
+        OutListNoXLinked = 4,  ///< Do not include links from PropertyXLink properties.
     };
 
     /**
@@ -629,9 +628,11 @@ public:
      * @param[in,out] inList An optional pointer to a vector holding the output.
      * objects, with the furthest linking object ordered last.
      */
-    void getInListEx(std::set<App::DocumentObject*>& inSet,
-                     bool recursive,
-                     std::vector<App::DocumentObject*>* inList = nullptr) const;
+    void getInListEx(
+        std::set<App::DocumentObject*>& inSet,
+        bool recursive,
+        std::vector<App::DocumentObject*>* inList = nullptr
+    ) const;
 
     /**
      * @brief Get a set of all objects linking to this object.
@@ -807,8 +808,7 @@ public:
      *
      * @return Return the element map version string.
      */
-    virtual std::string getElementMapVersion(const App::Property* prop,
-                                             bool restored = false) const;
+    virtual std::string getElementMapVersion(const App::Property* prop, bool restored = false) const;
 
     /** @brief Check the element map version of the property.
      *
@@ -825,7 +825,6 @@ public:
     virtual bool checkElementMapVersion(const App::Property* prop, const char* ver) const;
 
 public:
-
     /**
      * @brief Whether the object must be executed.
      *
@@ -896,11 +895,13 @@ public:
      * empty, then it returns itself. If @p subname is invalid, then it returns @c
      * nullptr.
      */
-    virtual DocumentObject* getSubObject(const char* subname,
-                                         PyObject** pyObj = nullptr,
-                                         Base::Matrix4D* mat = nullptr,
-                                         bool transform = true,
-                                         int depth = 0) const;
+    virtual DocumentObject* getSubObject(
+        const char* subname,
+        PyObject** pyObj = nullptr,
+        Base::Matrix4D* mat = nullptr,
+        bool transform = true,
+        int depth = 0
+    ) const;
 
     /**
      * @brief Get a list of objects referenced by a given subname.
@@ -920,9 +921,11 @@ public:
      *
      * @return Return a list of objects along the path of the subname.
      */
-    std::vector<DocumentObject*> getSubObjectList(const char* subname,
-                                                  std::vector<int>* subsizes = nullptr,
-                                                  bool flatten = false) const;
+    std::vector<DocumentObject*> getSubObjectList(
+        const char* subname,
+        std::vector<int>* subsizes = nullptr,
+        bool flatten = false
+    ) const;
 
     /// Reason of calling getSubObjects()
     enum GSReason
@@ -977,10 +980,10 @@ public:
      * @return A pointer to the first parent group object, or @c nullptr if no such
      * parent exists.
      */
-     App::DocumentObject* getFirstParent() const;
+    App::DocumentObject* getFirstParent() const;
 
     /**
-      * @brief Get the linked object with an optional transformation.
+     * @brief Get the linked object with an optional transformation.
      *
      * This method returns the linked object of this document object.  The @p
      * depth parameter indicates the current depth of recursion, which is used
@@ -1001,10 +1004,12 @@ public:
      * @return Return the linked object. This function returns itself if it is
      * not a link or the link is invalid.
      */
-    virtual DocumentObject* getLinkedObject(bool recurse = true,
-                                            Base::Matrix4D* mat = nullptr,
-                                            bool transform = false,
-                                            int depth = 0) const;
+    virtual DocumentObject* getLinkedObject(
+        bool recurse = true,
+        Base::Matrix4D* mat = nullptr,
+        bool transform = false,
+        int depth = 0
+    ) const;
 
     /**
      * @brief Check whether this object can adopt properties from linked objects.
@@ -1062,8 +1067,9 @@ public:
      * PropertyLinkBase::updateLabelReferences(), which is needed for undo/redo
      * purposes.
      */
-    std::vector<std::pair<Property*, std::unique_ptr<Property>>>
-    onProposedLabelChange(std::string& newLabel);
+    std::vector<std::pair<Property*, std::unique_ptr<Property>>> onProposedLabelChange(
+        std::string& newLabel
+    );
 
     /**
      * @brief Called to ensure that the object can control its relabeling.
@@ -1119,8 +1125,9 @@ public:
      * @return Expression info that contains the expression and whether the
      * expression is busy.
      */
-    virtual const PropertyExpressionEngine::ExpressionInfo
-    getExpression(const ObjectIdentifier& path) const;
+    virtual const PropertyExpressionEngine::ExpressionInfo getExpression(
+        const ObjectIdentifier& path
+    ) const;
 
     /**
      * @brief Rename object identifiers in expressions.
@@ -1130,8 +1137,9 @@ public:
      *
      * @param[in] paths A map of old to new object identifiers.
      */
-    virtual void
-    renameObjectIdentifiers(const std::map<App::ObjectIdentifier, App::ObjectIdentifier>& paths);
+    virtual void renameObjectIdentifiers(
+        const std::map<App::ObjectIdentifier, App::ObjectIdentifier>& paths
+    );
 
     /// Get the old label of the object.
     const std::string& getOldLabel() const
@@ -1155,7 +1163,7 @@ public:
 
     bool removeDynamicProperty(const char* prop) override;
 
-    bool renameDynamicProperty(Property *prop, const char *name) override;
+    bool renameDynamicProperty(Property* prop, const char* name) override;
 
     App::Property* addDynamicProperty(
         std::string_view type,
@@ -1192,14 +1200,16 @@ public:
      * @return The last referenced document object in the subname or if no such
      * object in subname, itself.
      */
-    App::DocumentObject* resolve(const char* subname,
-                                 App::DocumentObject** parent = nullptr,
-                                 std::string* childName = nullptr,
-                                 const char** subElement = nullptr,
-                                 PyObject** pyObj = nullptr,
-                                 Base::Matrix4D* mat = nullptr,
-                                 bool transform = true,
-                                 int depth = 0) const;
+    App::DocumentObject* resolve(
+        const char* subname,
+        App::DocumentObject** parent = nullptr,
+        std::string* childName = nullptr,
+        const char** subElement = nullptr,
+        PyObject** pyObj = nullptr,
+        Base::Matrix4D* mat = nullptr,
+        bool transform = true,
+        int depth = 0
+    ) const;
 
     /**
      * @brief Resolve a link reference that is relative to this object reference.
@@ -1256,9 +1266,11 @@ public:
      * the link.  If the output @p subname is empty, then the object
      * itself is returned.
      */
-    App::DocumentObject* resolveRelativeLink(std::string& subname,
-                                             App::DocumentObject*& link,
-                                             std::string& linkSub) const;
+    App::DocumentObject* resolveRelativeLink(
+        std::string& subname,
+        App::DocumentObject*& link,
+        std::string& linkSub
+    ) const;
 
     /**
      * @brief Adjust relative link properties to avoid cyclic links.
@@ -1276,8 +1288,10 @@ public:
      *
      * @return True if the object has been modified, false otherwise.
      */
-    virtual bool adjustRelativeLinks(const std::set<App::DocumentObject*>& inList,
-                                     std::set<App::DocumentObject*>* visited = nullptr);
+    virtual bool adjustRelativeLinks(
+        const std::set<App::DocumentObject*>& inList,
+        std::set<App::DocumentObject*>* visited = nullptr
+    );
 
     /**
      * @brief Check whether the object allows partial loading of dependent objects.
@@ -1334,8 +1348,11 @@ public:
      *
      * @return true if the subname was redirected, false otherwise.
      */
-    virtual bool
-    redirectSubName(std::ostringstream& ss, DocumentObject* topParent, DocumentObject* child) const;
+    virtual bool redirectSubName(
+        std::ostringstream& ss,
+        DocumentObject* topParent,
+        DocumentObject* child
+    ) const;
 
     /**
      * @brief A special marker to mark the object as hidden.
@@ -1475,7 +1492,6 @@ private:
     void setTouched(const char* propName);
 
 protected:  // attributes
-
     /// Python object of this class and all descendent classes.
     Py::SmartPtr PythonObject;
 
@@ -1505,10 +1521,30 @@ private:
     std::vector<DepEdge> _inListProp;
     mutable std::vector<App::DocumentObject*> _outList;
     mutable std::vector<DepEdge> _outListProp;
-    mutable std::unordered_map<const char*, App::DocumentObject*, CStringHasher, CStringHasher>
-        _outListMap;
+    mutable std::unordered_map<const char*, App::DocumentObject*, CStringHasher, CStringHasher> _outListMap;
     mutable bool _outListCached = false;
     mutable bool _outListCachedProp = false;
+
+public:
+    /**
+     * @brief Report whether a linked object is a structural timeline child.
+     *
+     * Structural children are contained or presented by this object but are
+     * not chronological inputs to it. DocumentTimeline excludes these links
+     * from dependency ordering while continuing to validate every ordinary
+     * link. The default implementation recognizes GroupExtension membership.
+     * Container types with equivalent native child properties may extend
+     * that definition.
+     *
+     * This virtual is intentionally the final virtual declaration in the
+     * class so adding the extension point does not change existing vtable
+     * slot positions.
+     *
+     * @param[in] object A linked object to classify.
+     * @return true only when the link is structural containment rather than
+     * a computation dependency.
+     */
+    virtual bool isTimelineStructuralChild(const App::DocumentObject* object) const;
 };
 
 }  // namespace App

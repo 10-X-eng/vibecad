@@ -96,7 +96,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         signals.append(self.form.OutputFileName.editingFinished)
         signals.append(self.form.Xoffset.valueChanged)
         signals.append(self.form.Yoffset.valueChanged)
-        self.form.SetOutputFileName.clicked.connect(self.SetOutputFileName)
+        self.connectSignal(
+            self.form.SetOutputFileName.clicked,
+            self.SetOutputFileName,
+        )
         return signals
 
     def SetOutputFileName(self):

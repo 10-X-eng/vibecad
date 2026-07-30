@@ -42,6 +42,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/Expression.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/CommandT.h>
@@ -601,6 +602,16 @@ ConstraintView::ConstraintView(QWidget* parent)
 ConstraintView::~ConstraintView()
 {}
 
+void ConstraintView::setSketchView(ViewProviderSketch* view)
+{
+    sketchView = view;
+}
+
+Sketcher::SketchObject* ConstraintView::getSketchObject() const
+{
+    return sketchView ? sketchView->getSketchObject() : nullptr;
+}
+
 void ConstraintView::contextMenuEvent(QContextMenuEvent* event)
 {
     QMenu menu;
@@ -608,18 +619,18 @@ void ConstraintView::contextMenuEvent(QContextMenuEvent* event)
     QList<QListWidgetItem*> items = selectedItems();
 
     // Cancel any in-progress operation
-    Gui::Document* doc = Gui::Application::Instance->activeDocument();
+    auto* sketchObject = getSketchObject();
+    Gui::Document* doc =
+        sketchObject && sketchObject->getDocument()
+        ? Gui::Application::Instance->getDocument(sketchObject->getDocument())
+        : nullptr;
     bool didRelease = SketcherGui::ReleaseHandler(doc);
 
     // Sync the FreeCAD selection with the selection in the ConstraintView widget
-    if (didRelease && item) {
-        Gui::Selection().clearSelection();
-        std::string doc_name = static_cast<ConstraintItem*>(item)
-                                   ->sketchView->getSketchObject()
-                                   ->getDocument()
-                                   ->getName();
-        std::string obj_name =
-            static_cast<ConstraintItem*>(item)->sketchView->getSketchObject()->getNameInDocument();
+    if (didRelease && item && sketchObject) {
+        std::string doc_name = sketchObject->getDocument()->getName();
+        std::string obj_name = sketchObject->getNameInDocument();
+        Gui::Selection().rmvSelection(doc_name.c_str(), obj_name.c_str());
 
         std::vector<std::string> constraintSubNames;
         for (auto&& it : items) {
@@ -754,19 +765,53 @@ void ConstraintView::centerSelectedItems()
 
 void ConstraintView::deleteSelectedItems()
 {
-    App::Document* doc = App::GetApplication().getActiveDocument();
-    if (!doc)
+    auto* sketchObject = getSketchObject();
+    if (!sketchObject || !sketchObject->getDocument()) {
         return;
-
-    doc->openTransaction("Delete constraint");
-    std::vector<Gui::SelectionObject> sel = Gui::Selection().getSelectionEx(doc->getName());
-    for (std::vector<Gui::SelectionObject>::iterator ft = sel.begin(); ft != sel.end(); ++ft) {
-        Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(ft->getObject());
-        if (vp) {
-            vp->onDelete(ft->getSubNames());
-        }
     }
-    doc->commitTransaction();
+
+    std::vector<std::string> constraintSubNames;
+    constraintSubNames.reserve(static_cast<std::size_t>(selectedItems().size()));
+    for (auto* selectedItem : selectedItems()) {
+        auto* constraintItem = dynamic_cast<ConstraintItem*>(selectedItem);
+        if (!constraintItem || constraintItem->sketch != sketchObject) {
+            continue;
+        }
+        constraintSubNames.emplace_back(
+            Sketcher::PropertyConstraintList::getConstraintName(
+                constraintItem->ConstraintNbr));
+    }
+    if (constraintSubNames.empty()) {
+        return;
+    }
+
+    auto* viewProvider = Gui::Application::Instance->getViewProvider(sketchObject);
+    if (!viewProvider) {
+        return;
+    }
+
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(sketchObject->getDocument());
+    if (!guiDocument
+        || guiDocument->openCommand("Delete constraint") == App::NullTransaction) {
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to delete the selected constraint"),
+            tr("The sketch document is already owned by another modeling operation."));
+        return;
+    }
+
+    try {
+        viewProvider->onDelete(constraintSubNames);
+        guiDocument->commitCommand();
+    }
+    catch (const Base::Exception& error) {
+        guiDocument->abortCommand();
+        Gui::TranslatedUserWarning(
+            sketchObject,
+            tr("Unable to delete the selected constraint"),
+            QString::fromUtf8(error.what()));
+    }
 }
 
 void ConstraintView::deleteAllItems()
@@ -949,6 +994,7 @@ TaskSketcherConstraints::TaskSketcherConstraints(ViewProviderSketch* sketchView)
     // we need a separate container widget to add all controls to
     proxy = new QWidget(this);
     ui->setupUi(proxy);
+    ui->listWidgetConstraints->setSketchView(sketchView);
     ui->listWidgetConstraints->setSelectionMode(QAbstractItemView::ExtendedSelection);
     ui->listWidgetConstraints->setEditTriggers(QListWidget::EditKeyPressed);
 
@@ -1404,17 +1450,23 @@ void TaskSketcherConstraints::updateAssociatedConstraintsFilter()
 
     assert(sketchView);
 
-    std::vector<Gui::SelectionObject> selection;
-    selection = Gui::Selection().getSelectionEx(nullptr, Sketcher::SketchObject::getClassTypeId());
-
-    // only one sketch with its subelements are allowed to be selected
-    if (selection.size() != 1) {
+    const Sketcher::SketchObject* Obj = sketchView->getSketchObject();
+    if (!Obj || !Obj->getDocument()) {
         return;
     }
 
-    // get the needed lists and objects
-    const std::vector<std::string>& SubNames = selection[0].getSubNames();
-    const Sketcher::SketchObject* Obj = sketchView->getSketchObject();
+    std::vector<std::string> SubNames;
+    for (const auto& selection :
+         Gui::Selection().getSelectionEx(Obj->getDocument()->getName())) {
+        if (selection.getObject() == Obj) {
+            SubNames = selection.getSubNames();
+            break;
+        }
+    }
+    if (SubNames.empty()) {
+        return;
+    }
+
     const std::vector<Sketcher::Constraint*>& vals = Obj->Constraints.getValues();
 
     std::vector<std::string> constraintSubNames;
@@ -1457,9 +1509,17 @@ void TaskSketcherConstraints::onSelectionChanged(const Gui::SelectionChanges& ms
 {
     assert(sketchView);
     assert(sketchView->getSketchObject());
+    const auto* sketchObject = sketchView->getSketchObject();
+    if (!sketchObject->getDocument()) {
+        return;
+    }
 
     std::string temp;
     if (msg.Type == Gui::SelectionChanges::ClrSelection) {
+        if (msg.pDocName
+            && strcmp(msg.pDocName, sketchObject->getDocument()->getName()) != 0) {
+            return;
+        }
         auto tmpBlock = ui->listWidgetConstraints->blockSignals(true);
         ui->listWidgetConstraints->clearSelection();
         ui->listWidgetConstraints->blockSignals(tmpBlock);
@@ -1486,8 +1546,9 @@ void TaskSketcherConstraints::onSelectionChanged(const Gui::SelectionChanges& ms
     }
 
     // is it this object??
-    if (strcmp(msg.pDocName, sketchView->getSketchObject()->getDocument()->getName()) != 0
-        || strcmp(msg.pObjectName, sketchView->getSketchObject()->getNameInDocument()) != 0
+    if (!msg.pDocName || !msg.pObjectName
+        || strcmp(msg.pDocName, sketchObject->getDocument()->getName()) != 0
+        || strcmp(msg.pObjectName, sketchObject->getNameInDocument()) != 0
         || !msg.pSubName) {
         return;
     }
@@ -1635,7 +1696,7 @@ void TaskSketcherConstraints::onListWidgetConstraintsItemSelectionChanged()
     std::string obj_name = sketchView->getSketchObject()->getNameInDocument();
 
     bool block = this->blockSelection(true);// avoid to be notified by itself
-    Gui::Selection().clearSelection();
+    Gui::Selection().rmvSelection(doc_name.c_str(), obj_name.c_str());
 
     std::vector<std::string> constraintSubNames;
     QList<QListWidgetItem*> items = ui->listWidgetConstraints->selectedItems();

@@ -23,6 +23,7 @@
 #pragma once
 
 #include <bitset>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -83,6 +84,9 @@ enum ViewStatus
     isRestoring = 2,
     UpdatingView = 3,
     TouchDocument = 4,
+    // Compatibility-only status positions retained for out-of-tree view
+    // providers built against the former presentation-gate API. Core no
+    // longer reads or writes these bits.
     VisibilityGateClosed = 5,
     VisibilityGateTransition = 6,
 };
@@ -369,9 +373,26 @@ public:
      * @return          true if the deletion is approved by the view provider.
      */
     virtual bool onDelete(const std::vector<std::string>& subNames);
+    /**
+     * Approve deletion of this private implementation object as part of its
+     * exact
+     * semantic history owner's deletion plan.
+     *
+     * The default preserves existing
+     * ViewProvider cleanup by forwarding to
+     * onDelete() with no subelements. ViewProviders
+     * whose ordinary onDelete()
+     * asks whether to delete operands may override this hook,
+     * validate the
+     * supplied owner, and approve without presenting an independent-deletion
+
+     * * question or broadening the exact deletion plan.
+     */
+    virtual bool onDeleteOwnedTimelineResource(App::DocumentObject* semanticOwner);
     /** Called before deletion
      *
-     * Unlike onDelete(), this function is guaranteed to be called before
+     * Unlike onDelete(), this function is guaranteed to be
+     * called before
      * deletion, either by Document::remObject(), or on document deletion.
      */
     virtual void beforeDelete();
@@ -382,6 +403,23 @@ public:
      * @return true if the removal is approved by the view provider.
      */
     virtual bool canDelete(App::DocumentObject* obj) const;
+    /**
+     * Return private companion objects that must be deleted with @p obj.
+     *
+     * This
+     * is a pure preflight query. Implementations must not change the
+     * document, selection,
+     * visibility, transaction, or macro state. The
+     * standard Delete command captures exact
+     * identities for returned objects
+     * and removes them only after all dependency prompts are
+     * accepted, in the
+     * same transaction as @p obj.
+     *
+     * Dispatch is intentionally
+     * non-virtual to preserve the ViewProvider ABI.
+     */
+    std::vector<App::DocumentObject*> getObjectsToDeleteWith(App::DocumentObject* obj) const;
     //@}
 
 
@@ -612,6 +650,17 @@ public:
     virtual void show();
     /// checks whether the view provider is visible or not
     virtual bool isShow() const;
+    /** Set scene-only visibility without changing a document object's
+     * persistent Visibility
+     * property.
+     *
+     * Task previews must restore the previous scene state themselves. This
+
+     * * method deliberately bypasses derived show()/hide() implementations
+     * whose public
+     * behavior synchronizes persistent visibility.
+     */
+    void setTemporaryVisibility(bool visible);
     void setVisible(bool);
     bool isVisible() const;
     void setLinkVisible(bool);
@@ -667,6 +716,41 @@ public:
     void finishEditing();
     virtual void setActive(bool active);
 
+    /**
+     * Whether the document timeline may offer this provider's default editor.
+     *
+     *
+     * A ViewProvider does not imply an editable feature. Providers with a
+     * real, user-facing
+     * default editor must opt in explicitly so document
+     * history never presents an Edit
+     * action which cannot do anything.
+     */
+    virtual bool supportsDocumentTimelineEdit() const noexcept
+    {
+        return false;
+    }
+
+    /**
+     * Whether the document history marker may move while this provider owns
+     * edit
+     * mode.
+     *
+     * Most edit modes represent an unfinished task and therefore return
+     *
+     * false. Persistent workspace editors may opt in when they can safely
+     * rebuild from the
+     * document's active history boundary.
+     */
+    bool allowsDocumentTimelineNavigationInEdit() const;
+
+protected:
+    void setAllowsDocumentTimelineNavigationInEdit(bool allowed);
+    void setDependentDeletionPlanner(
+        std::function<std::vector<App::DocumentObject*>(App::DocumentObject*)> planner
+    );
+
+public:
     /// adjust viewer settings when editing a view provider
     virtual void setEditViewer(View3DInventorViewer*, int ModNum);
     /// restores viewer settings when leaving editing mode

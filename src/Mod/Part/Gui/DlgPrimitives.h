@@ -38,6 +38,7 @@ class QSignalMapper;
 namespace App
 {
 class Document;
+class DocumentObject;
 }
 namespace Gui
 {
@@ -74,7 +75,24 @@ public:
 
     virtual bool pickedPoint(const SoPickedPoint* point) = 0;
     virtual QString command(App::Document*) const = 0;
+    virtual const char* exactTypeName() const
+    {
+        return nullptr;
+    }
+    virtual const char* exactDefaultName() const
+    {
+        return nullptr;
+    }
+    virtual QString exactConfigurationCommand(
+        App::Document*,
+        const QString&
+    ) const
+    {
+        return {};
+    }
     void createPrimitive(QWidget* widget, const QString&, Gui::Document*);
+    App::DocumentObject*
+    createPrimitiveAndReport(QWidget* widget, const QString&, Gui::Document*);
     QString toPlacement(const gp_Ax2&) const;
 
     int exitCode {-1};
@@ -402,8 +420,14 @@ public:
     explicit DlgPrimitives(QWidget* parent = nullptr, Part::Primitive* feature = nullptr);
     ~DlgPrimitives() override;
     void createPrimitive(const QString&);
+    bool createPrimitiveAndReport(const QString&);
+    App::DocumentObject* lastCreatedResult() const;
+    void applyChanges(const QString&);
     void accept(const QString&);
     void reject();
+
+Q_SIGNALS:
+    void pickedPrimitiveCreated();
 
 private:
     void buttonCircleFromThreePoints();
@@ -412,7 +436,7 @@ private:
     static void pickCallback(void* ud, SoEventCallback* n);
     void executeCallback(Picker*);
     void acceptChanges(const QString&);
-    void tryCreatePrimitive(const QString&);
+    bool tryCreatePrimitive(const QString&);
 
     void addPrimitive(std::shared_ptr<AbstractPrimitive>);
     std::shared_ptr<AbstractPrimitive> getPrimitive(int index) const;

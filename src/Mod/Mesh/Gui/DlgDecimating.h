@@ -30,7 +30,9 @@
 #include <QDialog>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
+#include <App/DocumentObserver.h>
 #include <memory>
+#include <vector>
 
 namespace MeshGui
 {
@@ -82,6 +84,7 @@ public:
 
 private:
     DlgDecimating* widget;
+    std::vector<App::DocumentObjectWeakPtrT> targetMeshes;
 };
 
 }  // namespace MeshGui

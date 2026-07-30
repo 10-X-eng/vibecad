@@ -51,8 +51,6 @@
         test: wlheadless-run -- /usr/bin/FreeCAD  -t  TestImportGui
     /TestMaterialsGui      :
         test: wlheadless-run -- /usr/bin/FreeCAD  -t  TestMaterialsGui
-    /TestOpenSCADGui       :
-        test: wlheadless-run -- /usr/bin/FreeCAD  -t  TestOpenSCADGui
     /TestPartGui           :
         test: wlheadless-run -- /usr/bin/FreeCAD  -t  TestPartGui
     /TestPartDesignGui     :
@@ -69,4 +67,3 @@
         test: wlheadless-run -- /usr/bin/FreeCAD  -t  Menu.MenuCreateCases
     /GuiDocument           :
         test: wlheadless-run -- /usr/bin/FreeCAD  -t  GuiDocument
-

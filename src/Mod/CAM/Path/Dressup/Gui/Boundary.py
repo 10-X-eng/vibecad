@@ -26,8 +26,16 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 import FreeCAD
 import FreeCADGui
 import Path
+import Path.Base.Util as PathUtil
 import Path.Dressup.Boundary as PathDressupPathBoundary
 import Path.Dressup.Utils as PathDressup
+from Path.CommandBoundary import (
+    TaskDocumentTransaction,
+    begin_task_launch,
+    can_start_document_command,
+    is_document_object,
+    open_timeline_mode_zero_editor,
+)
 import PathGui
 
 if False:
@@ -41,14 +49,35 @@ translate = FreeCAD.Qt.translate
 
 
 class TaskPanel(object):
-    def __init__(self, obj, viewProvider):
+    def __init__(self, obj, viewProvider, transaction=None):
         self.obj = obj
         self.viewProvider = viewProvider
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                obj,
+                "Edit Boundary Dress-up",
+            )
+        elif transaction.document is not obj.Document:
+            raise RuntimeError("The Boundary task transaction belongs to another document")
+        self.transaction = transaction
+        self.document = self.transaction.document
         self.form = FreeCADGui.PySideUic.loadUi(":/panels/DressupPathBoundary.ui")
+        self.base = obj.Base
+        self.baseName = str(self.base.Name) if self.base is not None else ""
+        self.baseId = int(self.base.ID) if self.base is not None else 0
+        self.visibilityBase = bool(
+            self.base is not None and self.base.ViewObject and self.base.ViewObject.Visibility
+        )
         if obj.Stock:
+            self.stock = obj.Stock
+            self.stockName = str(self.stock.Name)
+            self.stockId = int(self.stock.ID)
             self.visibilityBoundary = obj.Stock.ViewObject.Visibility
-            obj.Stock.ViewObject.Visibility = True
+            obj.Stock.ViewObject.setTemporaryVisibility(True)
         else:
+            self.stock = None
+            self.stockName = ""
+            self.stockId = 0
             self.visibilityBoundary = False
 
         self.buttonBox = None
@@ -80,30 +109,97 @@ class TaskPanel(object):
         # callback for standard buttons
         if button == QtGui.QDialogButtonBox.Apply:
             self.updateDressup()
-            FreeCAD.ActiveDocument.recompute()
+            self.transaction.recompute((self.obj,))
 
     def abort(self):
-        FreeCAD.ActiveDocument.abortTransaction()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
+        self.restorePreviewVisibility()
         self.cleanup(False)
+        return True
 
     def reject(self):
-        FreeCAD.ActiveDocument.abortTransaction()
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
+        self.transaction.abort()
+        self.restorePreviewVisibility()
         self.cleanup(True)
+        return True
 
     def accept(self):
+        if not self.transaction.is_open():
+            self.closeDeletedDocumentTask()
+            return True
         if self.isDirty:
             self.updateDressup()
-        FreeCAD.ActiveDocument.commitTransaction()
+        self.transaction.recompute((self.obj,))
+        self.restorePreviewVisibility()
+        if self.document.isProvisionallyEnrolledInTimelineByCurrentTransaction(self.obj):
+            resources = []
+            if (
+                self.obj.Stock is not None
+                and self.obj.Stock.Document is self.document
+                and self.document.getObject(self.obj.Stock.Name) is self.obj.Stock
+            ):
+                resources.append(self.obj.Stock)
+            self.document.publishProvisionalTimelineOperationBlock(
+                self.obj,
+                resources,
+            )
+        if self.base is not None and self.base in self.obj.VibeCADTimelineReplacedInputs:
+            self.base.ViewObject.Visibility = False
+        self.transaction.commit((self.obj,), recompute=False)
         self.cleanup(True)
+        return True
+
+    def resolveExactObject(self, obj, name, object_id):
+        if obj is None or not name or object_id <= 0:
+            return None
+        try:
+            return (
+                obj
+                if (
+                    obj.Document is self.document
+                    and self.document.getObject(name) is obj
+                    and self.document.getObject(object_id) is obj
+                    and int(obj.ID) == object_id
+                )
+                else None
+            )
+        except (AttributeError, NameError, ReferenceError, RuntimeError):
+            return None
+
+    def restorePreviewVisibility(self):
+        base = self.resolveExactObject(
+            self.base,
+            self.baseName,
+            self.baseId,
+        )
+        if base is not None and base.ViewObject:
+            base.ViewObject.setTemporaryVisibility(self.visibilityBase)
+
+        stock = self.resolveExactObject(
+            self.stock,
+            self.stockName,
+            self.stockId,
+        )
+        if stock is not None and stock.ViewObject:
+            stock.ViewObject.setTemporaryVisibility(self.visibilityBoundary)
+
+    def closeDeletedDocumentTask(self):
+        self.viewProvider.clearTaskPanel()
+        self.transaction.close_dialog()
 
     def cleanup(self, gui):
-        self.viewProvider.clearTaskPanel()
+        if self.transaction.is_open():
+            self.viewProvider.clearTaskPanel()
         if gui:
-            FreeCADGui.ActiveDocument.resetEdit()
-            FreeCADGui.Control.closeDialog()
-            FreeCAD.ActiveDocument.recompute()
-            if self.obj.Stock:
-                self.obj.Stock.ViewObject.Visibility = self.visibilityBoundary
+            self.transaction.reset_edit()
+            self.transaction.close_dialog()
+            self.transaction.recompute_after_close()
 
     def updateDressup(self):
         if self.obj.Inside != self.form.stockInside.isChecked():
@@ -215,6 +311,8 @@ class DressupPathBoundaryViewProvider(object):
         self.vobj = vobj
         self.obj = vobj.Object
         self.panel = None
+        self._taskTransaction = None
+        self._timelineObjectsBeforeTask = None
 
     def claimChildren(self):
         return [self.obj.Base, self.obj.Stock]
@@ -224,10 +322,34 @@ class DressupPathBoundaryViewProvider(object):
             vobj.Object.Proxy.onDelete(vobj.Object, args)
         return True
 
-    def setEdit(self, vobj, mode=0):
-        panel = TaskPanel(vobj.Object, self)
-        self.setupTaskPanel(panel)
+    def supportsDocumentTimelineEdit(self):
         return True
+
+    def doubleClicked(self, vobj=None):
+        return open_timeline_mode_zero_editor(self.obj)
+
+    def setEdit(self, vobj, mode=0):
+        transaction = self._taskTransaction
+        self._taskTransaction = None
+        if transaction is None:
+            transaction = TaskDocumentTransaction(
+                vobj.Object,
+                "Edit Boundary Dress-up",
+            )
+        try:
+            panel = TaskPanel(
+                vobj.Object,
+                self,
+                transaction=transaction,
+            )
+            self.setupTaskPanel(panel)
+            return True
+        except Exception:
+            self.panel = None
+            transaction.close_dialog()
+            if transaction.owns_transaction():
+                transaction.abort()
+            raise
 
     def unsetEdit(self, vobj, mode=0):
         if self.panel:
@@ -235,29 +357,55 @@ class DressupPathBoundaryViewProvider(object):
 
     def setupTaskPanel(self, panel):
         self.panel = panel
-        FreeCADGui.Control.closeDialog()
-        FreeCADGui.Control.showDialog(panel)
+        panel.transaction.close_dialog()
+        panel.transaction.show_dialog(panel)
         panel.setupUi()
 
     def clearTaskPanel(self):
         self.panel = None
 
     def getIcon(self):
-        if getattr(PathDressup.baseOp(self.obj), "Active", True):
+        if PathUtil.activeForOp(self.obj):
             return ":/icons/CAM_Dressup.svg"
         else:
             return ":/icons/CAM_OpActive.svg"
 
 
 def Create(base, name="DressupPathBoundary"):
-    FreeCAD.ActiveDocument.openTransaction("Create a Boundary dressup")
-    obj = PathDressupPathBoundary.Create(base, name)
-    obj.ViewObject.Proxy = DressupPathBoundaryViewProvider(obj.ViewObject)
-    obj.Base.ViewObject.Visibility = False
-    obj.Stock.ViewObject.Visibility = False
-    FreeCAD.ActiveDocument.commitTransaction()
-    obj.ViewObject.Document.setEdit(obj.ViewObject, 0)
-    return obj
+    transaction = TaskDocumentTransaction(
+        base,
+        "Create a Boundary dressup",
+        allow_caller_transaction=True,
+    )
+    base_was_visible = False
+    try:
+        base_was_visible = bool(base.ViewObject and base.ViewObject.Visibility)
+        obj = PathDressupPathBoundary.Create(base, name)
+        provider = DressupPathBoundaryViewProvider(obj.ViewObject)
+        obj.ViewObject.Proxy = provider
+        provider._taskTransaction = transaction
+        PathUtil.markTimelineReplacedInputs(
+            obj,
+            [base] if base_was_visible else [],
+        )
+        obj.Base.ViewObject.setTemporaryVisibility(False)
+        obj.Stock.ViewObject.Visibility = False
+        if not obj.ViewObject.Document.setEdit(obj.ViewObject, 0):
+            raise RuntimeError("The Boundary dress-up editor could not be opened")
+        return obj
+    except Exception:
+        if transaction.owns_transaction():
+            transaction.abort()
+        try:
+            if (
+                base.Document is transaction.document
+                and transaction.document.getObject(base.Name) is base
+                and base.ViewObject
+            ):
+                base.ViewObject.setTemporaryVisibility(base_was_visible)
+        except (AttributeError, NameError, ReferenceError, RuntimeError):
+            pass
+        raise
 
 
 class CommandPathDressupPathBoundary:
@@ -272,8 +420,10 @@ class CommandPathDressupPathBoundary:
         }
 
     def IsActive(self):
+        if not can_start_document_command():
+            return False
         op = PathDressup.selection()
-        if not op:
+        if not is_document_object(op):
             return False
         baseOp = PathDressup.baseOp(op)
         if not hasattr(baseOp, "ClearanceHeight"):
@@ -284,17 +434,31 @@ class CommandPathDressupPathBoundary:
         return True
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         # check that the selection contains exactly what we want
         op = PathDressup.selection(verbose=True)
         if not op:
             return
 
         # everything ok!
-        FreeCAD.ActiveDocument.openTransaction("Create Path Boundary Dress-up")
+        launch = begin_task_launch(
+            "Create Path Boundary Dress-up",
+            op.Document,
+        )
         FreeCADGui.addModule("Path.Dressup.Gui.Boundary")
-        FreeCADGui.doCommand("Path.Dressup.Gui.Boundary.Create(App.ActiveDocument.%s)" % op.Name)
+        try:
+            FreeCADGui.doCommand(
+                "Path.Dressup.Gui.Boundary.Create("
+                "FreeCAD.getDocument(%r).getObject(%r))" % (op.Document.Name, op.Name)
+            )
+            launch.require_claimed()
+        except Exception:
+            launch.abort()
+            raise
         # FreeCAD.ActiveDocument.commitTransaction()  # Final `commitTransaction()` called via TaskPanel.accept()
-        FreeCAD.ActiveDocument.recompute()
+        op.Document.recompute()
 
 
 if FreeCAD.GuiUp:

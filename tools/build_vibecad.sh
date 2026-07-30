@@ -109,12 +109,15 @@ if [[ -f "${vibecad_requirements}" ]]; then
         --upgrade \
         --target "${build_dir}/Ext" \
         --requirement "${vibecad_requirements}"
-    rm -rf -- "${build_dir}/Ext/agents" "${build_dir}"/Ext/openai_agents-*.dist-info
+    find "${build_dir}/Ext" -maxdepth 1 \
+        \( -name openai -o -name 'openai-*.dist-info' \
+        -o -name agents -o -name 'openai_agents-*.dist-info' \) \
+        -exec rm -rf -- {} +
 fi
 
 "${build_dir}/bin/FreeCADCmd" --version
 
-"${build_dir}/bin/FreeCADCmd" -c "import importlib.util, openai, anthropic, keyring, jsonschema; assert importlib.util.find_spec('agents') is None; print('VibeCAD provider dependencies import OK')"
+"${build_dir}/bin/FreeCADCmd" -c "import anthropic, keyring, jsonschema; print('VibeCAD Python dependencies import OK')"
 
 if ((run_tests)); then
     ctest --test-dir "${build_dir}" --output-on-failure
@@ -129,6 +132,10 @@ if [[ -n "${install_prefix}" ]]; then
             --upgrade \
             --target "${install_prefix}/Ext" \
             --requirement "${vibecad_requirements}"
+        find "${install_prefix}/Ext" -maxdepth 1 \
+            \( -name openai -o -name 'openai-*.dist-info' \
+            -o -name agents -o -name 'openai_agents-*.dist-info' \) \
+            -exec rm -rf -- {} +
     fi
 fi
 

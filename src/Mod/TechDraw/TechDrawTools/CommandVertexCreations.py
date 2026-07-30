@@ -83,18 +83,48 @@ class CommandAddOffsetVertex:
 
     def Activated(self):
         """Run the following code when the command is activated (button pressed)."""
-        if Utils.getSelView() and Utils.getSelVertexes():
-            view = Utils.getSelView()
-            vertexes = Utils.getSelVertexes()
-            self.ui = TechDrawTools.TaskAddOffsetVertex(view, vertexes[0])
-            Gui.Control.showDialog(self.ui)
+        if not self.IsActive():
+            return
+        selected = Gui.Selection.getSelectionEx()[0]
+        view = selected.Object
+        vertex = view.getVertexBySelection(
+            selected.SubElementNames[0]
+        )
+        if vertex is None:
+            return
+        self.ui = TechDrawTools.TaskAddOffsetVertex(view, vertex)
+        dialog = Gui.Control.showDialog(
+            self.ui,
+            self.ui.gui_document,
+        )
+        if dialog is not None:
+            dialog.setAutoCloseOnDeletedDocument(True)
+            dialog.setDocumentName(self.ui.document.Name)
 
     def IsActive(self):
         """Return True when the command should be active or False when it should be disabled (greyed)."""
-        if App.ActiveDocument:
-            return Utils.havePage() and Utils.haveView()
-        else:
+        document = App.ActiveDocument
+        if (
+            document is None
+            or Gui.Control.activeDialog()
+            or document.getBookedTransactionID() != 0
+            or document.HasPendingTransaction
+        ):
             return False
+        selection = Gui.Selection.getSelectionEx()
+        return (
+            len(selection) == 1
+            and selection[0].Object is not None
+            and selection[0].Object.Document is document
+            and selection[0].Object.isDerivedFrom(
+                "TechDraw::DrawViewPart"
+            )
+            and len(selection[0].SubElementNames) == 1
+            and selection[0].SubElementNames[0].startswith(
+                "Vertex"
+            )
+            and selection[0].Object.findParentPage() is not None
+        )
 
 Gui.addCommand('TechDraw_CommandVertexCreationGroup',CommandVertexCreationGroup())
 Gui.addCommand('TechDraw_CommandAddOffsetVertex',CommandAddOffsetVertex())

@@ -20,11 +20,13 @@
  *                                                                         *
  ***************************************************************************/
 
+# include <algorithm>
 # include <cmath>
 
 #include <App/Document.h>
 #include <Base/Console.h>
 #include <Base/Vector3D.h>
+#include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/ViewProvider.h>
@@ -48,12 +50,57 @@ TaskGeomHatch::TaskGeomHatch(TechDraw::DrawGeomHatch* inHatch, TechDrawGui::View
     m_Vp(inVp),
     m_createMode(mode)
 {
+    if (!inHatch || !inVp
+        || inVp->getViewObject() != inHatch
+        || inHatch->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The geometric hatch requires a live object, view provider, "
+            "and owning transaction"
+        );
+    }
     ui->setupUi(this);
     connect(ui->fcFile, &FileChooser::fileNameSelected, this, &TaskGeomHatch::onFileChanged);
 
-    m_source = m_hatch->Source.getValue();
+    m_source = dynamic_cast<TechDraw::DrawView*>(
+        m_hatch->Source.getValue()
+    );
+    if (!m_source
+        || m_source->getDocument() != m_hatch->getDocument()) {
+        throw Base::RuntimeError(
+            "The geometric hatch has no live source view"
+        );
+    }
+    m_hatchIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawGeomHatch>(m_hatch);
+    m_sourceIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawView>(m_source);
     getParameters();
     initUi();
+}
+
+bool TaskGeomHatch::resolveTargets()
+{
+    auto* hatch = m_hatchIdentity.resolve();
+    auto* source = m_sourceIdentity.resolve();
+    if (!hatch || !source
+        || hatch->getDocument() != source->getDocument()) {
+        return false;
+    }
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(hatch->getDocument());
+    auto* provider = guiDocument
+        ? dynamic_cast<ViewProviderGeomHatch*>(
+              guiDocument->getViewProvider(hatch)
+          )
+        : nullptr;
+    if (!provider) {
+        return false;
+    }
+    m_hatch = hatch;
+    m_source = source;
+    m_Vp = provider;
+    return true;
 }
 
 void TaskGeomHatch::initUi()
@@ -90,6 +137,9 @@ void TaskGeomHatch::initUi()
 
 void TaskGeomHatch::onFileChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     auto filespec = ui->fcFile->fileName().toStdString();
     m_file = DU::cleanFilespecBackslash(filespec);
     std::vector<std::string> names = PATLineSpec::getPatternList(m_file);
@@ -103,6 +153,9 @@ void TaskGeomHatch::onFileChanged()
 
 void TaskGeomHatch::onNameChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     QString cText = ui->cbName->currentText();
     m_name = cText.toUtf8().constData();
     m_hatch->NamePattern.setValue(m_name);
@@ -110,72 +163,90 @@ void TaskGeomHatch::onNameChanged()
 
 void TaskGeomHatch::onScaleChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     m_scale = ui->sbScale->value().getValue();
     m_hatch->ScalePattern.setValue(ui->sbScale->value().getValue());
-    TechDraw::DrawView* dv = static_cast<TechDraw::DrawView*>(m_source);
-    dv->requestPaint();
+    m_source->requestPaint();
 }
 
 void TaskGeomHatch::onRotationChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     m_rotation = ui->dsbRotation->value();
     m_hatch->PatternRotation.setValue(m_rotation);
-    TechDraw::DrawView* dv = static_cast<TechDraw::DrawView*>(m_source);
-    dv->requestPaint();
+    m_source->requestPaint();
 }
 
 void TaskGeomHatch::onOffsetChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     Base::Vector3d offset(ui->dsbOffsetX->value(), ui->dsbOffsetY->value(), 0.0);
     m_offset = offset;
     m_hatch->PatternOffset.setValue(m_offset);
-    TechDraw::DrawView* dv = static_cast<TechDraw::DrawView*>(m_source);
-    dv->requestPaint();
+    m_source->requestPaint();
 }
 
 void TaskGeomHatch::onLineWeightChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     m_weight =ui->sbWeight->value().getValue();
     m_Vp->WeightPattern.setValue(ui->sbWeight->value().getValue());
-    TechDraw::DrawView* dv = static_cast<TechDraw::DrawView*>(m_source);
-    dv->requestPaint();
+    m_source->requestPaint();
 }
 
 void TaskGeomHatch::onColorChanged()
 {
+    if (!resolveTargets()) {
+        return;
+    }
     m_color.setValue<QColor>(ui->ccColor->color());
     m_Vp->ColorPattern.setValue(m_color);
 }
 
 bool TaskGeomHatch::accept()
 {
-//    Base::Console().message("TGH::accept()\n");
+    if (!resolveTargets()) {
+        return false;
+    }
+    auto patternFile =
+        ui->fcFile->fileName().toStdString();
+    const auto patternName =
+        ui->cbName->currentText().toStdString();
+    const auto availablePatterns =
+        PATLineSpec::getPatternList(patternFile);
+    if (patternName.empty()
+        || std::ranges::find(availablePatterns, patternName)
+            == availablePatterns.end()) {
+        Base::Console().error(
+            "Select a valid geometric hatch pattern before accepting.\n"
+        );
+        return false;
+    }
     updateValues();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
     m_hatch->recomputeFeature();                     //create the hatch lines
-    TechDraw::DrawView* dv = static_cast<TechDraw::DrawView*>(m_source);
-    dv->requestPaint();
+    if (m_hatch->isError()) {
+        return false;
+    }
+    m_source->requestPaint();
+    TaskInternal::updateExactDocument(m_hatch->getDocument());
+    TaskInternal::resetExactEdit(m_hatch->getDocument());
     return true;
 }
 
 bool TaskGeomHatch::reject()
 {
-    if (getCreateMode()) {
-        std::string HatchName = m_hatch->getNameInDocument();
-        Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().removeObject('%s')", HatchName.c_str());
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        m_source->touch();
-        m_source->getDocument()->recompute();
-    } else {
-        m_hatch->FilePattern.setValue(m_origFile);
-        m_hatch->NamePattern.setValue(m_origName);
-        m_hatch->ScalePattern.setValue(m_origScale);
-        m_hatch->PatternRotation.setValue(m_origRotation);
-        m_hatch->PatternOffset.setValue(m_origOffset);
-        m_Vp->ColorPattern.setValue(m_origColor);
-        m_Vp->WeightPattern.setValue(m_origWeight);
-    }
-    return false;
+    // TaskView owns the exact command/edit transaction. Its Cancel boundary
+    // rolls back both provisional creation and live edit changes atomically.
+    TaskInternal::resetExactEdit(m_hatchIdentity.resolveDocument());
+    return true;
 }
 
 void TaskGeomHatch::getParameters()
@@ -214,6 +285,13 @@ void TaskGeomHatch::updateValues()
     m_weight = ui->sbWeight->value().getValue();
     m_Vp->WeightPattern.setValue(m_weight);
     m_hatch->PatternRotation.setValue(ui->dsbRotation->value());
+    m_hatch->PatternOffset.setValue(
+        Base::Vector3d(
+            ui->dsbOffsetX->value(),
+            ui->dsbOffsetY->value(),
+            0.0
+        )
+    );
 }
 
 QStringList TaskGeomHatch::listToQ(std::vector<std::string> inList)
@@ -236,13 +314,14 @@ void TaskGeomHatch::changeEvent(QEvent *event)
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 TaskDlgGeomHatch::TaskDlgGeomHatch(TechDraw::DrawGeomHatch* inHatch, TechDrawGui::ViewProviderGeomHatch* inVp, bool mode) :
     TaskDialog(),
-    viewProvider(nullptr)
+    viewProvider(inVp)
 {
     widget  = new TaskGeomHatch(inHatch, inVp, mode);
     taskbox = new Gui::TaskView::TaskBox(Gui::BitmapFactory().pixmap("TechDraw_TreeView"),
                                          widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgGeomHatch::~TaskDlgGeomHatch()
@@ -271,14 +350,12 @@ void TaskDlgGeomHatch::clicked(int i)
 
 bool TaskDlgGeomHatch::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgGeomHatch::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskGeomHatch.cpp>

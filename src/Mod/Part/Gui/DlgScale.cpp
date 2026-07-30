@@ -40,6 +40,8 @@
 #include <App/DocumentObject.h>
 #include <App/Link.h>
 #include <App/Part.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/UnitsApi.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -49,13 +51,66 @@
 #include <Gui/ViewProvider.h>
 #include <Gui/WaitCursor.h>
 
+#include <Mod/Part/App/FeatureScale.h>
+
 #include "ui_DlgScale.h"
 #include "DlgScale.h"
+#include "ModelingSelection.h"
 
 
 FC_LOG_LEVEL_INIT("Part", true, true)
 
 using namespace PartGui;
+
+namespace
+{
+constexpr int sourceNameRole = Qt::UserRole;
+constexpr int sourceIdRole = Qt::UserRole + 1;
+constexpr int sourceAddressRole = Qt::UserRole + 2;
+
+App::Document* resolveRetainedTaskDocument(
+    const std::string& name,
+    App::Document* address,
+    const std::string& uid
+) noexcept
+{
+    if (name.empty() || !address || uid.empty()) {
+        return nullptr;
+    }
+    try {
+        auto* document = App::GetApplication().getDocument(name.c_str());
+        return document == address && document->Uid.getValueStr() == uid ? document : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+App::DocumentObject* resolveRetainedTaskSource(
+    App::Document& document,
+    const QTreeWidgetItem& item
+) noexcept
+{
+    try {
+        const auto name = item.data(0, sourceNameRole).toString().toLatin1();
+        const long id = item.data(0, sourceIdRole).toLongLong();
+        const auto address = reinterpret_cast<App::DocumentObject*>(
+            static_cast<quintptr>(item.data(0, sourceAddressRole).toULongLong())
+        );
+        auto* object = id >= 0 ? document.getObjectByID(id) : nullptr;
+        return object && object == address && object->getID() == id
+                && document.containsObject(object) && object->getNameInDocument()
+                && name == object->getNameInDocument()
+                && document.getObject(name.constData()) == object
+                && PartGui::isModelingObjectActive(object)
+            ? object
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+}
 
 DlgScale::DlgScale(QWidget* parent, Qt::WindowFlags fl)
     : QDialog(parent, fl)
@@ -72,9 +127,13 @@ DlgScale::DlgScale(QWidget* parent, Qt::WindowFlags fl)
 
     // this will mark as selected all the items in treeWidget that are selected in the document
     Gui::ItemViewSelection sel(ui->treeWidget);
-    sel.applyFrom(Gui::Selection().getObjectsOfType(Part::Feature::getClassTypeId()));
-    sel.applyFrom(Gui::Selection().getObjectsOfType(App::Link::getClassTypeId()));
-    sel.applyFrom(Gui::Selection().getObjectsOfType(App::Part::getClassTypeId()));
+    auto modelingSelection =
+        PartGui::getModelingSelection(m_document.c_str());
+    std::vector<App::DocumentObject*> selectedObjects;
+    for (auto& selected : modelingSelection) {
+        selectedObjects.push_back(selected.getObject());
+    }
+    sel.applyFrom(selectedObjects);
 }
 
 void DlgScale::setupConnections()
@@ -121,8 +180,12 @@ void DlgScale::findShapes()
     Gui::Document* activeGui = Gui::Application::Instance->getDocument(activeDoc);
     m_document = activeDoc->getName();
     m_label = activeDoc->Label.getValue();
+    documentAddress = activeDoc;
+    documentUid = activeDoc->Uid.getValueStr();
 
-    std::vector<App::DocumentObject*> objs = activeDoc->getObjectsOfType<App::DocumentObject>();
+    const auto objs = PartGui::resolveModelingObjects(
+        activeDoc->getObjectsOfType<App::DocumentObject>()
+    );
 
     for (auto obj : objs) {
         Part::TopoShape topoShape = Part::Feature::getTopoShape(
@@ -139,7 +202,13 @@ void DlgScale::findShapes()
         if (canScale(shape)) {
             QTreeWidgetItem* item = new QTreeWidgetItem(ui->treeWidget);
             item->setText(0, QString::fromUtf8(obj->Label.getValue()));
-            item->setData(0, Qt::UserRole, QString::fromLatin1(obj->getNameInDocument()));
+            item->setData(0, sourceNameRole, QString::fromLatin1(obj->getNameInDocument()));
+            item->setData(0, sourceIdRole, QVariant::fromValue<qlonglong>(obj->getID()));
+            item->setData(
+                0,
+                sourceAddressRole,
+                QVariant::fromValue<qulonglong>(reinterpret_cast<quintptr>(obj))
+            );
             Gui::ViewProvider* vp = activeGui->getViewProvider(obj);
             if (vp) {
                 item->setIcon(0, vp->getIcon());
@@ -190,7 +259,9 @@ void DlgScale::accept()
     //    Base::Console().message("DS::accept()\n");
     try {
         apply();
-        QDialog::accept();
+        if (applySucceeded) {
+            QDialog::accept();
+        }
     }
     catch (Base::AbortException&) {
         Base::Console().message("DS::accept - apply failed!\n");
@@ -201,6 +272,10 @@ void DlgScale::accept()
 void DlgScale::apply()
 {
     //    Base::Console().message("DS::apply()\n");
+    applySucceeded = false;
+    appliedResults.clear();
+    App::Document* activeDoc = nullptr;
+
     try {
         if (!validate()) {
             QMessageBox::critical(this, windowTitle(), tr("No scalable shapes selected"));
@@ -208,16 +283,17 @@ void DlgScale::apply()
         }
 
         Gui::WaitCursor wc;
-        App::Document* activeDoc = App::GetApplication().getDocument(m_document.c_str());
+        activeDoc =
+            resolveRetainedTaskDocument(m_document, documentAddress, documentUid);
         if (!activeDoc) {
             QMessageBox::critical(
                 this,
                 windowTitle(),
-                tr("The document '%1' doesn't exist.").arg(QString::fromUtf8(m_label.c_str()))
+                tr("The document used to start this scale task is no longer available.")
             );
             return;
         }
-        activeDoc->openTransaction("Scale");
+        std::vector<App::DocumentObject*> objects = this->getShapesToScale();
 
         Base::Reference<ParameterGrp> hGrp = App::GetApplication()
                                                  .GetUserParameter()
@@ -226,7 +302,9 @@ void DlgScale::apply()
                                                  ->GetGroup("Mod/Part");
         bool addBaseName = hGrp->GetBool("AddBaseObjectName", false);
 
-        std::vector<App::DocumentObject*> objects = this->getShapesToScale();
+        PartGui::ModelingTaskAttempt attempt(*activeDoc, "Scale");
+        std::vector<App::DocumentObject*> results;
+        results.reserve(objects.size());
         for (App::DocumentObject* sourceObj : objects) {
             assert(sourceObj);
 
@@ -235,11 +313,10 @@ void DlgScale::apply()
                     Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
                 )
                     .isNull()) {
-                FC_ERR(
-                    "Object " << sourceObj->getFullName()
-                              << " is not a shape object. Scaling is not possible."
+                throw Base::RuntimeError(
+                    "Object " + sourceObj->getFullName()
+                    + " is not a shape object. Scaling is not possible."
                 );
-                continue;
             }
 
             std::string name;
@@ -250,25 +327,63 @@ void DlgScale::apply()
                 // label = QStringLiteral("%1_Scale").arg((*it)->text(0));
             }
 
-            FCMD_OBJ_DOC_CMD(sourceObj, "addObject('Part::Scale','" << name << "')");
-            auto newObj = sourceObj->getDocument()->getObject(name.c_str());
+            const QString factory = QStringLiteral("App.getDocument('%1').addObject("
+                                                   "'Part::Scale','%2')")
+                                        .arg(
+                                            QString::fromLatin1(sourceObj->getDocument()->getName()),
+                                            QString::fromStdString(name)
+                                        );
+            auto* newObj = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *sourceObj->getDocument(),
+                factory.toUtf8(),
+                Part::Scale::getClassTypeId()
+            );
+            attempt.trackCreatedObject(*newObj);
 
             this->writeParametersToFeature(*newObj, sourceObj);
+            auto* presentation = PartGui::resolveModelingPresentationObject(sourceObj);
+            if (presentation && presentation->Visibility.getValue()) {
+                attempt.trackReplacedInputs(*newObj, {presentation});
+            }
 
             Gui::Command::copyVisual(newObj, "ShapeAppearance", sourceObj);
             Gui::Command::copyVisual(newObj, "LineColor", sourceObj);
             Gui::Command::copyVisual(newObj, "PointColor", sourceObj);
 
             FCMD_OBJ_HIDE(sourceObj);
+            results.push_back(newObj);
         }
 
-        activeDoc->commitTransaction();
-        Gui::Command::updateActive();
+        if (results.empty()) {
+            throw Base::RuntimeError("No scale result was created");
+        }
+
+        activeDoc->recompute();
+        for (auto* result : results) {
+            auto shape = Part::Feature::getTopoShape(result, Part::ShapeOption::NoFlag);
+            if (!result->isValid()) {
+                throw Base::RuntimeError(result->getStatusString());
+            }
+            if (shape.isNull() || shape.getShape().IsNull()) {
+                throw Base::RuntimeError(std::string(result->getFullLabel()) + " produced no shape");
+            }
+            if (!shape.isValid()) {
+                throw Base::RuntimeError(
+                    std::string(result->getFullLabel()) + " produced an invalid shape"
+                );
+            }
+        }
+
+        appliedResults = results;
+        attempt.commit();
+        applySucceeded = true;
     }
     catch (Base::AbortException&) {
         throw;
     }
     catch (Base::Exception& err) {
+        appliedResults.clear();
         QMessageBox::critical(
             this,
             windowTitle(),
@@ -277,6 +392,7 @@ void DlgScale::apply()
         return;
     }
     catch (...) {
+        appliedResults.clear();
         QMessageBox::critical(
             this,
             windowTitle(),
@@ -297,16 +413,21 @@ std::vector<App::DocumentObject*> DlgScale::getShapesToScale() const
 {
     //    Base::Console().message("DS::getShapesToScale()\n");
     QList<QTreeWidgetItem*> items = ui->treeWidget->selectedItems();
-    App::Document* doc = App::GetApplication().getDocument(m_document.c_str());
+    App::Document* doc =
+        resolveRetainedTaskDocument(m_document, documentAddress, documentUid);
     if (!doc) {
-        throw Base::RuntimeError("Document lost");
+        throw Base::RuntimeError(
+            "The document used to start this scale task is no longer available"
+        );
     }
 
     std::vector<App::DocumentObject*> objects;
     for (auto item : items) {
-        App::DocumentObject* obj = doc->getObject(item->data(0, Qt::UserRole).toString().toLatin1());
+        App::DocumentObject* obj = item ? resolveRetainedTaskSource(*doc, *item) : nullptr;
         if (!obj) {
-            throw Base::RuntimeError("Object not found");
+            throw Base::RuntimeError(
+                "Selected scale source is no longer the active object used to start this task"
+            );
         }
         objects.push_back(obj);
     }
@@ -318,43 +439,35 @@ std::vector<App::DocumentObject*> DlgScale::getShapesToScale() const
 bool DlgScale::validate()
 {
     QList<QTreeWidgetItem*> items = ui->treeWidget->selectedItems();
-    App::Document* doc = App::GetApplication().getDocument(m_document.c_str());
+    App::Document* doc =
+        resolveRetainedTaskDocument(m_document, documentAddress, documentUid);
     if (!doc) {
-        throw Base::RuntimeError("Document lost");
+        throw Base::RuntimeError(
+            "The document used to start this scale task is no longer available"
+        );
     }
 
-    std::vector<App::DocumentObject*> objects;
     for (auto item : items) {
-        App::DocumentObject* obj = doc->getObject(item->data(0, Qt::UserRole).toString().toLatin1());
-        if (!obj) {
-            throw Base::RuntimeError("Object not found");
+        if (!item || !resolveRetainedTaskSource(*doc, *item)) {
+            throw Base::RuntimeError(
+                "Selected scale source is no longer the active object used to start this task"
+            );
         }
-        objects.push_back(obj);
     }
-    return !objects.empty();
+    return !items.empty();
 }
 
 //! update a FeatureScale with the parameters from the UI
 void DlgScale::writeParametersToFeature(App::DocumentObject& feature, App::DocumentObject* base) const
 {
     //    Base::Console().message("DS::writeParametersToFeature()\n");
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "f = App.getDocument('%s').getObject('%s')",
-        feature.getDocument()->getName(),
-        feature.getNameInDocument()
-    );
+    Gui::Command::doCommand(Gui::Command::Doc, "f = %s", Gui::Command::getObjectCmd(&feature).c_str());
 
     if (!base) {
         return;
     }
 
-    Gui::Command::doCommand(
-        Gui::Command::Doc,
-        "f.Base = App.getDocument('%s').getObject('%s')",
-        base->getDocument()->getName(),
-        base->getNameInDocument()
-    );
+    Gui::Command::doCommand(Gui::Command::Doc, "f.Base = %s", Gui::Command::getObjectCmd(base).c_str());
 
     Gui::Command::doCommand(
         Gui::Command::Doc,
@@ -378,7 +491,11 @@ TaskScale::TaskScale()
 bool TaskScale::accept()
 {
     widget->accept();
-    return (widget->result() == QDialog::Accepted);
+    const bool accepted = widget->result() == QDialog::Accepted;
+    if (accepted) {
+        markCommandInteractionStateDurable(widget->lastAppliedResults());
+    }
+    return accepted;
 }
 
 bool TaskScale::reject()
@@ -392,6 +509,9 @@ void TaskScale::clicked(int id)
     if (id == QDialogButtonBox::Apply) {
         try {
             widget->apply();
+            if (widget->wasLastApplySuccessful()) {
+                markCommandInteractionStateDurable(widget->lastAppliedResults());
+            }
         }
         catch (Base::AbortException&) {
         };

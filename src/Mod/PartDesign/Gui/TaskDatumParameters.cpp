@@ -153,12 +153,24 @@ bool TaskDlgDatumParameters::accept()
                     auto* copy = PartDesignGui::TaskFeaturePick::makeCopy(
                         obj,
                         subs[index],
-                        dlg.radioIndependent->isChecked()
+                        dlg.radioIndependent->isChecked(),
+                        pcDatum->getDocument()
                     );
                     if (copy) {
                         copyObjects.push_back(copy);
                         copies.push_back(copyObjects.back());
                         copySubValues.emplace_back();
+                    }
+                    else {
+                        QMessageBox::warning(
+                            Gui::getMainWindow(),
+                            tr("Copy failed"),
+                            tr(
+                                "The selected attachment reference could "
+                                "not be copied into this body."
+                            )
+                        );
+                        return false;
                     }
                 }
                 else {

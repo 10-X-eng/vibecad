@@ -43,6 +43,7 @@ import draftutils.utils as utils
 import draftguitools.gui_base as gui_base
 
 from draftutils.translate import translate
+from draftutils.transaction import run_document_mutation
 
 
 class FlipDimension(gui_base.GuiCommandNeedsSelection):
@@ -73,15 +74,25 @@ class FlipDimension(gui_base.GuiCommandNeedsSelection):
         """Execute when the command is called."""
         super(Draft_FlipDimension, self).Activated()
 
-        for o in Gui.Selection.getSelection():
-            if utils.get_type(o) in ("Dimension", "LinearDimension", "AngularDimension"):
-                self.doc.openTransaction("Flip dimension")
-                _cmd = "App.activeDocument()." + o.Name + ".Normal"
-                _cmd += " = "
-                _cmd += "App.activeDocument()." + o.Name + ".Normal.negative()"
-                Gui.doCommand(_cmd)
-                self.doc.commitTransaction()
-                self.doc.recompute()
+        dimensions = tuple(
+            obj
+            for obj in Gui.Selection.getSelection()
+            if utils.get_type(obj)
+            in ("Dimension", "LinearDimension", "AngularDimension")
+        )
+        if not dimensions:
+            return
+
+        def flip_dimensions():
+            for dimension in dimensions:
+                dimension.Normal = dimension.Normal.negative()
+
+        run_document_mutation(
+            self.doc,
+            translate("draft", "Flip Dimension"),
+            flip_dimensions,
+            objects=dimensions,
+        )
 
 
 Draft_FlipDimension = FlipDimension

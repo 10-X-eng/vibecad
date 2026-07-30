@@ -556,7 +556,10 @@ def main() -> int:
             arguments={
                 "program_id": prepared["program_id"],
                 "expected_revision": update_prepared["revision"],
-                "replacements": [{"old": "Chassis display", "new": "Updated display"}],
+                "source": source.replace(
+                    "Chassis display",
+                    "Updated display",
+                ),
             },
         )
         next_prepared, _next_execution, next_validated = _prepare_execute_validate(next_captured)

@@ -45,6 +45,7 @@ from draftguitools import gui_base
 from draftutils import params
 from draftutils import utils
 from draftutils.translate import translate
+from draftutils.transaction import run_document_mutation
 
 
 class LineSlope(gui_base.GuiCommandNeedsSelection):
@@ -77,6 +78,11 @@ class LineSlope(gui_base.GuiCommandNeedsSelection):
     def Activated(self):
         """Execute when the command is called."""
         super().Activated()
+        self.objects = tuple(
+            obj
+            for obj in Gui.Selection.getSelection()
+            if obj.Document is self.doc and utils.get_type(obj) == "Wire"
+        )
 
         # for obj in Gui.Selection.getSelection():
         #     if utils.get_type(obj) != "Wire":
@@ -123,7 +129,10 @@ class LineSlope(gui_base.GuiCommandNeedsSelection):
         # when we press the "OK" button.
         # Then we must show the container widget.
         taskwidget.accept = self.accept
-        dia = Gui.Control.showDialog(taskwidget)
+        gui_document = Gui.getDocument(self.doc.Name)
+        if gui_document is None or gui_document.Document is not self.doc:
+            return
+        dia = Gui.Control.showDialog(taskwidget, gui_document)
         dia.setDocumentName(self.doc.Name)
         dia.setAutoCloseOnDeletedDocument(True)
 
@@ -136,24 +145,49 @@ class LineSlope(gui_base.GuiCommandNeedsSelection):
         """
         if hasattr(self, "spinbox"):
             pc = self.spinbox.value()
-            self.doc.openTransaction("Change slope")
-            for obj in Gui.Selection.getSelection():
-                if utils.get_type(obj) == "Wire":
+            objects = self.objects
+
+            def change_slope():
+                for obj in objects:
                     if len(obj.Points) > 1:
-                        lp = None
-                        np = []
-                        for p in obj.Points:
-                            if not lp:
-                                lp = p
+                        last_point = None
+                        points = []
+                        for point in obj.Points:
+                            if last_point is None:
+                                last_point = point
                             else:
-                                v = p.sub(lp)
-                                z = pc * App.Vector(v.x, v.y, 0).Length
-                                lp = App.Vector(p.x, p.y, lp.z + z)
-                            np.append(lp)
-                        obj.Points = np
-            self.doc.commitTransaction()
-        Gui.Control.closeDialog()
-        self.doc.recompute()
+                                vector = point.sub(last_point)
+                                z = (
+                                    pc
+                                    * App.Vector(
+                                        vector.x,
+                                        vector.y,
+                                        0,
+                                    ).Length
+                                )
+                                last_point = App.Vector(
+                                    point.x,
+                                    point.y,
+                                    last_point.z + z,
+                                )
+                            points.append(last_point)
+                        obj.Points = points
+
+            if objects:
+                run_document_mutation(
+                    self.doc,
+                    translate("draft", "Change Slope"),
+                    change_slope,
+                    objects=objects,
+                )
+        self_doc = getattr(self, "doc", None)
+        if self_doc is not None:
+            gui_document = Gui.getDocument(self_doc.Name)
+            if (
+                gui_document is not None
+                and gui_document.Document is self_doc
+            ):
+                Gui.Control.closeDialog(gui_document)
 
 
 Draft_Slope = LineSlope

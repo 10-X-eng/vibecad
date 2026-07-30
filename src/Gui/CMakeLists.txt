@@ -1148,6 +1148,7 @@ SOURCE_GROUP("View3D\\Inventor" FILES ${Inventor_SRCS})
 # The widget sources
 SET(Widget_CPP_SRCS
     ComboLinks.cpp
+    FeatureTimeline.cpp
     FileDialog.cpp
     MainWindow.cpp
     MainWindowPy.cpp
@@ -1179,6 +1180,7 @@ if(WIN32)
 endif(WIN32)
 SET(Widget_HPP_SRCS
     ComboLinks.h
+    FeatureTimeline.h
     FileDialog.h
     FileDialogInternal.h
     MainWindow.h
@@ -1316,6 +1318,7 @@ SET(FreeCADGui_CPP_SRCS
     AutoSaver.cpp
     BitmapFactory.cpp
     Document.cpp
+    ExactTransaction.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
     DocumentObserver.cpp
@@ -1336,6 +1339,7 @@ SET(FreeCADGui_CPP_SRCS
     InputHintPy.cpp
     Macro.cpp
     MergeDocuments.cpp
+    TimelineImport.cpp
     ModuleIO.cpp
     Namespace.h
     resource.cpp
@@ -1362,6 +1366,7 @@ SET(FreeCADGui_SRCS
     AutoSaver.h
     BitmapFactory.h
     Document.h
+    ExactTransaction.h
     DocumentModel.h
     DocumentObserver.h
     DocumentObserverPython.h
@@ -1383,6 +1388,7 @@ SET(FreeCADGui_SRCS
     InputHintWidget.h
     Macro.h
     MergeDocuments.h
+    TimelineImport.h
     MetaTypes.h
     ModuleIO.h
     Notifications.h

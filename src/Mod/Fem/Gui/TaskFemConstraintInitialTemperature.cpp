@@ -29,6 +29,7 @@
 
 
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Mod/Fem/App/FemConstraintInitialTemperature.h>
 
 #include "TaskFemConstraintInitialTemperature.h"
@@ -95,29 +96,26 @@ TaskDlgFemConstraintInitialTemperature::TaskDlgFemConstraintInitialTemperature(
 
 bool TaskDlgFemConstraintInitialTemperature::accept()
 {
-    std::string name = ConstraintView->getObject()->getNameInDocument();
+    App::DocumentObject* constraint = ConstraintView->getObject();
+    App::Document* document = constraint->getDocument();
     const TaskFemConstraintInitialTemperature* parameterTemperature
         = static_cast<const TaskFemConstraintInitialTemperature*>(parameter);
 
     try {
-        Gui::Command::doCommand(
-            Gui::Command::Doc,
-            "App.ActiveDocument.%s.InitialTemperature = \"%s\"",
-            name.c_str(),
-            parameterTemperature->get_temperature().c_str()
+        Gui::cmdAppObject(
+            constraint,
+            std::ostringstream() << "InitialTemperature = \""
+                                 << parameterTemperature->get_temperature() << "\""
         );
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        if (!ConstraintView->getObject()->isValid()) {
-            throw Base::RuntimeError(ConstraintView->getObject()->getStatusString());
+        Gui::cmdAppDocument(document, "recompute()");
+        if (!constraint->isValid()) {
+            throw Base::RuntimeError(constraint->getStatusString());
         }
 
-        ConstraintView->getDocument()->commitCommand();  // Opened in
-                                                         // ViewProviderDocumentObject::startDefaultEditMode()
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
+        Gui::cmdGuiDocument(document, "resetEdit()");
     }
     catch (const Base::Exception& e) {
-        ConstraintView->getDocument()->abortCommand();  // Opened in
-                                                        // ViewProviderDocumentObject::startDefaultEditMode()
+        // Failed input remains correctable in the still-open exact task.
         QMessageBox::warning(parameter, tr("Input Error"), QString::fromLatin1(e.what()));
         return false;
     }

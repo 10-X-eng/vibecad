@@ -40,6 +40,10 @@ public:
     ~ViewProviderFemConstraintFluidBoundary() override;
 
     void updateData(const App::Property*) override;
+    bool supportsDocumentTimelineEdit() const noexcept override
+    {
+        return true;
+    }
     // virtual void onChanged(const App::Property*); //no further property for viewProvider
 protected:
     bool setEdit(int ModNum) override;

@@ -22,7 +22,13 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <exception>
 #include <limits>
+#include <map>
+#include <set>
+#include <sstream>
+#include <QMessageBox>
+#include <QSignalBlocker>
 
 #include <BRep_Tool.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -33,6 +39,7 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepProj_Projection.hxx>
 #include <gp_Ax1.hxx>
+#include <Precision.hxx>
 #include <ShapeAnalysis.hxx>
 #include <ShapeAnalysis_FreeBounds.hxx>
 #include <ShapeFix_Face.hxx>
@@ -48,8 +55,13 @@
 
 
 #include <App/Document.h>
+#include <App/GeoFeatureGroupExtension.h>
+#include <Base/Console.h>
+#include <Base/Tools.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/CommandT.h>
+#include <Gui/Document.h>
+#include <Gui/Macro.h>
 #include <Gui/MainWindow.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
@@ -58,6 +70,7 @@
 #include <Inventor/SbVec3d.h>
 
 #include "DlgProjectionOnSurface.h"
+#include "ModelingSelection.h"
 #include "ui_DlgProjectionOnSurface.h"
 #include "ViewProviderExt.h"
 
@@ -66,6 +79,99 @@ using namespace PartGui;
 
 namespace
 {
+std::set<const DlgProjectOnSurface*>& taskManagedProjectionWidgets()
+{
+    static std::set<const DlgProjectOnSurface*> widgets;
+    return widgets;
+}
+
+struct ProjectionWidgetState
+{
+    Part::ProjectOnSurface* acceptedResult = nullptr;
+    long createdFeatureId = -1;
+    std::string createdFeatureName;
+    bool recordCreation = false;
+};
+
+std::map<const DlgProjectOnSurface*, ProjectionWidgetState>&
+projectionWidgetStates()
+{
+    static std::map<const DlgProjectOnSurface*, ProjectionWidgetState> states;
+    return states;
+}
+
+void removeExactProjectionObject(
+    App::Document* document,
+    long objectId,
+    const std::string& objectName
+) noexcept
+{
+    try {
+        auto* object = document && objectId >= 0
+            ? document->getObjectByID(objectId)
+            : nullptr;
+        if (!object) {
+            return;
+        }
+        if (!object->getNameInDocument()
+            || objectName != object->getNameInDocument()) {
+            Base::Console().error(
+                "Projection rollback refused to remove a mismatched object "
+                "(expected '%s', id %ld).\n",
+                objectName.c_str(),
+                objectId
+            );
+            return;
+        }
+        document->removeObject(objectName.c_str());
+    }
+    catch (...) {
+        try {
+            Base::Console().error(
+                "Projection rollback could not remove '%s' (id %ld).\n",
+                objectName.c_str(),
+                objectId
+            );
+        }
+        catch (...) {
+        }
+    }
+}
+
+struct ProjectOnSurfaceTaskState
+{
+    explicit ProjectOnSurfaceTaskState(App::Document* document)
+        : feature(nullptr)
+        , attempt(
+              std::make_unique<ModelingTaskAttempt>(
+                  *document,
+                  "Project on surface"
+              )
+          )
+    {}
+
+    explicit ProjectOnSurfaceTaskState(Part::ProjectOnSurface* feature)
+        : feature(feature)
+        , attempt(
+              std::make_unique<ModelingTaskAttempt>(
+                  *feature->getDocument(),
+                  "Edit projection on surface"
+              )
+          )
+    {}
+
+    App::WeakPtrT<Part::ProjectOnSurface> feature;
+    std::unique_ptr<ModelingTaskAttempt> attempt;
+    bool creation = false;
+};
+
+std::map<TaskProjectOnSurface*, ProjectOnSurfaceTaskState>&
+projectOnSurfaceTaskStates()
+{
+    static std::map<TaskProjectOnSurface*, ProjectOnSurfaceTaskState> states;
+    return states;
+}
+
 //////////////////////////////////////////////////////////////////////////
 class EdgeSelection: public Gui::SelectionFilterGate
 {
@@ -78,10 +184,6 @@ public:
 
     bool allow(App::Document* /*pDoc*/, App::DocumentObject* iPObj, const char* sSubName) override
     {
-        auto aPart = dynamic_cast<Part::Feature*>(iPObj);
-        if (!aPart) {
-            return false;
-        }
         if (!sSubName) {
             return false;
         }
@@ -90,11 +192,17 @@ public:
             return false;
         }
 
-        auto subShape = aPart->Shape.getShape().getSubShape(sSubName, true);
-        if (subShape.IsNull()) {
+        iPObj = PartGui::resolveModelingObject(iPObj);
+        const auto subShape = Part::Feature::getTopoShape(
+            iPObj,
+            Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
+                | Part::ShapeOption::Transform,
+            sSubName
+        );
+        if (subShape.isNull()) {
             return false;
         }
-        auto type = subShape.ShapeType();
+        auto type = subShape.getShape().ShapeType();
         return (type == TopAbs_EDGE);
     }
 };
@@ -111,10 +219,6 @@ public:
 
     bool allow(App::Document* /*pDoc*/, App::DocumentObject* iPObj, const char* sSubName) override
     {
-        auto aPart = dynamic_cast<Part::Feature*>(iPObj);
-        if (!aPart) {
-            return false;
-        }
         if (!sSubName) {
             return false;
         }
@@ -123,14 +227,173 @@ public:
             return false;
         }
 
-        auto subShape = aPart->Shape.getShape().getSubShape(sSubName, true);
-        if (subShape.IsNull()) {
+        iPObj = PartGui::resolveModelingObject(iPObj);
+        const auto subShape = Part::Feature::getTopoShape(
+            iPObj,
+            Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
+                | Part::ShapeOption::Transform,
+            sSubName
+        );
+        if (subShape.isNull()) {
             return false;
         }
-        auto type = subShape.ShapeType();
+        auto type = subShape.getShape().ShapeType();
         return (type == TopAbs_FACE);
     }
 };
+
+std::string pythonString(const std::string& value)
+{
+    return "'" + Base::Tools::escapeEncodeString(value) + "'";
+}
+
+std::string pythonObjectReference(const App::DocumentObject* object)
+{
+    if (!object || !object->getDocument() || !object->getNameInDocument()) {
+        return "None";
+    }
+    return "App.getDocument(" + pythonString(object->getDocument()->getName())
+        + ").getObject(" + pythonString(object->getNameInDocument()) + ")";
+}
+
+std::string pythonLinkSub(
+    const App::DocumentObject* object,
+    const std::vector<std::string>& subElements
+)
+{
+    std::ostringstream stream;
+    stream << '(' << pythonObjectReference(object) << ",[";
+    for (std::size_t index = 0; index < subElements.size(); ++index) {
+        if (index) {
+            stream << ',';
+        }
+        stream << pythonString(subElements[index]);
+    }
+    stream << "])";
+    return stream.str();
+}
+
+std::string pythonLinkSubList(
+    const std::vector<App::DocumentObject*>& objects,
+    const std::vector<std::string>& subElements
+)
+{
+    std::ostringstream stream;
+    stream << '[';
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        if (index) {
+            stream << ',';
+        }
+        stream << '(' << pythonObjectReference(objects[index]) << ",["
+               << pythonString(subElements[index]) << "])";
+    }
+    stream << ']';
+    return stream.str();
+}
+
+std::string pythonFloat(double value)
+{
+    std::ostringstream stream;
+    stream.precision(17);
+    stream << value;
+    return stream.str();
+}
+
+void recordAcceptedProjection(const Part::ProjectOnSurface& projection, bool createFeature)
+{
+    if (!Gui::Application::Instance
+        || !Gui::Application::Instance->macroManager()) {
+        return;
+    }
+    auto* manager = Gui::Application::Instance->macroManager();
+    auto* document = projection.getDocument();
+    manager->addLine(Gui::MacroManager::App, "import Part");
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection_doc = App.getDocument("
+         + pythonString(document->getName()) + ")")
+            .c_str()
+    );
+    if (createFeature) {
+        manager->addLine(
+            Gui::MacroManager::App,
+            ("__vibecad_projection = __vibecad_projection_doc.addObject("
+             "'Part::ProjectOnSurface'," + pythonString(projection.getNameInDocument()) + ")")
+                .c_str()
+        );
+    }
+    else {
+        manager->addLine(
+            Gui::MacroManager::App,
+            ("__vibecad_projection = " + pythonObjectReference(&projection)).c_str()
+        );
+    }
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection.SupportFace = "
+         + pythonLinkSub(
+             projection.SupportFace.getValue(),
+             projection.SupportFace.getSubValues()
+         ))
+            .c_str()
+    );
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection.Projection = "
+         + pythonLinkSubList(
+             projection.Projection.getValues(),
+             projection.Projection.getSubValues()
+         ))
+            .c_str()
+    );
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection.Mode = "
+         + pythonString(projection.Mode.getValueAsString()))
+            .c_str()
+    );
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection.Height = " + pythonFloat(projection.Height.getValue())).c_str()
+    );
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection.Offset = " + pythonFloat(projection.Offset.getValue())).c_str()
+    );
+    const auto direction = projection.Direction.getValue();
+    manager->addLine(
+        Gui::MacroManager::App,
+        ("__vibecad_projection.Direction = App.Vector("
+         + pythonFloat(direction.x) + "," + pythonFloat(direction.y) + ","
+         + pythonFloat(direction.z) + ")")
+            .c_str()
+    );
+    auto* parent = App::GeoFeatureGroupExtension::getGroupOfObject(&projection);
+    if (createFeature && parent) {
+        manager->addLine(
+            Gui::MacroManager::App,
+            ("__vibecad_projection_parent = " + pythonObjectReference(parent)).c_str()
+        );
+        manager->addLine(
+            Gui::MacroManager::App,
+            "__vibecad_projection_parent.addObject(__vibecad_projection)"
+        );
+        manager->addLine(
+            Gui::MacroManager::App,
+            "if hasattr(__vibecad_projection_parent, 'Tip'): "
+            "__vibecad_projection_parent.Tip = __vibecad_projection"
+        );
+    }
+    manager->addLine(Gui::MacroManager::App, "__vibecad_projection_doc.recompute()");
+    manager->addLine(
+        Gui::MacroManager::App,
+        createFeature && parent
+            ? "del __vibecad_projection_parent, __vibecad_projection, "
+              "__vibecad_projection_doc"
+            : "del __vibecad_projection, __vibecad_projection_doc"
+    );
+}
+
 //////////////////////////////////////////////////////////////////////////
 }  // namespace
 
@@ -427,7 +690,7 @@ void PartGui::DlgProjectionOnSurface::store_current_selected_parts(
     if (!m_partDocument) {
         return;
     }
-    std::vector<Gui::SelectionObject> selObj = Gui::Selection().getSelectionEx();
+    auto selObj = PartGui::getModelingShapeSelection();
     if (!selObj.empty()) {
         for (auto it = selObj.begin(); it != selObj.end(); ++it) {
             auto aPart = it->getObject<Part::Feature>();
@@ -1244,11 +1507,28 @@ void TaskProjectionOnSurface::clicked(int id)
 
 // ------------------------------------------------------------------------------------------------
 
-DlgProjectOnSurface::DlgProjectOnSurface(Part::ProjectOnSurface* feature, QWidget* parent)
+DlgProjectOnSurface::DlgProjectOnSurface(
+    Part::ProjectOnSurface* feature,
+    QWidget* parent
+)
+    : DlgProjectOnSurface(feature, parent, false)
+{}
+
+DlgProjectOnSurface::DlgProjectOnSurface(
+    Part::ProjectOnSurface* feature,
+    QWidget* parent,
+    bool recordCreation
+)
     : QWidget(parent)
     , ui(new Ui::DlgProjectionOnSurface)
     , feature(feature)
 {
+    auto& state = projectionWidgetStates()[this];
+    state.recordCreation = recordCreation;
+    if (recordCreation) {
+        state.createdFeatureId = feature->getID();
+        state.createdFeatureName = feature->getNameInDocument();
+    }
     ui->setupUi(this);
     ui->doubleSpinBoxExtrudeHeight->setValue(feature->Height.getValue());
     ui->doubleSpinBoxSolidDepth->setValue(feature->Offset.getValue());
@@ -1264,9 +1544,9 @@ DlgProjectOnSurface::DlgProjectOnSurface(Part::ProjectOnSurface* feature, QWidge
 
 DlgProjectOnSurface::~DlgProjectOnSurface()
 {
-    if (selectionMode != SelectionMode::None) {
-        Gui::Selection().rmvSelectionGate();
-    }
+    taskManagedProjectionWidgets().erase(this);
+    projectionWidgetStates().erase(this);
+    releaseSelectionGate();
 }
 
 void DlgProjectOnSurface::setupConnections()
@@ -1298,6 +1578,12 @@ void DlgProjectOnSurface::setupConnections()
             this, &DlgProjectOnSurface::onAddWireClicked);
     connect(ui->doubleSpinBoxSolidDepth, qOverload<double>(&QDoubleSpinBox::valueChanged),
             this, &DlgProjectOnSurface::onSolidDepthValueChanged);
+    connect(ui->doubleSpinBoxDirX, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            this, [this](double) { setDirection(); });
+    connect(ui->doubleSpinBoxDirY, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            this, [this](double) { setDirection(); });
+    connect(ui->doubleSpinBoxDirZ, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            this, [this](double) { setDirection(); });
     // clang-format off
 }
 
@@ -1323,19 +1609,205 @@ void DlgProjectOnSurface::onSelectionChanged(const Gui::SelectionChanges& msg)
 
 void DlgProjectOnSurface::accept()
 {
+    tryAccept();
+}
+
+DlgProjectOnSurface::AcceptResult DlgProjectOnSurface::tryAccept()
+{
+    auto& state = projectionWidgetStates()[this];
+    state.acceptedResult = nullptr;
     if (!feature.expired()) {
-        auto document = feature->getDocument();
-        document->commitTransaction();
-        document->recompute();
+        auto* projection = feature.get();
+        auto* document = projection->getDocument();
+        const auto failRole = [this](const QString& message) {
+            QMessageBox::critical(
+                this,
+                tr("Incomplete Projection"),
+                message
+            );
+            return AcceptResult::KeepOpen;
+        };
+
+        try {
+            auto* supportObject = projection->SupportFace.getValue();
+            const auto& supportSubs = projection->SupportFace.getSubValues();
+            if (!supportObject || supportSubs.size() != 1) {
+                return failRole(tr("Assign exactly one target face with Target Surface."));
+            }
+            auto supportShape = Part::Feature::getTopoShape(
+                supportObject,
+                Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
+                    | Part::ShapeOption::Transform,
+                supportSubs.front().c_str()
+            );
+            if (supportShape.isNull()
+                || supportShape.getShape().ShapeType() != TopAbs_FACE) {
+                return failRole(tr("The target role must resolve to one face."));
+            }
+
+            const auto projectionObjects = projection->Projection.getValues();
+            const auto projectionSubs = projection->Projection.getSubValues();
+            if (projectionObjects.empty()
+                || projectionObjects.size() != projectionSubs.size()) {
+                return failRole(
+                    tr("Assign at least one edge, wire, or face with a projection source action.")
+                );
+            }
+            for (std::size_t index = 0; index < projectionObjects.size(); ++index) {
+                if (!projectionObjects[index] || projectionSubs[index].empty()) {
+                    return failRole(tr("Every projection source must be explicit geometry."));
+                }
+                auto sourceShape = Part::Feature::getTopoShape(
+                    projectionObjects[index],
+                    Part::ShapeOption::NeedSubElement | Part::ShapeOption::ResolveLink
+                        | Part::ShapeOption::Transform,
+                    projectionSubs[index].c_str()
+                );
+                if (sourceShape.isNull()) {
+                    return failRole(tr("A projection source no longer resolves."));
+                }
+                const auto type = sourceShape.getShape().ShapeType();
+                if (type != TopAbs_EDGE && type != TopAbs_WIRE && type != TopAbs_FACE) {
+                    return failRole(
+                        tr("Projection sources must resolve to edges, wires, or faces.")
+                    );
+                }
+            }
+
+            const auto direction = projection->Direction.getValue();
+            if (direction.Sqr() <= Precision::SquareConfusion()) {
+                return failRole(tr("Set a non-zero projection direction."));
+            }
+
+            document->recompute();
+            const auto shape = projection->Shape.getShape();
+            if (!projection->isValid() || shape.isNull() || !shape.isValid()) {
+                const auto status = projection->getStatusString();
+                return failRole(
+                    !status || !*status
+                        ? tr("The assigned roles do not produce valid projected geometry.")
+                        : QString::fromUtf8(status)
+                );
+            }
+            const bool taskManaged =
+                taskManagedProjectionWidgets().contains(this);
+            if (!taskManaged) {
+                document->commitTransaction();
+            }
+            state.acceptedResult = projection;
+            if (!taskManaged) {
+                try {
+                    recordAcceptedProjection(*projection, state.recordCreation);
+                }
+                catch (...) {
+                    Base::Console().warning(
+                        "Projection was committed, but its macro record could not be written.\n"
+                    );
+                }
+                state.recordCreation = false;
+                state.createdFeatureId = -1;
+                state.createdFeatureName.clear();
+            }
+            return AcceptResult::Accepted;
+        }
+        catch (const Base::Exception& error) {
+            QMessageBox::warning(
+                this,
+                tr("Projection failed"),
+                QCoreApplication::translate("Exception", error.what())
+            );
+            if (taskManagedProjectionWidgets().contains(this)) {
+                return AcceptResult::KeepOpen;
+            }
+            rollback();
+            return AcceptResult::Aborted;
+        }
+        catch (const Standard_Failure& error) {
+            QMessageBox::warning(
+                this,
+                tr("Projection failed"),
+                QString::fromUtf8(error.GetMessageString())
+            );
+            if (taskManagedProjectionWidgets().contains(this)) {
+                return AcceptResult::KeepOpen;
+            }
+            rollback();
+            return AcceptResult::Aborted;
+        }
+        catch (const std::exception& error) {
+            QMessageBox::warning(
+                this,
+                tr("Projection failed"),
+                QString::fromUtf8(error.what())
+            );
+            if (taskManagedProjectionWidgets().contains(this)) {
+                return AcceptResult::KeepOpen;
+            }
+            rollback();
+            return AcceptResult::Aborted;
+        }
+        catch (...) {
+            QMessageBox::warning(
+                this,
+                tr("Projection failed"),
+                tr("Unexpected projection failure.")
+            );
+            if (taskManagedProjectionWidgets().contains(this)) {
+                return AcceptResult::KeepOpen;
+            }
+            rollback();
+            return AcceptResult::Aborted;
+        }
     }
+    return AcceptResult::Aborted;
+}
+
+Part::ProjectOnSurface* DlgProjectOnSurface::lastAcceptedResult() const noexcept
+{
+    const auto found = projectionWidgetStates().find(this);
+    return found == projectionWidgetStates().end()
+        ? nullptr
+        : found->second.acceptedResult;
 }
 
 void DlgProjectOnSurface::reject()
 {
-    if (!feature.expired()) {
-        auto document = feature->getDocument();
-        document->abortTransaction();
+    rollback();
+}
+
+void DlgProjectOnSurface::releaseSelectionGate()
+{
+    if (selectionMode != SelectionMode::None) {
+        Gui::Selection().rmvSelectionGate();
+        selectionMode = SelectionMode::None;
     }
+}
+
+void DlgProjectOnSurface::rollback()
+{
+    auto& state = projectionWidgetStates()[this];
+    state.acceptedResult = nullptr;
+    if (taskManagedProjectionWidgets().contains(this)) {
+        releaseSelectionGate();
+        return;
+    }
+    auto* projection = feature.expired() ? nullptr : feature.get();
+    auto* document = projection ? projection->getDocument() : nullptr;
+    if (document) {
+        try {
+            document->abortTransaction();
+        }
+        catch (...) {
+        }
+        if (state.recordCreation) {
+            removeExactProjectionObject(
+                document,
+                state.createdFeatureId,
+                state.createdFeatureName
+            );
+        }
+    }
+    releaseSelectionGate();
 }
 
 void DlgProjectOnSurface::onAddProjFaceClicked()
@@ -1426,6 +1898,9 @@ void DlgProjectOnSurface::onGetCurrentCamDirClicked()
     float valZ {};
     lookAt.getValue(valX, valY, valZ);
 
+    const QSignalBlocker blockX(ui->doubleSpinBoxDirX);
+    const QSignalBlocker blockY(ui->doubleSpinBoxDirY);
+    const QSignalBlocker blockZ(ui->doubleSpinBoxDirZ);
     ui->doubleSpinBoxDirX->setValue(valX);
     ui->doubleSpinBoxDirY->setValue(valY);
     ui->doubleSpinBoxDirZ->setValue(valZ);
@@ -1435,6 +1910,9 @@ void DlgProjectOnSurface::onGetCurrentCamDirClicked()
 void DlgProjectOnSurface::onDirXClicked()
 {
     auto currentVal = ui->doubleSpinBoxDirX->value();
+    const QSignalBlocker blockX(ui->doubleSpinBoxDirX);
+    const QSignalBlocker blockY(ui->doubleSpinBoxDirY);
+    const QSignalBlocker blockZ(ui->doubleSpinBoxDirZ);
     ui->doubleSpinBoxDirX->setValue(currentVal > 0 ? -1 : 1);
     ui->doubleSpinBoxDirY->setValue(0);
     ui->doubleSpinBoxDirZ->setValue(0);
@@ -1444,6 +1922,9 @@ void DlgProjectOnSurface::onDirXClicked()
 void DlgProjectOnSurface::onDirYClicked()
 {
     auto currentVal = ui->doubleSpinBoxDirY->value();
+    const QSignalBlocker blockX(ui->doubleSpinBoxDirX);
+    const QSignalBlocker blockY(ui->doubleSpinBoxDirY);
+    const QSignalBlocker blockZ(ui->doubleSpinBoxDirZ);
     ui->doubleSpinBoxDirX->setValue(0);
     ui->doubleSpinBoxDirY->setValue(currentVal > 0 ? -1 : 1);
     ui->doubleSpinBoxDirZ->setValue(0);
@@ -1453,6 +1934,9 @@ void DlgProjectOnSurface::onDirYClicked()
 void DlgProjectOnSurface::onDirZClicked()
 {
     auto currentVal = ui->doubleSpinBoxDirZ->value();
+    const QSignalBlocker blockX(ui->doubleSpinBoxDirX);
+    const QSignalBlocker blockY(ui->doubleSpinBoxDirY);
+    const QSignalBlocker blockZ(ui->doubleSpinBoxDirZ);
     ui->doubleSpinBoxDirX->setValue(0);
     ui->doubleSpinBoxDirY->setValue(0);
     ui->doubleSpinBoxDirZ->setValue(currentVal > 0 ? -1 : 1);
@@ -1465,8 +1949,11 @@ void DlgProjectOnSurface::setDirection()
         auto xVal = ui->doubleSpinBoxDirX->value();
         auto yVal = ui->doubleSpinBoxDirY->value();
         auto zVal = ui->doubleSpinBoxDirZ->value();
-        feature->Direction.setValue(Base::Vector3d(xVal, yVal, zVal));
-        feature->recomputeFeature();
+        const Base::Vector3d direction(xVal, yVal, zVal);
+        feature->Direction.setValue(direction);
+        if (direction.Sqr() > Precision::SquareConfusion()) {
+            feature->recomputeFeature();
+        }
     }
 }
 
@@ -1485,7 +1972,7 @@ void DlgProjectOnSurface::addWire(const Gui::SelectionChanges& msg)
         return;
     }
 
-    Gui::SelectionObject selObj(msg);
+    const auto selObj = PartGui::resolveModelingSelection(Gui::SelectionObject(msg));
     if (!selObj.hasSubNames()) {
         return;
     }
@@ -1520,23 +2007,27 @@ void DlgProjectOnSurface::addWire(const Gui::SelectionChanges& msg)
 void DlgProjectOnSurface::addSelection(const Gui::SelectionChanges& msg, const std::string& subName)
 {
     if (!feature.expired()) {
-        Gui::SelectionObject selObj(msg);
-        feature->Projection.addValue(selObj.getObject(), {subName});
+        auto selObj = PartGui::resolveModelingSelection(Gui::SelectionObject(msg));
+        if (selObj.getObject()) {
+            feature->Projection.addValue(selObj.getObject(), {subName});
+        }
     }
 }
 
 void DlgProjectOnSurface::addSelection(const Gui::SelectionChanges& msg)
 {
     if (!feature.expired()) {
-        Gui::SelectionObject selObj(msg);
-        feature->Projection.addValue(selObj.getObject(), selObj.getSubNames());
+        auto selObj = PartGui::resolveModelingSelection(Gui::SelectionObject(msg));
+        if (selObj.getObject()) {
+            feature->Projection.addValue(selObj.getObject(), selObj.getSubNames());
+        }
     }
 }
 
 void DlgProjectOnSurface::setSupportFace(const Gui::SelectionChanges& msg)
 {
-    Gui::SelectionObject selObj(msg);
-    if (!feature.expired()) {
+    auto selObj = PartGui::resolveModelingSelection(Gui::SelectionObject(msg));
+    if (!feature.expired() && selObj.getObject()) {
         feature->SupportFace.setValue(selObj.getObject(), selObj.getSubNames());
         feature->recomputeFeature();
     }
@@ -1611,10 +2102,24 @@ void DlgProjectOnSurface::onSolidDepthValueChanged(double value)
 
 TaskProjectOnSurface::TaskProjectOnSurface(App::Document* doc)
 {
+    connect(this, &QObject::destroyed, [task = this]() {
+        projectOnSurfaceTaskStates().erase(task);
+    });
+    auto [state, inserted] =
+        projectOnSurfaceTaskStates().try_emplace(this, doc);
+    Q_UNUSED(inserted);
     setDocumentName(doc->getName());
-    doc->openTransaction(QT_TRANSLATE_NOOP("Command", "Project on surface"));
     auto feature = doc->addObject<Part::ProjectOnSurface>("Projection");
-    widget = new DlgProjectOnSurface(feature);
+    if (!feature) {
+        throw Base::RuntimeError(
+            "Could not create the projection feature"
+        );
+    }
+    state->second.feature = feature;
+    state->second.creation = true;
+    state->second.attempt->trackCreatedObject(*feature);
+    widget = new DlgProjectOnSurface(feature, nullptr, true);
+    taskManagedProjectionWidgets().insert(widget);
     taskbox = new Gui::TaskView::TaskBox(
         Gui::BitmapFactory().pixmap("Part_ProjectionOnSurface"),
         widget->windowTitle(),
@@ -1634,6 +2139,12 @@ TaskProjectOnSurface::TaskProjectOnSurface(Part::ProjectOnSurface* feature)
           nullptr
       ))
 {
+    connect(this, &QObject::destroyed, [task = this]() {
+        projectOnSurfaceTaskStates().erase(task);
+    });
+    projectOnSurfaceTaskStates().try_emplace(this, feature);
+    taskManagedProjectionWidgets().insert(widget);
+    setDocumentName(feature->getDocument()->getName());
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
 }
@@ -1646,15 +2157,71 @@ void TaskProjectOnSurface::resetEdit()
 
 bool TaskProjectOnSurface::accept()
 {
-    widget->accept();
+    const auto result = widget->tryAccept();
+    if (result == DlgProjectOnSurface::AcceptResult::KeepOpen) {
+        return false;
+    }
+    if (result == DlgProjectOnSurface::AcceptResult::Accepted) {
+        auto found = projectOnSurfaceTaskStates().find(this);
+        if (found == projectOnSurfaceTaskStates().end()) {
+            return false;
+        }
+        try {
+            found->second.attempt->commit();
+        }
+        catch (const Base::Exception& error) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                tr("Projection failed"),
+                QCoreApplication::translate("Exception", error.what())
+            );
+            return false;
+        }
+        try {
+            recordAcceptedProjection(
+                *widget->lastAcceptedResult(),
+                found->second.creation
+            );
+        }
+        catch (...) {
+            Base::Console().warning(
+                "Projection was committed, but its macro record could not be written.\n"
+            );
+        }
+        markCommandInteractionStateDurable(
+            {widget->lastAcceptedResult()}
+        );
+        taskManagedProjectionWidgets().erase(widget);
+        projectOnSurfaceTaskStates().erase(found);
+    }
     resetEdit();
     return true;
 }
 
 bool TaskProjectOnSurface::reject()
 {
+    auto found = projectOnSurfaceTaskStates().find(this);
+    std::unique_ptr<ModelingTaskAttempt> rollback;
+    bool creation = false;
+    if (found != projectOnSurfaceTaskStates().end()) {
+        rollback = std::move(found->second.attempt);
+        creation = found->second.creation;
+        projectOnSurfaceTaskStates().erase(found);
+    }
     widget->reject();
-    resetEdit();
+    taskManagedProjectionWidgets().erase(widget);
+    if (!creation) {
+        const std::string documentName = getDocumentName();
+        auto* guiDocument = Gui::Application::Instance
+            ? Gui::Application::Instance->getDocument(
+                  documentName.c_str()
+              )
+            : nullptr;
+        if (guiDocument) {
+            guiDocument->cancelEdit();
+        }
+    }
+    rollback.reset();
     return true;
 }
 

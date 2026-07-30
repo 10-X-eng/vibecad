@@ -289,14 +289,19 @@ class Rotate(gui_base_original.Modifier):
         else:
             cmd_name = translate("draft", "Rotate")
         Gui.addModule("Draft")
-        cmd = "Draft.rotate(selection, "
+        Gui.addModule("draftutils.timeline")
+        cmd = "rotated = draftutils.timeline.rotate(selection, "
         cmd += str(math.degrees(self.angle)) + ", "
         cmd += "center=" + DraftVecUtils.toString(self.center) + ", "
         cmd += "axis=" + DraftVecUtils.toString(self.wp.axis) + ", "
         cmd += "copy=" + str(copy) + ", "
         cmd += "subelements=" + str(self.ui.isSubelementMode.isChecked()) + ")"
         cmd_list = [cmd, "FreeCAD.ActiveDocument.recompute()"]
-        self.commit(cmd_name, cmd_list)
+        self.commit(
+            cmd_name,
+            cmd_list,
+            inputs=(selected.Object for selected in self.selection),
+        )
 
     def numericInput(self, numx, numy, numz):
         """Validate the entry fields in the user interface.

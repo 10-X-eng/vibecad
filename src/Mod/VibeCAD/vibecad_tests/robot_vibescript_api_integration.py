@@ -212,7 +212,7 @@ def _exercise_source_api() -> None:
     assert "no collision checking" in description["simulation_contract"][
         "not_simulated"
     ]
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, allow_nan=False).encode("utf-8")) < 32 * 1024
 
 

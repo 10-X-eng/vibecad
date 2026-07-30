@@ -47,6 +47,7 @@ from draftgeoutils import wires
 from draftutils import gui_utils
 from draftutils import params
 from draftutils import utils
+from draftutils.transaction import run_document_mutation
 from draftutils.translate import translate
 from draftviewproviders.view_base import ViewProviderDraft
 
@@ -204,15 +205,19 @@ class ViewProviderWire(ViewProviderDraft):
             self.Object.Shape.Wires[0], origin=wp.position, normal=wp.axis
         )
 
-        doc = App.ActiveDocument
-        doc.openTransaction(translate("draft", "Flatten"))
+        obj = self.Object
 
-        self.Object.Placement = App.Placement()
-        self.Object.Points = [vert.Point for vert in flat_wire.Vertexes]
-        self.Object.Closed = flat_wire.isClosed()
+        def apply_flatten():
+            obj.Placement = App.Placement()
+            obj.Points = [vert.Point for vert in flat_wire.Vertexes]
+            obj.Closed = flat_wire.isClosed()
 
-        doc.recompute()
-        doc.commitTransaction()
+        run_document_mutation(
+            obj.Document,
+            translate("draft", "Flatten"),
+            apply_flatten,
+            objects=[obj],
+        )
 
 
 # Alias for compatibility with v0.18 and earlier

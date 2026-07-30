@@ -22,9 +22,11 @@
 
 # include <QStatusBar>
 
+#include <QMessageBox>
 
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -40,6 +42,7 @@
 #include <Mod/TechDraw/App/DrawUtil.h>
 
 #include "TaskLeaderLine.h"
+#include "TaskDocumentGuard.h"
 #include "ui_TaskLeaderLine.h"
 #include "DrawGuiUtil.h"
 #include "MDIViewPage.h"
@@ -67,7 +70,7 @@ TaskLeaderLine::TaskLeaderLine(TechDrawGui::ViewProviderLeader* leadVP) :
     m_lineVP(leadVP),
     m_baseFeat(nullptr),
     m_basePage(nullptr),
-    m_lineFeat(m_lineVP->getFeature()),
+    m_lineFeat(m_lineVP ? m_lineVP->getFeature() : nullptr),
     m_qgParent(nullptr),
     m_createMode(false),
     m_trackerMode(QGTracker::TrackerMode::None),
@@ -80,14 +83,12 @@ TaskLeaderLine::TaskLeaderLine(TechDrawGui::ViewProviderLeader* leadVP) :
     m_saveX(0.0),
     m_saveY(0.0)
 {
-    //existence of leadVP is guaranteed by caller being ViewProviderLeaderLine.setEdit
-
-
-    m_basePage = m_lineFeat->findParentPage();
-    if (!m_basePage) {
-        Base::Console().error("TaskRichAnno - bad parameters (2).  Cannot proceed.\n");
-        return;
+    if (!m_lineVP || !m_lineFeat) {
+        throw Base::TypeError(
+            "The leader editor requires a live leader"
+        );
     }
+    m_basePage = m_lineFeat->findParentPage();
     App::DocumentObject* obj = m_lineFeat->LeaderParent.getValue();
     if (obj) {
         if (obj->isDerivedFrom<TechDraw::DrawView>() )  {
@@ -95,19 +96,35 @@ TaskLeaderLine::TaskLeaderLine(TechDrawGui::ViewProviderLeader* leadVP) :
         }
     }
 
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    if (!m_baseFeat || !m_basePage
+        || m_baseFeat->getDocument()
+            != m_lineFeat->getDocument()
+        || m_basePage->getDocument()
+            != m_lineFeat->getDocument()
+        || m_baseFeat->findParentPage() != m_basePage
+        || m_lineFeat->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The leader editor requires a leader attached to a live page "
+            "and its owning transaction"
+        );
+    }
+    Gui::Document* activeGui =
+        Gui::Application::Instance->getDocument(
+            m_basePage->getDocument()
+        );
+    Gui::ViewProvider* vp =
+        activeGui ? activeGui->getViewProvider(m_basePage) : nullptr;
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp || !m_vpp->getQGSPage()) {
+        throw Base::RuntimeError(
+            "The leader editor could not find the drawing page"
+        );
+    }
 
     m_qgParent = nullptr;
     if (m_baseFeat) {
         m_qgParent = m_vpp->getQGSPage()->findQViewForDocObj(m_baseFeat);
-    }
-
-    //TODO: when/if leaders are allowed to be parented to Page, check for m_baseFeat will be removed
-    if (!m_baseFeat || !m_basePage) {
-        Base::Console().error("TaskLeaderLine - bad parameters (2).  Cannot proceed.\n");
-        return;
     }
 
     ui->setupUi(this);
@@ -153,11 +170,26 @@ TaskLeaderLine::TaskLeaderLine(TechDraw::DrawView* baseFeat,
     m_saveX(0.0),
     m_saveY(0.0)
 {
-    //existence of basePage and baseFeat is checked in CmdTechDrawLeaderLine (CommandAnnotate.cpp)
-
-    Gui::Document* activeGui = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    Gui::ViewProvider* vp = activeGui->getViewProvider(m_basePage);
-    m_vpp = static_cast<ViewProviderPage*>(vp);
+    if (!m_baseFeat || !m_basePage
+        || m_baseFeat->getDocument()
+            != m_basePage->getDocument()
+        || m_baseFeat->findParentPage() != m_basePage) {
+        throw Base::RuntimeError(
+            "A new leader requires a base view on the selected page"
+        );
+    }
+    Gui::Document* activeGui =
+        Gui::Application::Instance->getDocument(
+            m_basePage->getDocument()
+        );
+    Gui::ViewProvider* vp =
+        activeGui ? activeGui->getViewProvider(m_basePage) : nullptr;
+    m_vpp = dynamic_cast<ViewProviderPage*>(vp);
+    if (!m_vpp || !m_vpp->getQGSPage()) {
+        throw Base::RuntimeError(
+            "The leader task could not find the drawing page"
+        );
+    }
 
     if (m_baseFeat) {
         m_qgParent = m_vpp->getQGSPage()->findQViewForDocObj(baseFeat);
@@ -177,6 +209,11 @@ TaskLeaderLine::TaskLeaderLine(TechDraw::DrawView* baseFeat,
     if (m_vpp->getMDIViewPage()) {
         m_saveContextPolicy = m_vpp->getMDIViewPage()->contextMenuPolicy();
     }
+}
+
+TaskLeaderLine::~TaskLeaderLine()
+{
+    removeTracker();
 }
 
 void TaskLeaderLine::saveState()
@@ -335,59 +372,106 @@ void TaskLeaderLine::onLineStyleChanged()
 //! sceneDeltas are in Qt scene coords (Rez and inverted Y).
 void TaskLeaderLine::createLeaderFeature(std::vector<Base::Vector3d> sceneDeltas)
 {
+    auto* document =
+        m_basePage ? m_basePage->getDocument() : nullptr;
+    if (!document || !m_baseFeat
+        || m_baseFeat->getDocument() != document
+        || m_baseFeat->findParentPage() != m_basePage) {
+        throw Base::RuntimeError(
+            "The leader target is no longer available"
+        );
+    }
+    TaskInternal::OwnedDocumentTransaction transaction(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create Leader")
+    );
+
     const std::string objectName{"LeaderLine"};
-    std::string m_leaderName = m_basePage->getDocument()->getUniqueObjectName(objectName.c_str());
+    m_leaderName =
+        document->getUniqueObjectName(objectName.c_str());
     m_leaderType = "TechDraw::DrawLeaderLine";
-
-    std::string PageName = m_basePage->getNameInDocument();
-
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Leader"));
-    Command::doCommand(Command::Doc, "App.activeDocument().addObject('%s', '%s')",
-                       m_leaderType.c_str(), m_leaderName.c_str());
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawLeaderLine', 'LeaderLine', '%s')",
-              m_leaderName.c_str(), m_leaderName.c_str());
-
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.addView(App.activeDocument().%s)",
-                       PageName.c_str(), m_leaderName.c_str());
+    const std::string documentName =
+        Base::InterpreterSingleton::strToPython(
+            document->getName()
+        );
+    const QString leaderFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject('%2', '%3')"
+        )
+            .arg(
+                QString::fromStdString(documentName),
+                QString::fromStdString(m_leaderType),
+                QString::fromStdString(m_leaderName)
+            );
+    auto* object = Gui::Command::runDocumentObjectCommand(
+        Command::Doc,
+        *document,
+        leaderFactory.toUtf8(),
+        TechDraw::DrawLeaderLine::getClassTypeId()
+    );
+    m_lineFeat =
+        dynamic_cast<TechDraw::DrawLeaderLine*>(object);
+    if (!m_lineFeat) {
+        throw Base::RuntimeError(
+            "The leader object could not be created"
+        );
+    }
+    m_leaderName = m_lineFeat->getNameInDocument();
+    m_lineFeat->translateLabel(
+        "DrawLeaderLine",
+        "LeaderLine",
+        m_leaderName
+    );
+    const std::string pageCommand =
+        Gui::Command::getObjectCmd(m_basePage);
+    const std::string leaderCommand =
+        Gui::Command::getObjectCmd(m_lineFeat);
+    Command::doCommand(
+        Command::Doc,
+        "%s.addView(%s)",
+        pageCommand.c_str(),
+        leaderCommand.c_str()
+    );
 
     double baseRotation{0};
     if (m_baseFeat) {
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.LeaderParent = App.activeDocument().%s",
-                               m_leaderName.c_str(), m_baseFeat->getNameInDocument());
+        const std::string baseCommand =
+            Gui::Command::getObjectCmd(m_baseFeat);
+        Command::doCommand(
+            Command::Doc,
+            "%s.LeaderParent = %s",
+            leaderCommand.c_str(),
+            baseCommand.c_str()
+        );
         baseRotation = m_baseFeat->Rotation.getValue();
     }
-
-    App::DocumentObject* obj = m_basePage->getDocument()->getObject(m_leaderName.c_str());
-    if (!obj) {
-        throw Base::RuntimeError("TaskLeaderLine - new markup object not found");
+    auto forMath{m_attachPoint};
+    if (baseRotation != 0) {
+        forMath = DU::invertY(forMath);
+        forMath.RotateZ(-Base::toRadians(baseRotation));
+        forMath = DU::invertY(forMath);
     }
-
-    if (obj->isDerivedFrom<TechDraw::DrawLeaderLine>()) {
-        m_lineFeat = static_cast<TechDraw::DrawLeaderLine*>(obj);
-        auto forMath{m_attachPoint};
-        if (baseRotation != 0) {
-            forMath = DU::invertY(forMath);
-            forMath.RotateZ(-Base::toRadians(baseRotation));
-            forMath = DU::invertY(forMath);
+    m_attachPoint = forMath;
+    m_lineFeat->setPosition(
+        Rez::appX(m_attachPoint.x),
+        Rez::appX(-m_attachPoint.y),
+        true
+    );
+    if (!sceneDeltas.empty()) {
+        std::vector<Base::Vector3d> pageDeltas;
+        for (auto& delta : sceneDeltas) {
+            pageDeltas.push_back(Rez::appX(delta));
         }
-        m_attachPoint = forMath;
-        m_lineFeat->setPosition(Rez::appX(m_attachPoint.x), Rez::appX(- m_attachPoint.y), true);
-        if (!sceneDeltas.empty()) {
-            std::vector<Base::Vector3d> pageDeltas;
-            // convert deltas to mm. leader points are stored inverted, so we do not convert to conventional Y axis
-            for (auto& delta : sceneDeltas) {
-                Base::Vector3d deltaInPageCoords = Rez::appX(delta);
-                pageDeltas.push_back(deltaInPageCoords);
-            }
-
-            // already unrotated, now convert to unscaled, but inverted
-            bool doScale{true};
-            bool doRotate{false};
-            auto temp = m_lineFeat->makeCanonicalPointsInverted(pageDeltas, doScale, doRotate);
-            m_lineFeat->WayPoints.setValues(temp);
-        }
-        commonFeatureUpdate();
+        const bool doScale{true};
+        const bool doRotate{false};
+        auto temp = m_lineFeat->makeCanonicalPointsInverted(
+            pageDeltas,
+            doScale,
+            doRotate
+        );
+        m_lineFeat->WayPoints.setValues(temp);
     }
+    commonFeatureUpdate();
 
     if (m_lineFeat) {
         Gui::ViewProvider* vp = QGIView::getViewProvider(m_lineFeat);
@@ -401,9 +485,6 @@ void TaskLeaderLine::createLeaderFeature(std::vector<Base::Vector3d> sceneDeltas
         }
     }
 
-    Gui::Command::updateActive();
-    Gui::Command::commitCommand(tid);
-
     //trigger claimChildren in tree
     if (m_baseFeat) {
         m_baseFeat->touch();
@@ -412,8 +493,16 @@ void TaskLeaderLine::createLeaderFeature(std::vector<Base::Vector3d> sceneDeltas
     m_basePage->touch();
 
     if (m_lineFeat) {
+        m_lineFeat->recomputeFeature();
+        if (m_lineFeat->isError()) {
+            throw Base::RuntimeError(
+                "The leader line could not produce a valid result"
+            );
+        }
         m_lineFeat->requestPaint();
     }
+    TaskInternal::updateExactDocument(document);
+    transaction.commit();
 }
 
 void TaskLeaderLine::dumpTrackerPoints(std::vector<Base::Vector3d>& tPoints) const
@@ -427,8 +516,13 @@ void TaskLeaderLine::dumpTrackerPoints(std::vector<Base::Vector3d>& tPoints) con
 
 void TaskLeaderLine::updateLeaderFeature()
 {
-//    Base::Console().message("TTL::updateLeaderFeature()\n");
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Edit Leader"));
+    if (!m_lineFeat || !m_lineVP
+        || m_lineFeat->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The leader edit transaction is no longer available"
+        );
+    }
     //waypoints & x, y are updated by QGILeaderLine (for edits only!)
     commonFeatureUpdate();
     Base::Color ac;
@@ -437,8 +531,15 @@ void TaskLeaderLine::updateLeaderFeature()
     m_lineVP->LineWidth.setValue(ui->dsbWeight->rawValue());
     m_lineVP->LineStyle.setValue(ui->cboxStyle->currentIndex());
 
-    Gui::Command::updateActive();
-    Gui::Command::commitCommand(tid);
+    m_lineFeat->recomputeFeature();
+    if (m_lineFeat->isError()) {
+        throw Base::RuntimeError(
+            "The leader line could not produce a valid result"
+        );
+    }
+    TaskInternal::updateExactDocument(
+        m_lineFeat->getDocument()
+    );
 
     if (m_baseFeat) {
         m_baseFeat->requestPaint();
@@ -463,21 +564,26 @@ void TaskLeaderLine::removeFeature()
 
     if (m_createMode) {
         try {
-            std::string PageName = m_basePage->getNameInDocument();
-            Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().%s.removeView(App.activeDocument().%s)",
-                                    PageName.c_str(), m_lineFeat->getNameInDocument());
-            Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().removeObject('%s')",
-                                        m_lineFeat->getNameInDocument());
+            App::Document* document = m_lineFeat->getDocument();
+            if (!document
+                || !m_basePage
+                || m_basePage->getDocument() != document
+                || m_lineFeat->findParentPage() != m_basePage) {
+                return;
+            }
+            const std::string leaderName =
+                m_lineFeat->getNameInDocument();
+            m_basePage->removeView(m_lineFeat);
+            document->removeObject(leaderName.c_str());
+            m_lineFeat = nullptr;
         }
         catch (...) {
             Base::Console().message("TTL::removeFeature - failed to delete feature\n");
             return;
         }
-    } else {
-        if (Gui::Command::hasPendingCommand()) {
-            std::vector<std::string> undos = Gui::Application::Instance->activeDocument()->getUndoVector();
-            Gui::Application::Instance->activeDocument()->undo(1);
-        }
+    }
+    else {
+        restoreState();
     }
 }
 
@@ -604,6 +710,12 @@ void TaskLeaderLine::startTracker()
 
     if (!m_tracker) {
         m_tracker = new QGTracker(m_vpp->getQGSPage(), m_trackerMode);
+        connect(
+            m_tracker,
+            &QObject::destroyed,
+            this,
+            [this]() { m_tracker = nullptr; }
+        );
         QObject::connect(
             m_tracker, &QGTracker::drawingFinished,
             this     , &TaskLeaderLine::onTrackerFinished
@@ -661,15 +773,13 @@ void TaskLeaderLine::onTrackerFinished(std::vector<QPointF> trackerScenePoints, 
 // this is called at every possible exit path?
 void TaskLeaderLine::removeTracker()
 {
-//    Base::Console().message("TTL::removeTracker()\n");
-    if (!m_vpp->getQGSPage()) {
+    if (!m_tracker) {
         return;
     }
-    if (m_tracker && m_tracker->scene()) {
-        m_vpp->getQGSPage()->removeItem(m_tracker);
-        delete m_tracker;
-        m_tracker = nullptr;
-    }
+    // Deleting a QGraphicsItem removes it from its scene.  This remains safe
+    // even if the page view has already been rebuilt.
+    delete m_tracker;
+    m_tracker = nullptr;
 }
 
 void TaskLeaderLine::onCancelEditClicked(bool clicked)
@@ -713,7 +823,9 @@ void TaskLeaderLine::setEditCursor(const QCursor &cursor)
     }
     if (m_baseFeat) {
         QGIView* qgivBase = m_vpp->getQGSPage()->findQViewForDocObj(m_baseFeat);
-        qgivBase->setCursor(cursor);
+        if (qgivBase) {
+            qgivBase->setCursor(cursor);
+        }
     }
 }
 
@@ -806,24 +918,50 @@ bool TaskLeaderLine::accept()
         //accept() button shouldn't be available if there is an edit in progress.
         abandonEditSession();
         removeTracker();
-        return true;
+        return false;
     }
 
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc)
+    auto* document =
+        m_basePage ? m_basePage->getDocument() : nullptr;
+    Gui::Document* guiDocument =
+        document && Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(document)
+        : nullptr;
+    if (!guiDocument) {
         return false;
+    }
+    if (getCreateMode() && m_sceneDeltas.size() < 2) {
+        QMessageBox::warning(
+            this,
+            tr("Leader Points Required"),
+            tr("Pick at least two points for the leader line.")
+        );
+        return false;
+    }
 
-    if (!getCreateMode())  {
-//        removeTracker();
-        updateLeaderFeature();
-    } else {
-//        removeTracker();
-        createLeaderFeature(m_sceneDeltas);
+    try {
+        if (!getCreateMode()) {
+            updateLeaderFeature();
+        }
+        else {
+            createLeaderFeature(m_sceneDeltas);
+        }
+    }
+    catch (const Base::Exception& error) {
+        if (getCreateMode()) {
+            m_lineFeat = nullptr;
+        }
+        QMessageBox::critical(
+            this,
+            tr("Leader Update Failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
     }
     m_trackerMode = QGTracker::TrackerMode::None;
     removeTracker();
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    TaskInternal::resetExactEdit(document);
 
     if (m_vpp->getMDIViewPage())
         m_vpp->getMDIViewPage()->setContextMenuPolicy(m_saveContextPolicy);
@@ -841,29 +979,21 @@ bool TaskLeaderLine::reject()
         return false;
     }
 
-    Gui::Document* doc = Gui::Application::Instance->getDocument(m_basePage->getDocument());
-    if (!doc)
-        return false;
-
-    if (getCreateMode() && m_lineFeat)  {
-        removeFeature();
-    }
-    else  {
-        restoreState();
-    }
+    auto* document =
+        m_basePage ? m_basePage->getDocument() : nullptr;
 
     m_trackerMode = QGTracker::TrackerMode::None;
     removeTracker();
 
-    //make sure any dangling objects are cleaned up
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().recompute()");
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    // Creation has not changed the model. Editing is owned by TaskView, which
+    // rolls its exact transaction back after this panel is torn down.
+    TaskInternal::resetExactEdit(document);
 
     if (m_vpp->getMDIViewPage()) {
         m_vpp->getMDIViewPage()->setContextMenuPolicy(m_saveContextPolicy);
     }
 
-    return false;
+    return true;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -876,6 +1006,7 @@ TaskDlgLeaderLine::TaskDlgLeaderLine(TechDraw::DrawView* baseFeat,
                                              widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgLeaderLine::TaskDlgLeaderLine(TechDrawGui::ViewProviderLeader* leadVP)
@@ -886,6 +1017,7 @@ TaskDlgLeaderLine::TaskDlgLeaderLine(TechDrawGui::ViewProviderLeader* leadVP)
                                              widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgLeaderLine::~TaskDlgLeaderLine()
@@ -915,14 +1047,12 @@ void TaskDlgLeaderLine::clicked(int)
 
 bool TaskDlgLeaderLine::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgLeaderLine::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskLeaderLine.cpp>

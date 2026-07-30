@@ -245,7 +245,11 @@ int TaskThicknessParameters::getMode() const
 TaskThicknessParameters::~TaskThicknessParameters()
 {
     try {
-        Gui::Selection().clearSelection();
+        if (auto* object = getObject()) {
+            Gui::Selection().clearSelection(
+                object->getDocument()->getName()
+            );
+        }
         Gui::Selection().rmvSelectionGate();
     }
     catch (const Py::Exception&) {

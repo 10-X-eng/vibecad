@@ -25,6 +25,7 @@
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
 #include <memory>
+#include <string>
 
 #include <QGraphicsView>
 #include <QLabel>
@@ -124,7 +125,7 @@ public:
 
     void centerOnPage();
 
-    TechDraw::DrawView* getBalloonParent() { return m_balloonParent; }
+    TechDraw::DrawView* getBalloonParent();
 
     void zoomIn();
     void zoomOut();
@@ -183,6 +184,8 @@ private:
     QPoint balloonCursorPos;
     QPoint balloonHotspot;
     TechDraw::DrawView* m_balloonParent;//temp field. used during balloon placing.
+    long m_balloonParentId;
+    std::string m_balloonParentName;
 
     QPoint panOrigin;
 

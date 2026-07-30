@@ -124,6 +124,7 @@ SET(PartDesignGuiTaskDlgs_SRCS
     TaskFeaturePick.h
     ReferenceSelection.cpp
     ReferenceSelection.h
+    TaskDialogState.h
     TaskFeatureParameters.cpp
     TaskFeatureParameters.h
     TaskSketchBasedParameters.cpp

@@ -91,7 +91,7 @@ public:
                                       gp_Dir& projDir);
 
     std::vector<DrawViewDetail*> getDetailRefs() const override;
-    TopoDS_Shape getDetailShape() const { return m_detailShape; }
+    TopoDS_Shape getDetailShape() const;
 
     Base::Vector3d mapPoint3dToDetail(const Base::Vector3d& inPoint) const;
 
@@ -99,6 +99,10 @@ public Q_SLOTS:
     void onMakeDetailFinished(void);
 
 protected:
+    bool timelineDependenciesActive(
+        TimelineDependencyStack& stack) const override;
+    std::string geometrySourceStateSignature() const override;
+
     void getParameters(void);
     double m_fudge;
     bool debugDetail() const;
@@ -110,6 +114,8 @@ protected:
     QFutureWatcher<void> m_detailWatcher;
     QFuture<void> m_detailFuture;
     bool m_waitingForDetail;
+    std::string m_detailDependencyState;
+    std::string m_detailAcceptedState;
 
     DrawViewPart* m_saveDvp;
     DrawViewSection* m_saveDvs;

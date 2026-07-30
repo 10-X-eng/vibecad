@@ -41,6 +41,7 @@ class Property;
 namespace Gui
 {
 class ViewProvider;
+class View3DInventorViewer;
 class ViewVolumeProjection;
 }  // namespace Gui
 
@@ -72,6 +73,7 @@ protected:
     Fem::FemSetNodesObject* pcObject;
     static void DefineNodesCallback(void* ud, SoEventCallback* n);
     void DefineNodes(const Base::Polygon2d& polygon, const Gui::ViewVolumeProjection& proj, bool);
+    void stopPolygonSelection();
 
 protected:
     void onSelectionChanged(const Gui::SelectionChanges& msg) override;
@@ -84,6 +86,7 @@ protected:
 private:
     QWidget* proxy;
     std::unique_ptr<Ui_TaskCreateNodeSet> ui;
+    Gui::View3DInventorViewer* polygonViewer {nullptr};
 };
 
 }  // namespace FemGui

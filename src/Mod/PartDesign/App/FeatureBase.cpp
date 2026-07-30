@@ -69,14 +69,16 @@ App::DocumentObjectExecReturn* FeatureBase::execute()
         );
     }
 
-    if (!BaseFeature.getValue()->isDerivedFrom<Part::Feature>()) {
+    auto* baseFeature = BaseFeature.getValue();
+    auto* resolvedFeature = baseFeature->getLinkedObject(true);
+    if (!resolvedFeature || !resolvedFeature->isDerivedFrom<Part::Feature>()) {
         return new App::DocumentObjectExecReturn(
             QT_TRANSLATE_NOOP("Exception", "BaseFeature must be a Part::Feature")
         );
     }
 
     auto shape = Part::Feature::getTopoShape(
-        BaseFeature.getValue(),
+        baseFeature,
         Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
     );
     if (shape.isNull()) {
@@ -85,6 +87,9 @@ App::DocumentObjectExecReturn* FeatureBase::execute()
         );
     }
 
+    // Placement belongs to this destination feature.  During recompute,
+    // Part::Feature::onChanged() applies that placement to the refreshed shape,
+    // so source topology can update without moving an imported base or clone.
     Shape.setValue(shape);
 
     return StdReturn;

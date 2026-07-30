@@ -29,6 +29,7 @@
 #include <memory>
 
 #include <App/DocumentObject.h>
+#include <App/DocumentTimeline.h>
 #include <App/MeasureManager.h>
 #include <App/DocumentObserver.h>
 #include <App/PropertyStandard.h>
@@ -115,16 +116,36 @@ public:
 
     static Part::MeasureInfoPtr getMeasureInfo(App::SubObjectT& subObjT)
     {
+        const auto timelineObjectIsUsable =
+            [](const App::DocumentObject* object) noexcept {
+                try {
+                    if (!App::DocumentTimeline::
+                            isObjectUsableAtCurrentPosition(object)) {
+                        return false;
+                    }
+                    const auto* linked = object->getLinkedObject(true);
+                    return !linked || linked == object
+                        || App::DocumentTimeline::
+                               isObjectUsableAtCurrentPosition(linked);
+                }
+                catch (...) {
+                    return false;
+                }
+            };
 
         // Resolve App::Link
+        App::DocumentObject* root = subObjT.getObject();
         App::DocumentObject* sub = subObjT.getSubObject();
-        if (!sub) {
+        if (!timelineObjectIsUsable(root)
+            || !timelineObjectIsUsable(sub)) {
             return nullptr;
         }
 
         if (sub->isDerivedFrom<App::Link>()) {
-            auto link = static_cast<App::Link*>(sub);
-            sub = link->getLinkedObject(true);
+            sub = sub->getLinkedObject(true);
+            if (!timelineObjectIsUsable(sub)) {
+                return nullptr;
+            }
         }
 
         // Get the Geometry handler based on the module

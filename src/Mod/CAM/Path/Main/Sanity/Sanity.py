@@ -35,6 +35,7 @@ from datetime import datetime
 import FreeCAD
 import Path
 import Path.Log
+import Path.Base.Util as PathUtil
 import Path.Main.Sanity.ImageBuilder as ImageBuilder
 import Path.Main.Sanity.ReportGenerator as ReportGenerator
 import os
@@ -284,7 +285,7 @@ class CAMSanity:
                     ctime = o.CycleTime
                 cool = o.CoolantMode if hasattr(o, "CoolantMode") else cool
 
-            if hasattr(op, "Active") and not op.Active:
+            if not PathUtil.activeForOp(op):
                 oplabel = "{} (INACTIVE)".format(oplabel)
                 ctime = "00:00:00"
 

@@ -28,6 +28,7 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Tools.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
@@ -66,13 +67,23 @@ TaskSectionView::TaskSectionView(TechDraw::DrawViewPart* base) :
     m_scaleEdited(false),
     m_directionChanged(false)
 {
-    //existence of base is guaranteed by CmdTechDrawSectionView (Command.cpp)
-
+    auto* page = base ? base->findParentPage() : nullptr;
+    if (!base || !page
+        || page->getDocument() != base->getDocument()
+        || base->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The section view requires a live base view, page, and "
+            "owning transaction"
+        );
+    }
     m_sectionName = std::string();
     m_doc = m_base->getDocument();
-
-    m_saveBaseName = m_base->getNameInDocument();
-    m_savePageName = m_base->findParentPage()->getNameInDocument();
+    m_documentIdentity = TaskInternal::DocumentIdentity(m_doc);
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_base);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(page);
 
     ui->setupUi(this);
     setUiPrimary();
@@ -96,18 +107,33 @@ TaskSectionView::TaskSectionView(TechDraw::DrawViewSection* section) :
     m_scaleEdited(false),
     m_directionChanged(false)
 {
-    //existence of section is guaranteed by ViewProviderViewSection.setEdit
-
+    if (!section) {
+        throw Base::TypeError(
+            "The section editor requires a live section view"
+        );
+    }
     m_doc = m_section->getDocument();
     m_sectionName = m_section->getNameInDocument();
     App::DocumentObject* newObj = m_section->BaseView.getValue();
     m_base = dynamic_cast<TechDraw::DrawViewPart*>(newObj);
-    if (!newObj || !m_base) {
-        throw Base::RuntimeError("TaskSectionView - BaseView not found");
+    auto* page = m_section->findParentPage();
+    if (!m_base || !page
+        || m_base->getDocument() != m_doc
+        || page->getDocument() != m_doc
+        || m_doc->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The section editor has no live base view, page, or owning "
+            "transaction"
+        );
     }
-
-    m_saveBaseName = m_base->getNameInDocument();
-    m_savePageName = m_base->findParentPage()->getNameInDocument();
+    m_documentIdentity = TaskInternal::DocumentIdentity(m_doc);
+    m_baseIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_base);
+    m_pageIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawPage>(page);
+    m_sectionIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewSection>(m_section);
 
     ui->setupUi(this);
 
@@ -446,6 +472,7 @@ bool TaskSectionView::apply(bool forceUpdate)
     }
     else {
         failNoObject();
+        return false;
     }
 
     m_section->recomputeFeature();
@@ -488,56 +515,134 @@ TechDraw::DrawViewSection* TaskSectionView::createSectionView(void)
         return nullptr;
     }
 
-    std::string baseName = m_base->getNameInDocument();
-
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Section View"));
     if (!m_section) {
+        auto* document = m_documentIdentity.resolve();
+        auto* page = m_pageIdentity.resolve();
+        if (!document || !page) {
+            failNoObject();
+            return nullptr;
+        }
         const std::string objectName("SectionView");
-        m_sectionName = m_base->getDocument()->getUniqueObjectName(objectName.c_str());
-        Command::doCommand(Command::Doc, "App.ActiveDocument.addObject('TechDraw::DrawViewSection', '%s')",
-                           m_sectionName.c_str());
+        m_sectionName =
+            document->getUniqueObjectName(objectName.c_str());
+        const std::string documentName =
+            Base::InterpreterSingleton::strToPython(
+                document->getName()
+            );
+        const QString sectionFactory =
+            QStringLiteral(
+                "App.getDocument('%1').addObject"
+                "('TechDraw::DrawViewSection', '%2')"
+            )
+                .arg(
+                    QString::fromStdString(documentName),
+                    QString::fromStdString(m_sectionName)
+                );
+        m_section = dynamic_cast<TechDraw::DrawViewSection*>(
+            Gui::Command::runDocumentObjectCommand(
+                Command::Doc,
+                *document,
+                sectionFactory.toUtf8(),
+                TechDraw::DrawViewSection::getClassTypeId()
+            )
+        );
+        if (!m_section) {
+            throw Base::RuntimeError(
+                "The section view object could not be created"
+            );
+        }
+        m_sectionName = m_section->getNameInDocument();
+        m_sectionIdentity =
+            TaskInternal::ObjectIdentity<TechDraw::DrawViewSection>(
+                m_section
+            );
+        const std::string sectionCommand =
+            Gui::Command::getObjectCmd(m_section);
+        const std::string pageCommand =
+            Gui::Command::getObjectCmd(page);
+        const std::string baseCommand =
+            Gui::Command::getObjectCmd(m_base);
 
         // section labels (Section A-A) are not unique, and are not the same as the object name (SectionView)
         // we pluck the generated suffix from the object name and append it to "Section" to generate
         // unique Labels
         QString qTemp = ui->leSymbol->text();
         std::string temp = qTemp.toStdString();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionSymbol = '%s'",
-                           m_sectionName.c_str(), temp.c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Label = '%s'",
-                           m_sectionName.c_str(),
-                           makeSectionLabel(qTemp).c_str());
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawViewSection', 'Section', '%s')",
-              m_sectionName.c_str(), makeSectionLabel(qTemp).c_str());
-
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.addView(App.ActiveDocument.%s)",
-                           m_savePageName.c_str(), m_sectionName.c_str());
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.BaseView = App.ActiveDocument.%s",
-                           m_sectionName.c_str(), baseName.c_str());
-        Command::doCommand(Command::Doc,
-                           "App.ActiveDocument.%s.Source = App.ActiveDocument.%s.Source",
-                           m_sectionName.c_str(), baseName.c_str());
-        Command::doCommand(Command::Doc,
-                           "App.ActiveDocument.%s.SectionOrigin = FreeCAD.Vector(%.6f, %.6f, %.6f)",
-                           m_sectionName.c_str(), ui->sbOrgX->value().getValue(),
-                           ui->sbOrgY->value().getValue(), ui->sbOrgZ->value().getValue());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Scale = %0.7f",
-                           m_sectionName.c_str(), ui->sbScale->value());
+        const std::string symbol =
+            Base::InterpreterSingleton::strToPython(temp.c_str());
+        const std::string labelText = makeSectionLabel(qTemp);
+        const std::string label =
+            Base::InterpreterSingleton::strToPython(
+                labelText.c_str()
+            );
+        const std::string direction =
+            Base::InterpreterSingleton::strToPython(
+                m_dirName.c_str()
+            );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionSymbol = '%s'",
+            sectionCommand.c_str(),
+            symbol.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Label = '%s'",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.translateLabel('DrawViewSection', 'Section', '%s')",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.addView(%s)",
+            pageCommand.c_str(),
+            sectionCommand.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.BaseView = %s",
+            sectionCommand.c_str(),
+            baseCommand.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Source = %s.Source",
+            sectionCommand.c_str(),
+            baseCommand.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionOrigin = FreeCAD.Vector(%.6f, %.6f, %.6f)",
+            sectionCommand.c_str(),
+            ui->sbOrgX->value().getValue(),
+            ui->sbOrgY->value().getValue(),
+            ui->sbOrgZ->value().getValue()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Scale = %0.7f",
+            sectionCommand.c_str(),
+            ui->sbScale->value()
+        );
 
         int scaleType = ui->cmbScaleType->currentIndex();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.ScaleType = %d",
-                           m_sectionName.c_str(), scaleType);
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionDirection = '%s'",
-                           m_sectionName.c_str(), m_dirName.c_str());
-
-        App::DocumentObject* newObj = m_base->getDocument()->getObject(m_sectionName.c_str());
-        m_section = dynamic_cast<TechDraw::DrawViewSection*>(newObj);
-        if (!newObj || !m_section) {
-            throw Base::RuntimeError("TaskSectionView - new section object not found");
-        }
+        Command::doCommand(
+            Command::Doc,
+            "%s.ScaleType = %d",
+            sectionCommand.c_str(),
+            scaleType
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionDirection = '%s'",
+            sectionCommand.c_str(),
+            direction.c_str()
+        );
         Base::Vector3d localUnit = m_viewDirectionWidget->value();
         localUnit.Normalize();
         if (m_dirName == "Aligned") {
@@ -552,10 +657,13 @@ TechDraw::DrawViewSection* TaskSectionView::createSectionView(void)
         //auto orientation of view relative to base view
         double viewDirectionAngle = m_compass->positiveValue();
         double rotation = requiredRotation(viewDirectionAngle);
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Rotation = %.6f",
-                           m_sectionName.c_str(), rotation);
+        Command::doCommand(
+            Command::Doc,
+            "%s.Rotation = %.6f",
+            sectionCommand.c_str(),
+            rotation
+        );
     }
-    Gui::Command::commitCommand(tid);
     return m_section;
 }
 
@@ -566,37 +674,75 @@ void TaskSectionView::updateSectionView()
         return;
     }
 
-    const std::string objectName("SectionView");
-    std::string baseName = m_base->getNameInDocument();
-
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Edit Section View"));
     if (m_section) {
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionDirection = '%s'",
-                           m_sectionName.c_str(), m_dirName.c_str());
-        Command::doCommand(Command::Doc,
-                           "App.ActiveDocument.%s.SectionOrigin = FreeCAD.Vector(%.3f, %.3f, %.3f)",
-                           m_sectionName.c_str(), ui->sbOrgX->value().getValue(),
-                           ui->sbOrgY->value().getValue(), ui->sbOrgZ->value().getValue());
+        const std::string sectionCommand =
+            Gui::Command::getObjectCmd(m_section);
+        const std::string direction =
+            Base::InterpreterSingleton::strToPython(
+                m_dirName.c_str()
+            );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionDirection = '%s'",
+            sectionCommand.c_str(),
+            direction.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionOrigin = FreeCAD.Vector(%.3f, %.3f, %.3f)",
+            sectionCommand.c_str(),
+            ui->sbOrgX->value().getValue(),
+            ui->sbOrgY->value().getValue(),
+            ui->sbOrgZ->value().getValue()
+        );
 
         QString qTemp = ui->leSymbol->text();
         std::string temp = qTemp.toStdString();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionSymbol = '%s'",
-                           m_sectionName.c_str(), temp.c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Label = '%s'",
-                           m_sectionName.c_str(),
-                           makeSectionLabel(qTemp).c_str());
-        Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawViewSection', 'Section', '%s')",
-              m_sectionName.c_str(), makeSectionLabel(qTemp).c_str());
-
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Scale = %0.7f",
-                           m_sectionName.c_str(), ui->sbScale->value());
+        const std::string symbol =
+            Base::InterpreterSingleton::strToPython(temp.c_str());
+        const std::string labelText = makeSectionLabel(qTemp);
+        const std::string label =
+            Base::InterpreterSingleton::strToPython(
+                labelText.c_str()
+            );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionSymbol = '%s'",
+            sectionCommand.c_str(),
+            symbol.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Label = '%s'",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.translateLabel('DrawViewSection', 'Section', '%s')",
+            sectionCommand.c_str(),
+            label.c_str()
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.Scale = %0.7f",
+            sectionCommand.c_str(),
+            ui->sbScale->value()
+        );
 
         int scaleType = ui->cmbScaleType->currentIndex();
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.ScaleType = %d",
-                           m_sectionName.c_str(), scaleType);
-        Command::doCommand(Command::Doc, "App.ActiveDocument.%s.SectionDirection = '%s'",
-                           m_sectionName.c_str(), m_dirName.c_str());
+        Command::doCommand(
+            Command::Doc,
+            "%s.ScaleType = %d",
+            sectionCommand.c_str(),
+            scaleType
+        );
+        Command::doCommand(
+            Command::Doc,
+            "%s.SectionDirection = '%s'",
+            sectionCommand.c_str(),
+            direction.c_str()
+        );
         Base::Vector3d localUnit = m_viewDirectionWidget->value();
         localUnit.Normalize();
         if (m_dirName == "Aligned") {
@@ -613,18 +759,24 @@ void TaskSectionView::updateSectionView()
         if (directionChanged()) {
             double viewDirectionAngle = m_compass->positiveValue();
             double rotation = requiredRotation(viewDirectionAngle);
-            Command::doCommand(Command::Doc, "App.ActiveDocument.%s.Rotation = %.6f",
-                               m_sectionName.c_str(), rotation);
+            Command::doCommand(
+                Command::Doc,
+                "%s.Rotation = %.6f",
+                sectionCommand.c_str(),
+                rotation
+            );
             directionChanged(false);
         }
     }
-    Gui::Command::commitCommand(tid);
 }
 
 std::string TaskSectionView::makeSectionLabel(QString symbol)
 {
     const std::string objectName("SectionView");
-    std::string uniqueSuffix{m_sectionName.substr(objectName.length(), std::string::npos)};
+    const std::string uniqueSuffix =
+        m_sectionName.rfind(objectName, 0) == 0
+        ? m_sectionName.substr(objectName.length())
+        : m_sectionName;
     std::string uniqueLabel = "Section" + uniqueSuffix;
     std::string temp = symbol.toStdString();
     return ( uniqueLabel + " " + temp + " - " + temp );
@@ -633,33 +785,35 @@ std::string TaskSectionView::makeSectionLabel(QString symbol)
 void TaskSectionView::failNoObject(void)
 {
     QString qsectionName = QString::fromStdString(m_sectionName);
-    QString qbaseName = QString::fromStdString(m_baseName);
+    QString qbaseName =
+        QString::fromStdString(m_baseIdentity.name());
     QString msg = tr("Can not continue. Object * %1 or %2 not found.").arg(qsectionName, qbaseName);
     QMessageBox::critical(Gui::getMainWindow(), QObject::tr("Operation Failed"), msg);
-    Gui::Control().closeDialog();
+    Gui::Control().closeDialog(m_documentIdentity.resolve());
 }
 
 bool TaskSectionView::isBaseValid()
 {
-    if (!m_base)
+    auto* document = m_documentIdentity.resolve();
+    auto* base = m_baseIdentity.resolve();
+    auto* page = m_pageIdentity.resolve();
+    if (!document || !base || !page
+        || base->getDocument() != document
+        || page->getDocument() != document) {
         return false;
-
-    App::DocumentObject* baseObj = m_doc->getObject(m_saveBaseName.c_str());
-    if (!baseObj)
-        return false;
-
+    }
+    m_doc = document;
+    m_base = base;
     return true;
 }
 
 bool TaskSectionView::isSectionValid()
 {
-    if (!m_section)
+    auto* section = m_sectionIdentity.resolve();
+    if (!section) {
         return false;
-
-    App::DocumentObject* sectionObj = m_doc->getObject(m_sectionName.c_str());
-    if (!sectionObj)
-        return false;
-
+    }
+    m_section = section;
     return true;
 }
 
@@ -679,49 +833,24 @@ double TaskSectionView::requiredRotation(double inputAngle)
 
 bool TaskSectionView::accept()
 {
-    apply(true);
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    if (!apply(true) || !isSectionValid() || m_section->isError()) {
+        return false;
+    }
+    TaskInternal::updateExactDocument(m_section->getDocument());
+    TaskInternal::resetExactEdit(m_section->getDocument());
     return true;
 }
 
 bool TaskSectionView::reject()
 {
-    if (!m_section) {//no section created, nothing to undo
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        return false;
-    }
-
-    if (!isSectionValid()) {//section !exist. nothing to undo
-        if (isBaseValid()) {
-            m_base->requestPaint();
-        }
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        return false;
-    }
-
-    if (m_createMode) {
-        std::string SectionName = m_section->getNameInDocument();
-        Gui::Command::doCommand(Gui::Command::Gui,
-                                "App.ActiveDocument.%s.removeView(App.ActiveDocument.%s)",
-                                m_savePageName.c_str(), SectionName.c_str());
-        Gui::Command::doCommand(Gui::Command::Gui, "App.ActiveDocument.removeObject('%s')",
-                                SectionName.c_str());
-
-    } else {
-        if (m_modelIsDirty) {
-            restoreSectionState();
-            m_section->recomputeFeature();
-            m_section->requestPaint();
-        }
-    }
-
     if (isBaseValid()) {
         m_base->requestPaint();
     }
-    Gui::Command::updateActive();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    // TaskView owns the exact creation/edit transaction. Cancel rolls every
+    // provisional object and live parameter change back as one operation.
+    TaskInternal::resetExactEdit(m_documentIdentity.resolve());
 
-    return false;
+    return true;
 }
 
 void TaskSectionView::changeEvent(QEvent* event)
@@ -740,6 +869,7 @@ TaskDlgSectionView::TaskDlgSectionView(TechDraw::DrawViewPart* base) : TaskDialo
                                    widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgSectionView::TaskDlgSectionView(TechDraw::DrawViewSection* section) : TaskDialog()
@@ -751,6 +881,7 @@ TaskDlgSectionView::TaskDlgSectionView(TechDraw::DrawViewSection* section) : Tas
 
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 TaskDlgSectionView::~TaskDlgSectionView() {}
 
@@ -760,14 +891,12 @@ void TaskDlgSectionView::open() {}
 
 bool TaskDlgSectionView::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgSectionView::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskSectionView.cpp>

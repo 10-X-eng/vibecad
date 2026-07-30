@@ -47,6 +47,9 @@ from draftguitools import gui_trackers as trackers
 from draftutils import gui_utils
 from draftutils import params
 from draftutils import todo
+from draftutils.transaction import document_is_available_for_mutation
+from draftutils.transaction import ObjectReference
+from draftutils.transaction import selection_is_usable_for_document
 from draftutils import utils
 from draftutils.messages import _log, _toolmsg
 
@@ -76,7 +79,10 @@ class DraftTool:
 
     def IsActive(self):
         """Return True when this command should be available."""
-        return bool(gui_utils.get_3d_view())
+        return bool(
+            gui_utils.get_3d_view()
+            and document_is_available_for_mutation(App.activeDocument())
+        )
 
     def Activated(self, name="None", is_subtool=False):
         """Execute when the command is called.
@@ -115,6 +121,20 @@ class DraftTool:
         self.commitList = []
         self.constrain = None
         self.doc = App.ActiveDocument
+        if not document_is_available_for_mutation(self.doc):
+            App.activeDraftCommand = None
+            raise RuntimeError(
+                "Draft cannot start while another document action is active"
+            )
+        if (
+            Gui.Selection.getSelection()
+            and not selection_is_usable_for_document(self.doc)
+        ):
+            App.activeDraftCommand = None
+            raise RuntimeError(
+                "Draft cannot use a selection from another document or "
+                "outside the current History position"
+            )
         self.extendedCopy = False
         self.featureName = name
         self.node = []
@@ -132,7 +152,7 @@ class DraftTool:
         if params.get_param("showPlaneTracker"):
             self.planetrack = trackers.PlaneTracker()
         if hasattr(Gui, "Snapper"):
-            Gui.Snapper.setTrackers()
+            Gui.Snapper.setTrackers(view=self.view)
 
         _toolmsg("{}".format(16 * "-"))
         _toolmsg("GuiCommand: {}".format(self.featureName))
@@ -177,26 +197,23 @@ class DraftTool:
         self.node = []
         App.activeDraftCommand = None
         if self.ui:
-            self.ui.offUi()
+            self.ui.offUi(self.doc)
             self.ui.sourceCmd = None
-        if hasattr(Gui, "Snapper"):
-            Gui.Snapper.off()
+        if hasattr(Gui, "Snapper") and getattr(self, "view", None) is not None:
+            Gui.Snapper.off(view=self.view)
         if self.planetrack:
             self.planetrack.finalize()
         self.wp._restore()
         if self.commitList:
-            last_cmd = self.commitList[-1][1][-1]
-            if last_cmd.find("recompute") >= 0:
-                self.commitList[-1] = (self.commitList[-1][0], self.commitList[-1][1][:-1])
-                todo.ToDo.delayCommit(self.commitList)
-                todo.ToDo.delayAfter(Gui.doCommand, last_cmd)
-            else:
-                todo.ToDo.delayCommit(self.commitList)
+            # Recompute is part of the accepted action. Keeping it inside the
+            # exact transaction lets a failed recompute roll back the whole
+            # command instead of publishing partially valid geometry.
+            todo.ToDo.delayCommit(self.commitList, self.doc)
         self.commitList = []
 
         QtCore.QTimer.singleShot(0, Gui.HintManager.hide)
 
-    def commit(self, name, func):
+    def commit(self, name, func, inputs=()):
         """Store actions in the commit list to be run later.
 
         Parameters
@@ -211,7 +228,13 @@ class DraftTool:
 
             See the complete information in the `draftutils.todo.ToDo` class.
         """
-        self.commitList.append((name, func))
+        self.commitList.append(
+            (
+                name,
+                func,
+                tuple(ObjectReference.capture(obj) for obj in inputs),
+            )
+        )
 
     def getStrings(self, addrot=None):
         """Return useful strings that will be used to build commands.
@@ -253,6 +276,13 @@ class DraftTool:
             make_face = "True"
 
         return qr, sup, points, make_face
+
+    def getSupportInputs(self):
+        """Return the exact attachment support used by ``getStrings``."""
+
+        if self.support and params.get_param("useSupport"):
+            return (self.support,)
+        return ()
 
 
 class Creator(DraftTool):

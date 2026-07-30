@@ -21,9 +21,11 @@
  ***************************************************************************/
 
 # include <cmath>
+# include <QMessageBox>
 # include <QPushButton>
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Base/Console.h>
 #include <Base/Tools.h>
 #include <Gui/BitmapFactory.h>
@@ -57,8 +59,22 @@ TaskWeldingSymbol::TaskWeldingSymbol(TechDraw::DrawLeaderLine* leadFeat) :
     m_createMode(true),
     m_otherDirty(false)
 {
-
-    //existence of leader is guaranteed by CmdTechDrawWeldSymbol (CommandAnnotate.cpp)
+    if (!m_leadFeat || !m_leadFeat->findParentPage()
+        || m_leadFeat->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "A weld symbol requires a leader on a live drawing page and "
+            "its owning transaction"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(
+            m_leadFeat->getDocument()
+        );
+    m_leaderIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawLeaderLine>(
+            m_leadFeat
+        );
     ui->setupUi(this);
 
     setUiPrimary();
@@ -87,17 +103,38 @@ TaskWeldingSymbol::TaskWeldingSymbol(TechDraw::DrawWeldSymbol* weld) :
     m_createMode(false),
     m_otherDirty(false)
 {
-    //existence of weld is guaranteed by CmdTechDrawWeldSymbol (CommandAnnotate.cpp)
-    //                                or ViewProviderWeld.setEdit
-
-    App::DocumentObject* obj = m_weldFeat->Leader.getValue();
+    App::DocumentObject* obj =
+        m_weldFeat ? m_weldFeat->Leader.getValue() : nullptr;
     if (!obj ||
         !obj->isDerivedFrom<TechDraw::DrawLeaderLine>() )  {
-        Base::Console().error("TaskWeldingSymbol - no leader for welding symbol.  Cannot proceed.\n");
-        return;
+        throw Base::RuntimeError(
+            "The weld symbol has no live leader"
+        );
     }
 
     m_leadFeat = static_cast<TechDraw::DrawLeaderLine*>(obj);
+    if (!m_weldFeat->findParentPage()
+        || m_leadFeat->getDocument()
+            != m_weldFeat->getDocument()
+        || m_weldFeat->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The weld editor requires a symbol on a live page and its "
+            "owning transaction"
+        );
+    }
+    m_documentIdentity =
+        TaskInternal::DocumentIdentity(
+            m_weldFeat->getDocument()
+        );
+    m_leaderIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawLeaderLine>(
+            m_leadFeat
+        );
+    m_weldIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawWeldSymbol>(
+            m_weldFeat
+        );
 
     ui->setupUi(this);
 
@@ -141,6 +178,28 @@ TaskWeldingSymbol::TaskWeldingSymbol(TechDraw::DrawWeldSymbol* weld) :
 
 TaskWeldingSymbol::~TaskWeldingSymbol()
 {
+}
+
+bool TaskWeldingSymbol::resolveTargets()
+{
+    auto* document = m_documentIdentity.resolve();
+    auto* leader = m_leaderIdentity.resolve();
+    if (!document || !leader
+        || leader->getDocument() != document
+        || !leader->findParentPage()) {
+        return false;
+    }
+    TechDraw::DrawWeldSymbol* weld = nullptr;
+    if (m_weldIdentity.id() >= 0) {
+        weld = m_weldIdentity.resolve();
+        if (!weld || weld->getDocument() != document
+            || weld->Leader.getValue() != leader) {
+            return false;
+        }
+    }
+    m_leadFeat = leader;
+    m_weldFeat = weld;
+    return true;
 }
 
 void TaskWeldingSymbol::updateTask()
@@ -452,8 +511,12 @@ void TaskWeldingSymbol::getTileFeats()
 //******************************************************************************
 TechDraw::DrawWeldSymbol* TaskWeldingSymbol::createWeldingSymbol()
 {
-//    Base::Console().message("TWS::createWeldingSymbol()\n");
-    App::Document *doc = Application::Instance->activeDocument()->getDocument();
+    if (!resolveTargets()) {
+        throw Base::RuntimeError(
+            "The weld-symbol target is no longer available"
+        );
+    }
+    App::Document* doc = m_documentIdentity.resolve();
     auto weldSymbol = doc->addObject<TechDraw::DrawWeldSymbol>("WeldSymbol");
     if (!weldSymbol) {
         throw Base::RuntimeError("TaskWeldingSymbol - new symbol object not found");
@@ -469,6 +532,15 @@ TechDraw::DrawWeldSymbol* TaskWeldingSymbol::createWeldingSymbol()
     if (page) {
         page->addView(weldSymbol);
     }
+    else {
+        throw Base::RuntimeError(
+            "The weld-symbol leader is not on a drawing page"
+        );
+    }
+    m_weldIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawWeldSymbol>(
+            weldSymbol
+        );
 
     return weldSymbol;
 }
@@ -491,18 +563,12 @@ void TaskWeldingSymbol::updateTiles()
     } else {
         collectArrowData();
         if (m_arrowOut.toBeSaved) {
-            std::string tileName = m_arrowFeat->getNameInDocument();
-            std::string leftText = Base::Tools::escapeEncodeString(m_arrowOut.leftText);
-            std::string rightText = Base::Tools::escapeEncodeString(m_arrowOut.rightText);
-            std::string centerText = Base::Tools::escapeEncodeString(m_arrowOut.centerText);
-            Command::doCommand(Command::Doc, "App.activeDocument().%s.TileColumn = %d",
-                           tileName.c_str(), m_arrowOut.col);
-            Command::doCommand(Command::Doc, "App.activeDocument().%s.LeftText = '%s'",
-                           tileName.c_str(), leftText.c_str());
-            Command::doCommand(Command::Doc, "App.activeDocument().%s.RightText = '%s'",
-                           tileName.c_str(), rightText.c_str());
-            Command::doCommand(Command::Doc, "App.activeDocument().%s.CenterText = '%s'",
-                           tileName.c_str(), centerText.c_str());
+            m_arrowFeat->TileColumn.setValue(m_arrowOut.col);
+            m_arrowFeat->LeftText.setValue(m_arrowOut.leftText);
+            m_arrowFeat->RightText.setValue(m_arrowOut.rightText);
+            m_arrowFeat->CenterText.setValue(
+                m_arrowOut.centerText
+            );
             if (!m_arrowOut.symbolPath.empty()) {
 //                m_arrowFeat->replaceSymbol(m_arrowOut.symbolPath);
                 m_arrowFeat->SymbolFile.setValue(m_arrowOut.symbolPath);
@@ -516,18 +582,16 @@ void TaskWeldingSymbol::updateTiles()
         if (m_otherDirty) {
             collectOtherData();
             if (m_otherOut.toBeSaved) {
-                std::string tileName = m_otherFeat->getNameInDocument();
-                std::string leftText = Base::Tools::escapeEncodeString(m_otherOut.leftText);
-                std::string rightText = Base::Tools::escapeEncodeString(m_otherOut.rightText);
-                std::string centerText = Base::Tools::escapeEncodeString(m_otherOut.centerText);
-                Command::doCommand(Command::Doc, "App.activeDocument().%s.TileColumn = %d",
-                               tileName.c_str(), m_otherOut.col);
-                Command::doCommand(Command::Doc, "App.activeDocument().%s.LeftText = '%s'",
-                               tileName.c_str(), leftText.c_str());
-                Command::doCommand(Command::Doc, "App.activeDocument().%s.RightText = '%s'",
-                               tileName.c_str(), rightText.c_str());
-                Command::doCommand(Command::Doc, "App.activeDocument().%s.CenterText = '%s'",
-                               tileName.c_str(), centerText.c_str());
+                m_otherFeat->TileColumn.setValue(m_otherOut.col);
+                m_otherFeat->LeftText.setValue(
+                    m_otherOut.leftText
+                );
+                m_otherFeat->RightText.setValue(
+                    m_otherOut.rightText
+                );
+                m_otherFeat->CenterText.setValue(
+                    m_otherOut.centerText
+                );
 //                m_otherFeat->replaceSymbol(m_otherOut.symbolPath);
                 m_otherFeat->SymbolFile.setValue(m_otherOut.symbolPath);
             }
@@ -553,44 +617,91 @@ void TaskWeldingSymbol::enableTaskButtons(bool enable)
 
 bool TaskWeldingSymbol::accept()
 {
-//    Base::Console().message("TWS::accept()\n");
-    if (m_createMode) {
-        int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Weld Symbol"));
-        m_weldFeat = createWeldingSymbol();
-        updateTiles();
-        Gui::Command::updateActive();
-        Gui::Command::commitCommand(tid);
-        m_weldFeat->recomputeFeature();
-    //    m_weldFeat->requestPaint();    //not a dv!
-    } else {
-        int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Edit Weld Symbol"));
-        try {
+    auto* document = m_documentIdentity.resolve();
+    if (!document || !resolveTargets()
+        || document->getBookedTransactionID()
+            == App::NullTransaction) {
+        return false;
+    }
+    try {
+        if (m_createMode) {
+            if (!m_weldFeat) {
+                m_weldFeat = createWeldingSymbol();
+            }
+            else {
+                updateWeldingSymbol();
+            }
+            updateTiles();
+        }
+        else {
             updateWeldingSymbol();
             updateTiles();
         }
-        catch (...) {
-            Base::Console().error("TWS::accept - failed to update symbol\n");
+        if (!m_weldFeat) {
+            throw Base::RuntimeError(
+                "The weld symbol could not be created"
+            );
         }
-
-        Gui::Command::updateActive();
-        Gui::Command::commitCommand(tid);
         m_weldFeat->recomputeFeature();
-    //    m_weldFeat->requestPaint();    //not a dv!
+        if (m_weldFeat->isError()) {
+            throw Base::RuntimeError(
+                "The weld symbol could not produce a valid result"
+            );
+        }
+        if (m_createMode) {
+            auto* timeline =
+                App::DocumentTimeline::get(document);
+            if (!timeline) {
+                throw Base::RuntimeError(
+                    "The weld symbol could not access document history"
+                );
+            }
+            std::vector<App::DocumentObject*> timelineBlock;
+            timelineBlock.reserve(3);
+            for (auto* tile : {m_arrowFeat, m_otherFeat}) {
+                if (!tile || tile->getDocument() != document
+                    || !document->containsObject(tile)
+                    || App::DocumentTimeline::timelineOwner(tile)
+                        != m_weldFeat
+                    || !timeline
+                            ->isProvisionallyEnrolledByCurrentTransaction(
+                                tile
+                            )) {
+                    throw Base::RuntimeError(
+                        "The weld symbol did not retain its exact generated "
+                        "tiles"
+                    );
+                }
+                timelineBlock.push_back(tile);
+            }
+            timelineBlock.push_back(m_weldFeat);
+            timeline->finalizeProvisionalOperationBlock(
+                m_weldFeat,
+                timelineBlock
+            );
+        }
     }
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    catch (const Base::Exception& error) {
+        QMessageBox::critical(
+            this,
+            tr("Weld Symbol Failed"),
+            QString::fromUtf8(error.what())
+        );
+        return false;
+    }
+    TaskInternal::updateExactDocument(document);
+    TaskInternal::resetExactEdit(document);
 
     return true;
 }
 
 bool TaskWeldingSymbol::reject()
 {
-//    Base::Console().message("TWS::reject()\n");
-      //nothing to remove.
-
-    Gui::Command::doCommand(Gui::Command::Gui, "App.activeDocument().recompute()");
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-
-    return false;
+    // TaskView rolls creation/editing back through the exact transaction.
+    TaskInternal::resetExactEdit(
+        m_documentIdentity.resolve()
+    );
+    return true;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 TaskDlgWeldingSymbol::TaskDlgWeldingSymbol(TechDraw::DrawLeaderLine* leader)
@@ -601,6 +712,7 @@ TaskDlgWeldingSymbol::TaskDlgWeldingSymbol(TechDraw::DrawLeaderLine* leader)
                                              widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgWeldingSymbol::TaskDlgWeldingSymbol(TechDraw::DrawWeldSymbol* weld)
@@ -611,6 +723,7 @@ TaskDlgWeldingSymbol::TaskDlgWeldingSymbol(TechDraw::DrawWeldSymbol* weld)
                                              widget->windowTitle(), true, nullptr);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgWeldingSymbol::~TaskDlgWeldingSymbol()
@@ -640,14 +753,12 @@ void TaskDlgWeldingSymbol::clicked(int)
 
 bool TaskDlgWeldingSymbol::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgWeldingSymbol::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskWeldingSymbol.cpp>

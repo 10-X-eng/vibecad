@@ -109,9 +109,13 @@ class Solve(run.Solve):
 
         # get solver binary
         self.pushStatus("Get solver binary...\n")
-        binary = settings.get_binary("Mystran")
-        if binary is None:
-            self.fail()  # a print has been made in settings module
+        try:
+            binary = settings.require_binary("Mystran")
+        except settings.SolverExecutableNotFoundError as exc:
+            self.report.error(str(exc))
+            self.pushStatus(str(exc) + "\n")
+            self.fail()
+            return
 
         # run solver
         self.pushStatus("Executing solver...\n")
@@ -132,10 +136,69 @@ class Results(run.Results):
 
     def run(self):
         prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/General")
-        if not prefs.GetBool("KeepResultsOnReRun", False):
-            self.purge_results()
-        if result_reading is True:
-            self.load_results()
+        keep_results = prefs.GetBool("KeepResultsOnReRun", False)
+        if not FreeCAD.GuiUp:
+            if not keep_results:
+                self.purge_results()
+            if result_reading is True:
+                self.load_results()
+            return
+
+        document = self.analysis.Document
+        if any(
+            candidate.getBookedTransactionID() != 0
+            or candidate.HasPendingTransaction
+            for candidate in FreeCAD.listDocuments().values()
+        ):
+            raise RuntimeError(
+                "Mystran results cannot be imported while another "
+                "document transaction is active"
+            )
+
+        transaction_id = 0
+        try:
+            document.openTransaction("Import Mystran solver results")
+            transaction_id = int(document.getBookedTransactionID())
+            if transaction_id == 0:
+                raise RuntimeError(
+                    "Could not open the Mystran result import transaction"
+                )
+            if not keep_results:
+                self.purge_results()
+            if result_reading is not True:
+                raise RuntimeError(
+                    "The Mystran result importer is unavailable"
+                )
+            result_graph = self.load_results()
+            if result_graph is None:
+                raise RuntimeError(
+                    "The Mystran result importer returned no result graph"
+                )
+            root, resources = result_graph
+            from femcommands.manager import (
+                _finalize_timeline_result_graph,
+            )
+
+            _finalize_timeline_result_graph(
+                self.solver,
+                root,
+                resources,
+            )
+            solver_results = list(self.solver.Results)
+            if root not in solver_results:
+                solver_results.append(root)
+                self.solver.Results = solver_results
+            document.recompute()
+            FreeCAD.closeActiveTransaction(False, transaction_id)
+            transaction_id = 0
+        except Exception:
+            if (
+                transaction_id
+                and document.getBookedTransactionID()
+                == transaction_id
+            ):
+                FreeCAD.closeActiveTransaction(True, transaction_id)
+            raise
 
     def purge_results(self):
         self.pushStatus("Purge existing results...\n")
@@ -150,16 +213,81 @@ class Results(run.Results):
         self.pushStatus("Import new results...\n")
         neu_result_file = os.path.join(self.directory, _inputFileName + ".NEU")
         if os.path.isfile(neu_result_file):
-            hfcMystranNeuIn.import_neu(neu_result_file)
-            # Workaround to move result object into analysis
-            for o in self.analysis.Document.Objects:
-                if o.Name == "Displacement0":
-                    self.analysis.addObject(o)
-                    break
+            document = self.analysis.Document
+            imported = hfcMystranNeuIn.import_neu(neu_result_file)
+            if (
+                isinstance(imported, (tuple, list))
+                and len(imported) == 2
+            ):
+                result, reported_resources = imported
+            else:
+                result = imported
+                reported_resources = ()
+            if (
+                result is None
+                or getattr(result, "Document", None) is not document
+                or document.getObject(
+                    getattr(result, "Name", "")
+                )
+                is not result
+                or not document
+                .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                    result
+                )
+            ):
+                raise RuntimeError(
+                    "The Mystran importer must return its exact result "
+                    "object"
+                )
+
+            resources = []
+            for resource in reported_resources:
+                if (
+                    resource is result
+                    or resource in resources
+                    or getattr(resource, "Document", None) is not document
+                    or document.getObject(
+                        getattr(resource, "Name", "")
+                    )
+                    is not resource
+                    or not document
+                    .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                        resource
+                    )
+                ):
+                    raise RuntimeError(
+                        "The Mystran importer returned an invalid exact "
+                        "result resource"
+                    )
+                resources.append(resource)
+
+            result_mesh = getattr(result, "Mesh", None)
+            if (
+                result_mesh is not None
+                and getattr(result_mesh, "Document", None) is document
+                and document.getObject(
+                    getattr(result_mesh, "Name", "")
+                )
+                is result_mesh
+                and document
+                .isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                    result_mesh
+                )
+                and result_mesh not in resources
+            ):
+                resources.append(result_mesh)
+
+            self.analysis.addObject(result)
+            if result not in self.analysis.Group:
+                raise RuntimeError(
+                    "The Mystran result was not added to its analysis"
+                )
+            return result, tuple(resources)
         else:
             # TODO: use solver framework status message system
             FreeCAD.Console.PrintError(f"FEM: No results found at {neu_result_file}!\n")
             self.fail()
+        return None
 
 
 ##  @}

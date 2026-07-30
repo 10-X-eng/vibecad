@@ -34,6 +34,7 @@
 
 #include "QGIEdge.h"
 #include "PreferencesGui.h"
+#include "TaskDocumentGuard.h"
 #include "TaskLineDecor.h"
 #include "QGIView.h"
 
@@ -104,7 +105,10 @@ void QGIEdge::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event)
         auto* baseFeat = static_cast<TechDraw::DrawViewPart *>(parent->getViewObject());
         std::vector<std::string> edgeName(1, DrawUtil::makeGeomName("Edge", getProjIndex()));
 
-        Gui::Control().showDialog(new TaskDlgLineDecor(baseFeat, edgeName));
+        TaskInternal::showDocumentDialog(
+            new TaskDlgLineDecor(baseFeat, edgeName),
+            baseFeat->getDocument()
+        );
     }
 }
 
@@ -112,4 +116,3 @@ void QGIEdge::setLinePen(const QPen& linePen)
 {
     m_pen = linePen;
 }
-

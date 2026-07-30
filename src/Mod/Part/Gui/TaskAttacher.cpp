@@ -1665,9 +1665,19 @@ bool TaskDlgAttacher::reject()
     Gui::DocumentT doc(getDocumentName());
     Gui::Document* document = doc.getDocument();
     if (document) {
-        // roll back the done things
-        document->abortCommand();
-        Gui::Command::doCommand(Gui::Command::Doc, "%s.recompute()", doc.getAppDocumentPython().c_str());
+        auto* appDocument = document->getDocument();
+        // Datum and attachment editors can run in edit mode. Tear the edit
+        // ViewProvider down before aborting its transaction; aborting first
+        // can leave the task/tree machinery pointing at a deleted object.
+        if (document->getInEdit()) {
+            document->cancelEdit();
+        }
+        else {
+            document->abortCommand();
+        }
+        if (appDocument) {
+            appDocument->recompute();
+        }
     }
 
     accepted = false;

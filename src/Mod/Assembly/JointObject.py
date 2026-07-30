@@ -78,6 +78,19 @@ JointTypes = [
     "Belt",
 ]
 
+
+def _jointInteractionUsable(joint):
+    if UtilsAssembly.isTimelineOperationActive(joint):
+        return True
+    task = globals().get("activeTask")
+    return bool(
+        task is not None
+        and getattr(task, "joint", None) is joint
+        and getattr(task, "provisional_timeline_internal", False)
+        and task.transaction.owns_current()
+    )
+
+
 JointUsingAngle = [
     "Angle",
 ]
@@ -172,7 +185,13 @@ def getContext(obj):
 # Both element names hold the full path to the object.
 # From these a placement is computed. It is relative to the Object.
 class Joint:
-    def __init__(self, joint, type_index):
+    def __init__(
+        self,
+        joint,
+        type_index,
+        *,
+        register_timeline_editor=True,
+    ):
         joint.Proxy = self
 
         joint.addExtension("App::SuppressibleExtensionPython")
@@ -189,10 +208,19 @@ class Joint:
 
         self.createProperties(joint)
 
-        self.setJointConnectors(joint, [])
+        self._initializeJointConnectors(joint)
+        if register_timeline_editor:
+            UtilsAssembly.markTimelineOperationEditor(
+                joint,
+                "Assembly_EditHistoryOperation",
+            )
 
     def onDocumentRestored(self, joint):
         self.createProperties(joint)
+        UtilsAssembly.markTimelineOperationEditor(
+            joint,
+            "Assembly_EditHistoryOperation",
+        )
         ensureViewProviderJoint(joint)
 
     def createProperties(self, joint):
@@ -750,13 +778,7 @@ class Joint:
         return None
 
     def getAssembly(self, joint):
-        for obj in joint.InList:
-            if obj.isDerivedFrom("Assembly::AssemblyObject"):
-                return obj
-            elif obj.isDerivedFrom("Assembly::AssemblyLink"):
-                return self.getAssembly(obj)
-
-        return None
+        return UtilsAssembly.findOwningPartOrAssembly(joint)
 
     def setJointType(self, joint, newType):
         oldType = joint.JointType
@@ -769,6 +791,8 @@ class Joint:
 
         # during loading the onchanged may be triggered before full init.
         if App.isRestoring():
+            return
+        if not _jointInteractionUsable(joint):
             return
 
         if prop == "JointType":
@@ -795,26 +819,32 @@ class Joint:
         ):
             return
 
+        container = self.getAssembly(joint)
+        if container is None:
+            return
+
         if prop == "Offset1" or prop == "Offset2":
             self.updateJCSPlacements(joint)
 
             presolved = joint.JointType in JointUsingPreSolve and self.preSolve(joint, False)
 
-            isAssembly = self.getAssembly(joint).Type == "Assembly"
+            isAssembly = container.Type == "Assembly"
             if isAssembly and not presolved:
-                solveIfAllowed(self.getAssembly(joint))
+                solveIfAllowed(container)
             else:
                 self.updateJCSPlacements(joint)
 
         if prop == "Distance" and joint.JointType == "Distance":
-            solveIfAllowed(self.getAssembly(joint))
+            solveIfAllowed(container)
 
         if prop == "Angle" and joint.JointType == "Angle":
             if joint.Angle != 0.0:
                 self.preventParallel(joint)
-            solveIfAllowed(self.getAssembly(joint))
+            solveIfAllowed(container)
 
     def execute(self, joint):
+        if not _jointInteractionUsable(joint):
+            return
         errStr = joint.Label + ": " + QT_TRANSLATE_NOOP("Assembly", "Broken link in: ")
         if (
             hasattr(joint, "Reference1")
@@ -838,7 +868,23 @@ class Joint:
 
     def setJointConnectors(self, joint, refs):
         # current selection is a vector of strings like "Assembly.Assembly1.Assembly2.Body.Pad.Edge16" including both what selection return as obj_name and obj_sub
+        if not _jointInteractionUsable(joint):
+            raise RuntimeError(
+                "The joint is not active in its exact Assembly context"
+            )
+        self._setJointConnectors(joint, refs)
+
+    def _initializeJointConnectors(self, joint):
+        """Initialize a newly-created joint before it becomes interactive."""
+
+        self._setJointConnectors(joint, [])
+
+    def _setJointConnectors(self, joint, refs):
         assembly = self.getAssembly(joint)
+        if assembly is None:
+            raise RuntimeError(
+                "The joint has no active owning Assembly or Part"
+            )
         isAssembly = assembly.Type == "Assembly"
 
         if len(refs) >= 1:
@@ -920,6 +966,8 @@ class Joint:
 
     def matchJCS(self, joint, savePlc=True, reverse=False):
         assembly = self.getAssembly(joint)
+        if assembly is None:
+            return False
         sameDir = self.areJcsSameDir(joint)
         if reverse:
             sameDir = not sameDir
@@ -998,6 +1046,8 @@ class Joint:
             return
 
         assembly = self.getAssembly(joint)
+        if assembly is None:
+            return
 
         part1 = UtilsAssembly.getMovingPart(joint.Reference1)
         part2 = UtilsAssembly.getMovingPart(joint.Reference2)
@@ -1217,7 +1267,11 @@ class ViewProviderJoint:
 
         assembly = self.app_obj.Proxy.getAssembly(self.app_obj)
         # Assuming Reference1 corresponds to the first part link
-        if hasattr(self.app_obj, "Reference1"):
+        if (
+            assembly is not None
+            and assembly.isDerivedFrom("Assembly::AssemblyObject")
+            and hasattr(self.app_obj, "Reference1")
+        ):
             part = UtilsAssembly.getMovingPart(self.app_obj.Reference1)
             if part is not None and not assembly.isPartConnected(part):
                 overlays[Gui.IconPosition.BottomLeft] = "Part_Detached"
@@ -1236,26 +1290,41 @@ class ViewProviderJoint:
         return None
 
     def doubleClicked(self, vobj):
-        App.ActiveDocument.abortTransaction()  # Close the auto-transaction
+        joint = vobj.Object
+        if not UtilsAssembly.isTimelineOperationActive(joint):
+            return False
+        assembly = joint.Proxy.getAssembly(joint)
+        if (
+            assembly is None
+            or not UtilsAssembly.isTimelineOperationActive(assembly)
+        ):
+            return False
 
         task = Gui.Control.activeTaskDialog()
         if task:
             task.reject()
+            if Gui.Control.activeTaskDialog() is not None:
+                return False
 
-        assembly = vobj.Object.Proxy.getAssembly(vobj.Object)
-
-        if assembly is None:
+        document = assembly.Document
+        gui_document = Gui.getDocument(document.Name)
+        if gui_document is None:
             return False
-
         if UtilsAssembly.activeAssembly() != assembly:
-            vobj.Document.setEdit(assembly)
+            gui_document.setEdit(assembly)
+            if UtilsAssembly.activeAssembly() is not assembly:
+                return False
 
-        panel = TaskAssemblyCreateJoint(0, vobj.Object)
-        dialog = Gui.Control.showDialog(panel)
+        panel = TaskAssemblyCreateJoint(
+            0,
+            joint,
+            existing_transaction_id=document.getBookedTransactionID(),
+        )
+        dialog = Gui.Control.showDialog(panel, panel.gui_doc)
         if dialog is not None:
             dialog.setAutoCloseOnTransactionChange(True)
             dialog.setAutoCloseOnDeletedDocument(True)
-            dialog.setDocumentName(App.ActiveDocument.Name)
+            dialog.setDocumentName(document.Name)
 
         return True
 
@@ -1272,6 +1341,7 @@ class GroundedJoint:
         self.joint = joint
 
         self.createObjectToGroundProperty(joint, obj_to_ground)
+        UtilsAssembly.markTimelineOperation(joint)
 
     def createObjectToGroundProperty(self, joint, obj_to_ground):
         joint.addProperty(
@@ -1288,6 +1358,7 @@ class GroundedJoint:
         self.migrationScript(joint)
 
         self.setReadOnly(joint, True)
+        UtilsAssembly.markTimelineOperation(joint)
         ensureViewProviderGroundedJoint(joint)
 
     def migrationScript(self, joint):
@@ -1536,25 +1607,55 @@ class MakeJointSelGate:
     def __init__(self, taskbox, assembly):
         self.taskbox = taskbox
         self.assembly = assembly
+        self.document = assembly.Document
+        self.document_uid = str(
+            getattr(self.document, "Uid", "") or ""
+        )
+        self.assembly_identity = (
+            str(assembly.Name),
+            int(assembly.ID),
+        )
 
     def allow(self, doc, obj, sub):
-        if not sub:
+        assembly_name, assembly_id = self.assembly_identity
+        if (
+            not sub
+            or obj is None
+            or not UtilsAssembly._document_is_open(self.document)
+            or str(getattr(self.document, "Uid", "") or "")
+            != self.document_uid
+            or self.document.getObject(assembly_name)
+            is not self.assembly
+            or int(self.assembly.ID) != assembly_id
+            or obj.Document is not self.document
+            or self.document.getObject(obj.Name) is not obj
+            or not UtilsAssembly.isTimelineOperationActive(self.assembly)
+        ):
             return False
 
-        objs_names, element_name = UtilsAssembly.getObjsNamesAndElement(obj.Name, sub)
-
-        if self.assembly.Name not in objs_names:
-            # Only objects within the assembly.
+        component, _relative_sub = UtilsAssembly.getComponentReference(
+            self.assembly,
+            obj,
+            sub,
+        )
+        if not UtilsAssembly.isMovableAssemblyComponent(
+            self.assembly,
+            component,
+        ):
             return False
 
         ref = [obj, [sub]]
         sel_obj = UtilsAssembly.getObject(ref)
+        if not UtilsAssembly.isTimelineOperationActive(sel_obj):
+            return False
 
         if UtilsAssembly.isLink(sel_obj):
             linked = sel_obj.getLinkedObject()
             if linked == sel_obj:
                 return True  # We accept empty links
             sel_obj = linked
+            if not UtilsAssembly.isTimelineOperationActive(sel_obj):
+                return False
 
         if sel_obj.isDerivedFrom("Part::Feature") or sel_obj.isDerivedFrom("App::Part"):
             return True
@@ -1581,32 +1682,98 @@ activeTask = None
 
 
 class TaskAssemblyCreateJoint(QtCore.QObject):
-    def __init__(self, jointTypeIndex, jointObj=None, subclass=False):
+    def __init__(
+        self,
+        jointTypeIndex,
+        jointObj=None,
+        subclass=False,
+        existing_transaction_id=0,
+        provisional_timeline_internal=False,
+        document_name=None,
+        container_name=None,
+    ):
         super().__init__()
 
-        global activeTask
-        activeTask = self
         self.blockOffsetRotation = False
+        self.provisional_timeline_internal = bool(
+            provisional_timeline_internal
+        )
 
-        self.assembly = UtilsAssembly.activeAssembly()
-        if not self.assembly:
-            self.assembly = UtilsAssembly.activePart()
-            self.activeType = "Part"
-        else:
+        if jointObj is not None:
+            joint_document = getattr(jointObj, "Document", None)
+            if (
+                not UtilsAssembly._document_is_open(joint_document)
+                or joint_document.getObject(jointObj.Name) is not jointObj
+                or not UtilsAssembly.isTimelineOperationActive(jointObj)
+            ):
+                raise RuntimeError(
+                    "The joint operation is not active and live"
+                )
+            self.assembly = jointObj.Proxy.getAssembly(jointObj)
             self.activeType = "Assembly"
-            self.assembly.ensureIdentityPlacements()
+        elif document_name is not None and container_name is not None:
+            try:
+                task_document = App.getDocument(document_name)
+            except (NameError, RuntimeError):
+                task_document = None
+            self.assembly = (
+                task_document.getObject(container_name)
+                if task_document is not None
+                else None
+            )
+            if self.assembly is None:
+                raise RuntimeError(
+                    "The joint task lost its exact active container"
+                )
+            if self.assembly.isDerivedFrom(
+                "Assembly::AssemblyObject"
+            ):
+                self.activeType = "Assembly"
+                active_container = UtilsAssembly.activeAssembly()
+            else:
+                self.activeType = "Part"
+                active_container = UtilsAssembly.activePart()
+            if active_container is not self.assembly:
+                raise RuntimeError(
+                    "The joint task active container changed before launch"
+                )
+        else:
+            self.assembly = UtilsAssembly.activeAssembly()
+            if not self.assembly:
+                self.assembly = UtilsAssembly.activePart()
+                self.activeType = "Part"
+            else:
+                self.activeType = "Assembly"
+        if self.assembly is None:
+            raise RuntimeError("An active assembly or part is required for a joint")
+        if not UtilsAssembly.isTimelineOperationActive(self.assembly):
+            raise RuntimeError(
+                "The joint container is not active in History"
+            )
 
         self.doc = self.assembly.Document
-        self.gui_doc = Gui.getDocument(self.doc)
-
+        self.document_uid = str(
+            getattr(self.doc, "Uid", "") or ""
+        )
+        self.assembly_identity = (
+            str(self.assembly.Name),
+            int(self.assembly.ID),
+            self.assembly,
+        )
+        self.gui_doc = Gui.getDocument(self.doc.Name)
+        if self.gui_doc is None:
+            raise RuntimeError("The joint task has no GUI document")
         self.view = self.gui_doc.activeView()
-
-        if not self.assembly or not self.view or not self.doc:
-            return
+        if self.view is None:
+            raise RuntimeError("The joint task has no active 3D view")
 
         if self.activeType == "Assembly":
-            self.assembly.ViewObject.MoveOnlyPreselected = True
-            self.assembly.ViewObject.MoveInCommand = False
+            self.move_only_preselected_before_task = bool(
+                self.assembly.ViewObject.MoveOnlyPreselected
+            )
+            self.move_in_command_before_task = bool(
+                self.assembly.ViewObject.MoveInCommand
+            )
 
         # Create a top-level container widget for subclasses of TaskAssemblyCreateJoint
         self.form = QtWidgets.QWidget()
@@ -1639,11 +1806,17 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.jForm.jointType.currentIndexChanged.connect(self.onJointTypeChanged)
 
         if jointObj:
-            Gui.Selection.clearSelection()
+            Gui.Selection.clearSelection(self.doc.Name)
             self.creating = False
             self.joint = jointObj
             self.jointName = jointObj.Label
-            Gui.ActiveDocument.openCommand("Edit " + self.jointName + " Joint")
+            self.transaction = UtilsAssembly._TaskTransactionOwner(
+                self.doc,
+                "Edit " + self.jointName + " Joint",
+                existing_transaction_id,
+            )
+            if self.activeType == "Assembly":
+                self.assembly.ensureIdentityPlacements()
 
             self.updateTaskboxFromJoint()
             self.visibilityBackup = self.joint.Visibility
@@ -1653,15 +1826,27 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
             self.creating = True
             self.jointName = self.jForm.jointType.currentText().replace(" ", "")
             if self.activeType == "Part":
-                Gui.ActiveDocument.openCommand("Transform")
+                transaction_label = "Transform"
             else:
-                Gui.ActiveDocument.openCommand("Create " + self.jointName + " Joint")
+                transaction_label = "Create " + self.jointName + " Joint"
+            self.transaction = UtilsAssembly._TaskTransactionOwner(
+                self.doc,
+                transaction_label,
+                existing_transaction_id,
+            )
+            if self.activeType == "Assembly":
+                self.assembly.ensureIdentityPlacements()
 
             self.refs = []
             self.presel_ref = None
 
             self.createJointObject()
             self.visibilityBackup = False
+        self.joint_identity = (
+            str(self.joint.Name),
+            int(self.joint.ID),
+            self.joint,
+        )
 
         self.jForm.angleSpinbox.valueChanged.connect(self.onAngleChanged)
         self.jForm.distanceSpinbox.valueChanged.connect(self.onDistanceChanged)
@@ -1724,33 +1909,142 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         self.createDeleteAction()
 
         self.addition_rejected = False
+        if self.activeType == "Assembly":
+            self.assembly.ViewObject.MoveOnlyPreselected = True
+            self.assembly.ViewObject.MoveInCommand = False
+        global activeTask
+        activeTask = self
+
+    def _ownsLiveContainerAndJoint(self):
+        assembly_name, assembly_id, exact_assembly = (
+            self.assembly_identity
+        )
+        joint_name, joint_id, exact_joint = self.joint_identity
+        try:
+            return (
+                UtilsAssembly._document_is_open(self.doc)
+                and str(getattr(self.doc, "Uid", "") or "")
+                == self.document_uid
+                and self.assembly is exact_assembly
+                and self.doc.getObject(assembly_name)
+                is exact_assembly
+                and int(exact_assembly.ID) == assembly_id
+                and UtilsAssembly.isTimelineOperationActive(
+                    self.assembly
+                )
+                and self.joint is exact_joint
+                and self.doc.getObject(joint_name) is exact_joint
+                and int(exact_joint.ID) == joint_id
+                and UtilsAssembly.isTimelineOperationActive(self.joint)
+                and UtilsAssembly.findOwningPartOrAssembly(
+                    self.joint,
+                    include_inactive=True,
+                )
+                is self.assembly
+            )
+        except (AttributeError, ReferenceError, RuntimeError):
+            return False
+
+    def _referencesRemainUsable(self):
+        if len(self.refs) != 2:
+            return False
+
+        components = []
+        try:
+            for ref in self.refs:
+                if not UtilsAssembly.isRefValid(ref, 2):
+                    return False
+
+                component = UtilsAssembly.getMovingPart(ref)
+                if (
+                    component is None
+                    or component.Document is not self.doc
+                    or self.doc.getObject(component.Name)
+                    is not component
+                    or not UtilsAssembly.isMovableAssemblyComponent(
+                        self.assembly,
+                        component
+                    )
+                ):
+                    return False
+
+                selected_object = UtilsAssembly.getObject(ref)
+                if (
+                    selected_object is None
+                    or not UtilsAssembly.isTimelineOperationActive(
+                        selected_object
+                    )
+                ):
+                    return False
+
+                if UtilsAssembly.isLink(selected_object):
+                    linked_object = selected_object.getLinkedObject()
+                    if (
+                        linked_object is not selected_object
+                        and not UtilsAssembly.isTimelineOperationActive(
+                            linked_object
+                        )
+                    ):
+                        return False
+                components.append(component)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            return False
+
+        return components[0] is not components[1]
 
     def accept(self):
-        if len(self.refs) != 2:
+        if not self.transaction.owns_current():
+            App.Console.PrintError(
+                "Could not finalize the joint: "
+                "the task no longer owns its exact document transaction\n"
+            )
+            return False
+        if not self._ownsLiveContainerAndJoint():
+            App.Console.PrintError(
+                "Could not finalize the joint: "
+                "its exact Assembly objects are no longer active\n"
+            )
+            return False
+        if not self._referencesRemainUsable():
             App.Console.PrintWarning(
-                translate("Assembly", "Select 2 elements from 2 separate parts")
+                translate(
+                    "Assembly",
+                    "Select 2 active elements from 2 separate parts",
+                )
+            )
+            return False
+
+        try:
+            remove_temporary_joint = False
+            if self.activeType == "Assembly":
+                self.joint.Visibility = self.visibilityBackup
+                commands = UtilsAssembly.generatePropertySettings(self.joint)
+            else:
+                moved_part = UtilsAssembly.getMovingPart(self.refs[1])
+                if moved_part is None:
+                    raise RuntimeError(
+                        "The second selected part is no longer available"
+                    )
+                commands = UtilsAssembly.generatePropertySettings(moved_part)
+                remove_temporary_joint = True
+
+            if commands:
+                Gui.doCommand(commands)
+            self.assembly.recompute(True)
+            if remove_temporary_joint:
+                self.joint.Document.removeObject(self.joint.Name)
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not finalize the joint: "
+                f"{error}\n"
             )
             return False
 
         self.deactivate()
-
-        if self.activeType == "Assembly":
-            self.joint.Visibility = self.visibilityBackup
-        else:
-            self.joint.Document.removeObject(self.joint.Name)
-
-        cmds = UtilsAssembly.generatePropertySettings(self.joint)
-        Gui.doCommand(cmds)
-
-        self.assembly.recompute(True)
-
-        Gui.ActiveDocument.commitCommand()
         return True
 
     def reject(self):
         self.deactivate()
-        Gui.ActiveDocument.abortCommand()
-        self.assembly.recompute(True)
         return True
 
     def autoClosedOnTransactionChange(self):
@@ -1762,32 +2056,63 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         Gui.Selection.removeSelectionGate()
         Gui.Selection.removeObserver(self)
         Gui.Selection.setSelectionStyle(Gui.Selection.SelectionStyle.NormalSelection)
-        App.ActiveDocument.abortTransaction()
+        self.transaction.document_deleted()
 
     def deactivate(self):
         global activeTask
         activeTask = None
 
-        if self.activeType == "Assembly":
-            self.assembly.clearUndo()
-            self.assembly.ViewObject.MoveOnlyPreselected = False
-            self.assembly.ViewObject.MoveInCommand = True
+        assembly_name, assembly_id, exact_assembly = (
+            self.assembly_identity
+        )
+        assembly_live = (
+            UtilsAssembly._document_is_open(self.doc)
+            and str(getattr(self.doc, "Uid", "") or "")
+            == self.document_uid
+            and self.doc.getObject(assembly_name)
+            is exact_assembly
+            and int(exact_assembly.ID) == assembly_id
+        )
+        if self.activeType == "Assembly" and assembly_live:
+            exact_assembly.clearUndo()
+            exact_assembly.ViewObject.MoveOnlyPreselected = (
+                self.move_only_preselected_before_task
+            )
+            exact_assembly.ViewObject.MoveInCommand = (
+                self.move_in_command_before_task
+            )
 
         Gui.Selection.removeSelectionGate()
         Gui.Selection.removeObserver(self)
         Gui.Selection.setSelectionStyle(Gui.Selection.SelectionStyle.NormalSelection)
-        Gui.Selection.clearSelection()
-        self.view.removeEventCallback("SoLocation2Event", self.callbackMove)
-        self.view.removeEventCallback("SoKeyboardEvent", self.callbackKey)
-        UtilsAssembly.setJointsPickableState(self.doc, True)
-        if Gui.Control.activeDialog():
-            Gui.Control.closeDialog()
+        Gui.Selection.clearSelection(self.doc.Name)
+        if (
+            assembly_live
+            and Gui.getDocument(self.doc.Name) is self.gui_doc
+        ):
+            self.view.removeEventCallback(
+                "SoLocation2Event",
+                self.callbackMove,
+            )
+            self.view.removeEventCallback(
+                "SoKeyboardEvent",
+                self.callbackKey,
+            )
+            UtilsAssembly.setJointsPickableState(self.doc, True)
 
     def handleInitialSelection(self):
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
             return
         for sel in selection:
+            if (
+                sel.Object is None
+                or sel.Object.Document is not self.doc
+                or not UtilsAssembly.isTimelineOperationActive(
+                    sel.Object
+                )
+            ):
+                continue
             # If you select 2 solids (bodies for example) within an assembly.
             # There'll be a single sel but 2 SubElementNames.
 
@@ -1803,7 +2128,10 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
                 moving_part, new_sub = UtilsAssembly.getComponentReference(
                     self.assembly, sel.Object, sub_name
                 )
-                if not moving_part:
+                if not UtilsAssembly.isMovableAssemblyComponent(
+                    self.assembly,
+                    moving_part,
+                ):
                     break
 
                 # Construct the reference using the Component as the root
@@ -1817,7 +2145,7 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
                 if len(self.refs) == 1 and moving_part == self.getMovingPart(self.refs[0]):
                     # do not select several feature of the same object.
                     self.refs.clear()
-                    Gui.Selection.clearSelection()
+                    Gui.Selection.clearSelection(self.doc.Name)
                     return
 
                 self.refs.append(ref)
@@ -1825,7 +2153,7 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
         # do not accept initial selection if we don't have 2 selected features
         if len(self.refs) != 2:
             self.refs.clear()
-            Gui.Selection.clearSelection()
+            Gui.Selection.clearSelection(self.doc.Name)
         else:
             self.updateJoint()
 
@@ -1841,7 +2169,19 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
             joint_group.purgeTouched()
             self.assembly.purgeTouched()
 
-        Joint(self.joint, type_index)
+        if self.provisional_timeline_internal:
+            # A New Part task creates its optional joint before the Part and
+            # occurrence it can reference. Keep that exact preview identity
+            # out of public History until accept promotes it. Classification
+            # must precede Joint's editor contract: internal leaves are not
+            # allowed to advertise a durable operation editor.
+            self.doc.classifyProvisionalTimelineInternalObject(self.joint)
+
+        Joint(
+            self.joint,
+            type_index,
+            register_timeline_editor=not self.provisional_timeline_internal,
+        )
         ViewProviderJoint(self.joint.ViewObject)
         self.joint.purgeTouched()
 
@@ -2185,10 +2525,14 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
     # 3D view keyboard handler
     def KeyboardEvent(self, info):
         if info["State"] == "UP" and info["Key"] == "ESCAPE":
-            self.reject()
+            dialog = Gui.Control.activeTaskDialog(self.gui_doc)
+            if dialog:
+                dialog.reject()
 
         if info["State"] == "UP" and info["Key"] == "RETURN":
-            self.accept()
+            dialog = Gui.Control.activeTaskDialog(self.gui_doc)
+            if dialog:
+                dialog.accept()
 
     def _removeSelectedItems(self, selected_indexes):
         for index in selected_indexes:
@@ -2255,17 +2599,38 @@ class TaskAssemblyCreateJoint(QtCore.QObject):
 
     # selectionObserver stuff
     def addSelection(self, doc_name, obj_name, sub_name, mousePos):
-        rootObj = App.getDocument(doc_name).getObject(obj_name)
+        if (
+            not self._ownsLiveContainerAndJoint()
+            or doc_name != self.doc.Name
+        ):
+            return
+        rootObj = self.doc.getObject(obj_name)
+        if (
+            rootObj is None
+            or not UtilsAssembly.isTimelineOperationActive(rootObj)
+        ):
+            return
 
         # We do not need the full TNP string like :"Part.Body.Pad.;#a:1;:G0;XTR;:Hc94:8,F.Face6"
         # instead we need : "Part.Body.Pad.Face6"
-        resolved = rootObj.resolveSubElement(sub_name, True)
+        try:
+            resolved = rootObj.resolveSubElement(sub_name, True)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            Gui.Selection.removeSelection(
+                doc_name,
+                obj_name,
+                sub_name,
+            )
+            return
         sub_name = resolved[2]
 
         sub_name = UtilsAssembly.fixBodyExtraFeatureInSub(doc_name, sub_name)
 
         comp, new_sub = UtilsAssembly.getComponentReference(self.assembly, rootObj, sub_name)
-        if not comp:
+        if not UtilsAssembly.isMovableAssemblyComponent(
+            self.assembly,
+            comp,
+        ):
             # Selection was not valid (not inside assembly or logic failed)
             Gui.Selection.removeSelection(doc_name, obj_name, sub_name)
             return

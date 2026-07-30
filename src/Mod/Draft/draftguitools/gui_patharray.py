@@ -136,6 +136,7 @@ class PathArray(gui_base_original.Modifier):
             vertical_vector_str = DraftVecUtils.toString(vertical_vector)
 
             Gui.addModule("Draft")
+            Gui.addModule("draftutils.timeline")
             _cmd = "Draft.make_path_array"
             _cmd += "("
             _cmd += "App.ActiveDocument." + base_object.Name + ", "
@@ -150,15 +151,23 @@ class PathArray(gui_base_original.Modifier):
             _cmd += "vertical_vector=" + vertical_vector_str + ", "
             _cmd += "start_offset=" + str(start_offset) + ", "
             _cmd += "end_offset=" + str(end_offset) + ", "
-            _cmd += "use_link=" + str(use_link)
+            _cmd += "use_link=" + str(use_link) + ", "
+            _cmd += "hide_base=False"
             _cmd += ")"
 
             _cmd_list = [
                 "_obj_ = " + _cmd,
                 "Draft.autogroup(_obj_)",
+                "draftutils.timeline.accept_derived_output(_obj_, "
+                "[App.ActiveDocument." + base_object.Name + ", "
+                "App.ActiveDocument." + path_object.Name + "])",
                 "App.ActiveDocument.recompute()",
             ]
-            self.commit(translate("draft", "Create Path Array"), _cmd_list)
+            self.commit(
+                translate("draft", "Create Path Array"),
+                _cmd_list,
+                inputs=(base_object, path_object),
+            )
 
         # Commit the transaction and execute the commands
         # through the parent class

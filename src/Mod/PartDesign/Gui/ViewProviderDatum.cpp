@@ -246,10 +246,17 @@ bool ViewProviderDatum::setEdit(int ModNum)
     }
     // TODO Share this code with Features view providers somehow (2015-09-08, Fat-Zer)
     if (ModNum == ViewProvider::Default) {
+        auto* datum = getObject();
+        auto* document =
+            datum ? datum->getDocument() : nullptr;
+        if (!document) {
+            return false;
+        }
         // When double-clicking on the item for this datum feature the
         // object unsets and sets its edit mode without closing
         // the task panel
-        Gui::TaskView::TaskDialog* dlg = Gui::Control().activeDialog();
+        Gui::TaskView::TaskDialog* dlg =
+            Gui::Control().activeDialog(document);
         TaskDlgDatumParameters* datumDlg = qobject_cast<TaskDlgDatumParameters*>(dlg);
         if (datumDlg && datumDlg->getViewProvider() != this) {
             datumDlg = nullptr;  // another datum feature left open its task panel
@@ -262,7 +269,7 @@ bool ViewProviderDatum::setEdit(int ModNum)
             msgBox.setDefaultButton(QMessageBox::Yes);
             int ret = msgBox.exec();
             if (ret == QMessageBox::Yes) {
-                Gui::Control().closeDialog();
+                Gui::Control().closeDialog(document);
             }
             else {
                 return false;
@@ -270,16 +277,19 @@ bool ViewProviderDatum::setEdit(int ModNum)
         }
 
         // clear the selection (convenience)
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(document->getName());
 
         oldWb = Gui::Command::assureWorkbench("PartDesignWorkbench");
 
         // start the edit dialog
         if (datumDlg) {
-            Gui::Control().showDialog(datumDlg);
+            Gui::Control().showDialog(datumDlg, document);
         }
         else {
-            Gui::Control().showDialog(new TaskDlgDatumParameters(this));
+            Gui::Control().showDialog(
+                new TaskDlgDatumParameters(this),
+                document
+            );
         }
 
         return true;
@@ -291,9 +301,9 @@ bool ViewProviderDatum::setEdit(int ModNum)
 
 bool ViewProviderDatum::doubleClicked()
 {
-    auto activeDoc = Gui::Application::Instance->activeDocument();
+    auto* activeDoc = getDocument();
     if (!activeDoc) {
-        activeDoc = getDocument();
+        return false;
     }
     auto activeView = activeDoc->getActiveView();
     if (!activeView) {
@@ -310,11 +320,13 @@ bool ViewProviderDatum::doubleClicked()
 
     if (datumBody) {
         if (datumBody != activeBody) {
-            Gui::Command::doCommand(
-                Gui::Command::Gui,
-                "Gui.ActiveDocument.ActiveView.setActiveObject('%s',%s)",
-                PDBODYKEY,
-                Gui::Command::getObjectCmd(datumBody).c_str()
+            _FCMD_DOC_CMD(
+                Gui,
+                datumBody->getDocument(),
+                "ActiveView.setActiveObject('"
+                    << PDBODYKEY << "',"
+                    << Gui::Command::getObjectCmd(datumBody)
+                    << ")"
             );
             activeBody = datumBody;
         }
@@ -329,7 +341,9 @@ void ViewProviderDatum::unsetEdit(int ModNum)
 
     if (ModNum == ViewProvider::Default) {
         // when pressing ESC make sure to close the dialog
-        Gui::Control().closeDialog();
+        if (auto* datum = getObject()) {
+            Gui::Control().closeDialog(datum->getDocument());
+        }
     }
     else {
         Gui::ViewProviderGeometryObject::unsetEdit(ModNum);

@@ -129,7 +129,7 @@ def _reference_schema(which: str) -> dict[str, Any]:
                 "type": "string",
                 "description": (
                     f"Exact internal name of the {which} component inside the "
-                    "assembly (from core.inspect scope='domain'), not the linked "
+                    "assembly (from assembly.list_structure), not the linked "
                     "source object."
                 ),
             },
@@ -161,7 +161,7 @@ TOOL_SPEC = {
             "assembly_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the assembly from core.inspect scope='domain'."
+                    "Exact internal name of the assembly from assembly.list_structure."
                 ),
             },
             "reference1": _reference_schema("first"),
@@ -207,7 +207,7 @@ def run(
     if assembly is None:
         return _invalid(
             f"Assembly not found by exact internal name: {assembly_name}. "
-            "Call core.inspect with scope='domain' for exact names."
+            "Call assembly.list_structure for exact names."
         )
     joint_group = domain_runtime.assembly_joint_group(assembly)
     if joint_group is None:

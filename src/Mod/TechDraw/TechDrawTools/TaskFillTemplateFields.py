@@ -38,6 +38,7 @@ import codecs
 from fractions import Fraction
 import os.path
 import TechDraw
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 CreatedByChkLst = []
 ScaleChkLst = []
@@ -91,8 +92,15 @@ keyLst = []
 
 
 class TaskFillTemplateFields:
-    def __init__(self):
-        objs = App.ActiveDocument.findObjects(Type="TechDraw::DrawPage")
+    def __init__(self, document=None):
+        self.document = (
+            document
+            if document is not None
+            else App.ActiveDocument
+        )
+        if self.document is None:
+            raise RuntimeError("A document is required to update template fields")
+        objs = self.document.findObjects(Type="TechDraw::DrawPage")
 
         for obj in objs:
             if (
@@ -166,7 +174,7 @@ class TaskFillTemplateFields:
                         u1.setPixmap(pix.scaled(32, 32))
                         self.la.addWidget(u1, dialogRow, 2)
                         self.s1 = QtGui.QLineEdit()
-                        self.s1.setText(App.ActiveDocument.CreatedBy)
+                        self.s1.setText(self.document.CreatedBy)
                         self.la.addWidget(self.s1, dialogRow, 3)
                         self.cb1.setObjectName(key)
                         keyLst.append(self.cb1.objectName())
@@ -174,7 +182,7 @@ class TaskFillTemplateFields:
                         self.lineTextList.append(self.s1)
                         self.cb1.clicked.connect(self.on_cb1_clicked)
                         longestText = max(
-                            longestText, len(App.ActiveDocument.CreatedBy)
+                            longestText, len(self.document.CreatedBy)
                         )
                         dialogRow += 1
                     if str(key).lower() in ScaleChkLst and projgrp_view:
@@ -218,13 +226,13 @@ class TaskFillTemplateFields:
                         self.la.addWidget(u3, dialogRow, 2)
                         self.s3 = QtGui.QLineEdit()
                         self.la.addWidget(self.s3, dialogRow, 3)
-                        self.s3.setText(App.ActiveDocument.Label)
+                        self.s3.setText(self.document.Label)
                         self.cb3.setObjectName(key)
                         keyLst.append(self.cb3.objectName())
                         self.checkBoxList.append(self.cb3)
                         self.lineTextList.append(self.s3)
                         self.cb3.clicked.connect(self.on_cb3_clicked)
-                        longestText = max(longestText, len(App.ActiveDocument.Label))
+                        longestText = max(longestText, len(self.document.Label))
                         dialogRow += 1
                     if str(key).lower() in CommentChkLst:
                         t4 = QtGui.QLabel(value)
@@ -241,13 +249,13 @@ class TaskFillTemplateFields:
                         self.la.addWidget(u4, dialogRow, 2)
                         self.s4 = QtGui.QLineEdit()
                         self.la.addWidget(self.s4, dialogRow, 3)
-                        self.s4.setText(App.ActiveDocument.Comment)
+                        self.s4.setText(self.document.Comment)
                         self.cb4.setObjectName(key)
                         keyLst.append(self.cb4.objectName())
                         self.checkBoxList.append(self.cb4)
                         self.lineTextList.append(self.s4)
                         self.cb4.clicked.connect(self.on_cb4_clicked)
-                        longestText = max(longestText, len(App.ActiveDocument.Comment))
+                        longestText = max(longestText, len(self.document.Comment))
                         dialogRow += 1
                     if str(key).lower() in CompanyChkLst:
                         t5 = QtGui.QLabel(value)
@@ -264,13 +272,13 @@ class TaskFillTemplateFields:
                         self.la.addWidget(u5, dialogRow, 2)
                         self.s5 = QtGui.QLineEdit()
                         self.la.addWidget(self.s5, dialogRow, 3)
-                        self.s5.setText(App.ActiveDocument.Company)
+                        self.s5.setText(self.document.Company)
                         self.cb5.setObjectName(key)
                         keyLst.append(self.cb5.objectName())
                         self.checkBoxList.append(self.cb5)
                         self.lineTextList.append(self.s5)
                         self.cb5.clicked.connect(self.on_cb5_clicked)
-                        longestText = max(longestText, len(App.ActiveDocument.Company))
+                        longestText = max(longestText, len(self.document.Company))
                         dialogRow += 1
                     if str(key).lower() in LicenseChkLst:
                         t6 = QtGui.QLabel(value)
@@ -287,13 +295,13 @@ class TaskFillTemplateFields:
                         self.la.addWidget(u6, dialogRow, 2)
                         self.s6 = QtGui.QLineEdit()
                         self.la.addWidget(self.s6, dialogRow, 3)
-                        self.s6.setText(App.ActiveDocument.License)
+                        self.s6.setText(self.document.License)
                         self.cb6.setObjectName(key)
                         keyLst.append(self.cb6.objectName())
                         self.checkBoxList.append(self.cb6)
                         self.lineTextList.append(self.s6)
                         self.cb6.clicked.connect(self.on_cb6_clicked)
-                        longestText = max(longestText, len(App.ActiveDocument.License))
+                        longestText = max(longestText, len(self.document.License))
                         dialogRow += 1
                     if str(key).lower() in LastModifiedDateChkLst:
                         t7 = QtGui.QLabel(value)
@@ -318,7 +326,7 @@ class TaskFillTemplateFields:
                         dialogRow += 1
                         try:
                             dt = datetime.datetime.strptime(
-                                App.ActiveDocument.LastModifiedDate,
+                                self.document.LastModifiedDate,
                                 "%Y-%m-%dT%H:%M:%SZ",
                             )
                             if value == "MM/DD/YYYY":
@@ -336,7 +344,7 @@ class TaskFillTemplateFields:
                         except ValueError:
                             App.Console.PrintLog(
                                 "DateTime format not recognised: "
-                                + App.ActiveDocument.LastModifiedDate
+                                + self.document.LastModifiedDate
                                 + "\n"
                             )
                             self.s7.setText(
@@ -369,7 +377,7 @@ class TaskFillTemplateFields:
                         dialogRow += 1
                         try:
                             dt = datetime.datetime.strptime(
-                                App.ActiveDocument.CreationDate, "%Y-%m-%dT%H:%M:%SZ"
+                                self.document.CreationDate, "%Y-%m-%dT%H:%M:%SZ"
                             )
                             if value == "MM/DD/YYYY":
                                 self.s8.setText(
@@ -386,7 +394,7 @@ class TaskFillTemplateFields:
                         except ValueError:
                             App.Console.PrintLog(
                                 "DateTime format not recognised: "
-                                + App.ActiveDocument.LastModifiedDate
+                                + self.document.LastModifiedDate
                                 + "\n"
                             )
                             self.s8.setText(
@@ -532,14 +540,32 @@ class TaskFillTemplateFields:
         transactionName = QtCore.QT_TRANSLATE_NOOP(
             "Techdraw_FillTemplateFields", "Fill template fields"
         )
-        App.ActiveDocument.openTransaction(transactionName)
-        i = 0
-        for cb in self.checkBoxList:
-            if cb.isChecked():
-                self.texts[keyLst[i]] = self.lineTextList[i].text()
-            i += 1
-        self.page.Template.EditableTexts = self.texts
-        App.ActiveDocument.commitTransaction()
+        try:
+            document_is_live = (
+                App.getDocument(self.document.Name) is self.document
+            )
+        except (NameError, RuntimeError):
+            document_is_live = False
+        if self.page.Document is not self.document or not document_is_live:
+            self.close()
+            return
+
+        transaction = _OwnedDocumentTransaction(
+            self.document,
+            transactionName,
+        )
+        try:
+            updated_texts = dict(self.texts)
+            for index, checkbox in enumerate(self.checkBoxList):
+                if checkbox.isChecked():
+                    updated_texts[keyLst[index]] = (
+                        self.lineTextList[index].text()
+                    )
+            self.page.Template.EditableTexts = updated_texts
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
         self.close()
 
     def close(self):

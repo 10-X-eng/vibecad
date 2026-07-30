@@ -37,6 +37,7 @@
 #include <Mod/Part/App/FeatureOffset.h>
 
 #include "TaskOffset.h"
+#include "TaskResultValidation.h"
 #include "ui_TaskOffset.h"
 
 
@@ -213,16 +214,10 @@ bool OffsetWidget::accept()
         );
         Gui::cmdAppObjectArgs(d->offset, "Fill = %s", d->ui.fillOffset->isChecked() ? "True" : "False");
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
-        if (!d->offset->isValid()) {
-            throw Base::CADKernelError(d->offset->getStatusString());
-        }
-
-        Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-        d->offset->getDocument()->commitTransaction();  // ViewProviderDocumentObject::startDefaultEditMode()
+        Gui::cmdAppDocumentArgs(d->offset->getDocument(), "recompute()");
+        TaskResultValidation::validatePartResult(d->offset);
     }
     catch (const Base::Exception& e) {
-        d->offset->getDocument()->abortTransaction();  // ViewProviderDocumentObject::startDefaultEditMode()
         QMessageBox::warning(
             this,
             tr("Input error"),
@@ -234,20 +229,23 @@ bool OffsetWidget::accept()
     return true;
 }
 
-bool OffsetWidget::reject()
+void OffsetWidget::prepareForClose()
 {
-    // get the support and Sketch
-    App::DocumentObject* source = d->offset->Source.getValue();
-    if (source) {
-        Gui::Application::Instance->getViewProvider(source)->show();
+    if (!d->offset) {
+        return;
     }
-
-    // roll back the done things
-    d->offset->getDocument()->abortTransaction();  // ViewProviderDocumentObject::startDefaultEditMode()
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    Gui::Command::updateActive();
-
-    return true;
+    d->ui.spinOffset->unbind();
+    for (QObject* sender : {
+             static_cast<QObject*>(d->ui.spinOffset),
+             static_cast<QObject*>(d->ui.modeType),
+             static_cast<QObject*>(d->ui.joinType),
+             static_cast<QObject*>(d->ui.intersection),
+             static_cast<QObject*>(d->ui.selfIntersection),
+             static_cast<QObject*>(d->ui.fillOffset),
+             static_cast<QObject*>(d->ui.updateView),
+         }) {
+        sender->disconnect(this);
+    }
 }
 
 void OffsetWidget::changeEvent(QEvent* e)
@@ -264,6 +262,9 @@ void OffsetWidget::changeEvent(QEvent* e)
 TaskOffset::TaskOffset(Part::Offset* offset)
 {
     widget = new OffsetWidget(offset);
+    launchTransactionId = offset && offset->getDocument()
+        ? offset->getDocument()->getBookedTransactionID()
+        : App::NullTransaction;
     addTaskBox(Gui::BitmapFactory().pixmap("Part_Offset"), widget);
 }
 
@@ -282,12 +283,48 @@ void TaskOffset::clicked(int)
 
 bool TaskOffset::accept()
 {
-    return widget->accept();
+    if (!widget->accept()) {
+        return false;
+    }
+
+    auto* object = widget->getObject();
+    auto* appDocument = object ? object->getDocument() : nullptr;
+    auto* guiDocument = appDocument
+        ? Gui::Application::Instance->getDocument(appDocument)
+        : nullptr;
+    auto* objectViewProvider = object
+        ? Gui::Application::Instance->getViewProvider(object)
+        : nullptr;
+    widget->prepareForClose();
+    if (guiDocument
+        && guiDocument->getEditViewProvider() == objectViewProvider) {
+        guiDocument->resetEdit();
+    }
+    return true;
 }
 
 bool TaskOffset::reject()
 {
-    return widget->reject();
+    auto* object = widget->getObject();
+    auto* appDocument = object ? object->getDocument() : nullptr;
+    auto* guiDocument = appDocument
+        ? Gui::Application::Instance->getDocument(appDocument)
+        : nullptr;
+    auto* objectViewProvider = object
+        ? Gui::Application::Instance->getViewProvider(object)
+        : nullptr;
+    widget->prepareForClose();
+    if (guiDocument
+        && guiDocument->getEditViewProvider() == objectViewProvider) {
+        guiDocument->cancelEdit();
+    }
+    else if (appDocument
+             && launchTransactionId != App::NullTransaction
+             && appDocument->getBookedTransactionID()
+                 == launchTransactionId) {
+        App::GetApplication().abortTransaction(launchTransactionId);
+    }
+    return true;
 }
 
 #include "moc_TaskOffset.cpp"

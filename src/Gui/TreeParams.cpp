@@ -948,7 +948,7 @@ const char* TreeParams::docOrganizeModelByType()
     return QT_TRANSLATE_NOOP(
         "TreeParams",
         "Presents model objects in virtual type folders such as Bodies, Sketches, "
-        "Construction, and Geometry without changing document ownership."
+        "References, and Geometry without changing document ownership."
     );
 }
 

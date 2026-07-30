@@ -35,8 +35,25 @@ LEGACY_CONVERSATION_NAME = "conversation.json"
 CONVERSATION_INDEX_SCHEMA = "vibecad-conversation-index-v1"
 CONVERSATION_THREAD_SCHEMA = "vibecad-conversation-thread-v1"
 DEFAULT_CONVERSATION_TITLE = "New conversation"
-MODELING_ENGINES = frozenset({"native", "build123d", "openscad", "vibescript"})
+MODELING_ENGINES = frozenset({"vibescript"})
 DEFAULT_MODELING_ENGINE = "vibescript"
+RETIRED_MODELING_ENGINE_SELECTIONS = frozenset(
+    {"native", "build123d", "openscad"}
+)
+
+
+def _normalize_modeling_engine(value: Any) -> str:
+    """Return a supported selection, migrating retired selectors one way."""
+
+    engine = str(value or DEFAULT_MODELING_ENGINE).strip().lower()
+    if engine in RETIRED_MODELING_ENGINE_SELECTIONS:
+        return DEFAULT_MODELING_ENGINE
+    if engine not in MODELING_ENGINES:
+        raise RuntimeError(
+            f"VibeCAD project selects unsupported modeling engine {engine!r}; "
+            f"choose one of: {sorted(MODELING_ENGINES)}."
+        )
+    return engine
 
 
 def now_iso() -> str:
@@ -855,10 +872,7 @@ class VibeCADProjectStore:
         }
 
     def modeling_engine(self) -> str:
-        engine = str(self.load_manifest().get("modeling_engine") or DEFAULT_MODELING_ENGINE)
-        if engine not in MODELING_ENGINES:
-            raise RuntimeError(f"VibeCAD project has an invalid modeling engine: {engine!r}.")
-        return engine
+        return _normalize_modeling_engine(self.load_manifest().get("modeling_engine"))
 
     @staticmethod
     def read_modeling_engine_manifest(manifest_path: str | Path) -> str:
@@ -874,29 +888,12 @@ class VibeCADProjectStore:
             return DEFAULT_MODELING_ENGINE
         data = _read_json_object(path, "project manifest")
         _project_manifest_schema(data, source=path)
-        engine = str(
+        engine = _normalize_modeling_engine(
             data.get("modeling_engine")
             or data.get("partdesign_engine")
             or DEFAULT_MODELING_ENGINE
-        ).strip().lower()
-        if engine not in MODELING_ENGINES:
-            raise RuntimeError(
-                f"VibeCAD project has an invalid modeling engine: {engine!r}."
-            )
+        )
         return engine
-
-    def set_modeling_engine(self, engine: str) -> dict[str, Any]:
-        clean = str(engine or "").strip().lower()
-        if clean not in MODELING_ENGINES:
-            raise ValueError(f"Modeling engine must be one of: {sorted(MODELING_ENGINES)}.")
-        manifest = self.load_manifest()
-        manifest["modeling_engine"] = clean
-        saved = self.save_manifest(manifest)
-        return {
-            "engine": clean,
-            "manifest_path": self.project_scope()["manifest_path"],
-            "updated_at": saved.get("updated_at"),
-        }
 
     def _default_manifest(self, scope: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -933,7 +930,7 @@ class VibeCADProjectStore:
             type(merged.get("version")) is int and int(merged["version"]) > 0
         ):
             merged["version"] = schema_version
-        merged["modeling_engine"] = str(migrated_engine or DEFAULT_MODELING_ENGINE).strip().lower()
+        merged["modeling_engine"] = _normalize_modeling_engine(migrated_engine)
         merged.pop("partdesign_engine", None)
         merged["project_id"] = scope["project_id"]
         documents = merged.get("documents")

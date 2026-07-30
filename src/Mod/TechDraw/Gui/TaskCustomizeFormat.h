@@ -26,6 +26,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 namespace App {
 class DocumentObject;
@@ -75,9 +76,17 @@ protected:
     void changeEvent(QEvent *e) override;
 
     void setUiEdit();
+    App::DocumentObject* resolveObject() const;
+    bool validateDimensionFormat(
+        const QString& format,
+        QString* preview = nullptr
+    ) const;
 
 private:
     App::DocumentObject* selectedObject;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<App::DocumentObject>
+        m_objectIdentity;
     bool isDimension;
     double dimRawValue;
     std::unique_ptr<Ui_TaskCustomizeFormat> ui;

@@ -45,6 +45,7 @@
 
 #include <Mod/TechDraw/App/DrawPage.h>
 #include <Mod/TechDraw/App/DrawSVGTemplate.h>
+#include <Mod/TechDraw/App/DrawView.h>
 
 #include "MDIViewPage.h"
 #include "PreferencesGui.h"
@@ -138,7 +139,8 @@ public:
 
 QGVPage::QGVPage(ViewProviderPage* vpPage, QGSPage* scenePage, QWidget* parent)
     : QGraphicsView(parent), m_renderer(RendererType::Native), drawBkg(true), m_vpPage(nullptr),
-      m_scene(scenePage), balloonPlacing(false), m_showGrid(false),
+      m_scene(scenePage), balloonPlacing(false), m_balloonParent(nullptr),
+      m_balloonParentId(-1), m_showGrid(false),
       m_navStyle(nullptr), d(new Private(this)), toolHandler(nullptr)
 {
     assert(vpPage);
@@ -277,16 +279,49 @@ void QGVPage::deactivateHandler()
 
 void QGVPage::startBalloonPlacing(DrawView* parent)
 {
+    auto* page = getDrawPage();
+    if (!parent || !page
+        || parent->getDocument() != page->getDocument()
+        || parent->findParentPage() != page) {
+        cancelBalloonPlacing();
+        return;
+    }
     balloonPlacing = true;
     m_balloonParent = parent;
+    m_balloonParentId = parent->getID();
+    m_balloonParentName = parent->getNameInDocument();
     activateCursor(
         QCursor(balloonCursor->pixmap(Qt::ReturnByValue), balloonHotspot.x(), balloonHotspot.y()));
+}
+
+DrawView* QGVPage::getBalloonParent()
+{
+    auto* page = getDrawPage();
+    auto* document = page ? page->getDocument() : nullptr;
+    if (!document || m_balloonParentId < 0
+        || m_balloonParentName.empty()) {
+        return nullptr;
+    }
+
+    auto* object = document->getObjectByID(m_balloonParentId);
+    if (!object || !object->getNameInDocument()
+        || m_balloonParentName != object->getNameInDocument()) {
+        return nullptr;
+    }
+    auto* parent = dynamic_cast<DrawView*>(object);
+    if (!parent || parent != m_balloonParent
+        || parent->findParentPage() != page) {
+        return nullptr;
+    }
+    return parent;
 }
 
 void QGVPage::cancelBalloonPlacing()
 {
     balloonPlacing = false;
     m_balloonParent = nullptr;
+    m_balloonParentId = -1;
+    m_balloonParentName.clear();
     balloonCursor->hide();
     resetCursor();
 }

@@ -262,55 +262,9 @@ def prepare_isolated_measurement(
     staging = Path(tempfile.mkdtemp(prefix="vibecad-geometry-"))
     try:
         first_shape, second_shape = _bounded_shape_pair(first_state, second_state)
-        first_artifact = _openscad_artifact(service, first_state)
-        second_artifact = _openscad_artifact(service, second_state)
-        missing_artifact = next(
-            (
-                artifact
-                for artifact in (first_artifact, second_artifact)
-                if artifact is not None and not artifact.get("available")
-            ),
-            None,
-        )
-        if missing_artifact is not None:
-            shutil.rmtree(staging, ignore_errors=True)
-            return {
-                "mode": "immediate",
-                "payload": _invalid(
-                    "This accepted OpenSCAD revision predates persisted geometry artifacts. "
-                    "Rebuild the OpenSCAD model once before measuring it.",
-                    failure_code="OPENSCAD_MEASUREMENT_ARTIFACT_MISSING",
-                    failure_stage="precondition",
-                    observed=missing_artifact,
-                    required_action="rebuild_openscad_model",
-                ),
-            }
-        use_mesh = bool(
-            first_artifact
-            and second_artifact
-            and first_artifact.get("format") == "stl"
-            and second_artifact.get("format") == "stl"
-            and not first_state.get("subelement")
-            and not second_state.get("subelement")
-        )
-        if use_mesh:
-            first_path = Path(str(first_artifact["path"]))
-            second_path = Path(str(second_artifact["path"]))
-            artifact_format = "stl"
-        else:
-            first_brep = _openscad_artifact(service, first_state, "brep")
-            second_brep = _openscad_artifact(service, second_state, "brep")
-            first_path = _write_or_reuse_brep(
-                first_shape,
-                first_brep,
-                staging / "first.brep",
-            )
-            second_path = _write_or_reuse_brep(
-                second_shape,
-                second_brep,
-                staging / "second.brep",
-            )
-            artifact_format = "brep"
+        first_path = _write_brep(first_shape, staging / "first.brep")
+        second_path = _write_brep(second_shape, staging / "second.brep")
+        artifact_format = "brep"
         fidelity = (
             "faceted_brep"
             if any(
@@ -478,35 +432,7 @@ def _shape_complexity(shape: Any) -> dict[str, Any]:
     }
 
 
-def _openscad_artifact(
-    service: Any,
-    state: dict[str, Any],
-    preferred_format: str | None = None,
-) -> dict[str, Any] | None:
-    obj = state.get("object")
-    if obj is None:
-        return None
-    from VibeCADOpenSCAD import measurement_artifact
-
-    return measurement_artifact(
-        service,
-        obj,
-        subelement=str(state.get("subelement") or ""),
-        preferred_format=preferred_format,
-    )
-
-
-def _write_or_reuse_brep(
-    shape: Any,
-    artifact: dict[str, Any] | None,
-    destination: Path,
-) -> Path:
-    if artifact is not None:
-        if not artifact.get("available"):
-            raise RuntimeError(
-                "The accepted OpenSCAD output has no persisted BREP artifact; rebuild it once."
-            )
-        return Path(str(artifact["path"]))
+def _write_brep(shape: Any, destination: Path) -> Path:
     shape.exportBrep(str(destination))
     return destination
 

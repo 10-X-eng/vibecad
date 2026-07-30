@@ -21,6 +21,7 @@
  ***************************************************************************/
 
 # include <cmath>
+# include <utility>
 
 # include <QAbstractTextDocumentLayout>
 # include <QDialog>
@@ -104,6 +105,44 @@ QGIRichAnno::QGIRichAnno() :
             this,
             &QGIRichAnno::onContentsChanged);
     connect(m_text, &QGCustomText::selectionChanged, this, &QGIRichAnno::selectionChanged);
+}
+
+QGIRichAnno::~QGIRichAnno()
+{
+    closeResizeTransaction(false);
+}
+
+bool QGIRichAnno::closeResizeTransaction(bool commit) noexcept
+{
+    if (!m_transactionOpen) {
+        return false;
+    }
+
+    const int transactionId = std::exchange(
+        m_tid,
+        App::NullTransaction
+    );
+    m_transactionOpen = false;
+    App::Document* document = m_transactionDocument.resolve();
+    m_transactionDocument = TaskInternal::DocumentIdentity();
+    if (!document
+        || transactionId == App::NullTransaction
+        || document->getBookedTransactionID() != transactionId) {
+        return false;
+    }
+
+    try {
+        if (commit) {
+            Gui::Command::commitCommand(transactionId);
+        }
+        else {
+            Gui::Command::abortCommand(transactionId);
+        }
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
 }
 
 void QGIRichAnno::updateView(bool update)
@@ -395,9 +434,27 @@ void QGIRichAnno::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
         }
 
         if (!m_isDraggingMidResize) {  // First actual move during this resize op
-            if (!Gui::Control().activeDialog()) {
-                m_tid = Gui::Command::openActiveDocumentCommand(
-                    QObject::tr("Resize Rich Annotation").toStdString().c_str());
+            if (Gui::Control().activeDialog()) {
+                return;
+            }
+            App::Document* document = annoFeat->getDocument();
+            if (!document
+                || document->getBookedTransactionID()
+                    != App::NullTransaction) {
+                return;
+            }
+            m_transactionDocument =
+                TaskInternal::DocumentIdentity(document);
+            m_tid = Gui::Command::openDocumentCommand(
+                document,
+                QObject::tr("Resize Rich Annotation").toStdString()
+            );
+            if (m_tid == App::NullTransaction
+                || document->getBookedTransactionID() != m_tid) {
+                m_tid = App::NullTransaction;
+                m_transactionDocument =
+                    TaskInternal::DocumentIdentity();
+                return;
             }
             m_transactionOpen = true;
             m_isDraggingMidResize = true;
@@ -493,13 +550,9 @@ void QGIRichAnno::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 {
     if (m_isResizing) {
         if (m_transactionOpen) {
-            // Only commit if actual dragging (and thus property changes) occurred.
-            // m_isDraggingMidResize flag indicates if mouseMoveEvent was processed.
-            if (!Gui::Control().activeDialog()) {
-                Gui::Command::commitCommand(m_tid);
+            if (closeResizeTransaction(true)) {
+                widthChanged();
             }
-            m_transactionOpen = false;
-            widthChanged();
         }
         m_isResizing = false;
         m_isDraggingMidResize = false;
@@ -529,12 +582,8 @@ void QGIRichAnno::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) {
     // If resizing was in progress, cancel it to avoid conflict with dialog
     if (m_isResizing) {
         if (m_transactionOpen) {
-            // To avoid partial changes, might need to revert or just abort.
-            // For simplicity, we commit if open. A better way would be to store original values and revert.
-            if (!Gui::Control().activeDialog()) {
-                Gui::Command::commitCommand(m_tid);
-            }
-            m_transactionOpen = false;
+            closeResizeTransaction(false);
+            updateView(true);
         }
         m_isResizing = false;
         m_isDraggingMidResize = false;

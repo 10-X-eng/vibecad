@@ -40,7 +40,28 @@ from PartDesignTests.TestMaterial import TestMaterial
 from PartDesignTests.TestActiveObject import TestActiveObject
 from PartDesignTests.TestConsolidatedPart import TestConsolidatedPartWorkbench
 from PartDesignTests.TestConsolidatedPartTools import TestConsolidatedPartTools
+from PartDesignTests.TestContextMenuTracking import (
+    TestContextMenuSurfaceContract,
+    TestContextMenuTracking,
+)
+from PartDesignTests.TestExactTransactionContract import TestExactTransactionContract
+from PartDesignTests.TestFeatureBasePlacement import TestFeatureBasePlacement
+from PartDesignTests.TestFeatureTimeline import TestFeatureTimeline
 from PartDesignTests.TestModelTreeBrowser import TestModelTreeBrowser
+from PartDesignTests.TestNativeRibbonTools import TestNativeRibbonTools
+from PartDesignTests.TestNativeTaskContract import (
+    TestNativeTaskContract,
+    TestNativeTaskSourceContract,
+)
+from PartDesignTests.TestPartMultiInputRibbonTools import TestPartMultiInputRibbonTools
+from PartDesignTests.TestPartDesignTaskLifecycle import TestPartDesignTaskLifecycle
+from PartDesignTests.TestPythonFeatureTasks import TestPythonFeatureTasks
+from PartDesignTests.TestPartSingleInputRibbonTools import TestPartSingleInputRibbonTools
+from PartDesignTests.TestRetainedPartDialogs import (
+    TestModelingTaskAttemptSourceContract,
+    TestRetainedPartDialogs,
+)
+from PartDesignTests.TestRibbonInspectView import TestRibbonInspectView
 from PartDesignTests.TestSuppressed import TestSuppressedStrikethrough
 from PartDesignTests.TestVibeScriptPresentation import TestVibeScriptPresentation
 

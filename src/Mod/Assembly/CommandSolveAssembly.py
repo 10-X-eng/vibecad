@@ -32,6 +32,7 @@ if App.GuiUp:
 
 import UtilsAssembly
 import Assembly_rc
+from VibeCADNativeTransaction import _OwnedDocumentTransaction
 
 __title__ = "Assembly Command to Solve Assembly"
 __author__ = "Ondsel"
@@ -59,13 +60,67 @@ class CommandSolveAssembly:
         return UtilsAssembly.isAssemblyCommandActive()
 
     def Activated(self):
+        if not self.IsActive():
+            return
+
         assembly = UtilsAssembly.activeAssembly()
         if not assembly:
             return
 
-        App.setActiveTransaction("Solve assembly")
-        assembly.recompute(True)
-        Gui.ActiveDocument.commitCommand()
+        document = assembly.Document
+        document_uid = str(
+            getattr(document, "Uid", "") or ""
+        )
+        assembly_identity = (
+            str(assembly.Name),
+            int(assembly.ID),
+            assembly,
+        )
+        transaction = _OwnedDocumentTransaction(
+            document,
+            "Solve assembly",
+        )
+        try:
+            if (
+                not UtilsAssembly._document_is_open(document)
+                or str(getattr(document, "Uid", "") or "")
+                != document_uid
+                or document.getObject(assembly_identity[0])
+                is not assembly_identity[2]
+                or int(assembly_identity[2].ID)
+                != assembly_identity[1]
+                or not UtilsAssembly.isTimelineOperationActive(
+                    assembly
+                )
+            ):
+                raise RuntimeError(
+                    "The exact active assembly changed before solving"
+                )
+            solver_code = int(assembly.solve(False))
+            document.recompute()
+            if (
+                document.getObject(assembly_identity[0])
+                is not assembly_identity[2]
+                or int(assembly_identity[2].ID)
+                != assembly_identity[1]
+                or not UtilsAssembly.isTimelineOperationActive(
+                    assembly
+                )
+            ):
+                raise RuntimeError(
+                    "The assembly changed identity while solving"
+                )
+            if solver_code != 0 or not assembly.isValid():
+                diagnostics = assembly.getSolverDiagnostics()
+                message = str(
+                    diagnostics.get("solver_message")
+                    or f"native solver returned {solver_code}"
+                )
+                raise RuntimeError(f"Assembly solve failed: {message}")
+        except Exception:
+            transaction.abort()
+            raise
+        transaction.commit()
 
 
 if App.GuiUp:

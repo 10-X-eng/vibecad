@@ -12,7 +12,7 @@ from __future__ import annotations
 import FreeCAD as App
 from collections.abc import Sequence
 from enum import IntEnum
-from typing import Any, ClassVar, Literal, Protocol, TypeAlias, overload
+from typing import Any, ClassVar, Literal, Protocol, TypeAlias, TypedDict, overload
 
 from FreeCAD import DocumentObject
 
@@ -20,6 +20,13 @@ _Pathish: TypeAlias = str | bytes | bytearray
 _IconContent: TypeAlias = str | bytes | bytearray | memoryview
 _WorkbenchMenu: TypeAlias = str | Sequence[str]
 _WorkbenchCommands: TypeAlias = str | Sequence[str]
+
+class _TimelineOperationDeletionPlan(TypedDict):
+    applicable: bool
+    valid: bool
+    replaced_inputs: list[DocumentObject]
+    objects_to_reveal: list[DocumentObject]
+    owned_resources: list[DocumentObject]
 
 class UserInput(IntEnum):
     """Enum of keyboard, mouse, and modifier tokens used by GUI input hints."""
@@ -462,6 +469,15 @@ def doCommandEval(cmd: str, /) -> Any:
     """Evaluate one command string and return its result."""
     ...
 
+def runDocumentObjectCommand(
+    document: App.Document,
+    expression: str,
+    expected_type: str | None = None,
+    /,
+) -> DocumentObject:
+    """Record and run one object factory, returning its exact validated result."""
+    ...
+
 def doCommandSkip(cmd: str, /) -> None:
     """Execute one command string without recording it in the console."""
     ...
@@ -497,6 +513,12 @@ def hideObject(obj: DocumentObject, /) -> None:
 
 def showObject(obj: DocumentObject, /) -> None:
     """Show one document object in the GUI."""
+    ...
+
+def timelineOperationDeletionPlan(
+    obj: DocumentObject, /
+) -> _TimelineOperationDeletionPlan:
+    """Return the validated, read-only cleanup plan for one history operation."""
     ...
 
 def open(fileName: _Pathish, /) -> None:

@@ -24,6 +24,9 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include <Gui/InputVector.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/TaskView/TaskDialog.h>
@@ -42,6 +45,10 @@ public:
     explicit DlgRevolution(QWidget* parent = nullptr, Qt::WindowFlags fl = Qt::WindowFlags());
     ~DlgRevolution() override;
     void accept() override;
+    const std::vector<App::DocumentObject*>& lastAppliedResults() const
+    {
+        return appliedResults;
+    }
 
     Base::Vector3d getDirection() const;
     Base::Vector3d getPosition() const;
@@ -81,9 +88,13 @@ private:
 
 private:
     std::unique_ptr<Ui_DlgRevolution> ui;
+    std::string document;
+    App::Document* documentAddress {nullptr};
+    std::string documentUid;
     class EdgeSelection;
     EdgeSelection* filter;
     bool filterSelection;
+    std::vector<App::DocumentObject*> appliedResults;
 };
 
 class TaskRevolution: public Gui::TaskView::TaskDialog

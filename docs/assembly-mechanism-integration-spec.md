@@ -83,10 +83,13 @@ receive a substitute solver or a restricted fork of Assembly.
 The existing Assembly VibeScript pack already exposes:
 
 - `component`;
+- `instances`;
+- `fastener`;
 - `connector`;
 - `joint`;
 - `assembly`;
 - `solve`;
+- `mechanism_check`;
 - `motion`;
 - `simulation`;
 - `exploded_view`;
@@ -112,10 +115,12 @@ The supported native joint set is:
 - gears;
 - belt.
 
-The current simulation path does not perform collision, clearance, fit, or
-continuous-motion certification. Part Design checks currently evaluate
-measurements only. VibeScript intentionally activates exactly one workbench
-pack, so Part Design source cannot call the Assembly pack directly.
+`mechanism_check` performs exact static collision, clearance, and declared
+contact evaluation at the native solved state. It does not certify motion.
+The current simulation path does not perform continuous-motion certification.
+Part Design checks currently evaluate measurements only. VibeScript
+intentionally activates exactly one workbench pack, so Part Design source
+cannot call the Assembly pack directly.
 
 These are sound boundaries to build on. The missing capability is a shared
 evaluation layer and a deliberately small Part Design adapter, not a union of
@@ -297,59 +302,110 @@ or name the exact passed requirements.
 
 ## 8. Assembly VibeScript contract
 
-All existing functions and output types remain supported. New capability is
-additive and uses the existing component, connector, joint, assembly, solve,
-motion, simulation, exploded-view, and BOM objects.
-
-Assembly should add one explicit evaluation operation, conceptually:
+All existing functions and output types remain supported. The additive static
+evaluation operation is:
 
 ```python
 verification = api.mechanism_check(
-    assembly=mechanism,
-    motion=travel,
+    mechanism,
     requirements=[
-        {"type": "degrees_of_freedom", "equals": 1},
-        {"type": "collision_free", "pairs": "all_except_allowed"},
+        {
+            "type": "collision_free",
+            "first": carriage,
+            "second": stop,
+            "tolerance_mm": 0.01
+        },
         {
             "type": "minimum_clearance",
-            "first": "Carriage",
-            "second": "Frame",
-            "mm": 0.25
+            "first": carriage,
+            "second": frame,
+            "minimum_mm": 0.25,
+            "tolerance_mm": 0.01
         }
     ],
     contacts=[
         {
-            "first": "Cam:working_surface",
-            "second": "Follower:contact_face",
-            "policy": "allowed"
+            "first": cam,
+            "second": follower,
+            "policy": "required",
+            "first_interface": "working_surface",
+            "second_interface": "contact_face",
+            "tolerance_mm": 0.01
+        },
+        {
+            "first": cover,
+            "second": guard,
+            "policy": "ignored",
+            "reason": "Nonphysical presentation geometry"
         }
     ],
-    label="Carriage travel verification"
+    label="Solved-state verification"
 )
 ```
 
-The final public schema may use typed requirement constructors if they make
-errors materially clearer, but there must still be one mechanism-evaluation
-operation and one normalized internal representation. There must not be
-independent `simulation`, `collision`, and `clearance` engines.
+`assembly` is the exact `api.assembly(...)` value. `first` and `second` are the
+exact component values already included in that assembly; labels and strings
+are not component references. Every unordered pair may appear only once across
+`requirements` and `contacts`.
 
-The published result contains the scenario identity, requirement verdicts, solve
-reports, first failure evidence, and certification scope. Raw frame data may be
-stored as an included artifact when large.
+The supported requirement types are:
+
+- `collision_free`: requires `first`, `second`, and a positive
+  `tolerance_mm`;
+- `minimum_clearance`: additionally requires a nonnegative `minimum_mm`.
+
+The supported contact policies are:
+
+- `prohibited`: touching within `tolerance_mm` or overlap fails;
+- `clearance`: additionally requires `minimum_clearance_mm`;
+- `allowed`: names `first_interface` and `second_interface`; separation
+  passes, but any contact must be confined to those semantic interfaces;
+- `required`: names both semantic interfaces and requires confined contact
+  within `tolerance_mm`;
+- `ignored`: requires a nonempty `reason` and performs no geometry evaluation.
+
+No pair, fit, exemption, interface, or tolerance is inferred. At least one
+declaration must be evaluated, and each list is bounded to 64 entries. The
+initial implementation rejects checks that address a flexible top-level
+subassembly because component-level static geometry cannot honestly certify its
+internally solved occurrence state.
+
+The returned `mechanism_verification` output is evaluated after native solve.
+The host independently reloads the authenticated source BREPs and recomputes
+the result before publication. Its persisted
+`vibecad-mechanism-verification-report-v1` contains scenario, solve-report, and
+check hashes; an overall `pass`, `fail`, or `indeterminate` verdict; individual
+declaration results; exact OCCT distance, overlap, interface, and witness
+evidence; the first failure; and an explicit scope:
+`static_solved_state`, `explicit_only`, `declared_per_pair`, and
+`motion_certified=False`.
+
+Publication creates a stable report object under the native Assembly's
+`Verification` group. Invalid or rejected candidate updates preserve the
+previously accepted report, and save/reopen restores the portable report
+without replaying the VibeScript. A requirement verdict of `fail` or
+`indeterminate` is itself a valid Assembly report and remains inspectable; it
+does not become an unsupported claim that the mechanism passed.
+
+A later motion-certification extension must remain additive to this operation
+and normalize through the same mechanism-evaluation boundary. It must not
+silently broaden a static report or create independent collision and clearance
+engines.
 
 API descriptions must use direct engineering language. For example:
 
-> Evaluate the declared Assembly motion and report solve, collision, clearance,
-> contact, and degrees-of-freedom requirements.
+> Evaluate explicit static collision, clearance, and contact requirements at
+> the native solved Assembly state.
 
 Descriptions must not contain a recommended modeling workflow or tell the model
 to call unrelated inspection tools.
 
 ## 9. Part Design verification facade
 
-Part Design receives an additive `api.mechanism_check(...)` value accepted by
-the existing `checks=` argument of `api.body(...)`. Existing measurement checks
-remain unchanged.
+A later Part Design phase receives an additive `api.mechanism_check(...)` value
+accepted by the existing `checks=` argument of `api.body(...)`. Existing
+measurement checks remain unchanged. This facade is not part of the shipped
+Assembly static contract described in Section 8.
 
 ### 9.1 Existing-Assembly mode
 
@@ -373,12 +429,18 @@ check = api.mechanism_check(
     ],
     requirements=[
         {"type": "degrees_of_freedom", "equals": 1},
-        {"type": "collision_free", "pairs": "all_except_allowed"},
+        {
+            "type": "collision_free",
+            "first": "Latch/Lever",
+            "second": "Latch/Stop",
+            "tolerance_mm": 0.01
+        },
         {
             "type": "minimum_clearance",
             "first": "Latch/Lever",
             "second": "Latch/Housing",
-            "mm": 0.2
+            "minimum_mm": 0.2,
+            "tolerance_mm": 0.01
         }
     ],
     label="Lever mechanism check"
@@ -445,7 +507,12 @@ check = api.mechanism_check(
     ],
     requirements=[
         {"type": "degrees_of_freedom", "equals": 1},
-        {"type": "collision_free", "pairs": "all_except_allowed"}
+        {
+            "type": "collision_free",
+            "first": "candidate",
+            "second": "housing",
+            "tolerance_mm": 0.01
+        }
     ]
 )
 ```
@@ -594,8 +661,8 @@ satisfy a requirement that asks for continuous collision-free motion.
 
 ### 12.3 Contact policy
 
-The default policy checks every pair of distinct physical occurrences.
-Callers can declare:
+Static evaluation is explicit-only: an undeclared pair is not evaluated and no
+default tolerance exists. Callers can declare:
 
 - `prohibited`: touching or overlap fails;
 - `clearance`: separation below a named threshold fails;
@@ -810,6 +877,13 @@ no public API or document change.
 Exit condition: Assembly can prove or disprove declared static collision and
 clearance requirements with exact evidence.
 
+Implementation status: complete for rigid component-level solved-state
+evaluation. The public `mechanism_check` contract, all five contact policies,
+host-side exact recomputation, stable native publication, rollback, and
+save/reopen persistence are covered by automated tests. Continuous motion and
+flexible-subassembly certification remain Phase 3 work and are not implied by a
+static pass.
+
 ### Phase 3: declared-motion certification
 
 - Add typed driver evaluation and structured state diagnostics.
@@ -935,16 +1009,28 @@ sampled result presented as continuous proof.
 
 ## 21. Approval gates and unresolved decisions
 
-The owner must approve before public implementation:
+The owner approved the initial additive Assembly static contract:
 
-1. The final `api.mechanism_check(...)` argument and requirement schema.
-2. The persisted scenario and report schema versions.
-3. The default static and continuous-analysis tolerances and resource limits.
-4. The exact initial set of supported semantic contact policies.
-5. The native FreeCAD changes to upstream versus maintain in VibeCAD adapters.
-6. Whether verification automatically refreshes in the background or only on
+1. `api.mechanism_check(assembly, *, requirements=(), contacts=(), label="")`
+   and the exact schemas documented in Section 8.
+2. `vibecad-mechanism-static-check-v1` and
+   `vibecad-mechanism-verification-report-v1`.
+3. No inferred or default static tolerance; every evaluated pair declares its
+   tolerance.
+4. The initial `prohibited`, `clearance`, `allowed`, `required`, and `ignored`
+   contact policies.
+5. Explicit-pair, rigid component-level, solved-state evaluation with
+   `motion_certified=False`.
+
+The owner must separately approve before public implementation:
+
+1. Continuous-analysis tolerances, resource limits, and any additions to the
+   `mechanism_check` signature.
+2. Native FreeCAD changes to upstream versus maintain in VibeCAD adapters.
+3. Whether verification automatically refreshes in the background or only on
    explicit request.
-7. Any future dynamics engine and the claims it is allowed to publish.
+4. The Part Design facade's final public schema and publication behavior.
+5. Any future dynamics engine and the claims it is allowed to publish.
 
 These are approval points for public contracts and behavior. They do not justify
 duplicating the Assembly engine while a decision is pending.

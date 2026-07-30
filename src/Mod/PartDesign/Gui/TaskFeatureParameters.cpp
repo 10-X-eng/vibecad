@@ -25,24 +25,35 @@
 #include <QApplication>
 #include <QMessageBox>
 
+#include <unordered_map>
 
+#include <App/Application.h>
 #include <App/DocumentObserver.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/Document.h>
 #include <Gui/InputHint.h>
 #include <Gui/Inventor/Draggers/Gizmo.h>
 #include <Gui/MainWindow.h>
 #include <Gui/BitmapFactory.h>
 #include <Mod/PartDesign/App/Feature.h>
-#include <Mod/PartDesign/App/Body.h>
 
 #include "ui_TaskPreviewParameters.h"
 
 #include "TaskFeatureParameters.h"
+#include "TaskDialogState.h"
 #include "TaskSketchBasedParameters.h"
 
 using namespace PartDesignGui;
 using namespace Gui;
+
+namespace
+{
+std::unordered_map<
+    const TaskDlgFeatureParameters*,
+    TaskInternal::VisibilitySnapshot>
+    taskVisibility;
+}
 
 /*********************************************************************
  *                      Task Feature Parameters                      *
@@ -180,17 +191,44 @@ void TaskFeatureParameters::recomputeFeature()
  *                            Task Dialog                            *
  *********************************************************************/
 TaskDlgFeatureParameters::TaskDlgFeatureParameters(PartDesignGui::ViewProvider* vp)
-    : preview(new TaskPreviewParameters(vp))
+    : preview(nullptr)
     , vp(vp)
 {
     assert(vp);
+    // Gui::Document::resetEdit() is a commit boundary, while cancelEdit() is
+    // the explicit rollback boundary.  Keep this dialog alive until the edit
+    // transaction has produced that exact outcome so its command checkpoint
+    // cannot be destroyed early and reinterpret resetEdit() as Cancel.
+    setAutoCloseOnResetEdit(true);
+    // The dialog and its parameter widgets are tied to this feature's
+    // ViewProvider.  Remove the dialog while TaskView still knows which
+    // document owned it; keeping it alive after that document is deleted
+    // would leave the task holding an invalid ViewProvider.
+    setAutoCloseOnDeletedDocument(true);
+    taskVisibility.insert_or_assign(
+        this,
+        TaskInternal::VisibilitySnapshot(
+            vp && vp->getObject()
+                ? vp->getObject()->getDocument()
+                : nullptr
+        )
+    );
+    preview = new TaskPreviewParameters(vp);
 }
 
-TaskDlgFeatureParameters::~TaskDlgFeatureParameters() = default;
+TaskDlgFeatureParameters::~TaskDlgFeatureParameters()
+{
+    taskVisibility.erase(this);
+}
 
 bool TaskDlgFeatureParameters::accept()
 {
+    TaskInternal::AcceptedMacro acceptedMacro;
     App::DocumentObject* feature = getObject();
+    if (!feature || !feature->getDocument()) {
+        acceptedMacro.discard();
+        return false;
+    }
     bool isUpdateBlocked = false;
     try {
         // Iterate over parameter dialogs and apply all parameters from them
@@ -238,6 +276,8 @@ bool TaskDlgFeatureParameters::accept()
         );
         Gui::cmdAppObjectHide(previous);
 
+        finalizeAcceptedFeature(feature);
+
         // detach the task panel from the selection to avoid to invoke
         // eventually onAddSelection when the selection changes
         std::vector<QWidget*> subwidgets = getDialogContent();
@@ -249,11 +289,14 @@ bool TaskDlgFeatureParameters::accept()
         }
 
         Gui::cmdGuiDocument(feature, "resetEdit()");
-        feature->getDocument()->commitTransaction();
     }
     catch (const Base::Exception& e) {
+        acceptedMacro.discard();
         QString errorText = QString::fromUtf8(e.what());
-        QString statusText = QString::fromUtf8(getObject()->getStatusString());
+        auto* currentObject = getObject();
+        QString statusText = currentObject
+            ? QString::fromUtf8(currentObject->getStatusString())
+            : QString();
 
         // generic, fallback error message
         if (errorText == QStringLiteral("Error") || errorText.isEmpty()) {
@@ -271,20 +314,27 @@ bool TaskDlgFeatureParameters::accept()
         Base::Console().error("%s\n", errorText.toUtf8().constData());
         return false;
     }
+    acceptedMacro.publish();
     return true;
 }
 
 bool TaskDlgFeatureParameters::reject()
 {
-    auto feature = getObject<PartDesign::Feature>();
-    App::DocumentObjectWeakPtrT weakptr(feature);
+    auto* feature = getObject<PartDesign::Feature>();
+    if (!feature || !feature->getDocument()) {
+        return true;
+    }
     App::Document* document = feature->getDocument();
-
-    PartDesign::Body* body = PartDesign::Body::findBodyOf(feature);
-
-    // Find out previous feature we won't be able to do it after abort
-    // (at least in the body case)
-    App::DocumentObject* previous = feature->getBaseObject(/* silent = */ true);
+    const std::string documentName = document->getName();
+    const std::string featureName =
+        feature->getNameInDocument() ? feature->getNameInDocument() : "";
+    const auto visibilityState = taskVisibility.find(this);
+    const bool hasVisibilityState =
+        visibilityState != taskVisibility.end();
+    const TaskInternal::VisibilitySnapshot initialVisibility =
+        hasVisibilityState
+        ? visibilityState->second
+        : TaskInternal::VisibilitySnapshot();
 
     // detach the task panel from the selection to avoid to invoke
     // eventually onAddSelection when the selection changes
@@ -296,26 +346,38 @@ bool TaskDlgFeatureParameters::reject()
         }
     }
 
-    // roll back the done things which may delete the feature
-    document->abortTransaction();
+    // Tear down the edit view while its ViewProvider and feature are still
+    // alive. Gui::Document::cancelEdit() calls finishEditing(), clears every
+    // GUI edit pointer, and only then aborts the owning transaction. Aborting
+    // first leaves the task, tree, and edit machinery holding deleted objects.
+    auto* guiDocument = Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(document)
+        : nullptr;
+    TaskInternal::cancelOwnedEdit(guiDocument);
 
-    // if abort command deleted the object make the previous feature visible again
-    if (weakptr.expired()) {
-        // Make the tip or the previous feature visible again with preference to the previous one
-        // TODO: ViewProvider::onDelete has the same code. May be this one is excess?
-        if (previous && Gui::Application::Instance->getViewProvider(previous)) {
-            Gui::Application::Instance->getViewProvider(previous)->show();
-        }
-        else if (body) {
-            App::DocumentObject* tip = body->Tip.getValue();
-            if (tip && Gui::Application::Instance->getViewProvider(tip)) {
-                Gui::Application::Instance->getViewProvider(tip)->show();
-            }
+    App::Document* restoredDocument = nullptr;
+    try {
+        restoredDocument =
+            App::GetApplication().getDocument(documentName.c_str());
+    }
+    catch (...) {
+    }
+    if (!restoredDocument) {
+        return true;
+    }
+
+    const bool featureSurvived =
+        !featureName.empty()
+        && restoredDocument->getObject(featureName.c_str());
+    if (featureSurvived) {
+        // Tree edits retain the feature, so transaction rollback cannot undo
+        // every temporary ViewProvider change made by the task panel.
+        if (hasVisibilityState) {
+            initialVisibility.restore(restoredDocument);
         }
     }
 
-    Gui::cmdAppDocument(document, "recompute()");
-    Gui::cmdGuiDocument(document, "resetEdit()");
+    restoredDocument->recompute();
 
     return true;
 }

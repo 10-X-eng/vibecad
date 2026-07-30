@@ -26,6 +26,7 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 class QPushButton;
 class Ui_TaskWeldingSymbol;
@@ -136,6 +137,7 @@ protected:
     void collectOtherData();
 
     std::string prefSymbolDir();
+    bool resolveTargets();
 
     QString m_currDir;
 
@@ -146,6 +148,11 @@ private:
     TechDraw::DrawWeldSymbol* m_weldFeat;
     TechDraw::DrawTileWeld*   m_arrowFeat;
     TechDraw::DrawTileWeld*   m_otherFeat;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawLeaderLine>
+        m_leaderIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawWeldSymbol>
+        m_weldIdentity;
 
     TileImage m_arrowOut;
     TileImage m_otherOut;

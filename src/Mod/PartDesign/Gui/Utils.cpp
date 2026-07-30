@@ -23,18 +23,30 @@
  ***************************************************************************/
 
 
+#include <QByteArray>
 #include <QMessageBox>
 #include <gp_Pln.hxx>
 #include <Precision.hxx>
+#include <string_view>
 
 
-#include <App/Origin.h>
+#include <App/Application.h>
+#include <App/DocumentTimeline.h>
 #include <App/Datums.h>
+#include <App/Document.h>
+#include <App/Origin.h>
 #include <App/Part.h>
+#include <App/PropertyStandard.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/Control.h>
+#include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/MDIView.h>
+#include <Gui/Selection/Selection.h>
+#include <Gui/TaskView/TaskDialog.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/PartDesign/App/Feature.h>
 #include <Mod/PartDesign/App/FeatureSketchBased.h>
@@ -56,6 +68,56 @@ using namespace Attacher;
 
 namespace PartDesignGui
 {
+
+namespace
+{
+
+PartDesign::Body* selectedBodyForDocument(App::Document* document)
+{
+    if (!document) {
+        return nullptr;
+    }
+
+    PartDesign::Body* selectedBody = nullptr;
+    auto selection = Gui::Selection().getSelectionEx();
+    for (auto& selected : selection) {
+        auto* object = selected.getObject();
+        if (!object || object->getDocument() != document) {
+            continue;
+        }
+        if (!PartGui::isModelingObjectActive(object)) {
+            return nullptr;
+        }
+        auto* body = freecad_cast<PartDesign::Body*>(object);
+        if (!body) {
+            body = PartDesign::Body::findBodyOf(object);
+        }
+        if (!body) {
+            continue;
+        }
+        if (selectedBody && selectedBody != body) {
+            return nullptr;
+        }
+        selectedBody = body;
+    }
+    return selectedBody;
+}
+
+}  // namespace
+
+bool canStartModelingCommand()
+{
+    if (!Gui::Application::Instance || Gui::Control().activeDialog()) {
+        return false;
+    }
+    auto* guiDocument = Gui::Application::Instance->activeDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    return document
+        && (document->getBookedTransactionID() == App::NullTransaction
+            || Gui::TaskView::TaskDialog::hasOwnedEnclosingTransaction(
+                document
+            ));
+}
 
 // TODO: Refactor DocumentObjectItem::getSubName() that has similar logic
 App::DocumentObject* getParent(App::DocumentObject* obj, std::string& subname)
@@ -87,7 +149,12 @@ bool setEdit(App::DocumentObject* obj, PartDesign::Body* body)
             return false;
         }
     }
-    auto* activeView = Gui::Application::Instance->activeView();
+    auto* guiDocument =
+        Gui::Application::Instance
+        ? Gui::Application::Instance->getDocument(obj->getDocument())
+        : nullptr;
+    auto* activeView =
+        guiDocument ? guiDocument->getActiveView() : nullptr;
     if (!activeView) {
         return false;
     }
@@ -136,6 +203,17 @@ PartDesign::Body* getBody(
         if (assertModern) {
             activeBody = activeView->getActiveObject<PartDesign::Body*>(PDBODYKEY, topParent, subname);
 
+            if (autoActivate) {
+                if (auto* selectedBody = selectedBodyForDocument(doc);
+                    selectedBody && selectedBody != activeBody) {
+                    activeBody = makeBodyActive(
+                        selectedBody,
+                        doc,
+                        topParent,
+                        subname
+                    );
+                }
+            }
             if (!activeBody && singleBodyDocument && autoActivate) {
                 auto bodies = doc->getObjectsOfType(PartDesign::Body::getClassTypeId());
                 App::DocumentObject* body = nullptr;
@@ -163,6 +241,26 @@ PartDesign::Body* getBody(
     }
 
     return activeBody;
+}
+
+PartDesign::Body* getBodyForCommandState()
+{
+    if (!Gui::Application::Instance) {
+        return nullptr;
+    }
+    auto* activeView = Gui::Application::Instance->activeView();
+    auto* document = activeView ? activeView->getAppDocument() : nullptr;
+    if (!document) {
+        return nullptr;
+    }
+
+    if (auto* selectedBody = selectedBodyForDocument(document)) {
+        return selectedBody;
+    }
+    return getBody(
+        /*messageIfNot=*/false,
+        /*autoActivate=*/false
+    );
 }
 
 PartDesign::Body* makeBodyActive(
@@ -216,28 +314,77 @@ void needActiveBodyError()
 
 PartDesign::Body* makeBody(App::Document* doc)
 {
+    if (!doc || doc->getBookedTransactionID() == App::NullTransaction
+        || !App::GetApplication().transactionIsActive(doc->getBookedTransactionID())) {
+        throw Base::RuntimeError("Creating a structural Body requires one caller-owned transaction");
+    }
     bool allowCompound = PartDesign::PartDesignParameter::instance()->getAllowCompoundDefault();
 
     // This is intended as a convenience when starting a new document.
+    const std::string documentName = doc->getName();
+    const std::string documentUid = doc->Uid.getValueStr();
+    auto* const expectedDocument = doc;
     auto bodyName(doc->getUniqueObjectName("Body"));
-    Gui::Command::doCommand(
+    std::ostringstream factory;
+    factory << "App.getDocument('" << documentName << "').addObject('PartDesign::Body','"
+            << bodyName << "')";
+    auto* body = freecad_cast<PartDesign::Body*>(Gui::Command::runDocumentObjectCommand(
         Gui::Command::Doc,
-        "App.getDocument('%s').addObject('PartDesign::Body','%s')",
-        doc->getName(),
-        bodyName.c_str()
+        *doc,
+        QByteArray(factory.str().c_str()),
+        PartDesign::Body::getClassTypeId()
+    ));
+    if (!body) {
+        throw Base::RuntimeError("Create Body returned an incompatible result");
+    }
+    const long bodyId = body->getID();
+    const std::string exactBodyName = body->getNameInDocument();
+    const auto resolveExactBody = [&]() -> PartDesign::Body* {
+        App::Document* currentDocument = nullptr;
+        try {
+            currentDocument = App::GetApplication().getDocument(documentName.c_str());
+        }
+        catch (...) {
+        }
+        auto* currentBody = currentDocument == expectedDocument
+                && currentDocument->Uid.getValueStr() == documentUid
+            ? freecad_cast<PartDesign::Body*>(currentDocument->getObjectByID(bodyId))
+            : nullptr;
+        return currentBody && currentBody->getNameInDocument()
+                && exactBodyName == currentBody->getNameInDocument()
+            ? currentBody
+            : nullptr;
+    };
+    FCMD_DOC_CMD(
+        doc,
+        "classifyProvisionalTimelineInternalObject("
+            << Gui::Command::getObjectCmd(body) << ")"
     );
+    body = resolveExactBody();
+    const auto* role = body
+        ? dynamic_cast<const App::PropertyString*>(
+              body->getPropertyByName(App::DocumentTimeline::RolePropertyName)
+          )
+        : nullptr;
+    if (!body || !role
+        || std::string_view(role->getValue()) != App::DocumentTimeline::InternalRole) {
+        throw Base::RuntimeError("Create Body did not retain one exact structural Body identity");
+    }
     Gui::Command::doCommand(
         Gui::Command::Doc,
-        "App.getDocument('%s').getObject('%s').AllowCompound = %s",
-        doc->getName(),
-        bodyName.c_str(),
+        "%s.AllowCompound = %s",
+        Gui::Command::getObjectCmd(body).c_str(),
         Gui::asString(allowCompound)
     );
+    body = resolveExactBody();
+    if (!body || body->AllowCompound.getValue() != allowCompound) {
+        throw Base::RuntimeError("Create Body did not accept its structural configuration");
+    }
 
-
-    auto body = dynamic_cast<PartDesign::Body*>(doc->getObject(bodyName.c_str()));
-    if (body) {
-        makeBodyActive(body, doc);
+    makeBodyActive(body, body->getDocument());
+    body = resolveExactBody();
+    if (!body) {
+        throw Base::RuntimeError("Create Body changed identity while it was activated");
     }
     return body;
 }

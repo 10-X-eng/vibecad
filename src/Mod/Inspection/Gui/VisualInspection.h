@@ -24,11 +24,19 @@
 
 #pragma once
 
-#include <QDialog>
+#include <string>
+#include <vector>
 
+#include <QDialog>
 
 class QTreeWidgetItem;
 class QPushButton;
+
+namespace App
+{
+class Document;
+class DocumentObject;
+}  // namespace App
 
 namespace InspectionGui
 {
@@ -43,6 +51,8 @@ public:
 
     void accept() override;
 
+    static std::vector<App::DocumentObject*> candidateObjects(App::Document* document);
+
 protected Q_SLOTS:
     void onActivateItem(QTreeWidgetItem*);
     void loadSettings();
@@ -51,6 +61,9 @@ protected Q_SLOTS:
 private:
     Ui_VisualInspection* ui;
     QPushButton* buttonOk;
+    std::string targetDocumentName;
+    std::string targetDocumentUid;
+    const App::Document* targetDocumentAddress {nullptr};
 };
 
 }  // namespace InspectionGui

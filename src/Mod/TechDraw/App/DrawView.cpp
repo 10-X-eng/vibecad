@@ -109,6 +109,10 @@ DrawView::DrawView():
 
 App::DocumentObjectExecReturn* DrawView::recompute()
 {
+    if (!isActiveInDocumentTimeline()) {
+        return App::DocumentObject::StdReturn;
+    }
+
     try {
         return App::DocumentObject::recompute();
     }
@@ -654,6 +658,9 @@ void DrawView::handleChangedPropertyType(Base::XMLReader &reader, const char * T
 bool DrawView::keepUpdated()
 {
 //    Base::Console().message("DV::keepUpdated() - %s\n", getNameInDocument());
+    if (!isActiveInDocumentTimeline()) {
+        return false;
+    }
     if (overrideKeepUpdated()) {
         return true;
     }
@@ -662,6 +669,64 @@ bool DrawView::keepUpdated()
         return (page->canUpdate() || page->forceRedraw());
     }
     return false;
+}
+
+bool DrawView::isActiveInDocumentTimeline() const
+{
+    TimelineDependencyStack stack;
+    return isActiveInDocumentTimeline(stack);
+}
+
+bool DrawView::isActiveInDocumentTimeline(
+    TimelineDependencyStack& stack) const
+{
+    if (!stack.insert(this).second) {
+        return false;
+    }
+    struct StackGuard
+    {
+        TimelineDependencyStack& stack;
+        const App::DocumentObject* object;
+        ~StackGuard()
+        {
+            stack.erase(object);
+        }
+    } guard {stack, this};
+
+    if (!DrawUtil::isActiveInDocumentTimeline(this)) {
+        return false;
+    }
+
+    auto* ownerProperty =
+        const_cast<DrawView*>(this)->getOwnerProperty();
+    auto* owner = ownerProperty ? ownerProperty->getValue() : nullptr;
+    if (owner && !timelineDependencyIsActive(owner, stack)) {
+        return false;
+    }
+    return timelineDependenciesActive(stack);
+}
+
+bool DrawView::timelineDependenciesActive(
+    TimelineDependencyStack& stack) const
+{
+    (void)stack;
+    return true;
+}
+
+bool DrawView::timelineDependencyIsActive(
+    const App::DocumentObject* object,
+    TimelineDependencyStack& stack)
+{
+    if (!DrawUtil::isActiveInDocumentTimeline(object)) {
+        return false;
+    }
+
+    const auto* linked = object->getLinkedObject(true);
+    const auto* dependency = linked ? linked : object;
+    if (auto* drawingView = freecad_cast<const DrawView*>(dependency)) {
+        return drawingView->isActiveInDocumentTimeline(stack);
+    }
+    return true;
 }
 
 void DrawView::setScaleAttribute()
@@ -713,7 +778,9 @@ double DrawView::prefScale()
 void DrawView::requestPaint()
 {
 //    Base::Console().message("DV::requestPaint() - %s\n", getNameInDocument());
-    signalGuiPaint(this);
+    if (isActiveInDocumentTimeline()) {
+        signalGuiPaint(this);
+    }
 }
 
 void DrawView::showProgressMessage(std::string featureName, std::string text)

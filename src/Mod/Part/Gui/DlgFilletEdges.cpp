@@ -66,6 +66,7 @@
 #include <Mod/Part/App/FeatureFillet.h>
 
 #include "DlgFilletEdges.h"
+#include "ModelingSelection.h"
 #include "ui_DlgFilletEdges.h"
 #include "SoBrepEdgeSet.h"
 #include "SoBrepFaceSet.h"
@@ -597,17 +598,20 @@ void DlgFilletEdges::findShapes()
         return;
     }
 
-    std::vector<App::DocumentObject*> objs = activeDoc->getObjectsOfType(
-        Part::Feature::getClassTypeId()
+    const auto objs = PartGui::resolveModelingObjects(
+        activeDoc->getObjectsOfType(Part::Feature::getClassTypeId())
     );
+
+    const auto currentSelection = PartGui::getModelingSelection(activeDoc->getName());
     int index = 1;
     int current_index = 0;
-    for (std::vector<App::DocumentObject*>::iterator it = objs.begin(); it != objs.end();
-         ++it, ++index) {
+    for (auto it = objs.begin(); it != objs.end(); ++it, ++index) {
         ui->shapeObject->addItem(QString::fromUtf8((*it)->Label.getValue()));
         ui->shapeObject->setItemData(index, QString::fromLatin1((*it)->getNameInDocument()));
         if (current_index == 0) {
-            if (Gui::Selection().isSelected(*it)) {
+            if (std::ranges::any_of(currentSelection, [it](const Gui::SelectionObject& selected) {
+                    return selected.getObject() == *it;
+                })) {
                 current_index = index;
             }
         }

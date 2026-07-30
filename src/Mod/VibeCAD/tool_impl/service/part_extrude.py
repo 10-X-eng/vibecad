@@ -178,7 +178,12 @@ def run(
         extrusion.Symmetric = bool(symmetric)
         extrusion.TaperAngle = float(taper_angle_degrees)
         extrusion.TaperAngleRev = float(second_taper_angle_degrees)
-        domain_runtime.adopt_part_result(extrusion)
+        domain_runtime.adopt_part_result(
+            extrusion,
+            replaced_inputs=(
+                [base] if visibility_before.get("visible") is True else []
+            ),
+        )
         active.recompute()
         view = getattr(base, "ViewObject", None)
         if view is not None and hasattr(view, "Visibility"):

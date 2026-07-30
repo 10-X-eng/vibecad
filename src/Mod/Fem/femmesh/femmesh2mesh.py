@@ -212,8 +212,6 @@ def femmesh_2_mesh(myFemMesh, myResults=None, myDispScale=1):
 
     end_time = time.process_time()
     FreeCAD.Console.PrintMessage(f"Mesh by surface search method: {end_time - start_time}\n")
-    # call to mesh_2_femmesh to convert mesh to femmesh before return statement
-    mesh2femmesh = mesh_2_femmesh(myFemMesh, singleFaces, faceCodeDict)
     return output_mesh
 
 

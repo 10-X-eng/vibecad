@@ -109,6 +109,19 @@ FemMesh::FemMesh(const FemMesh& mesh)
     copyMeshData(mesh);
 }
 
+FemMesh::FemMesh(EmbeddedAssignmentTag)
+    : myMesh(nullptr)
+#if SMESH_VERSION_MAJOR < 9
+    , myStudyId(0)
+#endif
+{
+#if SMESH_VERSION_MAJOR >= 9
+    myMesh = getGenerator()->CreateMesh(true);
+#else
+    myMesh = getGenerator()->CreateMesh(myStudyId, true);
+#endif
+}
+
 FemMesh::~FemMesh()
 {
     try {
@@ -125,12 +138,14 @@ FemMesh::~FemMesh()
 FemMesh& FemMesh::operator=(const FemMesh& mesh)
 {
     if (this != &mesh) {
-#if SMESH_VERSION_MAJOR >= 9
-        myMesh = getGenerator()->CreateMesh(true);
-#else
-        myMesh = getGenerator()->CreateMesh(myStudyId, true);
-#endif
-        copyMeshData(mesh);
+        // Build the replacement first so assignment is exception-safe, then
+        // let the temporary destroy the previous SMESH instance.  The former
+        // implementation overwrote myMesh and leaked the complete old mesh on
+        // every property update.
+        FemMesh replacement(EmbeddedAssignmentTag {});
+        replacement.copyMeshData(mesh);
+        std::swap(myMesh, replacement.myMesh);
+        std::swap(_Mtrx, replacement._Mtrx);
     }
     return *this;
 }
@@ -262,6 +277,54 @@ void FemMesh::copyMeshData(const FemMesh& mesh)
     }
 
     newMeshDS->Modified();
+}
+
+void FemMesh::removeElements(const std::set<int>& elementIds, bool removeOrphanNodes)
+{
+    if (elementIds.empty()) {
+        return;
+    }
+
+    SMESHDS_Mesh* meshData = myMesh->GetMeshDS();
+    std::set<int> candidateNodeIds;
+
+    // Validate the complete request and gather candidate orphan nodes before
+    // changing anything.  A mixed valid/invalid request must be atomic.
+    for (int elementId : elementIds) {
+        const SMDS_MeshElement* element = meshData->FindElement(elementId);
+        if (!element) {
+            throw Base::ValueError(
+                "No non-node mesh element exists with ID " + std::to_string(elementId)
+            );
+        }
+
+        if (removeOrphanNodes) {
+            SMDS_ElemIteratorPtr nodes = element->nodesIterator();
+            while (nodes->more()) {
+                candidateNodeIds.insert(nodes->next()->GetID());
+            }
+        }
+    }
+
+    for (int elementId : elementIds) {
+        // Removing one element does not invalidate unrelated elements, but
+        // resolve by ID at the point of mutation rather than retaining kernel
+        // pointers across modifications.
+        if (const SMDS_MeshElement* element = meshData->FindElement(elementId)) {
+            meshData->RemoveElement(element);
+        }
+    }
+
+    if (removeOrphanNodes) {
+        for (int nodeId : candidateNodeIds) {
+            const SMDS_MeshNode* node = meshData->FindNode(nodeId);
+            if (node && node->NbInverseElements() == 0) {
+                meshData->RemoveNode(node);
+            }
+        }
+    }
+
+    meshData->Modified();
 }
 
 const SMESH_Mesh* FemMesh::getSMesh() const
@@ -2472,7 +2535,11 @@ void FemMesh::RestoreDocFile(Base::Reader& reader)
     file.close();
 
     // read the shape from the temp file
-    myMesh->UNVToMesh(fi.filePath().c_str());
+    // Node and element identifiers are part of the FCStd contract: FEM
+    // constraints, filtered meshes, and groups persist references to them.
+    // Generic UNV import retains its historical compacting behavior, while
+    // native document restore must reproduce the identifiers exactly.
+    myMesh->UNVToMeshPreservingIds(fi.filePath().c_str());
 
     // delete the temp file
     fi.deleteFile();

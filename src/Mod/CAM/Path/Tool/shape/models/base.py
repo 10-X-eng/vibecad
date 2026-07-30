@@ -370,7 +370,15 @@ class ToolBitShape(Asset):
                 raise ValueError("No 'Attributes' PropertyBag object found in document bytes")
 
             # loaded_raw_params will now be Dict[str, Tuple[Any, str]]
-            loaded_raw_params = get_object_properties(props_obj, exclude_groups=["", "Base"])
+            # A shape document is opened as a normal native document, so its
+            # Attributes object can acquire application-owned history
+            # metadata while it is loaded.  That metadata describes the
+            # temporary document object; it is never a cutter parameter and
+            # must not be copied onto a ToolBit.
+            loaded_raw_params = get_object_properties(
+                props_obj,
+                exclude_groups=["", "Base", "Timeline", "VibeCAD"],
+            )
 
             # Separate values and types, and populate _param_types
             loaded_params = {}
@@ -435,7 +443,11 @@ class ToolBitShape(Asset):
         doc = None
         try:
             # Create a new temporary document
-            doc = FreeCAD.newDocument("TemporaryShapeDoc", hidden=True)
+            doc = FreeCAD.newDocument(
+                "TemporaryShapeDoc",
+                hidden=True,
+                temporary=True,
+            )
 
             # Add the shape's body to the temporary document
             self.make_body(doc)

@@ -23,7 +23,9 @@
  ***************************************************************************/
 
 
+#include <algorithm>
 #include <QAction>
+#include <utility>
 
 
 #include <App/Application.h>
@@ -43,6 +45,86 @@ Q_DECLARE_METATYPE(App::PropertyLinkSubList::SubSet)
 
 using namespace PartDesignGui;
 using namespace Gui;
+
+namespace
+{
+QVariant sectionIdentity(
+    const App::PropertyLinkSubList::SubSet& section
+)
+{
+    QVariantMap identity;
+    if (!section.first || !section.first->isAttachedToDocument()) {
+        return identity;
+    }
+    identity.insert(
+        QStringLiteral("document"),
+        QString::fromLatin1(section.first->getDocument()->getName())
+    );
+    identity.insert(
+        QStringLiteral("object"),
+        QString::fromLatin1(section.first->getNameInDocument())
+    );
+    identity.insert(
+        QStringLiteral("id"),
+        QVariant::fromValue<qlonglong>(section.first->getID())
+    );
+    QStringList subNames;
+    for (const auto& subName : section.second) {
+        subNames.push_back(QString::fromStdString(subName));
+    }
+    identity.insert(QStringLiteral("subNames"), subNames);
+    return identity;
+}
+
+bool resolveSection(
+    const QVariant& value,
+    App::PropertyLinkSubList::SubSet& section
+)
+{
+    const QVariantMap identity = value.toMap();
+    const QString documentName =
+        identity.value(QStringLiteral("document")).toString();
+    const QString objectName =
+        identity.value(QStringLiteral("object")).toString();
+    const qlonglong objectId =
+        identity.value(QStringLiteral("id"), -1).toLongLong();
+    if (documentName.isEmpty() || objectName.isEmpty()
+        || objectId < 0) {
+        return false;
+    }
+
+    App::Document* document = nullptr;
+    try {
+        document = App::GetApplication().getDocument(
+            documentName.toLatin1().constData()
+        );
+    }
+    catch (...) {
+    }
+    auto* object = document
+        ? document->getObject(objectName.toLatin1().constData())
+        : nullptr;
+    if (!object || object->getID() != objectId) {
+        return false;
+    }
+
+    std::vector<std::string> subNames;
+    for (const auto& subName :
+         identity.value(QStringLiteral("subNames")).toStringList()) {
+        subNames.push_back(subName.toStdString());
+    }
+    section = {object, std::move(subNames)};
+    return true;
+}
+
+bool sameSection(
+    const App::PropertyLinkSubList::SubSet& left,
+    const App::PropertyLinkSubList::SubSet& right
+)
+{
+    return left.first == right.first && left.second == right.second;
+}
+}
 
 /* TRANSLATOR PartDesignGui::TaskLoftParameters */
 
@@ -106,16 +188,15 @@ TaskLoftParameters::TaskLoftParameters(ViewProviderLoft* LoftView, bool /*newObj
         ui->profileBaseEdit->setText(label);
     }
 
-    for (auto& subSet : loft->Sections.getSubListValues()) {
-        Gui::Application::Instance->showViewProvider(subSet.first);
-
-        // TODO: if it is a single vertex of a sketch, use that subshape's name
-        QString label = make2DLabel(subSet.first, subSet.second);
-        QListWidgetItem* item = new QListWidgetItem();
-        item->setText(label);
-        item->setData(Qt::UserRole, QVariant::fromValue(subSet));
-        ui->listWidgetReferences->addItem(item);
+    // Opening the task intentionally reveals its existing profiles so the
+    // operation can be edited in context. Subsequent list refreshes are
+    // presentation-only and must not override a user's visibility changes.
+    for (const auto& section : loft->Sections.getSubListValues()) {
+        if (section.first && section.first->isAttachedToDocument()) {
+            Gui::Application::Instance->showViewProvider(section.first);
+        }
     }
+    rebuildSectionRows();
 
     // get options
     ui->checkBoxRuled->setChecked(loft->Ruled.getValue());
@@ -130,6 +211,52 @@ TaskLoftParameters::TaskLoftParameters(ViewProviderLoft* LoftView, bool /*newObj
 }
 
 TaskLoftParameters::~TaskLoftParameters() = default;
+
+void TaskLoftParameters::rebuildSectionRows()
+{
+    ui->listWidgetReferences->clear();
+    auto* loft = getObject<PartDesign::Loft>();
+    if (!loft) {
+        return;
+    }
+    for (const auto& section : loft->Sections.getSubListValues()) {
+        if (!section.first || !section.first->isAttachedToDocument()) {
+            continue;
+        }
+        auto* item = new QListWidgetItem(
+            make2DLabel(section.first, section.second)
+        );
+        item->setData(Qt::UserRole, sectionIdentity(section));
+        ui->listWidgetReferences->addItem(item);
+    }
+}
+
+void TaskLoftParameters::slotChangedObject(
+    const Gui::ViewProviderDocumentObject& object,
+    const App::Property& property
+)
+{
+    auto* loft = getObject<PartDesign::Loft>();
+    if (loft && object.getObject() == loft
+        && &property == &loft->Sections) {
+        rebuildSectionRows();
+    }
+}
+
+void TaskLoftParameters::slotRelabelObject(
+    const Gui::ViewProviderDocumentObject& object
+)
+{
+    auto* loft = getObject<PartDesign::Loft>();
+    if (!loft) {
+        return;
+    }
+    const auto sections = loft->Sections.getValues();
+    if (std::ranges::find(sections, object.getObject())
+        != sections.end()) {
+        rebuildSectionRows();
+    }
+}
 
 void TaskLoftParameters::updateUI()
 {
@@ -158,19 +285,12 @@ void TaskLoftParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
                 if (selectionMode == refProfile) {
                     ui->profileBaseEdit->setText(label);
                 }
-                else if (selectionMode == refAdd) {
-                    QListWidgetItem* item = new QListWidgetItem();
-                    item->setText(label);
-                    item->setData(
-                        Qt::UserRole,
-                        QVariant::fromValue(
-                            std::make_pair(object, std::vector<std::string>(1, msg.pSubName))
-                        )
-                    );
-                    ui->listWidgetReferences->addItem(item);
-                }
-                else if (selectionMode == refRemove) {
-                    removeFromListWidget(ui->listWidgetReferences, label);
+                else if (selectionMode == refAdd
+                         || selectionMode == refRemove) {
+                    // The property is authoritative. Rebuilding also handles
+                    // duplicate display labels without deleting the wrong
+                    // section row.
+                    rebuildSectionRows();
                 }
             }
 
@@ -255,27 +375,38 @@ void TaskLoftParameters::removeFromListWidget(QListWidget* widget, QString name)
 
 void TaskLoftParameters::onDeleteSection()
 {
-    // Delete the selected profile
-    int row = ui->listWidgetReferences->currentRow();
-    QListWidgetItem* item = ui->listWidgetReferences->takeItem(row);
-    if (item) {
-        QByteArray data(
-            item->data(Qt::UserRole).value<App::PropertyLinkSubList::SubSet>().first->getNameInDocument()
-        );
-        delete item;
-
-        // search inside the list of sections
-        if (const auto loft = getObject<PartDesign::Loft>()) {
-            std::vector<App::DocumentObject*> refs = loft->Sections.getValues();
-            App::DocumentObject* obj = loft->getDocument()->getObject(data.constData());
-            if (const auto f = std::ranges::find(refs, obj); f != refs.end()) {
-                loft->Sections.removeValue(obj);
-
-                recomputeFeature();
-                updateUI();
-            }
-        }
+    const int row = ui->listWidgetReferences->currentRow();
+    auto* item = row >= 0
+        ? ui->listWidgetReferences->item(row)
+        : nullptr;
+    auto* loft = getObject<PartDesign::Loft>();
+    if (!item || !loft) {
+        return;
     }
+
+    App::PropertyLinkSubList::SubSet selected;
+    if (!resolveSection(item->data(Qt::UserRole), selected)
+        || selected.first->getDocument() != loft->getDocument()) {
+        rebuildSectionRows();
+        return;
+    }
+
+    auto sections = loft->Sections.getSubListValues();
+    const auto found = std::ranges::find_if(
+        sections,
+        [&selected](const auto& section) {
+            return sameSection(section, selected);
+        }
+    );
+    if (found == sections.end()) {
+        rebuildSectionRows();
+        return;
+    }
+    sections.erase(found);
+    loft->Sections.setSubListValues(sections);
+    rebuildSectionRows();
+    recomputeFeature();
+    updateUI();
 }
 
 void TaskLoftParameters::indexesMoved()
@@ -286,15 +417,41 @@ void TaskLoftParameters::indexesMoved()
     }
 
     if (auto loft = getObject<PartDesign::Loft>()) {
-        auto originals = loft->Sections.getSubListValues();
-
-        int rows = model->rowCount();
-        for (int i = 0; i < rows; i++) {
-            QModelIndex index = model->index(i, 0);
-            originals[i] = index.data(Qt::UserRole).value<App::PropertyLinkSubList::SubSet>();
+        auto remaining = loft->Sections.getSubListValues();
+        if (model->rowCount()
+            != static_cast<int>(remaining.size())) {
+            rebuildSectionRows();
+            return;
         }
 
-        loft->Sections.setSubListValues(originals);
+        std::vector<App::PropertyLinkSubList::SubSet> reordered;
+        reordered.reserve(remaining.size());
+        for (int row = 0; row < model->rowCount(); ++row) {
+            App::PropertyLinkSubList::SubSet section;
+            if (!resolveSection(
+                    model->index(row, 0).data(Qt::UserRole),
+                    section
+                )
+                || section.first->getDocument()
+                    != loft->getDocument()) {
+                rebuildSectionRows();
+                return;
+            }
+            const auto found = std::ranges::find_if(
+                remaining,
+                [&section](const auto& candidate) {
+                    return sameSection(candidate, section);
+                }
+            );
+            if (found == remaining.end()) {
+                rebuildSectionRows();
+                return;
+            }
+            reordered.push_back(*found);
+            remaining.erase(found);
+        }
+
+        loft->Sections.setSubListValues(reordered);
         recomputeFeature();
         updateUI();
     }
@@ -316,7 +473,11 @@ void TaskLoftParameters::clearButtons(const selectionModes notThis)
 void TaskLoftParameters::exitSelectionMode()
 {
     selectionMode = none;
-    Gui::Selection().clearSelection();
+    if (auto* loft = getObject<PartDesign::Loft>()) {
+        Gui::Selection().clearSelection(
+            loft->getDocument()->getName()
+        );
+    }
     this->blockSelection(true);
 }
 
@@ -343,12 +504,20 @@ void TaskLoftParameters::setSelectionMode(selectionModes mode, bool checked)
 {
     if (checked) {
         clearButtons(mode);
-        Gui::Selection().clearSelection();
+        if (auto* loft = getObject<PartDesign::Loft>()) {
+            Gui::Selection().clearSelection(
+                loft->getDocument()->getName()
+            );
+        }
         selectionMode = mode;
         this->blockSelection(false);
     }
     else {
-        Gui::Selection().clearSelection();
+        if (auto* loft = getObject<PartDesign::Loft>()) {
+            Gui::Selection().clearSelection(
+                loft->getDocument()->getName()
+            );
+        }
         selectionMode = none;
     }
 

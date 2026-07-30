@@ -19,6 +19,10 @@ fi
 
 cmake --build "${build_root}"
 
+"${script_directory}/purge_vibecad_retired_authoring_artifacts.sh" \
+    "${build_root}" \
+    "${module_directory}"
+
 freecadcmd_executable=""
 for candidate in \
     "${build_root}/bin/FreeCADCmd" \
@@ -40,30 +44,15 @@ if [[ ! -f "${module_directory}/VibeCADCodex.py" ]]; then
 fi
 
 "${script_directory}/install_vibecad_provider_deps.sh" "${environment_root}"
-"${script_directory}/install_vibecad_build123d_runtime.sh" \
-    "${python_executable}" \
-    "${module_directory}"
-"${script_directory}/install_vibecad_openscad_runtime.sh" \
-    "${python_executable}" \
-    "${module_directory}"
 "${script_directory}/install_vibecad_codex_runtime.sh" \
     "${python_executable}" \
     "${module_directory}"
-"${python_executable}" \
-    "${script_directory}/write_vibecad_build123d_manifest.py" \
-    "${module_directory}/build123d_runtime" \
-    "${environment_root}" \
-    "${python_executable}"
 
 "${freecadcmd_executable}" --safe-mode --version
 "${freecadcmd_executable}" --safe-mode -c \
-    "import anthropic, jsonschema, keyring, openai; print('VibeCAD provider imports ok')"
+    "import importlib.util, anthropic, jsonschema, keyring; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies import ok')"
 "${freecadcmd_executable}" --safe-mode -c \
     "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(); print('VibeCAD provider subprocess smoke ok')"
-"${freecadcmd_executable}" --safe-mode -c \
-    "from VibeCADBuild123d import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD build123d runtime smoke ok', result['version'])"
-"${freecadcmd_executable}" --safe-mode -c \
-    "from VibeCADOpenSCAD import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD OpenSCAD runtime smoke ok', result['version'])"
 "${freecadcmd_executable}" --safe-mode -c \
     "from VibeCADCodex import runtime_execution_smoke; result = runtime_execution_smoke(); print('VibeCAD Codex app-server smoke ok', result['version'])"
 

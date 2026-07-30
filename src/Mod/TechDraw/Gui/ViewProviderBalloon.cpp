@@ -45,6 +45,7 @@
 #include "ZVALUE.h"
 #include "QGIViewBalloon.h"
 #include "TaskBalloon.h"
+#include "TaskDocumentGuard.h"
 #include "ViewProviderBalloon.h"
 #include "ViewProviderPage.h"
 
@@ -83,29 +84,32 @@ bool ViewProviderBalloon::doubleClicked()
 void ViewProviderBalloon::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
 {
     auto* func = new Gui::ActionFunction(menu);
-    QAction* act = menu->addAction(QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue())));
+    QAction* act = menu->addAction(
+        QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()))
+    );
+    act->setObjectName(QStringLiteral("TechDrawContextEditBalloon"));
     act->setData(QVariant((int)ViewProvider::Default));
-    func->trigger(act, [this]() {
-        this->startDefaultEditMode();
-    });
+    func->trigger(act, [this]() { this->startDefaultEditMode(); });
 
     ViewProviderDrawingView::setupContextMenu(menu, receiver, member);
 }
 
 bool ViewProviderBalloon::setEdit(int ModNum)
 {
-    if (ModNum != ViewProvider::Default ) {
+    if (ModNum != ViewProvider::Default) {
         return ViewProviderDrawingView::setEdit(ModNum);
     }
-    if (Gui::Control().activeDialog())  {
+    auto* balloon = getViewObject();
+    if (!balloon || Gui::Control().activeDialog(balloon->getDocument())) {
         return false;
     }
     // clear the selection (convenience)
     Gui::Selection().clearSelection();
     auto qgivBalloon(dynamic_cast<QGIViewBalloon*>(getQView()));
-    if (qgivBalloon) {
-        Gui::Control().showDialog(new TaskDlgBalloon(qgivBalloon, this));
+    if (!qgivBalloon) {
+        return false;
     }
+    TaskInternal::showDocumentDialog(new TaskDlgBalloon(qgivBalloon, this), balloon->getDocument());
     return true;
 }
 

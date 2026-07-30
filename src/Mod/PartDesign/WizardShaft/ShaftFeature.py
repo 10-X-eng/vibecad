@@ -25,6 +25,26 @@
 import FreeCAD, FreeCADGui
 import Part, Sketcher
 
+from PartDesign.PartDesignTimeline import mark_operation, mark_resource
+
+
+def _publish_shaft_timeline(feature, sketch):
+    """Publish the generated shaft as one operation with one owned profile."""
+
+    if (
+        feature is None
+        or sketch is None
+        or feature is sketch
+        or feature.Document is not sketch.Document
+    ):
+        raise ValueError(
+            "A shaft operation and profile must be distinct objects "
+            "in one document"
+        )
+
+    mark_operation(feature)
+    mark_resource(sketch, feature)
+
 
 class ShaftFeature:
     "Creates and updates the feature of the shaft"
@@ -147,6 +167,7 @@ class ShaftFeature:
             self.feature.Profile = self.sketch
             self.feature.ReferenceAxis = (self.sketch, ["H_Axis"])
             self.feature.Angle = 360.0
+            _publish_shaft_timeline(self.feature, self.sketch)
             self.Doc.recompute()
             self.Gui.hide("SketchShaft")
         else:

@@ -26,6 +26,7 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <Base/Console.h>
+#include <Base/Interpreter.h>
 #include <Base/Vector3D.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -50,9 +51,19 @@ using DU = DrawUtil;
 TaskHatch::TaskHatch(TechDraw::DrawViewPart* inDvp, std::vector<std::string> subs) :
     ui(new Ui_TaskHatch),
     m_hatch(nullptr),
+    m_vp(nullptr),
     m_dvp(inDvp),
+    m_viewIdentity(inDvp),
     m_subs(subs)
 {
+    if (!inDvp || subs.empty()
+        || inDvp->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The image hatch requires selected faces and an owning "
+            "drawing transaction"
+        );
+    }
     ui->setupUi(this);
 
     connect(ui->fcFile, &FileChooser::fileNameSelected, this, &TaskHatch::onFileChanged);
@@ -69,11 +80,28 @@ TaskHatch::TaskHatch(TechDrawGui::ViewProviderHatch* inVp) :
     ui(new Ui_TaskHatch),
     m_vp(inVp)
 {
-//    Base::Console().message("TH::TH() - edit\n");
+    if (!inVp) {
+        throw Base::TypeError(
+            "The image-hatch editor requires a live hatch"
+        );
+    }
     ui->setupUi(this);
     m_hatch = m_vp->getViewObject();
-    App::DocumentObject* obj = m_hatch->Source.getValue();
-    m_dvp = static_cast<TechDraw::DrawViewPart*>(obj);
+    App::DocumentObject* obj =
+        m_hatch ? m_hatch->Source.getValue() : nullptr;
+    m_dvp = dynamic_cast<TechDraw::DrawViewPart*>(obj);
+    if (!m_hatch || !m_dvp
+        || m_hatch->getDocument() != m_dvp->getDocument()
+        || m_hatch->getDocument()->getBookedTransactionID()
+            == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "The image hatch has no live source or owning transaction"
+        );
+    }
+    m_hatchIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawHatch>(m_hatch);
+    m_viewIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawViewPart>(m_dvp);
 
     connect(ui->fcFile, &FileChooser::fileNameSelected, this, &TaskHatch::onFileChanged);
     connect(ui->sbScale, qOverload<double>(&QuantitySpinBox::valueChanged), this, &TaskHatch::onScaleChanged);
@@ -87,6 +115,29 @@ TaskHatch::TaskHatch(TechDrawGui::ViewProviderHatch* inVp) :
 }
 TaskHatch::~TaskHatch()
 {
+}
+
+bool TaskHatch::resolveTargets()
+{
+    auto* view = m_viewIdentity.resolve();
+    auto* hatch = m_hatchIdentity.resolve();
+    if (!view || (m_hatch && !hatch)) {
+        return false;
+    }
+    m_dvp = view;
+    m_hatch = hatch;
+    if (!hatch) {
+        m_vp = nullptr;
+        return true;
+    }
+    auto* guiDocument =
+        Gui::Application::Instance->getDocument(hatch->getDocument());
+    m_vp = guiDocument
+        ? dynamic_cast<ViewProviderHatch*>(
+              guiDocument->getViewProvider(hatch)
+          )
+        : nullptr;
+    return m_vp != nullptr;
 }
 
 void TaskHatch::setUiPrimary()
@@ -172,7 +223,11 @@ void TaskHatch::onOffsetChanged()
 void TaskHatch::apply(bool forceUpdate)
 {
     Q_UNUSED(forceUpdate)
-//    Base::Console().message("TH::apply() - m_hatch: %X\n", m_hatch);
+    if (!resolveTargets()) {
+        throw Base::RuntimeError(
+            "The image hatch target is no longer available"
+        );
+    }
     if (!m_hatch) {
         createHatch();
     }
@@ -190,57 +245,100 @@ void TaskHatch::apply(bool forceUpdate)
 
 void TaskHatch::createHatch()
 {
-//    Base::Console().message("TH::createHatch()\n");
     App::Document* doc = m_dvp->getDocument();
 
     // TODO: the structured label for Hatch (and GeomHatch) should be retired.
     const std::string objectName("Hatch");
     std::string FeatName = doc->getUniqueObjectName(objectName.c_str());
 
-    int tid = Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Create Hatch"));
+    const std::string documentName =
+        Base::InterpreterSingleton::strToPython(doc->getName());
+    const QString hatchFactory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject('TechDraw::DrawHatch', '%2')"
+        )
+            .arg(
+                QString::fromStdString(documentName),
+                QString::fromStdString(FeatName)
+            );
+    m_hatch = dynamic_cast<TechDraw::DrawHatch*>(
+        Gui::Command::runDocumentObjectCommand(
+            Command::Doc,
+            *doc,
+            hatchFactory.toUtf8(),
+            TechDraw::DrawHatch::getClassTypeId()
+        )
+    );
+    if (!m_hatch) {
+        throw Base::RuntimeError(
+            "The image hatch factory returned an incompatible object"
+        );
+    }
+    FeatName = m_hatch->getNameInDocument();
+    Command::doCommand(
+        Command::Doc,
+        "App.getDocument('%s').getObject('%s').translateLabel"
+        "('DrawHatch', 'Hatch', '%s')",
+        documentName.c_str(),
+        FeatName.c_str(),
+        FeatName.c_str()
+    );
 
-    Command::doCommand(Command::Doc, "App.activeDocument().addObject('TechDraw::DrawHatch', '%s')", FeatName.c_str());
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.translateLabel('DrawHatch', 'Hatch', '%s')",
-              FeatName.c_str(), FeatName.c_str());
-
-    m_hatch = static_cast<TechDraw::DrawHatch *>(doc->getObject(FeatName.c_str()));
     m_hatch->Source.setValue(m_dvp, m_subs);
+    m_hatchIdentity =
+        TaskInternal::ObjectIdentity<TechDraw::DrawHatch>(m_hatch);
 
     auto filespec = ui->fcFile->fileName().toStdString();
     filespec = DU::cleanFilespecBackslash(filespec);
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.HatchPattern = '%s'",
-                       FeatName.c_str(),
-                       filespec.c_str());
+    const std::string pythonFilespec =
+        Base::InterpreterSingleton::strToPython(filespec.c_str());
+    const std::string hatchCommand =
+        Gui::Command::getObjectCmd(m_hatch);
+    Command::doCommand(
+        Command::Doc,
+        "%s.HatchPattern = '%s'",
+        hatchCommand.c_str(),
+        pythonFilespec.c_str()
+    );
 
     //view provider properties
-    Gui::ViewProvider* vp = Gui::Application::Instance->getDocument(doc)->getViewProvider(m_hatch);
+    auto* guiDocument = Gui::Application::Instance->getDocument(doc);
+    Gui::ViewProvider* vp =
+        guiDocument ? guiDocument->getViewProvider(m_hatch) : nullptr;
     m_vp = dynamic_cast<TechDrawGui::ViewProviderHatch*>(vp);
-    if (m_vp) {
-        Base::Color ac;
-        ac.setValue<QColor>(ui->ccColor->color());
-        m_vp->HatchColor.setValue(ac);
-        m_vp->HatchScale.setValue(ui->sbScale->value().getValue());
-        m_vp->HatchRotation.setValue(ui->dsbRotation->value());
-        Base::Vector3d offset(ui->dsbOffsetX->value(), ui->dsbOffsetY->value(), 0.0);
-        m_vp->HatchOffset.setValue(offset);
-    } else {
-        Base::Console().error("TaskHatch - hatch has no ViewProvider\n");
+    if (!m_vp) {
+        throw Base::RuntimeError(
+            "The image hatch has no compatible view provider"
+        );
     }
-    Command::commitCommand(tid);
+    Base::Color ac;
+    ac.setValue<QColor>(ui->ccColor->color());
+    m_vp->HatchColor.setValue(ac);
+    m_vp->HatchScale.setValue(ui->sbScale->value().getValue());
+    m_vp->HatchRotation.setValue(ui->dsbRotation->value());
+    Base::Vector3d offset(ui->dsbOffsetX->value(), ui->dsbOffsetY->value(), 0.0);
+    m_vp->HatchOffset.setValue(offset);
 }
 
 void TaskHatch::updateHatch()
 {
-//    Base::Console().message("TH::updateHatch()\n");
-    std::string FeatName = m_hatch->getNameInDocument();
-
-    int tid = Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Update Hatch"));
-
+    if (!m_hatch || !m_vp) {
+        throw Base::RuntimeError(
+            "The image hatch is unavailable for update"
+        );
+    }
     auto filespec = ui->fcFile->fileName().toStdString();
     filespec = DU::cleanFilespecBackslash(filespec);
-    Command::doCommand(Command::Doc, "App.activeDocument().%s.HatchPattern = '%s'",
-                       FeatName.c_str(),
-                       filespec.c_str());
+    const std::string pythonFilespec =
+        Base::InterpreterSingleton::strToPython(filespec.c_str());
+    const std::string hatchCommand =
+        Gui::Command::getObjectCmd(m_hatch);
+    Command::doCommand(
+        Command::Doc,
+        "%s.HatchPattern = '%s'",
+        hatchCommand.c_str(),
+        pythonFilespec.c_str()
+    );
 
     Base::Color ac;
     ac.setValue<QColor>(ui->ccColor->color());
@@ -249,25 +347,34 @@ void TaskHatch::updateHatch()
     m_vp->HatchRotation.setValue(ui->dsbRotation->value());
     Base::Vector3d offset(ui->dsbOffsetX->value(), ui->dsbOffsetY->value(), 0.0);
     m_vp->HatchOffset.setValue(offset);
-    Command::commitCommand(tid);
 }
 
 bool TaskHatch::accept()
 {
-//    Base::Console().message("TH::accept()\n");
-    apply(true);
+    try {
+        apply(true);
+    }
+    catch (const Base::Exception& error) {
+        Base::Console().error(
+            "Could not apply image hatch: %s\n",
+            error.what()
+        );
+        return false;
+    }
+    if (!m_hatch || !m_vp || m_hatch->isError()) {
+        return false;
+    }
 
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
+    TaskInternal::updateExactDocument(m_hatch->getDocument());
+    TaskInternal::resetExactEdit(m_hatch->getDocument());
 
     return true;
 }
 
 bool TaskHatch::reject()
 {
-//    Base::Console().message("TH::reject()\n");
-    restoreHatchState();
-    Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
-    return false;
+    TaskInternal::resetExactEdit(m_viewIdentity.resolveDocument());
+    return true;
 }
 
 void TaskHatch::changeEvent(QEvent *e)
@@ -286,6 +393,7 @@ TaskDlgHatch::TaskDlgHatch(TechDraw::DrawViewPart* inDvp, std::vector<std::strin
                                          widget->windowTitle(), true, 0);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgHatch::TaskDlgHatch(TechDrawGui::ViewProviderHatch* inVp) :
@@ -296,6 +404,7 @@ TaskDlgHatch::TaskDlgHatch(TechDrawGui::ViewProviderHatch* inVp) :
                                          widget->windowTitle(), true, 0);
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
+    setAutoCloseOnTransactionChange(true);
 }
 
 TaskDlgHatch::~TaskDlgHatch()
@@ -319,14 +428,12 @@ void TaskDlgHatch::clicked(int i)
 
 bool TaskDlgHatch::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgHatch::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskHatch.cpp>

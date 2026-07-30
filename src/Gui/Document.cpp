@@ -64,6 +64,7 @@
 #include "NotificationArea.h"
 #include "Selection.h"
 #include "Thumbnail.h"
+#include "TaskView/TaskDialog.h"
 #include "Tree.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
@@ -80,9 +81,103 @@ namespace sp = std::placeholders;
 namespace Gui
 {
 
+namespace
+{
+struct DetachedExactAbort
+{
+    int transactionId {App::NullTransaction};
+    bool retrying {false};
+    std::vector<fastsignals::connection> participantChanges;
+    fastsignals::connection exactClosed;
+    fastsignals::connection documentDeleted;
+};
+
+std::map<int, std::shared_ptr<DetachedExactAbort>>&
+detachedExactAborts()
+{
+    static auto* pending =
+        new std::map<int, std::shared_ptr<DetachedExactAbort>>;
+    return *pending;
+}
+
+void retryDetachedExactAbort(int transactionId)
+{
+    auto& pending = detachedExactAborts();
+    const auto found = pending.find(transactionId);
+    if (found == pending.end() || found->second->retrying) {
+        return;
+    }
+    const auto state = found->second;
+    state->retrying = true;
+    bool closed = false;
+    try {
+        closed = App::GetApplication().abortTransaction(transactionId);
+    }
+    catch (...) {
+        closed = false;
+    }
+    closed = closed
+        || !App::GetApplication().transactionIsActive(transactionId);
+    state->retrying = false;
+    if (closed) {
+        pending.erase(transactionId);
+    }
+}
+
+void retainDetachedExactAbort(
+    int transactionId,
+    const App::Document* closingDocument
+)
+{
+    if (transactionId == App::NullTransaction
+        || !App::GetApplication().transactionIsActive(transactionId)) {
+        return;
+    }
+    auto state = std::make_shared<DetachedExactAbort>();
+    state->transactionId = transactionId;
+    const auto retry = [transactionId](const auto&) {
+        retryDetachedExactAbort(transactionId);
+    };
+    for (auto* document : App::GetApplication().getDocuments()) {
+        if (!document || document == closingDocument
+            || document->getBookedTransactionID() != transactionId) {
+            continue;
+        }
+        state->participantChanges.push_back(
+            document->signalTransactionLockChanged.connect(retry)
+        );
+        state->participantChanges.push_back(
+            document->signalBecameStable.connect(retry)
+        );
+    }
+    state->exactClosed =
+        App::GetApplication().signalExactTransactionClosed.connect(
+            [transactionId](
+                int closedId,
+                bool,
+                const std::vector<App::Document*>&
+            ) {
+                if (closedId == transactionId) {
+                    detachedExactAborts().erase(transactionId);
+                }
+            }
+        );
+    state->documentDeleted =
+        App::GetApplication().signalDeletedDocument.connect(
+            [transactionId] {
+                retryDetachedExactAbort(transactionId);
+            }
+        );
+    detachedExactAborts().insert_or_assign(transactionId, state);
+}
+}
+
 // Pimpl class
 struct DocumentP
 {
+    using Connection = fastsignals::connection;
+    using AdvancedConnection = fastsignals::advanced_connection;
+
     Thumbnail thumb;
     int _iWinCount;
     int _iDocId;
@@ -93,6 +188,13 @@ struct DocumentP
     bool _changeViewTouchDocument;
     bool _editWantsRestore;
     bool _editWantsRestorePrevious;
+    bool _abortEditTransaction;
+    bool _editTransactionLocked;
+    bool _editTransactionClosePending;
+    bool _editTransactionClosing;
+    int _editTransactionId;
+    std::vector<Connection> _editTransactionRetryConnections;
+    Connection _editTransactionExactCloseConnection;
     int _editMode;
     int _editModePrevious;
     ViewProvider* _editViewProvider;
@@ -118,8 +220,6 @@ struct DocumentP
     std::map<std::string, ViewProvider*> _ViewProviderMapAnnotation;
     std::list<ViewProviderDocumentObject*> _redoViewProviders;
 
-    using Connection = fastsignals::connection;
-    using AdvancedConnection = fastsignals::advanced_connection;
     Connection connectNewObject;
     Connection connectDelObject;
     Connection connectCngObject;
@@ -141,6 +241,8 @@ struct DocumentP
     Connection connectSkipRecompute;
     Connection connectTransactionAppend;
     Connection connectTransactionRemove;
+    Connection connectBookedTransactionChanged;
+    Connection connectTransactionLockChanged;
     Connection connectTouchedObject;
     Connection connectChangePropertyEditor;
     AdvancedConnection connectChangeDocument;
@@ -447,6 +549,11 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->_editModePrevious = 0;
     d->_editWantsRestore = false;
     d->_editWantsRestorePrevious = false;
+    d->_abortEditTransaction = false;
+    d->_editTransactionLocked = false;
+    d->_editTransactionClosePending = false;
+    d->_editTransactionClosing = false;
+    d->_editTransactionId = App::NullTransaction;
 
     // NOLINTBEGIN
     //  Setup the connections
@@ -527,6 +634,23 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->connectTransactionRemove = pcDocument->signalTransactionRemove.connect(
         std::bind(&Gui::Document::slotTransactionRemove, this, sp::_1, sp::_2)
     );
+    const auto updateTransactionSensitiveActions = [this](const auto&...) {
+        if (d->_pcAppWnd) {
+            // Transaction ownership is itself an activation condition for
+            // modeling commands. Refresh on the next GUI turn so a ribbon
+            // action cannot remain visibly clickable during the old 150 ms
+            // polling window after a transaction opens, closes, or locks.
+            d->_pcAppWnd->updateActions(false);
+        }
+    };
+    d->connectBookedTransactionChanged =
+        pcDocument->signalBookedTransactionChanged.connect(
+            updateTransactionSensitiveActions
+        );
+    d->connectTransactionLockChanged =
+        pcDocument->signalTransactionLockChanged.connect(
+            updateTransactionSensitiveActions
+        );
     // NOLINTEND
 
     // pointer to the python class
@@ -549,6 +673,41 @@ Document::Document(App::Document* pcDocument, Application* app)
 
 Document::~Document()
 {
+    // A retained no-panel command checkpoint is keyed by this GUI document.
+    // Remove it before the pointer can become stale, and resolve the exact
+    // adopted transaction while the App document is still alive.
+    TaskView::TaskDialog::discardOwnedEditCommandInteraction(this);
+    const int closingEditTransaction = d->_editTransactionId;
+    if (closingEditTransaction != App::NullTransaction) {
+        clearPendingEditTransactionRetry();
+        releaseEditTransactionLock();
+        bool aborted = false;
+        try {
+            aborted = App::GetApplication().abortTransaction(
+                closingEditTransaction
+            );
+        }
+        catch (...) {
+            aborted = false;
+        }
+        if (!aborted
+            && App::GetApplication().transactionIsActive(
+                closingEditTransaction
+            )) {
+            retainDetachedExactAbort(
+                closingEditTransaction,
+                getDocument()
+            );
+            Base::Console().error(
+                "Could not roll back exact edit transaction %d while "
+                "closing its GUI document.\n",
+                closingEditTransaction
+            );
+        }
+        d->_editTransactionId = App::NullTransaction;
+        d->_editTransactionClosePending = false;
+    }
+
     // disconnect everything to avoid to be double-deleted
     // in case an exception is raised somewhere
     d->connectNewObject.disconnect();
@@ -571,6 +730,8 @@ Document::~Document()
     d->connectSkipRecompute.disconnect();
     d->connectTransactionAppend.disconnect();
     d->connectTransactionRemove.disconnect();
+    d->connectBookedTransactionChanged.disconnect();
+    d->connectTransactionLockChanged.disconnect();
     d->connectTouchedObject.disconnect();
     d->connectChangePropertyEditor.disconnect();
     d->connectChangeDocument.disconnect();
@@ -591,6 +752,8 @@ Document::~Document()
         delete va.second;
     }
 
+    releaseEditTransactionLock();
+
     // remove the reference from the object
     Base::PyGILStateLocker lock;
     _pcDocPy->setInvalid();
@@ -608,9 +771,136 @@ bool Document::setEdit(Gui::ViewProvider* p, int ModNum, const char* subname)
         return trySetEdit(p, ModNum, subname);
     }
     catch (const Base::Exception& e) {
+        // A failed edit launch must not leave a transaction attributed to an
+        // edit session that the caller was told did not start.
+        releaseEditTransactionLock();
+        d->_editTransactionId = App::NullTransaction;
         FC_ERR("" << e.what());
         return false;
     }
+}
+
+bool Document::adoptEditTransaction(int transactionId)
+{
+    if (d->_editViewProvider
+        && d->_editTransactionLocked
+        && d->_editTransactionId == transactionId
+        && transactionId != App::NullTransaction
+        && getDocument()->getBookedTransactionID() == transactionId
+        && App::GetApplication().transactionIsActive(transactionId)) {
+        return true;
+    }
+    if (!d->_editViewProvider
+        || transactionId == App::NullTransaction
+        || d->_editTransactionId != App::NullTransaction
+        || getDocument()->getBookedTransactionID() != transactionId
+        || !App::GetApplication().transactionIsActive(transactionId)) {
+        return false;
+    }
+
+    getDocument()->lockTransaction();
+    d->_editTransactionLocked = true;
+    d->_editTransactionId = transactionId;
+    return true;
+}
+
+void Document::releaseEditTransactionLock()
+{
+    if (!d->_editTransactionLocked) {
+        return;
+    }
+
+    getDocument()->unlockTransaction();
+    d->_editTransactionLocked = false;
+}
+
+void Document::clearPendingEditTransactionRetry()
+{
+    d->_editTransactionRetryConnections.clear();
+    d->_editTransactionExactCloseConnection.disconnect();
+}
+
+void Document::armPendingEditTransactionRetry()
+{
+    clearPendingEditTransactionRetry();
+    if (!d->_editTransactionClosePending
+        || d->_editTransactionId == App::NullTransaction) {
+        return;
+    }
+    const int transactionId = d->_editTransactionId;
+    for (auto* document : App::GetApplication().getDocuments()) {
+        if (!document
+            || document->getBookedTransactionID() != transactionId) {
+            continue;
+        }
+        d->_editTransactionRetryConnections.push_back(
+            document->signalTransactionLockChanged.connect(
+                [this](const App::Document&) {
+                    retryPendingEditTransaction();
+                }
+            )
+        );
+        d->_editTransactionRetryConnections.push_back(
+            document->signalBecameStable.connect(
+                [this](const App::Document&) {
+                    retryPendingEditTransaction();
+                }
+            )
+        );
+    }
+    d->_editTransactionExactCloseConnection =
+        App::GetApplication().signalExactTransactionClosed.connect(
+            [this](int closedId,
+                   bool aborted,
+                   const std::vector<App::Document*>&) {
+                if (!d->_editTransactionClosing
+                    && d->_editTransactionClosePending
+                    && d->_editTransactionId == closedId) {
+                    completePendingEditTransaction(
+                        closedId,
+                        !aborted
+                    );
+                }
+            }
+        );
+}
+
+void Document::completePendingEditTransaction(
+    int transactionId,
+    bool commit
+)
+{
+    if (!d->_editTransactionClosePending
+        || d->_editTransactionId != transactionId) {
+        return;
+    }
+    clearPendingEditTransactionRetry();
+    d->_editTransactionClosePending = false;
+    d->_editTransactionId = App::NullTransaction;
+    d->_abortEditTransaction = false;
+    TaskView::TaskDialog::finishOwnedEditCommandInteraction(
+        this,
+        transactionId,
+        !commit,
+        true
+    );
+    Application::Instance->signalFinishEdit(
+        *this,
+        !commit,
+        true
+    );
+}
+
+void Document::retryPendingEditTransaction()
+{
+    if (d->_editTransactionClosing
+        || !d->_editTransactionClosePending
+        || d->_editTransactionId == App::NullTransaction) {
+        return;
+    }
+    const int transactionId = d->_editTransactionId;
+    const bool commit = !d->_abortEditTransaction;
+    (void)finishEditTransaction(transactionId, commit);
 }
 
 void Document::resetIfEditing()
@@ -675,22 +965,42 @@ bool Document::trySetEdit(Gui::ViewProvider* p, int ModNum, const char* subname)
     // using the current selection before closing the previous edit.
     resetIfEditing();
 
-    d->throwIfNotInMap(obj, getDocument());
-
-    Application::Instance->setEditDocument(this);
-
-    if (!d->tryStartEditing(vp, obj, _subname.c_str(), ModNum)) {
-        d->setDocumentNameOfTaskDialog(getDocument());
+    if (d->_editTransactionClosePending) {
+        FC_ERR(
+            "Cannot enter edit mode while a previous exact edit "
+            "transaction still requires closure"
+        );
         return false;
     }
+    d->throwIfNotInMap(obj, getDocument());
+    d->_editTransactionId = App::NullTransaction;
 
-    d->setDocumentNameOfTaskDialog(getDocument());
+    try {
+        Application::Instance->setEditDocument(this);
 
-    auto view3d = openEditingView3D(vp);
-    d->setEditingViewerIfPossible(view3d, ModNum);
-    d->signalEditMode();
+        if (!d->tryStartEditing(vp, obj, _subname.c_str(), ModNum)) {
+            releaseEditTransactionLock();
+            d->_editTransactionId = App::NullTransaction;
+            d->setDocumentNameOfTaskDialog(getDocument());
+            return false;
+        }
 
-    return true;
+        d->setDocumentNameOfTaskDialog(getDocument());
+
+        auto view3d = openEditingView3D(vp);
+        d->setEditingViewerIfPossible(view3d, ModNum);
+        d->signalEditMode();
+
+        return true;
+    }
+    catch (...) {
+        // TaskDialog may have adopted a command transaction while
+        // ViewProvider::startEditing() was constructing the panel. If launch
+        // does not complete, there is no edit session allowed to own it.
+        releaseEditTransactionLock();
+        d->_editTransactionId = App::NullTransaction;
+        throw;
+    }
 }
 
 const Base::Matrix4D& Document::getEditingTransform() const
@@ -723,8 +1033,132 @@ void Document::resetEdit()
     }
 }
 
+void Document::cancelEdit()
+{
+    if (!d->_editViewProvider) {
+        return;
+    }
+    prepareCancelEdit();
+    resetEdit();
+}
+
+int Document::prepareCancelEdit()
+{
+    if (!d->_editViewProvider || !d->_editTransactionLocked
+        || d->_editTransactionId == App::NullTransaction
+        || getDocument()->getBookedTransactionID()
+            != d->_editTransactionId) {
+        return App::NullTransaction;
+    }
+
+    d->_abortEditTransaction = true;
+    return d->_editTransactionId;
+}
+
+void Document::clearCancelEdit(int transactionId)
+{
+    // A declined/failed reject may clear only the mark it established. Never
+    // let cleanup for an old dialog alter a replacement edit session.
+    if (transactionId != App::NullTransaction
+        && d->_editTransactionLocked
+        && d->_editTransactionId == transactionId
+        && getDocument()->getBookedTransactionID() == transactionId) {
+        d->_abortEditTransaction = false;
+    }
+}
+
+bool Document::ownsEditTransaction(int transactionId) const
+{
+    return transactionId != App::NullTransaction
+        && (d->_editViewProvider
+            || d->_editTransactionClosePending)
+        && d->_editTransactionLocked
+        && d->_editTransactionId == transactionId
+        && getDocument()->getBookedTransactionID() == transactionId
+        && App::GetApplication().transactionIsActive(transactionId);
+}
+
+bool Document::adoptOwnedEditTransaction(int transactionId)
+{
+    if (!adoptEditTransaction(transactionId)) {
+        return false;
+    }
+    TaskView::TaskDialog::markOwnedEnclosingTransactionAdopted(
+        getDocument(),
+        transactionId
+    );
+    TaskView::TaskDialog::adoptOwnedEditCommandInteraction(
+        this,
+        transactionId
+    );
+    return true;
+}
+
+bool Document::finishEditTransaction(
+    int transactionId,
+    bool commit
+)
+{
+    if (!ownsEditTransaction(transactionId)) {
+        return false;
+    }
+    if (d->_editTransactionClosePending) {
+        // The editor is already gone; retry only the exact outcome retained
+        // by the failed teardown. Never reinterpret Cancel as OK (or vice
+        // versa) on a later retry.
+        const bool pendingCommit = !d->_abortEditTransaction;
+        if (commit != pendingCommit
+            || getDocument()->getBookedTransactionID()
+                != transactionId
+            || !App::GetApplication().transactionIsActive(
+                transactionId
+            )) {
+            return false;
+        }
+
+        d->_editTransactionClosing = true;
+        releaseEditTransactionLock();
+        bool closed = false;
+        try {
+            closed = commit
+                ? App::GetApplication().commitTransaction(transactionId)
+                : App::GetApplication().abortTransaction(transactionId);
+        }
+        catch (...) {
+            closed = false;
+        }
+        closed = closed
+            || !App::GetApplication().transactionIsActive(transactionId);
+        if (!closed) {
+            if (getDocument()->getBookedTransactionID()
+                    == transactionId
+                && App::GetApplication().transactionIsActive(
+                    transactionId
+                )) {
+                getDocument()->lockTransaction();
+                d->_editTransactionLocked = true;
+            }
+            d->_editTransactionClosing = false;
+            return false;
+        }
+
+        completePendingEditTransaction(transactionId, commit);
+        d->_editTransactionClosing = false;
+        return true;
+    }
+    if (!commit) {
+        d->_abortEditTransaction = true;
+    }
+    resetEdit();
+    return !App::GetApplication().transactionIsActive(transactionId);
+}
+
 void Document::_resetEdit()
 {
+    const bool abortEditTransaction = d->_abortEditTransaction;
+    d->_abortEditTransaction = false;
+    const int editTransactionId = d->_editTransactionId;
+    d->_editTransactionId = App::NullTransaction;
     if (d->_editViewProvider) {
         for (auto* v : d->baseViews) {
             auto activeView = dynamic_cast<View3DInventor*>(v);
@@ -756,13 +1190,73 @@ void Document::_resetEdit()
         // resetEdit() above calls into Application->unsetEditDocument() which
         // will prevent recursive calling.
 
-        App::GetApplication().commitTransaction(getDocument()->getBookedTransactionID());
+    }
+
+    // The edit lock prevents another caller from replacing or closing the
+    // transaction while provisional task geometry is live. Release only when
+    // the panel has finished teardown, immediately before closing the exact
+    // transaction transferred to this edit session.
+    releaseEditTransactionLock();
+
+    bool editTransactionFinished = true;
+    // An edit session closes only the command transaction explicitly
+    // transferred to it. If that transaction was already closed or
+    // replaced, the current transaction belongs to somebody else.
+    if (editTransactionId != App::NullTransaction
+        && getDocument()->getBookedTransactionID() == editTransactionId) {
+        editTransactionFinished = abortEditTransaction
+            ? App::GetApplication().abortTransaction(editTransactionId)
+            : App::GetApplication().commitTransaction(editTransactionId);
+    }
+    else if (editTransactionId != App::NullTransaction
+             && App::GetApplication().transactionIsActive(
+                 editTransactionId
+             )) {
+        editTransactionFinished = false;
+    }
+    if (!editTransactionFinished) {
+        // Preserve exact ownership after teardown. A cross-document lock can
+        // make close fail even though this editor released its own lock; do
+        // not leave that live transaction broad, unlocked, or replaceable.
+        if (editTransactionId != App::NullTransaction
+            && getDocument()->getBookedTransactionID()
+                == editTransactionId
+            && App::GetApplication().transactionIsActive(
+                editTransactionId
+            )) {
+            getDocument()->lockTransaction();
+            d->_editTransactionLocked = true;
+            d->_editTransactionClosePending = true;
+            d->_editTransactionId = editTransactionId;
+            d->_abortEditTransaction = abortEditTransaction;
+            armPendingEditTransactionRetry();
+        }
+        Base::Console().error(
+            "Could not %s exact edit transaction %d after editor teardown\n",
+            abortEditTransaction ? "roll back" : "commit",
+            editTransactionId
+        );
+    }
+    else {
+        clearPendingEditTransactionRetry();
+        d->_editTransactionClosePending = false;
     }
     d->_editViewProviderParent = nullptr;
     d->_editingViewer = nullptr;
     d->_editObjs.clear();
     d->_editingObject = nullptr;
     Application::Instance->unsetEditDocument(this);
+    TaskView::TaskDialog::finishOwnedEditCommandInteraction(
+        this,
+        editTransactionId,
+        abortEditTransaction,
+        editTransactionFinished
+    );
+    Application::Instance->signalFinishEdit(
+        *this,
+        abortEditTransaction,
+        editTransactionFinished
+    );
 }
 
 ViewProvider* Document::getInEdit(
@@ -2847,17 +3341,58 @@ Gui::MDIView* Document::getEditingViewOfViewProvider(Gui::ViewProvider* vp) cons
  */
 int Document::openCommand(const char* sName)
 {
+    // A user gesture may enter through a generic tree/ribbon boundary which
+    // has already opened its exact transaction before dispatching a legacy
+    // ViewProvider. Reuse that command-owned transaction. Opening a second
+    // transaction here would implicitly commit the provisional first one
+    // before the task panel can adopt it, splitting one human action into two
+    // undo records and making Cancel unable to remove created geometry.
+    const int enclosingTransaction =
+        TaskView::TaskDialog::ownedEnclosingTransactionId(
+            getDocument()
+        );
+    if (enclosingTransaction != App::NullTransaction) {
+        return enclosingTransaction;
+    }
     return getDocument()->openTransaction(App::TransactionName {.name = sName, .temporary = false});
 }
 
 void Document::commitCommand()
 {
+    const int transactionId =
+        getDocument()->getBookedTransactionID();
     getDocument()->commitTransaction();
+    if (transactionId != App::NullTransaction
+        && !App::GetApplication().transactionIsActive(
+            transactionId
+        )) {
+        TaskView::TaskDialog::recordCommandTransactionCompletion(
+            getDocument(),
+            transactionId
+        );
+    }
 }
 
 void Document::abortCommand()
 {
+    // Generic command rollback is not a task-panel Cancel signal. In
+    // particular, a failed sub-command while editing must not poison a later
+    // OK by marking the entire adopted edit transaction for rollback. The
+    // transaction lock makes this a no-op when the command is owned by the
+    // live editor; TaskView::reject() and cancelEdit() are the explicit Cancel
+    // boundaries that mark exact rollback after ViewProvider teardown.
+    const int transactionId =
+        getDocument()->getBookedTransactionID();
     getDocument()->abortTransaction();
+    if (transactionId != App::NullTransaction
+        && !App::GetApplication().transactionIsActive(
+            transactionId
+        )) {
+        TaskView::TaskDialog::recordCommandTransactionCompletion(
+            getDocument(),
+            transactionId
+        );
+    }
 }
 
 bool Document::hasPendingCommand() const

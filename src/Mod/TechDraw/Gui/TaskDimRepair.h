@@ -30,6 +30,7 @@
 #include <Mod/TechDraw/App/DrawViewDimension.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
 
 class Ui_TaskDimRepair;
 
@@ -67,10 +68,14 @@ protected:
     void loadTableWidget(QTableWidget* tw, TechDraw::ReferenceVector refs);
     void saveDimState();
     void restoreDimState();
+    TechDraw::DrawViewDimension* resolveDimension() const;
 
 private:
     std::unique_ptr<Ui_TaskDimRepair> ui;
     TechDraw::DrawViewDimension* m_dim;
+    TaskInternal::DocumentIdentity m_documentIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawViewDimension>
+        m_dimensionIdentity;
 
     long int m_saveMeasureType;
     long int m_saveDimType;

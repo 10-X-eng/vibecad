@@ -206,7 +206,7 @@ def _exercise_source_api() -> None:
     ]["within_tolerance_fraction"]
     comparison_signature = str(inspect.signature(api.comparison))
     assert "thickness" not in comparison_signature
-    assert "cannot switch workbench" in description["workbench_handoffs"]["rule"]
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert len(json.dumps(description, allow_nan=False).encode("utf-8")) < 32 * 1024
 
 

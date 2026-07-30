@@ -26,6 +26,8 @@
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
+#include "TaskDocumentGuard.h"
+
 
 class QComboBox;
 class QLineEdit;
@@ -78,6 +80,10 @@ class TaskSurfaceFinishSymbols : public QWidget
 
 public:
     explicit TaskSurfaceFinishSymbols(const std::string &ownerName);
+    TaskSurfaceFinishSymbols(
+        App::DocumentObject* owner,
+        std::string subName = {}
+    );
     ~TaskSurfaceFinishSymbols() override = default;
 
     virtual bool accept();
@@ -86,9 +92,10 @@ public:
 
 protected:
     void changeEvent(QEvent *event) override;
+    void initialize(std::string subName);
     void setUiEdit();
 
-    App::DocumentObject *owner;
+    App::DocumentObject *owner {nullptr};
     Base::Vector3d placement;
 
 private:
@@ -114,6 +121,12 @@ private:
     QGraphicsPixmapItem* currentIcon;
     std::unique_ptr<Ui_TaskSurfaceFinishSymbols> ui;
     QColor getPenColor();
+    bool resolveTargets();
+
+    TaskInternal::DocumentIdentity documentIdentity;
+    TaskInternal::ObjectIdentity<App::DocumentObject> ownerIdentity;
+    TaskInternal::ObjectIdentity<TechDraw::DrawPage> pageIdentity;
+    std::string selectedSubName;
 
 private Q_SLOTS:
     void onIconChanged();
@@ -128,6 +141,10 @@ class TaskDlgSurfaceFinishSymbols : public Gui::TaskView::TaskDialog
 
 public:
     explicit TaskDlgSurfaceFinishSymbols(const std::string &ownerName);
+    TaskDlgSurfaceFinishSymbols(
+        App::DocumentObject* owner,
+        std::string subName = {}
+    );
     ~TaskDlgSurfaceFinishSymbols() override;
 
     /// is called the TaskView when the dialog is opened

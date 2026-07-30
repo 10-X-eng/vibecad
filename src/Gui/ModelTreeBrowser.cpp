@@ -60,7 +60,7 @@ bool isSketch(const App::DocumentObject* object)
     return isDerivedFrom(object, "Sketcher::SketchObject");
 }
 
-bool isConstruction(const App::DocumentObject* object)
+bool isReferenceGeometry(const App::DocumentObject* object)
 {
     return isDerivedFrom(object, "Part::Datum")
         || isDerivedFrom(object, "PartDesign::CoordinateSystem")
@@ -113,41 +113,6 @@ std::string scriptedOutputIdentity(
     return std::to_string(modelId.size()) + ":" + modelId + outputKey;
 }
 
-bool hasExactType(const App::DocumentObject* object, std::string_view typeName)
-{
-    return object
-        && std::string_view(object->getTypeId().getName()) == typeName;
-}
-
-bool isCompatibilityAdoptedResult(
-    const App::DocumentObject* object,
-    const App::DocumentObject* body,
-    App::Document* document
-)
-{
-    if (!object || !body || !document
-        || !hasExactType(object, "PartDesign::Feature")
-        || stringProperty(body, "VibeCADScriptedRole") != "implementation"
-        || stringProperty(body, "VibeCADScriptedEngine")
-            != "vibescript:partdesign") {
-        return false;
-    }
-
-    const std::string featureRole =
-        stringProperty(object, "VibeCADNativeFeatureRole");
-    const std::string_view internalName =
-        object->getNameInDocument() ? object->getNameInDocument() : "";
-    if (featureRole != "adopted_result"
-        && internalName.find("AdoptedResult_") == std::string_view::npos) {
-        return false;
-    }
-
-    const std::string featureLabel = stringProperty(object, "Label");
-    const std::string bodyLabel = stringProperty(body, "Label");
-    return !featureLabel.empty() && !bodyLabel.empty()
-        && document->haveSameBaseName(featureLabel, bodyLabel);
-}
-
 App::DocumentObject* geoParent(const App::DocumentObject* object)
 {
     return App::GeoFeatureGroupExtension::getGroupOfObject(object);
@@ -171,6 +136,8 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
     // of relying on labels, object order, or generated names.
     std::unordered_map<std::string, App::DocumentObject*> scriptedBodies;
     std::unordered_map<std::string, App::DocumentObject*> scriptedPublications;
+    std::unordered_map<std::string, App::DocumentObject*>
+        scriptedPublicationTargets;
     auto recordUnique = [](
                             auto& table,
                             const std::string& identity,
@@ -200,46 +167,52 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
                 object
             );
         }
+        recordUnique(
+            scriptedPublicationTargets,
+            scriptedOutputIdentity(object, "publication_target"),
+            object
+        );
     }
 
     std::unordered_map<const App::DocumentObject*, App::DocumentObject*>
         bodyRepresentations;
     std::unordered_map<const App::DocumentObject*, App::DocumentObject*>
-        publicationRepresentations;
+        targetRepresentations;
+    std::unordered_set<const App::DocumentObject*> completePublicationLinks;
+    std::unordered_set<const App::DocumentObject*> pairedPublicationTargets;
+    std::unordered_set<std::string> ambiguousIdentities;
+    const auto recordAmbiguities = [&](const auto& table) {
+        for (const auto& [identity, object] : table) {
+            if (!object) {
+                ambiguousIdentities.insert(identity);
+            }
+        }
+    };
+    recordAmbiguities(scriptedBodies);
+    recordAmbiguities(scriptedPublications);
+    recordAmbiguities(scriptedPublicationTargets);
     for (const auto& [identity, published] : scriptedPublications) {
         const auto body = scriptedBodies.find(identity);
-        if (!published || body == scriptedBodies.end() || !body->second
-            || geoParent(published)
-            || App::GroupExtension::getGroupOfObject(published)) {
+        const auto target = scriptedPublicationTargets.find(identity);
+        if (!published || ambiguousIdentities.contains(identity)) {
             continue;
         }
-        auto* linked = published->getLinkedObject(false);
-        if (!linked || linked == published || linked->getDocument() != document) {
+        const bool hasBody =
+            body != scriptedBodies.end() && body->second;
+        const bool hasTarget =
+            target != scriptedPublicationTargets.end() && target->second;
+        if (!hasBody && !hasTarget) {
+            // A lone tagged Link is damaged or incomplete, not an internal
+            // publication. Keep it visible so the user can repair it.
             continue;
         }
-        const Ownership linkedOwnership = resolveOwnership(linked);
-        const Ownership bodyOwnership = resolveOwnership(body->second);
-        if (!linkedOwnership.component
-            || linkedOwnership.component != bodyOwnership.component) {
-            continue;
+        completePublicationLinks.insert(published);
+        if (hasBody) {
+            bodyRepresentations.emplace(published, body->second);
         }
-        bodyRepresentations.emplace(published, body->second);
-        publicationRepresentations.emplace(body->second, published);
-    }
-
-    std::unordered_set<const App::DocumentObject*> publishedImplementations;
-    for (auto* object : objects) {
-        if (!isLink(object) || geoParent(object)
-            || App::GroupExtension::getGroupOfObject(object)) {
-            continue;
-        }
-        auto* linked = object->getLinkedObject(false);
-        if (!linked || linked == object || linked->getDocument() != document
-            || isComponent(linked) || isBody(linked)) {
-            continue;
-        }
-        if (resolveOwnership(linked).component) {
-            publishedImplementations.insert(linked);
+        if (hasTarget) {
+            targetRepresentations.emplace(published, target->second);
+            pairedPublicationTargets.insert(target->second);
         }
     }
 
@@ -259,23 +232,21 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
             // contexts, not user-created organizational groups.
             normalGroup = nullptr;
         }
-        bool publishedOutput = false;
-
-        // VibeScript and other generators commonly keep implementation geometry in
-        // an App::Part and expose stable public objects as root-level App::Links.
-        // Present those links with the component that owns their target.  This is
-        // inferred from native ownership and works for documents made before this
-        // browser existed.
-        if (isLink(object) && !geoParent(object) && !normalGroup) {
-            auto* linked = object->getLinkedObject(false);
-            if (linked && linked != object && linked->getDocument() == document
-                && !isComponent(linked) && !isBody(linked)) {
-                Ownership linkedOwnership = resolveOwnership(linked);
-                if (linkedOwnership.component) {
-                    ownership = linkedOwnership;
-                    publishedOutput = true;
-                }
-            }
+        const bool publishedOutput =
+            completePublicationLinks.contains(object);
+        if (const auto body = bodyRepresentations.find(object);
+            body != bodyRepresentations.end()) {
+            // The output identity persisted on both objects is the publication
+            // contract. Once that exact pair is established, present the
+            // internal link in the Body's native ownership context. Never
+            // derive publication status from an App::Link target or location.
+            ownership = resolveOwnership(body->second);
+        }
+        else if (const auto target = targetRepresentations.find(object);
+                 target != targetRepresentations.end()) {
+            // A publication without a native Body uses its exact persisted
+            // target pair's component solely as its presentation context.
+            ownership = resolveOwnership(target->second);
         }
 
         Entry entry;
@@ -284,15 +255,17 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         entry.body = ownership.body;
         entry.group = normalGroup;
         entry.publishedOutput = publishedOutput;
-        entry.publishedImplementation = publishedImplementations.contains(object);
+        entry.publishedImplementation =
+            pairedPublicationTargets.contains(object);
         entry.role = classify(object, ownership, publishedOutput);
 
         if (entry.role == Role::OriginFeature) {
             entry.logicalParent = findOriginParent(object);
         }
         else if (publishedOutput) {
-            // The link is displayed with its target's component, but it remains a
-            // document-root object for selection and subelement addressing.
+            // The internal link uses the paired Body's semantic component but
+            // remains a document-root object for selection and subelement
+            // addressing.
             entry.logicalParent = nullptr;
         }
         else if (entry.role == Role::Component) {
@@ -317,35 +290,8 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
             body != bodyRepresentations.end()) {
             entry.bodyRepresentation = body->second;
         }
-        if (const auto published = publicationRepresentations.find(object);
-            published != publicationRepresentations.end()) {
-            entry.publicationRepresentation = published->second;
-        }
-        entry.compatibilityResultLabel = isCompatibilityAdoptedResult(
-            object,
-            ownership.body,
-            document
-        );
-
         _index.emplace(object, _entries.size());
         _entries.push_back(entry);
-    }
-
-    std::unordered_map<const App::DocumentObject*, std::vector<App::DocumentObject*>>
-        resultsByBody;
-    for (const auto& entry : _entries) {
-        if (entry.role == Role::Feature && entry.body) {
-            resultsByBody[entry.body].push_back(entry.object);
-        }
-    }
-    for (auto& entry : _entries) {
-        if (entry.role != Role::Body || !entry.publicationRepresentation) {
-            continue;
-        }
-        if (const auto results = resultsByBody.find(entry.object);
-            results != resultsByBody.end()) {
-            entry.bodyResultRepresentations = results->second;
-        }
     }
 
     orderFeaturesByBodyHistory();
@@ -442,13 +388,22 @@ ModelTreeBrowserProjection::Ownership
 ModelTreeBrowserProjection::resolveOwnership(const App::DocumentObject* object)
 {
     Ownership result;
-    for (auto* parent = geoParent(object); parent; parent = geoParent(parent)) {
+    std::unordered_set<const App::DocumentObject*> visited;
+    for (auto* current = object; current && visited.insert(current).second;) {
+        auto* parent = geoParent(current);
+        if (!parent) {
+            parent = App::GroupExtension::getGroupOfObject(current);
+        }
+        if (!parent || parent == current) {
+            break;
+        }
         if (!result.body && isBody(parent)) {
             result.body = parent;
         }
         else if (!result.component && isComponent(parent)) {
             result.component = parent;
         }
+        current = parent;
     }
     return result;
 }
@@ -491,8 +446,8 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     if (isSketch(object)) {
         return Role::Sketch;
     }
-    if (isConstruction(object)) {
-        return Role::Construction;
+    if (isReferenceGeometry(object)) {
+        return Role::Reference;
     }
     if (object->hasExtension(App::GroupExtension::getExtensionClassTypeId())
         && !object->hasExtension(App::GeoFeatureGroupExtension::getExtensionClassTypeId())) {

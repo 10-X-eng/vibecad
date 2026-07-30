@@ -76,7 +76,7 @@ TOOL_SPEC = {
             "job_name": {
                 "type": "string",
                 "description": (
-                    "Exact internal name of the CAM job from core.inspect scope='domain'."
+                    "Exact internal name of the CAM job from cam.list_jobs."
                 ),
             },
             "label": {
@@ -342,7 +342,7 @@ def run(
     job = service._get_cam_job(str(job_name or "").strip() or None)
     if job is None:
         return _invalid(
-            f"CAM job not found: {job_name}. Use core.inspect scope='domain' for exact names."
+            f"CAM job not found: {job_name}. Call cam.list_jobs for exact names."
         )
     controllers = list(getattr(getattr(job, "Tools", None), "Group", []) or [])
     if not controllers:

@@ -11,7 +11,6 @@ import pytest
 
 from VibeCADCore import VibeCADService
 from VibeCADEditState import active_edit_state
-import VibeCADInspection as inspection
 import VibeCADSession as session
 
 
@@ -81,11 +80,6 @@ def test_native_edit_info_resolves_assembly_before_touching_view_provider(
         "active_sketch": None,
     }
     assert service.task_panel_summary()["edit_object"]["name"] == "Assembly"
-    assert inspection._edit_object() == {
-        "name": "Assembly",
-        "label": "Crank Assembly",
-        "type": "Assembly::AssemblyObject",
-    }
 
 
 def test_opaque_edit_view_provider_is_active_but_never_masquerades_as_object(

@@ -104,13 +104,19 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.verticalSpacerBox.hide()
 
     def registerSignalHandlers(self, obj):
-        self.form.source.currentIndexChanged.connect(self.updateVisibility)
-        self.form.setFileName.clicked.connect(self.setFileName)
+        self.connectSignal(
+            self.form.source.currentIndexChanged,
+            self.updateVisibility,
+        )
+        self.connectSignal(
+            self.form.setFileName.clicked,
+            self.setFileName,
+        )
 
     def setFileName(self):
         dirname = os.path.dirname(self.obj.GcodeFile)
         if not dirname:
-            dirname = os.path.dirname(FreeCAD.activeDocument().FileName)
+            dirname = os.path.dirname(self.document.FileName)
         filter1 = "All Files (*)"
         filter2 = "Text files (*.cnc *.g *.gc *.gco *.gcode *.nc *.ncc *.ngc *.tap *.txt)"
         filters = translate("CAM_Custom", ";;".join((filter1, filter2)))

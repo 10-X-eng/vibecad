@@ -24,10 +24,12 @@
 # include <QComboBox>
 # include <QGraphicsProxyWidget>
 # include <QLineEdit>
+# include <QMessageBox>
 
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <Base/Exception.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
@@ -69,8 +71,32 @@ void SvgString::addCircle(int xCenter, int yCenter, int radius)
 
 void SvgString::addText(int xText, int yText, std::string text)
 {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char character : text) {
+        switch (character) {
+            case '&':
+                escaped += "&amp;";
+                break;
+            case '<':
+                escaped += "&lt;";
+                break;
+            case '>':
+                escaped += "&gt;";
+                break;
+            case '"':
+                escaped += "&quot;";
+                break;
+            case '\'':
+                escaped += "&apos;";
+                break;
+            default:
+                escaped += character;
+                break;
+        }
+    }
     svgStream << "<text x='" << xText << "' y='" << yText;
-    svgStream << "' style='font-size:18px'>" << text << "</text>\n";
+    svgStream << "' style='font-size:18px'>" << escaped << "</text>\n";
 }
 
 std::string SvgString::finish()
@@ -88,9 +114,9 @@ TaskSurfaceFinishSymbols::TaskSurfaceFinishSymbols(const std::string &ownerName)
     ui(new Ui_TaskSurfaceFinishSymbols)
 {
     App::Document *doc = App::GetApplication().getActiveDocument();
+    std::string subName;
     if (doc) {
         owner = doc->getObject(ownerName.c_str());
-        std::string subName;
         if (!owner) {
             size_t dot = ownerName.rfind('.');
             if (dot != std::string::npos) {
@@ -98,35 +124,97 @@ TaskSurfaceFinishSymbols::TaskSurfaceFinishSymbols(const std::string &ownerName)
                 owner = doc->getObject(ownerName.substr(0, dot).c_str());
             }
         }
+    }
+    initialize(std::move(subName));
+}
 
-        auto page = dynamic_cast<TechDraw::DrawPage *>(owner);
-        if (page) {
-            placement.x = page->getPageWidth()/2.0;
-            placement.y = page->getPageHeight()/2.0;
+TaskSurfaceFinishSymbols::TaskSurfaceFinishSymbols(
+    App::DocumentObject* ownerObject,
+    std::string subName
+)
+    : owner(ownerObject)
+    , currentIcon(nullptr)
+    , ui(new Ui_TaskSurfaceFinishSymbols)
+{
+    initialize(std::move(subName));
+}
+
+void TaskSurfaceFinishSymbols::initialize(std::string subName)
+{
+    if (!owner || !owner->getDocument()) {
+        throw Base::RuntimeError(
+            "The surface-finish symbol has no live drawing target"
+        );
+    }
+
+    documentIdentity = TaskInternal::DocumentIdentity(owner->getDocument());
+    ownerIdentity =
+        TaskInternal::ObjectIdentity<App::DocumentObject>(owner);
+    selectedSubName = std::move(subName);
+
+    auto* page = dynamic_cast<TechDraw::DrawPage*>(owner);
+    auto* view = dynamic_cast<TechDraw::DrawView*>(owner);
+    if (!page && !view) {
+        throw Base::TypeError(
+            "A surface-finish symbol must target a drawing page or view"
+        );
+    }
+    if (!page) {
+        page = view->findParentPage();
+    }
+    if (!page || page->getDocument() != owner->getDocument()) {
+        throw Base::RuntimeError(
+            "The surface-finish target is not attached to a drawing page"
+        );
+    }
+    pageIdentity = TaskInternal::ObjectIdentity<TechDraw::DrawPage>(page);
+
+    if (dynamic_cast<TechDraw::DrawPage*>(owner)) {
+        placement.x = page->getPageWidth() / 2.0;
+        placement.y = page->getPageHeight() / 2.0;
+    }
+
+    auto* viewPart = dynamic_cast<TechDraw::DrawViewPart*>(owner);
+    if (!selectedSubName.empty()) {
+        if (!viewPart) {
+            throw Base::TypeError(
+                "Only a drawing part view can provide symbol geometry"
+            );
         }
 
-        auto viewPart = dynamic_cast<TechDraw::DrawViewPart *>(owner);
-        if (viewPart && !subName.empty()) {
-            std::string subType = DrawUtil::getGeomTypeFromName(subName);
-            if (subType == "Vertex") {
-                TechDraw::VertexPtr vertex = viewPart->getVertex(subName);
-                if (vertex) {
-                    placement = vertex->point();
-                }
+        const std::string subType =
+            DrawUtil::getGeomTypeFromName(selectedSubName);
+        bool foundGeometry = false;
+        if (subType == "Vertex") {
+            TechDraw::VertexPtr vertex =
+                viewPart->getVertex(selectedSubName);
+            if (vertex) {
+                placement = vertex->point();
+                foundGeometry = true;
             }
-            else if (subType == "Edge") {
-                TechDraw::BaseGeomPtr edge = viewPart->getEdge(subName);
-                if (edge) {
-                    placement = edge->getMidPoint();
-                }
+        }
+        else if (subType == "Edge") {
+            TechDraw::BaseGeomPtr edge =
+                viewPart->getEdge(selectedSubName);
+            if (edge) {
+                placement = edge->getMidPoint();
+                foundGeometry = true;
             }
-            else if (subType == "Face") {
-                TechDraw::FacePtr face = viewPart->getFace(subName);
-                if (face) {
-                    placement = face->getCenter();
-                }
+        }
+        else if (subType == "Face") {
+            TechDraw::FacePtr face =
+                viewPart->getFace(selectedSubName);
+            if (face) {
+                placement = face->getCenter();
+                foundGeometry = true;
             }
-
+        }
+        if (!foundGeometry) {
+            throw Base::ValueError(
+                "The selected drawing geometry is no longer available"
+            );
+        }
+        if (viewPart) {
             placement = DrawUtil::invertY(placement);
         }
     }
@@ -140,6 +228,30 @@ TaskSurfaceFinishSymbols::TaskSurfaceFinishSymbols(const std::string &ownerName)
 
     ui->setupUi(this);
     setUiEdit();
+}
+
+bool TaskSurfaceFinishSymbols::resolveTargets()
+{
+    auto* resolvedOwner = ownerIdentity.resolve();
+    auto* page = pageIdentity.resolve();
+    if (!resolvedOwner || !page
+        || resolvedOwner->getDocument() != documentIdentity.resolve()) {
+        owner = nullptr;
+        return false;
+    }
+
+    auto* view = dynamic_cast<TechDraw::DrawView*>(resolvedOwner);
+    if (view && view->findParentPage() != page) {
+        owner = nullptr;
+        return false;
+    }
+    if (!view && resolvedOwner != page) {
+        owner = nullptr;
+        return false;
+    }
+
+    owner = resolvedOwner;
+    return true;
 }
 
 QColor TaskSurfaceFinishSymbols::getPenColor()
@@ -397,32 +509,81 @@ void TaskSurfaceFinishSymbols::onASME()
 bool TaskSurfaceFinishSymbols::accept()
 // Slot: dialog finished using OK
 {
-    int tid = Gui::Command::openActiveDocumentCommand(QT_TRANSLATE_NOOP("Command", "Surface Finish Symbols"));
-    App::Document *doc = Application::Instance->activeDocument()->getDocument();
-    auto* surfaceSymbol = doc->addObject<TechDraw::DrawViewSymbol>("SurfaceSymbol");
-    surfaceSymbol->Symbol.setValue(completeSymbol());
-    surfaceSymbol->Rotation.setValue(ui->leAngle->text().toDouble());
-
-    auto view = dynamic_cast<TechDraw::DrawView *>(owner);
-    surfaceSymbol->Owner.setValue(view);
-    surfaceSymbol->X.setValue(placement.x);
-    surfaceSymbol->Y.setValue(placement.y);
-
-    auto viewProvider = dynamic_cast<ViewProviderSymbol *>(QGIView::getViewProvider(surfaceSymbol));
-    if (viewProvider) {
-        viewProvider->StackOrder.setValue(ZVALUE::DIMENSION);
+    bool validAngle = false;
+    const double angle = ui->leAngle->text().toDouble(&validAngle);
+    if (!validAngle) {
+        QMessageBox::warning(
+            this,
+            tr("Invalid symbol angle"),
+            tr("Enter a numeric rotation angle.")
+        );
+        return false;
     }
 
-    auto page = dynamic_cast<TechDraw::DrawPage *>(owner);
-    if (!page && view) {
-        page = view->findParentPage();
+    if (!resolveTargets()) {
+        QMessageBox::warning(
+            this,
+            tr("Drawing target unavailable"),
+            tr("The selected drawing page or view is no longer available.")
+        );
+        return false;
     }
-    if (page) {
+
+    auto* doc = documentIdentity.resolve();
+    auto* page = pageIdentity.resolve();
+    try {
+        TaskInternal::OwnedDocumentTransaction transaction(
+            doc,
+            QT_TRANSLATE_NOOP("Command", "Surface Finish Symbols")
+        );
+        auto* surfaceSymbol =
+            doc->addObject<TechDraw::DrawViewSymbol>("SurfaceSymbol");
+        if (!surfaceSymbol) {
+            throw Base::RuntimeError(
+                "Could not create the surface-finish symbol"
+            );
+        }
+        surfaceSymbol->Symbol.setValue(completeSymbol());
+        surfaceSymbol->Rotation.setValue(angle);
+
+        auto* view = dynamic_cast<TechDraw::DrawView*>(owner);
+        surfaceSymbol->Owner.setValue(view);
+        surfaceSymbol->X.setValue(placement.x);
+        surfaceSymbol->Y.setValue(placement.y);
         page->addView(surfaceSymbol);
-    }
 
-    Gui::Command::commitCommand(tid);
-    return true;
+        auto* viewProvider = dynamic_cast<ViewProviderSymbol*>(
+            QGIView::getViewProvider(surfaceSymbol)
+        );
+        if (viewProvider) {
+            viewProvider->StackOrder.setValue(ZVALUE::DIMENSION);
+        }
+
+        surfaceSymbol->recomputeFeature();
+        if (surfaceSymbol->isError()) {
+            throw Base::RuntimeError(
+                "The surface-finish symbol could not be generated"
+            );
+        }
+        TaskInternal::updateExactDocument(doc);
+        transaction.commit();
+        return true;
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            this,
+            tr("Surface finish symbol"),
+            QString::fromUtf8(error.what())
+        );
+    }
+    catch (const std::exception& error) {
+        QMessageBox::warning(
+            this,
+            tr("Surface finish symbol"),
+            QString::fromUtf8(error.what())
+        );
+    }
+    return false;
 }
 
 bool TaskSurfaceFinishSymbols::reject()
@@ -440,6 +601,25 @@ TaskDlgSurfaceFinishSymbols::TaskDlgSurfaceFinishSymbols(const std::string &owne
     widget  = new TaskSurfaceFinishSymbols(ownerName);
     taskbox = new Gui::TaskView::TaskBox(Gui::BitmapFactory().pixmap("actions/TechDraw_SurfaceFinishSymbols"),
                                              widget->windowTitle(), true, nullptr);
+    taskbox->groupLayout()->addWidget(widget);
+    Content.push_back(taskbox);
+}
+
+TaskDlgSurfaceFinishSymbols::TaskDlgSurfaceFinishSymbols(
+    App::DocumentObject* owner,
+    std::string subName
+)
+    : TaskDialog()
+{
+    widget = new TaskSurfaceFinishSymbols(owner, std::move(subName));
+    taskbox = new Gui::TaskView::TaskBox(
+        Gui::BitmapFactory().pixmap(
+            "actions/TechDraw_SurfaceFinishSymbols"
+        ),
+        widget->windowTitle(),
+        true,
+        nullptr
+    );
     taskbox->groupLayout()->addWidget(widget);
     Content.push_back(taskbox);
 }
@@ -464,14 +644,12 @@ void TaskDlgSurfaceFinishSymbols::clicked(int)
 
 bool TaskDlgSurfaceFinishSymbols::accept()
 {
-    widget->accept();
-    return true;
+    return widget->accept();
 }
 
 bool TaskDlgSurfaceFinishSymbols::reject()
 {
-    widget->reject();
-    return true;
+    return widget->reject();
 }
 
 #include <Mod/TechDraw/Gui/moc_TaskSurfaceFinishSymbols.cpp>

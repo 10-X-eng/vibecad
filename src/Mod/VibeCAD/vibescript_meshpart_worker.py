@@ -520,6 +520,7 @@ def _payload(
     *,
     context: str,
     require_domain_value: bool,
+    definition_domain: str,
 ) -> dict[str, Any]:
     if isinstance(value, DomainValue):
         payload = value.to_payload()
@@ -541,7 +542,7 @@ def _payload(
             unexpected=sorted(set(payload) - fields),
         )
     operation = str(payload.get("operation") or "")
-    if payload.get("domain") != "meshpart" or operation not in _EXPORTS:
+    if payload.get("domain") != definition_domain or operation not in _EXPORTS:
         raise _fail(
             f"{context} is not a supported MeshPart graph value.",
             stage="definition_contract",
@@ -564,7 +565,11 @@ def _payload(
             path=f"{context}.properties",
         )
     _encoded(payload)
-    api = MeshPartDomainAPI(_EXPORTS, _OUTPUT_TYPES)
+    api = MeshPartDomainAPI(
+        _EXPORTS,
+        _OUTPUT_TYPES,
+        domain=definition_domain,
+    )
     try:
         kwargs = dict(properties)
         if operation == "shape_from_mesh":
@@ -596,11 +601,20 @@ def validate_meshpart_definition(
     expected_output_type: str | None = None,
     require_domain_value: bool = True,
     context: str = "result",
+    definition_domain: str = "meshpart",
 ) -> dict[str, Any]:
+    clean_domain = str(definition_domain or "").strip().lower()
+    if clean_domain not in {"mesh", "meshpart"}:
+        raise _fail(
+            f"{context} has unsupported conversion domain {definition_domain!r}.",
+            stage="definition_contract",
+            path=f"{context}.domain",
+        )
     payload = _payload(
         value,
         context=context,
         require_domain_value=require_domain_value,
+        definition_domain=clean_domain,
     )
     output_type = str(payload.get("output_type") or "")
     operation = str(payload["operation"])
@@ -1224,6 +1238,8 @@ def validate_and_convert_meshpart(
     root: Path,
     *,
     max_shape_subelements: int,
+    definition_domain: str = "meshpart",
+    output_indices: Sequence[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Validate, execute, diagnose, and serialize all MeshPart outputs."""
 
@@ -1239,6 +1255,19 @@ def validate_and_convert_meshpart(
             received=list(result),
         )
     detail_limit = max(0, min(_MAX_SUBELEMENT_FACTS, int(max_shape_subelements)))
+    indices = (
+        list(range(len(expected_outputs)))
+        if output_indices is None
+        else list(output_indices)
+    )
+    if len(indices) != len(expected_outputs) or any(
+        isinstance(index, bool) or not isinstance(index, int) or index < 0
+        for index in indices
+    ):
+        raise _fail(
+            "MeshPart output_indices must contain one non-negative integer per output.",
+            stage="result_contract",
+        )
     outputs: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
     mesh_output_count = 0
@@ -1246,13 +1275,14 @@ def validate_and_convert_meshpart(
     total_input_facets = 0
     total_output_facets = 0
     output_root = Path(root) / "outputs"
-    for index, declaration in enumerate(expected_outputs):
+    for declaration, artifact_index in zip(expected_outputs, indices, strict=True):
         name = str(declaration.get("name") or "")
         expected_type = str(declaration.get("type") or "")
         definition = validate_meshpart_definition(
             result[name],
             expected_output_type=expected_type,
             context=f"result[{name!r}]",
+            definition_domain=definition_domain,
         )
         operation = str(definition["operation"])
         properties = dict(definition["properties"])
@@ -1276,7 +1306,7 @@ def validate_and_convert_meshpart(
             mesh, backend = _build_mesh(selected_shape, properties)
             diagnostics = mesh_diagnostics(mesh)
             segments = _mesh_segments(mesh)
-            relative = Path("outputs") / f"output-{index:03d}.bms"
+            relative = Path("outputs") / f"output-{artifact_index:03d}.bms"
             digest = _export_mesh(mesh, Path(root) / relative, output_name=name)
             data = {
                 "schema": VALIDATION_SCHEMA,
@@ -1350,7 +1380,7 @@ def validate_and_convert_meshpart(
                 properties,
                 expected_type,
                 output_root,
-                index,
+                artifact_index,
             )
             facts = part_shape_facts(shape, max_subelements=detail_limit)
             if facts["null"] or not facts["valid"]:
@@ -1359,7 +1389,7 @@ def validate_and_convert_meshpart(
                     stage="shape_validation",
                     output_name=name,
                 )
-            relative = Path("outputs") / f"output-{index:03d}.brep"
+            relative = Path("outputs") / f"output-{artifact_index:03d}.brep"
             digest = _export_shape(shape, Path(root) / relative, output_name=name)
             data = {
                 "schema": VALIDATION_SCHEMA,

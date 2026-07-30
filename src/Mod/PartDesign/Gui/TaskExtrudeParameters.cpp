@@ -566,7 +566,7 @@ void PartDesignGui::TaskExtrudeParameters::selectedShape(
         return;
     }
 
-    Gui::Selection().clearSelection();
+    Gui::Selection().clearSelection(document->getName());
 
     auto ref = document->getObject(msg.pObjectName);
 

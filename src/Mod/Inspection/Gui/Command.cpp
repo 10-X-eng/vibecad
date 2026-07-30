@@ -24,20 +24,21 @@
 
 #include <Inventor/events/SoButtonEvent.h>
 
-
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/Control.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Mod/Inspection/App/InspectionFeature.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 
 #include "ViewProviderInspection.h"
 #include "VisualInspection.h"
-
 
 DEF_STD_CMD_A(CmdVisualInspection)
 
@@ -50,17 +51,27 @@ CmdVisualInspection::CmdVisualInspection()
     sToolTipText = QT_TR_NOOP("Inspects the objects visually");
     sStatusTip = sToolTipText;
     sWhatsThis = "Inspection_VisualInspection";
+    sPixmap = "inspect_pipette";
 }
 
 void CmdVisualInspection::activated(int)
 {
+    // A command may be invoked directly while its QAction state is stale.
+    // Re-run the document, History, and transaction eligibility checks before
+    // the modal captures any identities.
+    if (!isActive()) {
+        return;
+    }
     InspectionGui::VisualInspection dlg(Gui::getMainWindow());
     dlg.exec();
 }
 
 bool CmdVisualInspection::isActive()
 {
-    return App::GetApplication().getActiveDocument();
+    App::Document* document = App::GetApplication().getActiveDocument();
+    return document && PartGui::canStartRetainedModelingTask(document)
+        && !Gui::Control().activeDialog()
+        && InspectionGui::VisualInspection::candidateObjects(document).size() >= 2;
 }
 
 //--------------------------------------------------------------------------------------
@@ -81,8 +92,16 @@ CmdInspectElement::CmdInspectElement()
 
 void CmdInspectElement::activated(int)
 {
+    // Direct command invocation must not bypass the current-History and view
+    // checks performed for action enablement.
+    if (!isActive()) {
+        return;
+    }
     Gui::Document* doc = Gui::Application::Instance->activeDocument();
-    Gui::View3DInventor* view = static_cast<Gui::View3DInventor*>(doc->getActiveView());
+    if (!doc) {
+        return;
+    }
+    Gui::View3DInventor* view = dynamic_cast<Gui::View3DInventor*>(doc->getActiveView());
     if (view) {
         Gui::View3DInventorViewer* viewer = view->getViewer();
         viewer->setEditing(true);
@@ -102,7 +121,17 @@ void CmdInspectElement::activated(int)
 bool CmdInspectElement::isActive()
 {
     App::Document* doc = App::GetApplication().getActiveDocument();
-    if (!doc || doc->countObjectsOfType<Inspection::Feature>() == 0) {
+    if (!doc) {
+        return false;
+    }
+    bool hasActiveInspection = false;
+    for (auto* feature : doc->getObjectsOfType<Inspection::Feature>()) {
+        if (App::DocumentTimeline::isObjectUsableAtCurrentPosition(feature)) {
+            hasActiveInspection = true;
+            break;
+        }
+    }
+    if (!hasActiveInspection) {
         return false;
     }
 

@@ -316,7 +316,9 @@ void TaskTransformedParameters::onButtonAddFeature(bool checked)
         hideObject();
         showBase();
         selectionMode = SelectionMode::AddFeature;
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(
+            getObject()->getDocument()->getName()
+        );
     }
     else {
         exitSelectionMode();
@@ -352,7 +354,9 @@ void TaskTransformedParameters::onButtonRemoveFeature(bool checked)
     if (checked) {
         checkVisibility();
         selectionMode = SelectionMode::RemoveFeature;
-        Gui::Selection().clearSelection();
+        Gui::Selection().clearSelection(
+            getObject()->getDocument()->getName()
+        );
     }
     else {
         exitSelectionMode();

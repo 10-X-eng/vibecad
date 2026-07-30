@@ -54,6 +54,7 @@
 
 #include "Action.h"
 #include "Application.h"
+#include "BitmapFactory.h"
 #include "Command.h"
 #include "MainWindow.h"
 #include "ThemeManager.h"
@@ -85,10 +86,130 @@ struct CommandEntry
     bool separator = false;
     QList<QAction*> childActions;
     Gui::ActionGroup* actionGroup = nullptr;
+    bool ownedAction = false;
 };
 
 using CommandEntries = std::vector<CommandEntry>;
 using GroupDefinition = std::pair<QString, std::vector<QString>>;
+
+QString actionCommandId(const QAction* action)
+{
+    if (!action) {
+        return {};
+    }
+    QString commandId = action->property("VibeCADCommandId").toString().trimmed();
+    if (commandId.isEmpty()) {
+        commandId = action->property("CommandName").toString().trimmed();
+    }
+    if (commandId.isEmpty()) {
+        commandId =
+            action->property("FreeCADCommandGroupChildId").toString().trimmed();
+    }
+    if (commandId.isEmpty()) {
+        commandId = action->objectName().trimmed();
+    }
+    return commandId;
+}
+
+QString accessibleActionName(const QAction* action, const QString& commandId)
+{
+    QString name = action ? action->text() : QString();
+    name.remove(QLatin1Char('&'));
+    name = name.trimmed();
+    return name.isEmpty() ? commandId : name;
+}
+
+QIcon commandFallbackIcon(const QString& commandId)
+{
+    const QByteArray encoded = commandId.toUtf8();
+    QIcon icon = Gui::BitmapFactory().iconFromTheme(encoded.constData());
+    if (icon.isNull()) {
+        icon = QIcon::fromTheme(commandId);
+    }
+    if (icon.isNull()) {
+        icon = QIcon(QStringLiteral(":/icons/%1.svg").arg(commandId));
+    }
+    return icon;
+}
+
+void ensureActionPresentation(QAction* action, const QString& commandId, bool unavailable = false)
+{
+    if (!action) {
+        return;
+    }
+
+    action->setProperty("VibeCADCommandId", commandId);
+    action->setProperty("VibeCADUnavailable", unavailable);
+    if (action->text().trimmed().isEmpty()) {
+        action->setText(
+            unavailable ? QObject::tr("%1 (Unavailable)").arg(commandId) : commandId
+        );
+    }
+
+    const QString accessibleName = accessibleActionName(action, commandId);
+    action->setProperty("VibeCADAccessibleName", accessibleName);
+    if (action->toolTip().trimmed().isEmpty()) {
+        action->setToolTip(
+            unavailable
+                ? QObject::tr("%1 is unavailable in this build.").arg(commandId)
+                : accessibleName
+        );
+    }
+    if (action->statusTip().trimmed().isEmpty()) {
+        action->setStatusTip(action->toolTip());
+    }
+
+    bool missingIcon = action->property("VibeCADMissingIcon").toBool();
+    if (action->icon().isNull()) {
+        QIcon fallback = commandFallbackIcon(commandId);
+        if (fallback.isNull()) {
+            missingIcon = true;
+            fallback =
+                QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+        }
+        action->setIcon(fallback);
+    }
+    action->setProperty("VibeCADMissingIcon", missingIcon);
+    if (unavailable) {
+        action->setEnabled(false);
+    }
+}
+
+void decorateCompositeWrapper(QAction* wrapper, const CommandEntry& entry)
+{
+    if (!wrapper || !entry.action) {
+        return;
+    }
+    const QPointer<QAction> source(entry.action);
+    const QPointer<QAction> target(wrapper);
+    const auto synchronize = [source, target]() {
+        if (!source || !target) {
+            return;
+        }
+        target->setText(source->text());
+        target->setIcon(source->icon());
+        target->setEnabled(source->isEnabled());
+        target->setVisible(source->isVisible());
+        target->setProperty("VibeCADCommandId", actionCommandId(source));
+        target->setProperty("VibeCADComposite", true);
+        target->setProperty(
+            "VibeCADUnavailable",
+            source->property("VibeCADUnavailable")
+        );
+        target->setProperty(
+            "VibeCADMissingIcon",
+            source->property("VibeCADMissingIcon")
+        );
+        target->setProperty(
+            "VibeCADAccessibleName",
+            source->property("VibeCADAccessibleName")
+        );
+        target->setToolTip(source->toolTip());
+        target->setStatusTip(source->statusTip());
+    };
+    synchronize();
+    QObject::connect(entry.action, &QAction::changed, wrapper, synchronize);
+}
 
 QString sanitizedObjectName(QString value)
 {
@@ -118,6 +239,19 @@ QToolButton* actionButton(const CommandEntry& entry, QWidget* parent)
     auto* button = new QToolButton(parent);
     button->setDefaultAction(entry.action);
     button->setProperty("ribbonCommand", true);
+    button->setProperty("VibeCADCommandId", actionCommandId(entry.action));
+    button->setProperty(
+        "VibeCADUnavailable",
+        entry.action->property("VibeCADUnavailable")
+    );
+    button->setProperty(
+        "VibeCADMissingIcon",
+        entry.action->property("VibeCADMissingIcon")
+    );
+    button->setAccessibleName(
+        entry.action->property("VibeCADAccessibleName").toString()
+    );
+    button->setToolTip(entry.action->toolTip());
     button->setAutoRaise(true);
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
     button->setIconSize(QSize(28, 28));
@@ -160,6 +294,7 @@ void appendMenuEntries(QMenu* menu, const CommandEntries& entries, int skipActio
         }
         else {
             auto* submenu = menu->addMenu(entry.action->icon(), entry.action->text());
+            decorateCompositeWrapper(submenu->menuAction(), entry);
             submenu->addActions(entry.childActions);
             connectActionGroupMenu(submenu, entry.actionGroup);
         }
@@ -206,6 +341,11 @@ public:
 
         constexpr int primaryActionCount = 4;
         int addedActions = 0;
+        for (CommandEntry& entry : _entries) {
+            if (entry.ownedAction && entry.action && !entry.action->parent()) {
+                entry.action->setParent(this);
+            }
+        }
         for (const CommandEntry& entry : _entries) {
             if (!entry.action || addedActions >= primaryActionCount) {
                 continue;
@@ -314,6 +454,14 @@ public:
 
     void setGroups(std::vector<RibbonGroup*> groups)
     {
+        // Layout changes can synchronously deliver resize/layout events. Stop
+        // updateCollapse() from traversing the previous page while its widgets
+        // are being destroyed, and release every stale observer before the
+        // first child is deleted.
+        _updating = true;
+        _groups.clear();
+        _overflow = nullptr;
+        _overflowMenu = nullptr;
         while (_layout->count() > 0) {
             QLayoutItem* item = _layout->takeAt(0);
             if (QWidget* widget = item->widget()) {
@@ -322,8 +470,10 @@ public:
             delete item;
         }
         _groups = std::move(groups);
+        int groupOrder = 0;
         for (RibbonGroup* group : _groups) {
             group->setParent(this);
+            group->setProperty("ribbonOrder", groupOrder++);
             _layout->addWidget(group);
         }
 
@@ -343,6 +493,7 @@ public:
         _overflow->hide();
         _layout->addWidget(_overflow);
         _layout->addStretch(1);
+        _updating = false;
         updateCollapse();
     }
 
@@ -525,7 +676,7 @@ bool isStandardToolbar(const std::string& title)
 
 QString presentationGroupTitle(const std::string& implementationTitle)
 {
-    static const std::array<std::pair<const char*, const char*>, 25> groupTitles = {{
+    static const std::array<std::pair<const char*, const char*>, 26> groupTitles = {{
         {"Part Design Helper Features", QT_TRANSLATE_NOOP("VibeCADRibbon", "Structure")},
         {"Create and Remove Material", QT_TRANSLATE_NOOP("VibeCADRibbon", "Solids")},
         {"Finish Shape", QT_TRANSLATE_NOOP("VibeCADRibbon", "Finish")},
@@ -545,6 +696,7 @@ QString presentationGroupTitle(const std::string& implementationTitle)
         {"Tool Commands", QT_TRANSLATE_NOOP("VibeCADRibbon", "Tools")},
         {"New Operations", QT_TRANSLATE_NOOP("VibeCADRibbon", "Operations")},
         {"Path Modification", QT_TRANSLATE_NOOP("VibeCADRibbon", "Modify")},
+        {"Helpful Tools", QT_TRANSLATE_NOOP("VibeCADRibbon", "Area")},
         {"TechDraw Extend Dimensions", QT_TRANSLATE_NOOP("VibeCADRibbon", "Extend")},
         {"TechDraw File Access", QT_TRANSLATE_NOOP("VibeCADRibbon", "Files")},
         {"Mesh Tools", QT_TRANSLATE_NOOP("VibeCADRibbon", "Tools")},
@@ -591,35 +743,104 @@ struct Gui::VibeCADRibbon::Private
         , mainWindow(window)
     {}
 
-    CommandEntry commandEntry(const QString& commandName) const
+    CommandEntry commandEntry(
+        const QString& commandName,
+        bool useToolBarPresentation = false
+    ) const
     {
         Command* command = Application::Instance->commandManager().getCommandByName(
             commandName.toUtf8().constData()
         );
         if (!command) {
-            return {};
+            auto* unavailable = new QAction();
+            ensureActionPresentation(unavailable, commandName, true);
+            return {unavailable, false, {}, nullptr, true};
         }
         command->initAction();
         if (!command->getAction()) {
-            return {};
+            auto* unavailable = new QAction();
+            ensureActionPresentation(unavailable, commandName, true);
+            return {unavailable, false, {}, nullptr, true};
         }
         QAction* action = command->getAction()->action();
-        if (!action) {
-            return {};
+        if (useToolBarPresentation) {
+            if (auto* undo = dynamic_cast<UndoAction*>(command->getAction())) {
+                action = undo->toolBarAction();
+            }
+            else if (auto* redo = dynamic_cast<RedoAction*>(command->getAction())) {
+                action = redo->toolBarAction();
+            }
         }
-        action->setProperty("VibeCADCommandId", commandName);
+        if (!action) {
+            auto* unavailable = new QAction();
+            ensureActionPresentation(unavailable, commandName, true);
+            return {unavailable, false, {}, nullptr, true};
+        }
+        ensureActionPresentation(action, commandName);
         auto* actionGroup = dynamic_cast<ActionGroup*>(command->getAction());
+        QList<QAction*> childActions = actionGroup ? actionGroup->actions() : QList<QAction*>();
+        int childIndex = 0;
+        for (QAction* child : childActions) {
+            if (!child || child->isSeparator()) {
+                ++childIndex;
+                continue;
+            }
+            QString childCommandId = actionCommandId(child);
+            const QString nativeParentId =
+                child->property("FreeCADCommandGroupParentId").toString().trimmed();
+            const QVariant nativeIndex =
+                child->property("FreeCADCommandGroupChildIndex");
+            const bool validGroupChild =
+                nativeParentId == commandName && nativeIndex.isValid()
+                && nativeIndex.toInt() == childIndex;
+            const bool validSyntheticChild =
+                child->property("FreeCADCommandGroupSynthetic").toBool()
+                && validGroupChild;
+            bool unavailable = false;
+            if (childCommandId.isEmpty()) {
+                childCommandId =
+                    QStringLiteral("%1/child-%2").arg(commandName).arg(childIndex + 1);
+                unavailable = true;
+            }
+            else if (!validGroupChild
+                     && !Application::Instance->commandManager().getCommandByName(
+                         childCommandId.toUtf8().constData()
+                     )) {
+                unavailable = true;
+            }
+            ensureActionPresentation(child, childCommandId, unavailable);
+            child->setProperty(
+                "VibeCADParentCommandId",
+                nativeParentId.isEmpty() ? commandName : nativeParentId
+            );
+            child->setProperty(
+                "VibeCADCompositeChildIndex",
+                nativeIndex.isValid() ? nativeIndex : QVariant(childIndex)
+            );
+            child->setProperty("VibeCADGroupCommandChild", validGroupChild);
+            child->setProperty("VibeCADSyntheticCommand", validSyntheticChild);
+            ++childIndex;
+        }
         return {
             action,
             false,
-            actionGroup ? actionGroup->actions() : QList<QAction*>(),
+            std::move(childActions),
             actionGroup,
+            false,
         };
     }
 
-    QAction* commandAction(const QString& commandName) const
+    QAction* commandAction(
+        const QString& commandName,
+        bool* ownedAction = nullptr,
+        bool useToolBarPresentation = false
+    ) const
     {
-        return commandEntry(commandName).action;
+        CommandEntry entry = commandEntry(commandName, useToolBarPresentation);
+        if (ownedAction) {
+            *ownedAction = entry.ownedAction;
+        }
+        return entry.action;
     }
 
     CommandEntries resolveEntries(const std::vector<QString>& commands) const
@@ -678,19 +899,63 @@ struct Gui::VibeCADRibbon::Private
     {
         std::vector<RibbonGroup*> groups;
         bool inspectionAdded = false;
+        QSet<QString> surfacedActionIds;
 
-        const auto addInspectionGroup = [this, &groups, &inspectionAdded]() {
-            CommandEntries entries = resolveEntries(sharedInspectionCommands());
+        const auto resolveUniqueEntries = [this, &surfacedActionIds](
+                                              const std::vector<QString>& commands
+                                          ) {
+            CommandEntries entries;
+            entries.reserve(commands.size());
+            for (const QString& command : commands) {
+                if (command == QStringLiteral("Separator")) {
+                    entries.push_back({nullptr, true, {}, nullptr});
+                }
+                else if (!surfacedActionIds.contains(command)) {
+                    CommandEntry entry = commandEntry(command);
+                    surfacedActionIds.insert(command);
+                    QList<QAction*> uniqueChildren;
+                    uniqueChildren.reserve(entry.childActions.size());
+                    for (QAction* child : std::as_const(entry.childActions)) {
+                        if (!child) {
+                            continue;
+                        }
+                        if (child->isSeparator()) {
+                            uniqueChildren.push_back(child);
+                            continue;
+                        }
+                        const QString childId = actionCommandId(child);
+                        if (!surfacedActionIds.contains(childId)) {
+                            surfacedActionIds.insert(childId);
+                            uniqueChildren.push_back(child);
+                        }
+                    }
+                    entry.childActions = std::move(uniqueChildren);
+                    entries.push_back(std::move(entry));
+                }
+            }
+            return entries;
+        };
+
+        const auto addInspectionGroup = [
+                                            this,
+                                            &groups,
+                                            &inspectionAdded,
+                                            &resolveUniqueEntries
+                                        ]() {
+            if (inspectionAdded) {
+                return;
+            }
+            inspectionAdded = true;
+            CommandEntries entries = resolveUniqueEntries(sharedInspectionCommands());
             if (entryActionCount(entries) > 0) {
                 groups.push_back(
                     new RibbonGroup(QObject::tr("Inspect"), std::move(entries))
                 );
-                inspectionAdded = true;
             }
         };
 
         // View controls stay present in every CAD domain.
-        CommandEntries viewEntries = resolveEntries(
+        CommandEntries viewEntries = resolveUniqueEntries(
             {"Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid"}
         );
         if (entryActionCount(viewEntries) > 0) {
@@ -706,7 +971,7 @@ struct Gui::VibeCADRibbon::Private
             if (!inSketchEdit) {
                 std::erase_if(domainCommands, isSharedInspectionCommand);
             }
-            CommandEntries entries = resolveEntries(domainCommands);
+            CommandEntries entries = resolveUniqueEntries(domainCommands);
             if (entryActionCount(entries) > 0) {
                 groups.push_back(new RibbonGroup(title, std::move(entries)));
             }
@@ -754,16 +1019,34 @@ struct Gui::VibeCADRibbon::Private
         const QString& objectName
     ) const
     {
-        QAction* action = commandAction(command);
         auto* button = new QToolButton(root);
+        bool ownedAction = false;
+        QAction* action = commandAction(command, &ownedAction, true);
         button->setObjectName(objectName);
         button->setAutoRaise(true);
         button->setIconSize(QSize(20, 20));
         if (action) {
-            button->setDefaultAction(action);
+            if (ownedAction) {
+                action->setParent(button);
+            }
             if (action->menu()) {
+                button->setMenu(action->menu());
                 button->setPopupMode(QToolButton::MenuButtonPopup);
             }
+            button->setDefaultAction(action);
+            button->setProperty("VibeCADCommandId", actionCommandId(action));
+            button->setProperty(
+                "VibeCADUnavailable",
+                action->property("VibeCADUnavailable")
+            );
+            button->setProperty(
+                "VibeCADMissingIcon",
+                action->property("VibeCADMissingIcon")
+            );
+            button->setAccessibleName(
+                action->property("VibeCADAccessibleName").toString()
+            );
+            button->setToolTip(action->toolTip());
         }
         else {
             button->setEnabled(false);

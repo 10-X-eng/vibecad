@@ -67,6 +67,7 @@ def make_path_array(
     start_offset=0.0,
     end_offset=0.0,
     use_link=True,
+    hide_base=True,
 ):
     """Make a Draft PathArray object.
 
@@ -162,6 +163,10 @@ def make_path_array(
         It defaults to `True`, in which case the copies are `App::Link`
         elements. Otherwise, the copies are shape copies which makes
         the resulting array heavier.
+
+    hide_base: bool, optional
+        If it is `True`, hide `base_object` after creating the array.
+        It defaults to `True`.
 
     Returns
     -------
@@ -304,7 +309,8 @@ def make_path_array(
             ViewProviderDraftArray(new_obj.ViewObject)
             gui_utils.formatObject(new_obj, new_obj.Base)
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
-        new_obj.Base.ViewObject.hide()
+        if hide_base:
+            new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
 
     return new_obj
@@ -319,7 +325,14 @@ def makePathArray(
     return make_path_array(baseobject, pathobject, count, xlate, pathobjsubs, align, use_link)
 
 
-def make_path_twisted_array(base_object, path_object, count=15, rot_factor=0.25, use_link=True):
+def make_path_twisted_array(
+    base_object,
+    path_object,
+    count=15,
+    rot_factor=0.25,
+    use_link=True,
+    hide_base=True,
+):
     """Create a Path twisted array."""
     _name = "make_path_twisted_array"
 
@@ -367,7 +380,8 @@ def make_path_twisted_array(base_object, path_object, count=15, rot_factor=0.25,
             ViewProviderDraftArray(new_obj.ViewObject)
             gui_utils.formatObject(new_obj, new_obj.Base)
             new_obj.ViewObject.Proxy.resetColors(new_obj.ViewObject)
-        new_obj.Base.ViewObject.hide()
+        if hide_base:
+            new_obj.Base.ViewObject.hide()
         gui_utils.select(new_obj)
 
     return new_obj

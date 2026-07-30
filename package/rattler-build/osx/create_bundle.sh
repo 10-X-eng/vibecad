@@ -21,30 +21,12 @@ python ../scripts/relocate_conda_environment.py \
     "${conda_env_absolute}"
 
 ../scripts/install_vibecad_provider_deps.sh "${conda_env}"
-../scripts/install_vibecad_build123d_runtime.sh \
-    "${conda_env}/bin/python" \
-    "${module_directory}"
-../scripts/install_vibecad_openscad_runtime.sh \
-    "${conda_env}/bin/python" \
-    "${module_directory}"
 ../scripts/install_vibecad_codex_runtime.sh \
     "${conda_env}/bin/python" \
     "${module_directory}"
-python ../scripts/relocate_macos_runtime_rpaths.py \
-    "${module_directory}/build123d_runtime/site-packages" \
-    --bundle-prefix "${conda_env_absolute}"
-python ../scripts/relocate_macos_runtime_rpaths.py \
-    "${module_directory}/openscad_runtime/OpenSCAD.app" \
-    --bundle-prefix "${conda_env_absolute}"
-codesign --force --deep --sign - \
-    "${module_directory}/openscad_runtime/OpenSCAD.app"
-codesign --verify --deep --strict \
-    "${module_directory}/openscad_runtime/OpenSCAD.app"
-"${conda_env}/bin/python" \
-    ../scripts/write_vibecad_build123d_manifest.py \
-    "${module_directory}/build123d_runtime" \
+../scripts/purge_vibecad_retired_authoring_artifacts.sh \
     "${conda_env}" \
-    "${conda_env}/bin/python"
+    "${module_directory}"
 
 # delete unnecessary stuff
 rm -rf "${conda_env}/include"
@@ -194,7 +176,7 @@ run_freecad_runtime_check() {
 }
 
 echo "Running isolated VibeCAD macOS runtime smoke tests..."
-for check in python openai anthropic keyring jsonschema macos-keyring removed-agents; do
+for check in python anthropic keyring jsonschema macos-keyring removed-openai-sdk; do
     run_standalone_runtime_check "${check}"
 done
 
@@ -203,8 +185,8 @@ if ! "${conda_env}/bin/freecadcmd" --safe-mode --version; then
     exit 1
 fi
 for check in \
-    python pivy openai anthropic keyring jsonschema macos-keyring removed-agents \
-    provider-subprocess build123d openscad codex; do
+    python pivy anthropic keyring jsonschema macos-keyring removed-openai-sdk \
+    provider-subprocess codex; do
     run_freecad_runtime_check "${check}"
 done
 
