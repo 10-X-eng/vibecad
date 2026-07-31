@@ -1608,6 +1608,154 @@ class TestRetainedPartDialogs(unittest.TestCase):
         self.assertIn(first, self.document.Objects)
         self.assertIn(second, self.document.Objects)
 
+    def test_design_definition_block_never_enters_the_active_body(self):
+        body = self.document.addObject(
+            "PartDesign::Body",
+            "DefinitionIsolationBody",
+        )
+        first = body.newObject(
+            "PartDesign::Feature",
+            "DefinitionIsolationFirst",
+        )
+        first.Shape = Part.makeBox(5, 6, 7)
+        second = body.newObject(
+            "PartDesign::Feature",
+            "DefinitionIsolationSecond",
+        )
+        second.Shape = Part.makeCylinder(
+            3,
+            8,
+            App.Vector(12, 0, 0),
+        )
+        body.Tip = second
+        self.document.recompute()
+        original_group = tuple(body.Group)
+        original_tip = body.Tip
+
+        Gui.activeView().setActiveObject("pdbody", body)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(first)
+        Gui.Selection.addSelection(second)
+        before = set(self.document.Objects)
+        Gui.runCommand("Part_SimpleCopy", 0)
+        self._process_events(100)
+
+        results = [
+            obj
+            for obj in self.document.Objects
+            if obj not in before and obj.TypeId == "Part::Feature"
+        ]
+        self.assertEqual(len(results), 2)
+        operation = next(
+            obj
+            for obj in results
+            if obj.VibeCADTimelineRole == "operation"
+        )
+        resource = next(
+            obj
+            for obj in results
+            if obj.VibeCADTimelineRole == "resource"
+        )
+        self.assertIs(resource.VibeCADTimelineOwner, operation)
+        self.assertIsNone(operation.getParentGeoFeatureGroup())
+        self.assertIsNone(resource.getParentGeoFeatureGroup())
+        self.assertTrue(str(operation.VibeCADDefinitionId))
+        self.assertTrue(str(operation.DesignId))
+        self.assertEqual(tuple(body.Group), original_group)
+        self.assertIs(body.Tip, original_tip)
+
+        created_names = tuple(obj.Name for obj in results)
+        self.document.undo()
+        self._process_events(80)
+        for name in created_names:
+            self.assertIsNone(self.document.getObject(name), name)
+        self.assertEqual(tuple(body.Group), original_group)
+        self.assertIs(body.Tip, original_tip)
+
+    def test_immediate_part_tools_publish_global_design_definitions(self):
+        def assert_definition(result, bodies):
+            self._process_events(80)
+            self.document.recompute()
+            self.assertIsNotNone(result)
+            self.assertIsNone(result.getParentGeoFeatureGroup())
+            self.assertEqual(result.VibeCADTimelineRole, "operation")
+            self.assertTrue(str(result.VibeCADDefinitionId))
+            self.assertTrue(str(result.DesignId))
+            for body, original_group, original_tip in bodies:
+                self.assertEqual(tuple(body.Group), original_group)
+                self.assertIs(body.Tip, original_tip)
+
+        reverse_body, reverse_source = self._body_feature(
+            "GlobalReverseBody",
+            "GlobalReverseSource",
+            Part.makeBox(5, 6, 7),
+        )
+        reverse_state = (
+            reverse_body,
+            tuple(reverse_body.Group),
+            reverse_body.Tip,
+        )
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(reverse_source)
+        Gui.runCommand("Part_ReverseShape", 0)
+        assert_definition(self.document.ActiveObject, [reverse_state])
+
+        compound_body, compound_source = self._body_feature(
+            "GlobalCompoundBody",
+            "GlobalCompoundSource",
+            Part.makeBox(4, 5, 6, App.Vector(12, 0, 0)),
+        )
+        compound_tool_body, compound_tool = self._body_feature(
+            "GlobalCompoundToolBody",
+            "GlobalCompoundTool",
+            Part.makeCylinder(2, 7, App.Vector(20, 0, 0)),
+        )
+        compound_states = [
+            (
+                compound_body,
+                tuple(compound_body.Group),
+                compound_body.Tip,
+            ),
+            (
+                compound_tool_body,
+                tuple(compound_tool_body.Group),
+                compound_tool_body.Tip,
+            ),
+        ]
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(compound_source)
+        Gui.Selection.addSelection(compound_tool)
+        Gui.runCommand("Part_Compound", 0)
+        assert_definition(self.document.ActiveObject, compound_states)
+
+        section_body, section_source = self._body_feature(
+            "GlobalSectionBody",
+            "GlobalSectionSource",
+            Part.makeBox(8, 8, 8, App.Vector(30, 0, 0)),
+        )
+        section_tool_body, section_tool = self._body_feature(
+            "GlobalSectionToolBody",
+            "GlobalSectionTool",
+            Part.makeBox(8, 8, 8, App.Vector(34, 0, 0)),
+        )
+        section_states = [
+            (
+                section_body,
+                tuple(section_body.Group),
+                section_body.Tip,
+            ),
+            (
+                section_tool_body,
+                tuple(section_tool_body.Group),
+                section_tool_body.Tip,
+            ),
+        ]
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(section_source)
+        Gui.Selection.addSelection(section_tool)
+        Gui.runCommand("Part_Section", 0)
+        assert_definition(self.document.ActiveObject, section_states)
+
     def test_primitive_attempt_rejects_reentrant_transaction_operations(self):
         """Creation callbacks cannot steal or close the modeling attempt."""
 

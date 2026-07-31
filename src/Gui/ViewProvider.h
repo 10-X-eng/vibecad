@@ -389,6 +389,41 @@ public:
      * * question or broadening the exact deletion plan.
      */
     virtual bool onDeleteOwnedTimelineResource(App::DocumentObject* semanticOwner);
+    /**
+     * Resolve a presentation object to the semantic History operation which
+     * owns its complete lifecycle.
+     *
+     * The default returns nullptr, so ordinary objects keep their existing
+     * deletion behavior. Presentation containers such as a Design Body may
+     * return one exact operation when deleting the container must instead
+     * invoke that operation's atomic model-deletion contract.
+     */
+    virtual App::DocumentObject* documentTimelineOperationDeleteTarget() const
+    {
+        return nullptr;
+    }
+    /**
+     * Whether this provider removes its complete semantic History operation
+     * through a domain model instead of generic object-by-object deletion.
+     *
+     * This is a mutation-free preflight query. The standard Delete command
+     * calls prepareDocumentTimelineOperationDelete() inside its transaction
+     * only after every exact identity and dependency check has passed.
+     */
+    virtual bool supportsDocumentTimelineOperationDelete() const noexcept
+    {
+        return false;
+    }
+    /**
+     * Reconcile and remove every model-owned resource while leaving the
+     * operation itself live.
+     *
+     * The standard Delete command calls ordinary onDelete() and removes the
+     * operation immediately after this method returns, while the provider is
+     * still alive. Implementations should throw on a malformed or externally
+     * referenced graph so the complete transaction rolls back atomically.
+     */
+    virtual bool prepareDocumentTimelineOperationDelete();
     /** Called before deletion
      *
      * Unlike onDelete(), this function is guaranteed to be

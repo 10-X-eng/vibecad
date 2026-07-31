@@ -273,6 +273,339 @@ def _safe_name(value: str, fallback: str) -> str:
     return clean[:96]
 
 
+def _generated_fastener_operation(generator: Any) -> Any | None:
+    """Return the one Design operation which owns *generator* as a dependency."""
+
+    if generator is None:
+        return None
+    matches = [
+        candidate
+        for candidate in list(getattr(generator, "InList", []) or [])
+        if str(getattr(candidate, "TypeId", "") or "")
+        == "PartDesign::DesignGeneratedOperation"
+        and str(getattr(candidate, "GeneratorKind", "") or "")
+        == "standard-fastener"
+        and getattr(candidate, "Generator", None) is generator
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _generated_fastener_body(operation: Any) -> Any | None:
+    """Resolve the one stable Body output declared by *operation*."""
+
+    if (
+        operation is None
+        or str(getattr(operation, "TypeId", "") or "")
+        != "PartDesign::DesignGeneratedOperation"
+        or str(getattr(operation, "GeneratorKind", "") or "")
+        != "standard-fastener"
+    ):
+        return None
+    body_ids = list(getattr(operation, "OutputBodyIds", []) or [])
+    if len(body_ids) != 1:
+        return None
+    matches = [
+        candidate
+        for candidate in list(getattr(operation.Document, "Objects", []) or [])
+        if str(getattr(candidate, "TypeId", "") or "") == "PartDesign::Body"
+        and str(getattr(candidate, "VibeCADBodyId", "") or "")
+        == str(body_ids[0])
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _timeline_root(obj: Any) -> Any | None:
+    """Return one exact semantic History root without resolving App::Links."""
+
+    current = obj
+    seen: set[tuple[str, str]] = set()
+    while current is not None:
+        key = (
+            str(
+                getattr(getattr(current, "Document", None), "Uid", "")
+                or getattr(getattr(current, "Document", None), "Name", "")
+            ),
+            str(getattr(current, "Name", "") or id(current)),
+        )
+        if key in seen:
+            return None
+        seen.add(key)
+        owner = getattr(current, "VibeCADTimelineOwner", None)
+        if owner is None:
+            return current
+        current = owner
+    return None
+
+
+def _timeline_successor_root(
+    document: Any,
+    root: Any | None,
+    *,
+    additional_members: tuple[Any, ...] = (),
+) -> Any | None:
+    """Return the semantic root after one complete legacy History footprint."""
+
+    timeline = document.getObject("VibeCADTimeline")
+    operations = list(getattr(timeline, "Operations", []) or [])
+    indices = [
+        index
+        for index, candidate in enumerate(operations)
+        if candidate in additional_members
+        or (root is not None and _timeline_root(candidate) is root)
+    ]
+    if not indices:
+        return None
+    if indices != list(range(indices[0], indices[-1] + 1)):
+        raise RuntimeError(
+            _translate("The legacy fastener has a non-contiguous History block.")
+        )
+    if indices[-1] + 1 >= len(operations):
+        return None
+    return _timeline_root(operations[indices[-1] + 1])
+
+
+def _reference_history_root(document: Any, selected: Any) -> Any | None:
+    """Resolve the History root that must precede a selected geometry reference."""
+
+    timeline = document.getObject("VibeCADTimeline")
+    operations = list(getattr(timeline, "Operations", []) or [])
+    operation_set = set(operations)
+    candidates: list[Any] = [selected]
+    if str(getattr(selected, "TypeId", "") or "") == "PartDesign::Body":
+        publication = getattr(selected, "Tip", None)
+        state = getattr(publication, "CurrentState", None)
+        producer = getattr(state, "Operation", None)
+        if producer is not None:
+            candidates.insert(0, producer)
+        legacy_tip = getattr(selected, "Tip", None)
+        if legacy_tip is not None:
+            candidates.append(legacy_tip)
+    else:
+        try:
+            body = selected.getParentGeoFeatureGroup()
+        except Exception:
+            body = None
+        if str(getattr(body, "TypeId", "") or "") == "PartDesign::Body":
+            candidates.append(body)
+    for candidate in candidates:
+        root = _timeline_root(candidate)
+        if root in operation_set:
+            return root
+    return None
+
+
+def _legacy_model_fastener_body(generator: Any) -> Any | None:
+    """Return the exact one-feature legacy Body which owns *generator*."""
+
+    from VibeCADFasteners import COMPONENT_SCHEMA, PROP_SCHEMA
+
+    if str(getattr(generator, PROP_SCHEMA, "") or "") != COMPONENT_SCHEMA:
+        return None
+    try:
+        body = generator.getParentGeoFeatureGroup()
+    except Exception:
+        body = None
+    if (
+        str(getattr(body, "TypeId", "") or "") != "PartDesign::Body"
+        or getattr(body, "Tip", None) is not generator
+        or any(
+            str(getattr(member, "TypeId", "") or "")
+            == "PartDesign::DesignBodyPublication"
+            for member in list(getattr(body, "Group", []) or [])
+        )
+        or list(getattr(body, "Group", []) or []) != [generator]
+    ):
+        return None
+    return body
+
+
+def _legacy_fastener_history_root(body: Any, generator: Any) -> Any | None:
+    """Validate and return the one old Model-fastener semantic root."""
+
+    document = body.Document
+    timeline = document.getObject("VibeCADTimeline")
+    operations = list(getattr(timeline, "Operations", []) or [])
+    body_role = str(getattr(body, "VibeCADTimelineRole", "") or "")
+    generator_role = str(
+        getattr(generator, "VibeCADTimelineRole", "") or ""
+    )
+    generator_owner = getattr(generator, "VibeCADTimelineOwner", None)
+    if (
+        body_role == "operation"
+        and generator_role == "resource"
+        and generator_owner is body
+        and body in operations
+        and generator in operations
+    ):
+        return body
+    if (
+        generator_role == "operation"
+        and generator_owner is None
+        and generator in operations
+        and (
+            body not in operations
+            or (
+                body_role == ""
+                and operations.index(body) + 1 == operations.index(generator)
+            )
+        )
+    ):
+        return generator
+    if (
+        body_role == ""
+        and body in operations
+        and generator not in operations
+        and generator_role in {"", "internal"}
+    ):
+        return None
+    if (
+        body not in operations
+        and generator not in operations
+        and body_role in {"", "internal"}
+        and generator_role in {"", "internal"}
+    ):
+        return None
+    raise RuntimeError(
+        _translate(
+            "This legacy fastener has ambiguous History ownership and cannot be "
+            "converted automatically. Its Body and generator were left unchanged."
+        )
+    )
+
+
+def _make_timeline_internal(obj: Any) -> None:
+    """Apply canonical retained-internal metadata to one untracked object."""
+
+    _ensure_timeline_property(
+        obj,
+        "App::PropertyString",
+        "VibeCADTimelineRole",
+        "Document timeline classification",
+    )
+    if "VibeCADTimelineOwner" in obj.PropertiesList:
+        obj.VibeCADTimelineOwner = None
+    if "VibeCADTimelineEditor" in obj.PropertiesList:
+        obj.VibeCADTimelineEditor = None
+    if "VibeCADTimelineEditCommand" in obj.PropertiesList:
+        obj.VibeCADTimelineEditCommand = ""
+    if "VibeCADTimelineDeleteCommand" in obj.PropertiesList:
+        obj.VibeCADTimelineDeleteCommand = ""
+    if "VibeCADTimelineReplacedInputs" in obj.PropertiesList:
+        obj.VibeCADTimelineReplacedInputs = []
+    obj.VibeCADTimelineRole = "internal"
+
+
+def _migrate_legacy_model_fastener(
+    generator: Any,
+    *,
+    configure=None,
+    output_label: str = "",
+    preserve_history_position: bool = True,
+) -> tuple[Any, Any, Any, Any]:
+    """Convert one Body-owned Model fastener inside the caller's transaction."""
+
+    import PartDesign
+
+    body = _legacy_model_fastener_body(generator)
+    if body is None:
+        raise RuntimeError(
+            _translate(
+                "Only a one-feature Body-owned standard fastener can be converted automatically."
+            )
+        )
+    document = body.Document
+    if int(document.getBookedTransactionID()) == 0:
+        raise RuntimeError(
+            _translate("Legacy fastener conversion requires one active transaction.")
+        )
+    timeline = document.getObject("VibeCADTimeline")
+    external_consumers = [
+        consumer
+        for consumer in list(getattr(generator, "InList", []) or [])
+        if consumer is not body and consumer is not timeline
+    ]
+    if external_consumers:
+        labels = ", ".join(
+            str(getattr(consumer, "Label", "") or consumer.Name)
+            for consumer in external_consumers
+        )
+        raise RuntimeError(
+            _translate(
+                "This legacy fastener is referenced by other document objects "
+                f"({labels}). Convert those references to the Body before migrating it."
+            )
+        )
+
+    old_root = _legacy_fastener_history_root(body, generator)
+    operations = list(getattr(timeline, "Operations", []) or [])
+    body_is_standalone_leaf = (
+        body in operations
+        and str(getattr(body, "VibeCADTimelineRole", "") or "") == ""
+    )
+    successor = (
+        _timeline_successor_root(
+            document,
+            old_root,
+            additional_members=(body,) if body_is_standalone_leaf else (),
+        )
+        if (old_root is not None or body_is_standalone_leaf)
+        and preserve_history_position
+        else None
+    )
+    if old_root is not None:
+        document.classifyExistingTimelineSemanticBlockInternalObject(old_root)
+    if body_is_standalone_leaf:
+        document.classifyExistingTimelineLeafInternalObject(body)
+    _make_timeline_internal(body)
+    _make_timeline_internal(generator)
+
+    visible_label = str(
+        output_label or getattr(body, "Label", "") or generator.Label
+    )
+    initial_state = PartDesign.initializeDesignBodyFromLegacyFeature(
+        body,
+        generator,
+    )
+    _make_timeline_internal(body)
+    _make_timeline_internal(generator)
+    for obj in (initial_state, generator):
+        view = getattr(obj, "ViewObject", None)
+        if view is not None:
+            view.Visibility = False
+            if hasattr(view, "ShowInTree"):
+                view.ShowInTree = False
+
+    operation = document.addObject(
+        "PartDesign::DesignGeneratedOperation",
+        _safe_name(f"{visible_label}_Feature", "StandardFastenerFeature"),
+    )
+    edit = PartDesign.beginDesignOperationEdit(operation)
+    operation.Label = f"Fastener: {visible_label}"
+    operation.GeneratorKind = "standard-fastener"
+    operation.Generator = generator
+    operation.OutputLabel = visible_label
+    _mark_timeline_operation(operation)
+    PartDesign.setDesignOperationTargets(edit, "Modify", [body])
+    if configure is not None:
+        configure(operation, generator)
+    document.recompute()
+    error = str(getattr(generator, "VibeCADFastenerError", "") or "")
+    if error:
+        raise RuntimeError(error)
+    outputs = PartDesign.finalizeDesignOperationEdit(edit)
+    if len(outputs) != 1 or outputs[0] is not body:
+        raise RuntimeError(
+            _translate(
+                "Legacy fastener conversion did not retain its exact Body identity."
+            )
+        )
+    body.Label = visible_label
+    _copy_fastener_appearance(generator, body)
+    if successor is not None:
+        document.reorderTimelineOperationBlocksBefore([operation], successor)
+    return body, operation, generator, initial_state
+
+
 def _fastener_target(obj: Any) -> Any | None:
     from VibeCADFasteners import COMPONENT_SCHEMA, PROP_SCHEMA
 
@@ -295,9 +628,33 @@ def _fastener_target(obj: Any) -> Any | None:
             target = resolve(linked, seen)
             if target is not None:
                 return target
+        if (
+            str(getattr(candidate, "TypeId", "") or "")
+            == "PartDesign::DesignGeneratedOperation"
+            and str(getattr(candidate, "GeneratorKind", "") or "")
+            == "standard-fastener"
+        ):
+            target = getattr(candidate, "Generator", None)
+            if (
+                str(getattr(target, PROP_SCHEMA, "") or "")
+                == COMPONENT_SCHEMA
+            ):
+                return target
         if str(getattr(candidate, PROP_SCHEMA, "") or "") == COMPONENT_SCHEMA:
             return candidate
         if str(getattr(candidate, "TypeId", "") or "") == "PartDesign::Body":
+            publication = getattr(candidate, "Tip", None)
+            state = getattr(publication, "CurrentState", None)
+            operation = getattr(state, "Operation", None)
+            if (
+                str(getattr(operation, "TypeId", "") or "")
+                == "PartDesign::DesignGeneratedOperation"
+                and str(getattr(operation, "GeneratorKind", "") or "")
+                == "standard-fastener"
+            ):
+                return resolve(operation, seen)
+            # Legacy Body-owned standard fasteners remain editable for imported
+            # documents, but new Model insertion never creates this layout.
             matches = [
                 child
                 for child in list(getattr(candidate, "Group", []) or [])
@@ -369,6 +726,10 @@ def _selected_fasteners() -> list[tuple[Any, Any]]:
 def _fastener_label_owner(selected: Any, target: Any) -> Any:
     """Return the visible object whose label represents the fastener."""
 
+    operation = _generated_fastener_operation(target)
+    body = _generated_fastener_body(operation)
+    if body is not None:
+        return body
     if selected is not target:
         return selected
     try:
@@ -381,6 +742,30 @@ def _fastener_label_owner(selected: Any, target: Any) -> Any:
     ):
         return body
     return target
+
+
+def _copy_fastener_appearance(generator: Any, body: Any) -> None:
+    """Publish the native generator's appearance on the stable Body result."""
+
+    source = getattr(generator, "ViewObject", None)
+    publication = getattr(body, "Tip", None)
+    targets = [
+        getattr(body, "ViewObject", None),
+        getattr(publication, "ViewObject", None),
+    ]
+    for target in targets:
+        if source is None or target is None:
+            continue
+        for name in (
+            "ShapeColor",
+            "LineColor",
+            "PointColor",
+            "Transparency",
+            "LineWidth",
+            "PointSize",
+        ):
+            if hasattr(source, name) and hasattr(target, name):
+                setattr(target, name, getattr(source, name))
 
 
 def _activate_partdesign_body(body: Any) -> None:
@@ -774,16 +1159,10 @@ class _InsertStandardFastenerCommand:
                 )
                 selected = occurrence
             else:
-                body = document.addObject(
-                    "PartDesign::Body",
-                    _safe_name(
-                        visible_label,
-                        "StandardFastener",
-                    ),
-                )
-                body.Label = visible_label
-                feature, _identity = create_fastener_feature(
-                    body,
+                import PartDesign
+
+                generator, _identity = create_fastener_feature(
+                    document,
                     **{
                         key: values[key]
                         for key in (
@@ -795,17 +1174,46 @@ class _InsertStandardFastenerCommand:
                             "options",
                         )
                     },
-                    object_name="Fastener",
-                    label=visible_label,
+                    object_name=_safe_name(
+                        f"{visible_label}_Generator",
+                        "StandardFastenerGenerator",
+                    ),
+                    label=f"{visible_label} generator",
                 )
-                body.Tip = feature
-                _mark_timeline_resource(feature, body)
-                _mark_timeline_operation(body, editor=feature)
-                document.finalizeProvisionalTimelineOperationBlock(
-                    body,
-                    [feature, body],
+                document.classifyProvisionalTimelineInternalObject(generator)
+                generator.ViewObject.Visibility = False
+                if hasattr(generator.ViewObject, "ShowInTree"):
+                    generator.ViewObject.ShowInTree = False
+
+                operation = document.addObject(
+                    "PartDesign::DesignGeneratedOperation",
+                    _safe_name(
+                        f"{visible_label}_Feature",
+                        "StandardFastenerFeature",
+                    ),
                 )
-                _activate_partdesign_body(body)
+                edit = PartDesign.beginDesignOperationEdit(operation)
+                operation.Label = f"Fastener: {visible_label}"
+                operation.GeneratorKind = "standard-fastener"
+                operation.Generator = generator
+                operation.OutputLabel = visible_label
+                _mark_timeline_operation(operation)
+                PartDesign.setDesignOperationTargets(
+                    edit,
+                    "New Body",
+                    [],
+                )
+                document.recompute()
+                outputs = PartDesign.finalizeDesignOperationEdit(edit)
+                if len(outputs) != 1:
+                    raise RuntimeError(
+                        _translate(
+                            "The standard fastener did not publish exactly one Body."
+                        )
+                    )
+                body = outputs[0]
+                body.Label = visible_label
+                _copy_fastener_appearance(generator, body)
                 selected = body
             document.recompute()
             document.commitTransaction()
@@ -876,27 +1284,74 @@ class _EditStandardFastenerCommand:
                 return
             document.openTransaction(_translate("Edit standard fastener"))
             try:
+                operation = _generated_fastener_operation(target)
                 visible_label = str(
                     values["label"] or values["identity"]["part_number"]
                 )
-                if label_owner is not target:
-                    label_owner.Label = visible_label
-                update_fastener_feature(
-                    target,
-                    **{
-                        key: values[key]
-                        for key in (
-                            "standard",
-                            "nominal_thread",
-                            "length_mm",
-                            "model_thread",
-                            "left_handed",
-                            "options",
-                            "label",
-                        )
-                    },
+                update_values = {
+                    key: values[key]
+                    for key in (
+                        "standard",
+                        "nominal_thread",
+                        "length_mm",
+                        "model_thread",
+                        "left_handed",
+                        "options",
+                        "label",
+                    )
+                }
+                legacy_body = (
+                    _legacy_model_fastener_body(target)
+                    if operation is None
+                    else None
                 )
-                document.recompute()
+                if legacy_body is not None:
+                    update_values["label"] = f"{visible_label} generator"
+
+                    def configure(converted_operation, converted_generator):
+                        update_fastener_feature(
+                            converted_generator,
+                            **update_values,
+                        )
+                        converted_operation.Label = (
+                            f"Fastener: {visible_label}"
+                        )
+                        converted_operation.OutputLabel = visible_label
+
+                    body, operation, _generator, _initial = (
+                        _migrate_legacy_model_fastener(
+                            target,
+                            configure=configure,
+                            output_label=visible_label,
+                        )
+                    )
+                    body.Label = visible_label
+                else:
+                    edit = None
+                    if operation is not None:
+                        import PartDesign
+
+                        edit = PartDesign.beginDesignOperationEdit(operation)
+                        update_values["label"] = (
+                            f"{visible_label} generator"
+                        )
+                    if label_owner is not target:
+                        label_owner.Label = visible_label
+                    update_fastener_feature(target, **update_values)
+                    if operation is not None:
+                        operation.Label = f"Fastener: {visible_label}"
+                        operation.OutputLabel = visible_label
+                    document.recompute()
+                if operation is not None and legacy_body is None:
+                    outputs = PartDesign.finalizeDesignOperationEdit(edit)
+                    if len(outputs) != 1:
+                        raise RuntimeError(
+                            _translate(
+                                "The edited standard fastener did not retain one Body."
+                            )
+                        )
+                    outputs[0].Label = visible_label
+                    _copy_fastener_appearance(target, outputs[0])
                 document.commitTransaction()
             except Exception:
                 document.abortTransaction()
@@ -905,7 +1360,7 @@ class _EditStandardFastenerCommand:
             _show_error("Edit Standard Fastener", exc)
 
 
-def _selected_hole_inputs() -> tuple[Any, Any]:
+def _selected_hole_inputs() -> tuple[Any, Any, list[Any]]:
     fasteners = _selected_fasteners()
     sketches = [
         obj
@@ -919,14 +1374,35 @@ def _selected_hole_inputs() -> tuple[Any, Any]:
                 "containing the hole locations."
             )
         )
-    _occurrence, fastener = fasteners[0]
+    occurrence, fastener = fasteners[0]
     sketch = sketches[0]
-    body = sketch.getParentGeoFeatureGroup()
-    if body is None or str(getattr(body, "TypeId", "") or "") != "PartDesign::Body":
+    if sketch.getParentGeoFeatureGroup() is not None:
         raise RuntimeError(
-            _translate("The selected hole-location sketch must belong to a Body.")
+            _translate(
+                "The selected hole-location sketch must be a reusable Design sketch, "
+                "not a sketch owned by one Body."
+            )
         )
-    return sketch, fastener
+    bodies: list[Any] = []
+    for obj in Gui.Selection.getSelection():
+        if str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body":
+            continue
+        if obj is occurrence or _fastener_target(obj) is fastener:
+            continue
+        if obj.Document is not sketch.Document:
+            raise RuntimeError(
+                _translate("Every selected target Body must be in the sketch document.")
+            )
+        if obj not in bodies:
+            bodies.append(obj)
+    if not bodies:
+        raise RuntimeError(
+            _translate(
+                "Select at least one target Body with the standard fastener "
+                "and reusable hole-location sketch."
+            )
+        )
+    return sketch, fastener, bodies
 
 
 def _selected_attachment_inputs() -> tuple[Any, Any, Any, str]:
@@ -945,6 +1421,15 @@ def _selected_attachment_inputs() -> tuple[Any, Any, Any, str]:
         raise RuntimeError(
             _translate(
                 "Use Assembly connectors and joints to place an Assembly occurrence."
+            )
+        )
+    if (
+        _generated_fastener_operation(fastener) is None
+        and _legacy_model_fastener_body(fastener) is None
+    ):
+        raise RuntimeError(
+            _translate(
+                "Select a Model fastener or one convertible legacy Body-owned fastener."
             )
         )
 
@@ -1007,7 +1492,7 @@ class _CreateMatchingHoleCommand:
         )
 
         try:
-            sketch, fastener = _selected_hole_inputs()
+            sketch, fastener, bodies = _selected_hole_inputs()
             supported = []
             for purpose in (
                 "clearance",
@@ -1053,47 +1538,41 @@ class _CreateMatchingHoleCommand:
                 )
                 if not accepted:
                     return
-            body = sketch.getParentGeoFeatureGroup()
-            _activate_partdesign_body(body)
             document = sketch.Document
             if not _document_transaction_is_clean(document):
                 return
-            document.openTransaction(_translate("Create matching fastener hole"))
-            try:
-                feature = body.newObject(
-                    "PartDesign::Hole",
-                    "StandardFastenerHole",
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(sketch)
+            for body in bodies:
+                Gui.Selection.addSelection(body)
+            Gui.runCommand("PartDesign_Hole", 0)
+            feature = document.ActiveObject
+            if (
+                feature is None
+                or str(getattr(feature, "TypeId", "") or "")
+                != "PartDesign::DesignHole"
+                or not Gui.Control.activeDialog()
+            ):
+                raise RuntimeError(
+                    _translate("The global matching-hole task did not open.")
                 )
-                feature.Profile = sketch
-                feature.DepthType = "ThroughAll"
-                configure_fastener_hole_feature(
-                    feature,
-                    fastener,
-                    purpose=str(purpose),
-                    fit=str(fit),
-                )
-                feature.Refine = True
-                feature.Label = _translate("Matching standard fastener hole")
-                body.Tip = feature
+            feature.DepthType = "ThroughAll"
+            configure_fastener_hole_feature(
+                feature,
+                fastener,
+                purpose=str(purpose),
+                fit=str(fit),
+            )
+            feature.Refine = True
+            feature.Label = _translate("Matching standard fastener hole")
+            if bodies:
                 document.recompute()
-                if (
-                    feature.Shape.isNull()
-                    or not feature.Shape.isValid()
-                    or len(feature.Shape.Solids) != 1
-                ):
-                    raise RuntimeError(
-                        _translate(
-                            "The matching hole did not produce one valid solid; "
-                            "check the sketch placement and base material."
-                        )
-                    )
-                document.commitTransaction()
-                Gui.Selection.clearSelection()
-                Gui.Selection.addSelection(feature)
-            except Exception:
-                document.abortTransaction()
-                raise
         except Exception as exc:
+            if Gui.Control.activeDialog():
+                try:
+                    Gui.Control.activeTaskDialog().reject()
+                except (AttributeError, RuntimeError):
+                    Gui.Control.closeDialog()
             _show_error("Create Matching Fastener Hole", exc)
 
 
@@ -1129,15 +1608,74 @@ class _AttachStandardFastenerCommand:
             _occurrence, fastener, host, sub_name = (
                 _selected_attachment_inputs()
             )
+            operation = _generated_fastener_operation(fastener)
+            import PartDesign
+
             document = fastener.Document
             if not _document_transaction_is_clean(document):
                 return
             document.openTransaction(_translate("Attach standard fastener"))
             try:
-                fastener.BaseObject = (host, [sub_name])
-                document.recompute()
-                if str(getattr(fastener, "VibeCADFastenerError", "") or ""):
-                    raise RuntimeError(str(fastener.VibeCADFastenerError))
+                if operation is None:
+                    def configure(converted_operation, converted_generator):
+                        exact_host, exact_subelements = (
+                            PartDesign.resolveDesignDefinitionSubelementReference(
+                                converted_operation,
+                                host,
+                                [sub_name],
+                            )
+                        )
+                        converted_generator.BaseObject = (
+                            exact_host,
+                            list(exact_subelements),
+                        )
+
+                    outputs = [
+                        _migrate_legacy_model_fastener(
+                            fastener,
+                            configure=configure,
+                            preserve_history_position=False,
+                        )[0]
+                    ]
+                else:
+                    dependency_root = _reference_history_root(document, host)
+                    timeline = document.getObject("VibeCADTimeline")
+                    history = list(getattr(timeline, "Operations", []) or [])
+                    if (
+                        dependency_root is not None
+                        and dependency_root is not operation
+                        and dependency_root in history
+                        and operation in history
+                        and history.index(operation)
+                        < history.index(dependency_root)
+                    ):
+                        document.reorderTimelineOperationBlocksAfter(
+                            [operation],
+                            dependency_root,
+                        )
+                    edit = PartDesign.beginDesignOperationEdit(operation)
+                    exact_host, exact_subelements = (
+                        PartDesign.resolveDesignDefinitionSubelementReference(
+                            operation,
+                            host,
+                            [sub_name],
+                        )
+                    )
+                    fastener.BaseObject = (
+                        exact_host,
+                        list(exact_subelements),
+                    )
+                    document.recompute()
+                    if str(getattr(fastener, "VibeCADFastenerError", "") or ""):
+                        raise RuntimeError(str(fastener.VibeCADFastenerError))
+                    outputs = PartDesign.finalizeDesignOperationEdit(edit)
+                if len(outputs) != 1:
+                    raise RuntimeError(
+                        _translate(
+                            "The attached standard fastener did not retain one Body."
+                        )
+                    )
+                _copy_fastener_appearance(fastener, outputs[0])
                 document.commitTransaction()
             except Exception:
                 document.abortTransaction()

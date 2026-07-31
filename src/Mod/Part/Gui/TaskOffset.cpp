@@ -29,13 +29,17 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
+#include <Gui/Command.h>
 #include <Gui/CommandT.h>
 #include <Gui/Document.h>
 #include <Gui/ViewProvider.h>
 #include <Mod/Part/App/FeatureOffset.h>
+#include <Mod/Part/App/Part2DObject.h>
 
+#include "ModelingSelection.h"
 #include "TaskOffset.h"
 #include "TaskResultValidation.h"
 #include "ui_TaskOffset.h"
@@ -261,11 +265,108 @@ void OffsetWidget::changeEvent(QEvent* e)
 
 TaskOffset::TaskOffset(Part::Offset* offset)
 {
+    if (!offset || !offset->getDocument()) {
+        throw Base::ValueError(
+            "Offset editing requires one live offset feature"
+        );
+    }
+    attempt = std::make_unique<ModelingTaskAttempt>(
+        *offset->getDocument(),
+        "Edit offset"
+    );
     widget = new OffsetWidget(offset);
-    launchTransactionId = offset && offset->getDocument()
-        ? offset->getDocument()->getBookedTransactionID()
-        : App::NullTransaction;
     addTaskBox(Gui::BitmapFactory().pixmap("Part_Offset"), widget);
+}
+
+TaskOffset::TaskOffset(
+    App::Document& document,
+    App::DocumentObject& source,
+    bool twoDimensional
+)
+    : attempt(
+          std::make_unique<ModelingTaskAttempt>(
+              document,
+              twoDimensional ? "Create 2D offset" : "Create 3D offset"
+          )
+      )
+{
+    if (source.getDocument() != &document
+        || !source.getNameInDocument()
+        || !document.containsObject(&source)) {
+        throw Base::ValueError(
+            "Offset source must be a live object in the target document"
+        );
+    }
+
+    const std::string resultName = document.getUniqueObjectName(
+        twoDimensional ? "Offset2D" : "Offset"
+    );
+    const QString factory =
+        QStringLiteral(
+            "App.getDocument('%1').addObject('%2','%3')"
+        )
+            .arg(
+                QString::fromLatin1(document.getName()),
+                twoDimensional
+                    ? QStringLiteral("Part::Offset2D")
+                    : QStringLiteral("Part::Offset"),
+                QString::fromStdString(resultName)
+            );
+    const auto expectedType = twoDimensional
+        ? Part::Offset2D::getClassTypeId()
+        : Part::Offset::getClassTypeId();
+    auto* offset = freecad_cast<Part::Offset*>(
+        Gui::Command::runDocumentObjectCommand(
+            Gui::Command::Doc,
+            document,
+            factory.toUtf8(),
+            expectedType
+        )
+    );
+    if (!offset) {
+        throw Base::RuntimeError(
+            "Offset creation returned an incompatible result"
+        );
+    }
+
+    attempt->trackCreatedObject(*offset);
+    attempt->markResultAsDesignDefinition(*offset);
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.Source = %s",
+        Gui::Command::getObjectCmd(offset).c_str(),
+        Gui::Command::getObjectCmd(&source).c_str()
+    );
+    Gui::Command::doCommand(
+        Gui::Command::Doc,
+        "%s.Value = 1.0",
+        Gui::Command::getObjectCmd(offset).c_str()
+    );
+    document.recompute();
+
+    if (!source.isDerivedFrom<Part::Part2DObject>()) {
+        Gui::Command::copyVisual(
+            offset,
+            "ShapeAppearance",
+            &source
+        );
+        Gui::Command::copyVisual(offset, "LineColor", &source);
+        Gui::Command::copyVisual(offset, "PointColor", &source);
+    }
+    auto* presentation =
+        PartGui::resolveModelingPresentationObject(&source);
+    if (presentation && presentation->Visibility.getValue()) {
+        attempt->trackReplacedInputs(*offset, {presentation});
+        Gui::cmdAppObjectHide(presentation);
+    }
+
+    widget = new OffsetWidget(offset);
+    addTaskBox(
+        Gui::BitmapFactory().pixmap(
+            twoDimensional ? "Part_Offset2D" : "Part_Offset"
+        ),
+        widget
+    );
 }
 
 TaskOffset::~TaskOffset() = default;
@@ -288,6 +389,23 @@ bool TaskOffset::accept()
     }
 
     auto* object = widget->getObject();
+    try {
+        if (!attempt) {
+            throw Base::RuntimeError(
+                "Offset task lost its exact transaction"
+            );
+        }
+        attempt->commit();
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            widget,
+            tr("Offset failed"),
+            QCoreApplication::translate("Exception", error.what())
+        );
+        return false;
+    }
+
     auto* appDocument = object ? object->getDocument() : nullptr;
     auto* guiDocument = appDocument
         ? Gui::Application::Instance->getDocument(appDocument)
@@ -296,6 +414,7 @@ bool TaskOffset::accept()
         ? Gui::Application::Instance->getViewProvider(object)
         : nullptr;
     widget->prepareForClose();
+    attempt.reset();
     if (guiDocument
         && guiDocument->getEditViewProvider() == objectViewProvider) {
         guiDocument->resetEdit();
@@ -313,17 +432,13 @@ bool TaskOffset::reject()
     auto* objectViewProvider = object
         ? Gui::Application::Instance->getViewProvider(object)
         : nullptr;
+    auto rollback = std::move(attempt);
     widget->prepareForClose();
     if (guiDocument
         && guiDocument->getEditViewProvider() == objectViewProvider) {
         guiDocument->cancelEdit();
     }
-    else if (appDocument
-             && launchTransactionId != App::NullTransaction
-             && appDocument->getBookedTransactionID()
-                 == launchTransactionId) {
-        App::GetApplication().abortTransaction(launchTransactionId);
-    }
+    rollback.reset();
     return true;
 }
 

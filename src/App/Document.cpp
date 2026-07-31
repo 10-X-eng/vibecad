@@ -1914,6 +1914,7 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
     signalImportObjects(objs, reader);
     afterRestore(objs, true);
 
+    GetApplication().signalFinishImportObjects(*this, objs);
     signalFinishImportObjects(objs);
 
     for (const auto o : objs) {
@@ -1956,6 +1957,15 @@ void Document::classifyExistingTimelineLeafInternalObject(DocumentObject* object
         throw Base::RuntimeError("This document has no native operation timeline");
     }
     timeline->classifyExistingLeafInternalObject(object);
+}
+
+void Document::classifyExistingTimelineSemanticBlockInternalObject(DocumentObject* operation)
+{
+    auto* timeline = DocumentTimeline::get(this);
+    if (!timeline) {
+        throw Base::RuntimeError("This document has no native operation timeline");
+    }
+    timeline->classifyExistingSemanticBlockInternal(operation);
 }
 
 bool Document::isProvisionallyEnrolledInTimelineByCurrentTransaction(
@@ -4163,12 +4173,85 @@ std::vector<DocumentObject*> Document::copyObject(
     bool returnAll
 )
 {
+    const int copyTransactionId = getBookedTransactionID();
+    const bool capturesTimelineCreations = !testStatus(TempDoc) && !isPerformingTransaction()
+        && !d->rollback && copyTransactionId != NullTransaction
+        && GetApplication().transactionIsActive(copyTransactionId);
+
     std::vector<DocumentObject*> deps;
     if (!recursive) {
         deps = objs;
     }
     else {
         deps = getDependencyList(objs, DepNoXLinked | DepSort);
+    }
+
+    auto* sourceTimeline = capturesTimelineCreations ? DocumentTimeline::get(this) : nullptr;
+    if (recursive && sourceTimeline) {
+        // Ordinary dependency traversal does not express semantic ownership.
+        // Alternate both closures until every operation resource and every
+        // dependency introduced by that resource is present exactly once.
+        std::unordered_set<DocumentObject*> identities(deps.begin(), deps.end());
+        while (true) {
+            const std::size_t sizeBefore = identities.size();
+            std::vector<DocumentObject*> tracked;
+            for (auto* operation : sourceTimeline->Operations.getValues()) {
+                if (identities.contains(operation)) {
+                    tracked.push_back(operation);
+                }
+            }
+            if (!tracked.empty()) {
+                const auto semantic = sourceTimeline->semanticCopyClosure(tracked);
+                identities.insert(semantic.begin(), semantic.end());
+                const auto dependencies = getDependencyList(
+                    semantic,
+                    DepNoXLinked | DepSort
+                );
+                identities.insert(dependencies.begin(), dependencies.end());
+            }
+            if (identities.size() == sizeBefore) {
+                break;
+            }
+        }
+
+        std::vector<DocumentObject*> unordered(identities.begin(), identities.end());
+        const auto ordered = getDependencyList(unordered, DepNoXLinked | DepSort);
+        deps.clear();
+        deps.reserve(identities.size());
+        for (auto* object : ordered) {
+            if (identities.contains(object)) {
+                deps.push_back(object);
+            }
+        }
+        if (deps.size() != identities.size()) {
+            throw Base::RuntimeError(
+                "Could not produce one exact dependency order for a recursive timeline copy"
+            );
+        }
+    }
+
+    std::vector<std::string> sourceOrderNames;
+    std::vector<bool> sourceVisibility;
+    std::vector<bool> sourceSuppression;
+    if (sourceTimeline) {
+        const auto& operations = sourceTimeline->Operations.getValues();
+        const auto& visibility = sourceTimeline->VisibilityAtEnd.getValues();
+        const auto& suppression = sourceTimeline->SuppressionAtEnd.getValues();
+        if (visibility.size() != operations.size() || suppression.size() != operations.size()) {
+            throw Base::RuntimeError(
+                "The source timeline has inconsistent accepted state"
+            );
+        }
+        const std::unordered_set<DocumentObject*> copied(deps.begin(), deps.end());
+        for (std::size_t index = 0; index < operations.size(); ++index) {
+            auto* operation = operations[index];
+            if (!copied.contains(operation)) {
+                continue;
+            }
+            sourceOrderNames.push_back(operation->getExportName(true));
+            sourceVisibility.push_back(visibility.test(index));
+            sourceSuppression.push_back(suppression.test(index));
+        }
     }
 
     if (!testStatus(TempDoc) && !isSaved() && PropertyXLink::hasXLink(deps)) {
@@ -4181,10 +4264,6 @@ std::vector<DocumentObject*> Document::copyObject(
     // if not copying recursively then suppress possible warnings
     md.setVerbose(recursive);
 
-    const int copyTransactionId = getBookedTransactionID();
-    const bool capturesTimelineCreations = !testStatus(TempDoc) && !isPerformingTransaction()
-        && !d->rollback && copyTransactionId != NullTransaction
-        && GetApplication().transactionIsActive(copyTransactionId);
     if (capturesTimelineCreations) {
         // copyObject restores through the generic import machinery. Ensure
         // the target controller exists before partially restored objects can
@@ -4251,6 +4330,36 @@ std::vector<DocumentObject*> Document::copyObject(
 
         Base::ifstream istr(fi, std::ios::in | std::ios::binary);
         imported = md.importObjects(istr);
+    }
+
+    if (capturesTimelineCreations) {
+        std::unordered_set<DocumentObject*> importedSet(imported.begin(), imported.end());
+        std::unordered_set<DocumentObject*> mappedSet;
+        std::vector<DocumentObject*> mappedSourceOrder;
+        mappedSourceOrder.reserve(sourceOrderNames.size());
+        for (const auto& sourceName : sourceOrderNames) {
+            const auto mappedName = md.getNameMap().find(sourceName);
+            if (mappedName == md.getNameMap().end()) {
+                throw Base::RuntimeError(
+                    "A recursive copy did not map one source timeline identity"
+                );
+            }
+            auto* mapped = getObject(mappedName->second.c_str());
+            if (!mapped || !importedSet.contains(mapped)
+                || !mappedSet.insert(mapped).second) {
+                throw Base::RuntimeError(
+                    "A recursive copy produced a missing, duplicate, or external "
+                    "timeline identity"
+                );
+            }
+            mappedSourceOrder.push_back(mapped);
+        }
+        adoptImportedTimelineOperations(
+            imported,
+            mappedSourceOrder,
+            sourceVisibility,
+            sourceSuppression
+        );
     }
 
     if (returnAll || imported.size() != deps.size()) {

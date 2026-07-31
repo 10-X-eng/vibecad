@@ -132,7 +132,7 @@ class TestFeatureBasePlacement(unittest.TestCase):
         clones = [
             obj
             for obj in created
-            if obj.TypeId == "PartDesign::FeatureBase"
+            if obj.TypeId == "PartDesign::DesignClone"
         ]
         bodies = [
             obj for obj in created if obj.TypeId == "PartDesign::Body"
@@ -141,14 +141,23 @@ class TestFeatureBasePlacement(unittest.TestCase):
         self.assertEqual(len(bodies), 1)
         clone = clones[0]
         clone_body = bodies[0]
-        self.assertIs(clone.getParentGeoFeatureGroup(), clone_body)
-        self.assertIs(clone_body.Tip, clone)
+        self.assertIsNone(clone.getParentGeoFeatureGroup())
+        self.assertIsNone(clone.BaseFeature)
+        self.assertEqual(clone.ResultOperation, "New Bodies")
+        self.assertEqual(clone.OutputBodyIds, [str(clone_body.VibeCADBodyId)])
+        self.assertEqual(
+            clone_body.Tip.TypeId,
+            "PartDesign::DesignBodyPublication",
+        )
+        self.assertIs(clone_body.Tip.CurrentState.Operation, clone)
         self.assertTrue(clone.isValid(), clone.getStatusString())
-        self.assertFalse(clone.Shape.isNull())
-        self.assertTrue(clone.Shape.isValid())
+        self.assertTrue(clone.Shape.isNull())
+        self.assertFalse(clone.PreviewShape.isNull())
+        self.assertTrue(clone.PreviewShape.isValid())
         self.assertTrue(clone_body.isValid(), clone_body.getStatusString())
         self.assertFalse(clone_body.Shape.isNull())
         self.assertTrue(clone_body.Shape.isValid())
+        PartDesign.validateDesign(clone)
         self.assertFalse(self.document.HasPendingTransaction)
         return clone_body, clone
 
@@ -264,7 +273,7 @@ class TestFeatureBasePlacement(unittest.TestCase):
         self.assertIsNotNone(self.document.getObject(source.Name))
         self.assertFalse(self.document.HasPendingTransaction)
 
-    def test_clone_external_feature_uses_global_root_and_independent_local(self):
+    def test_clone_rejects_standalone_geometry_without_a_body_identity(self):
         container = self.document.addObject("App::Part", "FeatureContainer")
         container.Placement = self._placement(30, 8, -4, 22)
         source = self.document.addObject("Part::Feature", "FeatureSource")
@@ -278,51 +287,18 @@ class TestFeatureBasePlacement(unittest.TestCase):
         source.ViewObject.Transparency = 17
         source.ViewObject.DisplayMode = "Flat Lines"
 
-        expected_root = source.getGlobalPlacement()
-        clone_body, clone = self._clone_selected(source)
-        self.assertIs(clone.BaseFeature, source)
-        self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, App.Placement())
-        self._assert_bounds_equal(
-            self._global_shape(clone_body),
-            self._global_shape(source),
-        )
+        before = tuple(obj.Name for obj in self.document.Objects)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(source)
+        self._process_events()
+        self.assertFalse(Gui.isCommandActive("PartDesign_Clone"))
+        Gui.runCommand("PartDesign_Clone", 0)
+        self._process_events()
         self.assertEqual(
-            clone.ViewObject.ShapeColor,
-            source.ViewObject.ShapeColor,
+            tuple(obj.Name for obj in self.document.Objects),
+            before,
         )
-        self.assertEqual(
-            clone.ViewObject.LineColor,
-            source.ViewObject.LineColor,
-        )
-        self.assertEqual(
-            clone.ViewObject.PointColor,
-            source.ViewObject.PointColor,
-        )
-        self.assertEqual(
-            clone.ViewObject.Transparency,
-            source.ViewObject.Transparency,
-        )
-        self.assertEqual(
-            clone.ViewObject.DisplayMode,
-            source.ViewObject.DisplayMode,
-        )
-
-        root_placement = clone_body.Placement
-        source.Placement = self._placement(-40, 12, 7, 55)
-        self.document.recompute()
-        self._assert_placement_equal(clone_body.Placement, root_placement)
-        self._assert_placement_equal(clone.Placement, App.Placement())
-
-        local_placement = self._placement(3, 9, -1, 11)
-        clone.Placement = local_placement
-        self.document.recompute()
-        source.Shape = Part.makeBox(5, 3, 2)
-        source.Placement = self._placement(-40, 12, 7, 55)
-        self.document.recompute()
-        self.assertAlmostEqual(clone.Shape.Volume, 30.0)
-        self._assert_placement_equal(clone_body.Placement, root_placement)
-        self._assert_placement_equal(clone.Placement, local_placement)
+        self.assertFalse(self.document.HasPendingTransaction)
 
     def test_clone_body_preserves_tip_local_transform(self):
         container = self.document.addObject("App::Part", "BodyContainer")
@@ -343,11 +319,9 @@ class TestFeatureBasePlacement(unittest.TestCase):
         self.document.recompute()
 
         expected_root = source_body.getGlobalPlacement()
-        expected_local = source_tip.Placement
         clone_body, clone = self._clone_selected(source_body)
-        self.assertIs(clone.BaseFeature, source_tip)
+        self.assertEqual(clone.InputStates, [source_tip])
         self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, expected_local)
         self._assert_bounds_equal(
             self._global_shape(clone_body),
             self._global_shape(source_body),
@@ -357,16 +331,39 @@ class TestFeatureBasePlacement(unittest.TestCase):
         source_tip.Placement = self._placement(-6, 8, 2, -40)
         self.document.recompute()
         self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, expected_local)
 
         source_tip.Shape = Part.makeBox(5, 3, 2)
         source_tip.Placement = self._placement(-6, 8, 2, -40)
         self.document.recompute()
-        self.assertAlmostEqual(clone.Shape.Volume, 30.0)
+        self.assertAlmostEqual(clone_body.Shape.Volume, 30.0)
         self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, expected_local)
 
-    def test_clone_link_occurrence_is_independent_and_round_trips(self):
+        clone_body_name = clone_body.Name
+        clone_name = clone.Name
+        identities = (
+            str(clone.OperationId),
+            str(clone_body.VibeCADBodyId),
+            str(clone_body.Tip.CurrentState.BodyStateId),
+        )
+        self._round_trip("BodyClonePlacement.FCStd")
+        reopened_body = self.document.getObject(clone_body_name)
+        reopened_clone = self.document.getObject(clone_name)
+        self._assert_placement_equal(
+            reopened_body.Placement,
+            expected_root,
+        )
+        self.assertAlmostEqual(reopened_body.Shape.Volume, 30.0)
+        self.assertEqual(
+            (
+                str(reopened_clone.OperationId),
+                str(reopened_body.VibeCADBodyId),
+                str(reopened_body.Tip.CurrentState.BodyStateId),
+            ),
+            identities,
+        )
+        PartDesign.validateDesign(reopened_clone)
+
+    def test_clone_rejects_an_assembly_occurrence(self):
         definition = self.document.addObject(
             "PartDesign::Body",
             "LinkDefinition",
@@ -386,54 +383,36 @@ class TestFeatureBasePlacement(unittest.TestCase):
         container.addObject(occurrence)
         self.document.recompute()
 
-        expected_root = (
-            container.getGlobalPlacement() * occurrence.Placement
+        before = tuple(obj.Name for obj in self.document.Objects)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(occurrence)
+        self._process_events()
+        self.assertFalse(Gui.isCommandActive("PartDesign_Clone"))
+        Gui.runCommand("PartDesign_Clone", 0)
+        self._process_events()
+        self.assertEqual(
+            tuple(obj.Name for obj in self.document.Objects),
+            before,
         )
-        clone_body, clone = self._clone_selected(occurrence)
-        self.assertIs(clone.BaseFeature, occurrence)
-        self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, App.Placement())
-        self._assert_bounds_equal(
-            self._global_shape(clone_body),
-            self._link_global_shape(occurrence),
-        )
-
-        occurrence.Placement = self._placement(-30, 22, 8, 63)
-        self.document.recompute()
-        self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, App.Placement())
-
-        local_placement = self._placement(2, -7, 3, 9)
-        clone.Placement = local_placement
-        self.document.recompute()
-        definition_tip.Shape = Part.makeBox(5, 3, 2)
-        definition_tip.Placement = App.Placement()
-        self.document.recompute()
-        self.assertAlmostEqual(clone.Shape.Volume, 30.0)
-        self._assert_placement_equal(clone_body.Placement, expected_root)
-        self._assert_placement_equal(clone.Placement, local_placement)
-
-        clone_body_name = clone_body.Name
-        clone_name = clone.Name
-        self._round_trip("LinkClonePlacement.FCStd")
-        reopened_body = self.document.getObject(clone_body_name)
-        reopened_clone = self.document.getObject(clone_name)
-        self._assert_placement_equal(reopened_body.Placement, expected_root)
-        self._assert_placement_equal(
-            reopened_clone.Placement,
-            local_placement,
-        )
-        self.assertAlmostEqual(reopened_clone.Shape.Volume, 30.0)
+        self.assertFalse(self.document.HasPendingTransaction)
 
     def test_clone_creation_is_one_undo_step(self):
-        source = self.document.addObject("Part::Feature", "UndoCloneSource")
+        source_body = self.document.addObject(
+            "PartDesign::Body",
+            "UndoCloneBody",
+        )
+        source = source_body.newObject(
+            "PartDesign::Feature",
+            "UndoCloneSource",
+        )
         source.Shape = Part.makeBox(4, 3, 2)
         source.Placement = self._placement(12, 5, -3, 15)
+        source_body.Tip = source
         self.document.recompute()
         self.document.clearUndos()
         original_names = tuple(obj.Name for obj in self.document.Objects)
 
-        self._clone_selected(source)
+        self._clone_selected(source_body)
         self.assertNotEqual(
             tuple(obj.Name for obj in self.document.Objects),
             original_names,
@@ -448,35 +427,26 @@ class TestFeatureBasePlacement(unittest.TestCase):
         self.assertFalse(self.document.HasPendingTransaction)
 
     def test_clone_failure_aborts_without_partial_objects_or_undo(self):
-        source = self.document.addObject(
-            "Part::FeaturePython",
+        source_body = self.document.addObject(
+            "PartDesign::Body",
+            "FailingCloneBody",
+        )
+        source = source_body.newObject(
+            "PartDesign::FeaturePython",
             "FailingCloneSource",
         )
         proxy = _FailingCloneSourceProxy()
         source.Proxy = proxy
+        source_body.Tip = source
         self.document.recompute()
         self.assertTrue(source.isValid(), source.getStatusString())
         self.assertFalse(source.Shape.isNull())
 
-        # Creating the modeling context last establishes App::Document's active
-        # object through the same native add-object path used by the product.
-        # ActiveObject is intentionally read-only in the Python document API.
-        context_body = self.document.addObject(
-            "PartDesign::Body",
-            "FailureContextBody",
-        )
-        context_feature = context_body.newObject(
-            "PartDesign::Feature",
-            "FailureContextFeature",
-        )
-        context_feature.Shape = Part.makeBox(2, 2, 2)
-        context_body.Tip = context_feature
-
-        context_body.ViewObject.Visibility = False
+        source_body.ViewObject.Visibility = True
         source.ViewObject.Visibility = True
-        Gui.activeView().setActiveObject("pdbody", context_body)
+        Gui.activeView().setActiveObject("pdbody", source_body)
         Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(source, "Face1")
+        Gui.Selection.addSelection(source_body, "Face1")
         self._process_events()
         self.assertTrue(Gui.isCommandActive("PartDesign_Clone"))
 

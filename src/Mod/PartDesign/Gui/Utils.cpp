@@ -27,6 +27,8 @@
 #include <QMessageBox>
 #include <gp_Pln.hxx>
 #include <Precision.hxx>
+#include <map>
+#include <sstream>
 #include <string_view>
 
 
@@ -46,6 +48,7 @@
 #include <Gui/MDIView.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/TaskView/TaskDialog.h>
+#include <Gui/ViewProviderLink.h>
 #include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/PartDesign/App/Feature.h>
@@ -69,6 +72,59 @@ using namespace Attacher;
 namespace PartDesignGui
 {
 
+void copyShapeVisualProperties(const App::DocumentObject& destination, const App::DocumentObject& source)
+{
+    static const std::map<std::string, std::string> linkMaterialProperties = {
+        {"ShapeAppearance", "ShapeMaterial"},
+        {"Transparency", "Transparency"},
+    };
+    static constexpr const char* properties[] = {
+        "ShapeAppearance",
+        "LineColor",
+        "PointColor",
+        "Transparency",
+        "DisplayMode",
+    };
+
+    const auto destinationCommand = Gui::Command::getObjectCmd(&destination);
+    for (const char* property : properties) {
+        const auto materialProperty = linkMaterialProperties.find(property);
+        if (materialProperty != linkMaterialProperties.end()) {
+            auto* current = &source;
+            for (int depth = 0;; ++depth) {
+                auto* linkView = freecad_cast<Gui::ViewProviderLink*>(
+                    Gui::Application::Instance->getViewProvider(current)
+                );
+                if (linkView && linkView->OverrideMaterial.getValue()) {
+                    Gui::cmdGuiObject(
+                        &destination,
+                        std::stringstream()
+                            << property << " = " << Gui::Command::getObjectCmd(current)
+                            << ".ViewObject." << materialProperty->second
+                    );
+                    current = nullptr;
+                    break;
+                }
+                auto* linked = current->getLinkedObject(false, nullptr, false, depth);
+                if (!linked || linked == current) {
+                    break;
+                }
+                current = linked;
+            }
+            if (!current) {
+                continue;
+            }
+        }
+
+        Gui::cmdGuiObject(
+            &destination,
+            std::stringstream() << property << " = getattr(" << Gui::Command::getObjectCmd(&source)
+                                << ".getLinkedObject(True).ViewObject, '" << property << "', "
+                                << destinationCommand << ".ViewObject." << property << ')'
+        );
+    }
+}
+
 namespace
 {
 
@@ -88,10 +144,7 @@ PartDesign::Body* selectedBodyForDocument(App::Document* document)
         if (!PartGui::isModelingObjectActive(object)) {
             return nullptr;
         }
-        auto* body = freecad_cast<PartDesign::Body*>(object);
-        if (!body) {
-            body = PartDesign::Body::findBodyOf(object);
-        }
+        auto* body = freecad_cast<PartDesign::Body*>(PartGui::findModelingBody(object));
         if (!body) {
             continue;
         }
@@ -114,9 +167,7 @@ bool canStartModelingCommand()
     auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
     return document
         && (document->getBookedTransactionID() == App::NullTransaction
-            || Gui::TaskView::TaskDialog::hasOwnedEnclosingTransaction(
-                document
-            ));
+            || Gui::TaskView::TaskDialog::hasOwnedEnclosingTransaction(document));
 }
 
 // TODO: Refactor DocumentObjectItem::getSubName() that has similar logic
@@ -142,26 +193,30 @@ bool setEdit(App::DocumentObject* obj, PartDesign::Body* body)
         FC_ERR("invalid object");
         return false;
     }
-    if (!body) {
+    const bool globalDefinition = obj->getPropertyByName("VibeCADDefinitionId")
+        && !PartDesign::Body::findBodyOf(obj);
+    if (!body && !globalDefinition) {
         body = getBodyFor(obj, false);
         if (!body) {
             FC_ERR("no body found");
             return false;
         }
     }
-    auto* guiDocument =
-        Gui::Application::Instance
+    auto* guiDocument = Gui::Application::Instance
         ? Gui::Application::Instance->getDocument(obj->getDocument())
         : nullptr;
-    auto* activeView =
-        guiDocument ? guiDocument->getActiveView() : nullptr;
+    auto* activeView = guiDocument ? guiDocument->getActiveView() : nullptr;
     if (!activeView) {
         return false;
     }
     App::DocumentObject* parent = nullptr;
     std::string subname;
     auto activeBody = activeView->getActiveObject<PartDesign::Body*>(PDBODYKEY, &parent, &subname);
-    if (activeBody != body) {
+    if (globalDefinition) {
+        parent = obj;
+        subname.clear();
+    }
+    else if (activeBody != body) {
         parent = obj;
         subname.clear();
     }
@@ -206,12 +261,7 @@ PartDesign::Body* getBody(
             if (autoActivate) {
                 if (auto* selectedBody = selectedBodyForDocument(doc);
                     selectedBody && selectedBody != activeBody) {
-                    activeBody = makeBodyActive(
-                        selectedBody,
-                        doc,
-                        topParent,
-                        subname
-                    );
+                    activeBody = makeBodyActive(selectedBody, doc, topParent, subname);
                 }
             }
             if (!activeBody && singleBodyDocument && autoActivate) {
@@ -226,12 +276,10 @@ PartDesign::Body* getBody(
                 DlgActiveBody dia(
                     Gui::getMainWindow(),
                     doc,
-                    QObject::tr(
-                        "To use Part Design, an active body is required in the document. "
-                        "Activate a body (double-click) or create a new one."
-                        "\n\nFor legacy documents with Part Design objects lacking a body, "
-                        "use the migrate function in Part Design to place them into a body."
-                    )
+                    QObject::tr("To use Part Design, an active body is required in the document. "
+                                "Activate a body (double-click) or create a new one."
+                                "\n\nFor legacy documents with Part Design objects lacking a body, "
+                                "use the migrate function in Part Design to place them into a body.")
                 );
                 if (dia.exec() == QDialog::DialogCode::Accepted) {
                     activeBody = dia.getActiveBody();
@@ -357,17 +405,14 @@ PartDesign::Body* makeBody(App::Document* doc)
     };
     FCMD_DOC_CMD(
         doc,
-        "classifyProvisionalTimelineInternalObject("
-            << Gui::Command::getObjectCmd(body) << ")"
+        "classifyProvisionalTimelineInternalObject(" << Gui::Command::getObjectCmd(body) << ")"
     );
     body = resolveExactBody();
-    const auto* role = body
-        ? dynamic_cast<const App::PropertyString*>(
-              body->getPropertyByName(App::DocumentTimeline::RolePropertyName)
-          )
-        : nullptr;
-    if (!body || !role
-        || std::string_view(role->getValue()) != App::DocumentTimeline::InternalRole) {
+    const auto* role = body ? dynamic_cast<const App::PropertyString*>(
+                                  body->getPropertyByName(App::DocumentTimeline::RolePropertyName)
+                              )
+                            : nullptr;
+    if (!body || !role || std::string_view(role->getValue()) != App::DocumentTimeline::InternalRole) {
         throw Base::RuntimeError("Create Body did not retain one exact structural Body identity");
     }
     Gui::Command::doCommand(
@@ -409,6 +454,13 @@ PartDesign::Body* getBodyFor(
     }
 
     rv = PartDesign::Body::findBodyOf(obj);
+    if (rv) {
+        return rv;
+    }
+
+    rv = const_cast<PartDesign::Body*>(
+        freecad_cast<const PartDesign::Body*>(PartGui::findModelingBody(obj))
+    );
     if (rv) {
         return rv;
     }
@@ -747,7 +799,8 @@ bool isFeatureMovable(App::DocumentObject* const feat)
             }
         }
 
-        if (auto prop = dynamic_cast<App::PropertyLinkSub*>(prim->getPropertyByName("AuxiliarySpine"))) {
+        if (auto prop = dynamic_cast<App::PropertyLinkSub*>(prim->getPropertyByName("AuxiliarySpine")
+            )) {
             App::DocumentObject* auxSpine = prop->getValue();
             if (auxSpine && !isFeatureMovable(auxSpine)) {
                 return false;

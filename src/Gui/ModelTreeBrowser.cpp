@@ -13,6 +13,7 @@
 
 #include <App/Datums.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/GroupExtension.h>
@@ -91,6 +92,11 @@ std::string stringProperty(const App::DocumentObject* object, const char* name)
     const auto* property =
         dynamic_cast<const App::PropertyString*>(object->getPropertyByName(name));
     return property ? property->getStrValue() : std::string();
+}
+
+std::string timelineRole(const App::DocumentObject* object)
+{
+    return stringProperty(object, App::DocumentTimeline::RolePropertyName);
 }
 
 std::string scriptedOutputIdentity(
@@ -449,15 +455,23 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     if (isReferenceGeometry(object)) {
         return Role::Reference;
     }
+    if (isReference(object)) {
+        return Role::Reference;
+    }
+    const std::string persistedTimelineRole = timelineRole(object);
+    if (persistedTimelineRole == App::DocumentTimeline::OperationRole) {
+        return Role::History;
+    }
+    if (persistedTimelineRole == App::DocumentTimeline::ResourceRole
+        || persistedTimelineRole == App::DocumentTimeline::InternalRole) {
+        return Role::Internal;
+    }
     if (object->hasExtension(App::GroupExtension::getExtensionClassTypeId())
         && !object->hasExtension(App::GeoFeatureGroupExtension::getExtensionClassTypeId())) {
         return Role::Group;
     }
     if (publishedOutput) {
         return Role::Geometry;
-    }
-    if (isReference(object)) {
-        return Role::Reference;
     }
     if (ownership.body) {
         return Role::Feature;

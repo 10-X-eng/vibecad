@@ -116,64 +116,61 @@ def cmdCreateToleranceSetFeature(name, minTolerance=1e-7, maxTolerance=0):
     presentations = _visible_presentations(operands)
 
     document.openTransaction("Create ToleranceSet")
-    FreeCADGui.addModule("BOPTools.ToleranceFeatures")
-    result = FreeCADGui.runDocumentObjectCommand(
-        document,
-        f"BOPTools.ToleranceFeatures.makeToleranceSet(name={name!r})",
-        "Part::Feature",
-    )
-    result_expression = _object_expression(result)
-    FreeCADGui.doCommand(
-        f"{result_expression}.minTolerance = {minTolerance!r}"
-    )
-    FreeCADGui.doCommand(
-        f"{result_expression}.maxTolerance = {maxTolerance!r}"
-    )
-    FreeCADGui.doCommand(
-        f"{result_expression}.Objects = ["
-        + ", ".join(_object_expression(obj) for obj in operands)
-        + "]"
-    )
-
     try:
+        FreeCADGui.addModule("BOPTools.ToleranceFeatures")
+        result = FreeCADGui.runDocumentObjectCommand(
+            document,
+            "BOPTools.ToleranceFeatures."
+            f"makeToleranceSet(name={name!r})",
+            "Part::Feature",
+        )
+        result_expression = _object_expression(result)
+        FreeCADGui.doCommand(
+            f"{result_expression}.minTolerance = {minTolerance!r}"
+        )
+        FreeCADGui.doCommand(
+            f"{result_expression}.maxTolerance = {maxTolerance!r}"
+        )
+        FreeCADGui.doCommand(
+            f"{result_expression}.Objects = ["
+            + ", ".join(_object_expression(obj) for obj in operands)
+            + "]"
+        )
         FreeCADGui.doCommand(
             f"{result_expression}.Proxy.execute({result_expression})"
         )
         FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
+        if result.Shape.isNull() or not result.Shape.isValid():
+            raise RuntimeError(
+                "Tolerance Set did not produce valid geometry"
+            )
+
+        presentation_expression = ", ".join(
+            _object_expression(presentation)
+            for presentation in presentations
+        )
+        FreeCADGui.doCommand(
+            "BOPTools.ToleranceFeatures."
+            "_replace_visible_presentations("
+            f"{result_expression}, [{presentation_expression}])"
+        )
+        FreeCADGui.addModule("PartGui")
+        FreeCADGui.doCommand(
+            "PartGui.publishDesignDefinitionBlock("
+            f"[{result_expression}])"
+        )
+        document.commitTransaction()
     except Exception as err:
-        mb = QtGui.QMessageBox()
-        mb.setIcon(mb.Icon.Warning)
-        error_text1 = translate(
-            "Part_ToleranceFeatures", "Computing the result failed with an error:"
+        document.abortTransaction()
+        QtGui.QMessageBox.warning(
+            FreeCADGui.getMainWindow(),
+            translate(
+                "Part_ToleranceFeatures",
+                "Tolerance Set failed",
+                None,
+            ),
+            str(err),
         )
-        error_text2 = translate(
-            "Part_ToleranceFeatures",
-            "Click 'Continue' to create the feature anyway, or 'Abort' to cancel.",
-        )
-        mb.setText(error_text1 + "\n\n" + str(err) + "\n\n" + error_text2)
-        mb.setWindowTitle(translate("Part_ToleranceFeatures", "Bad Selection", None))
-        btnAbort = mb.addButton(QtGui.QMessageBox.StandardButton.Abort)
-        btnOK = mb.addButton(
-            translate("Part_ToleranceFeatures", "Continue", None),
-            QtGui.QMessageBox.ButtonRole.ActionRole,
-        )
-        mb.setDefaultButton(btnOK)
-        mb.exec_()
-
-        if mb.clickedButton() is btnAbort:
-            document.abortTransaction()
-            return
-
-    presentation_expression = ", ".join(
-        _object_expression(presentation)
-        for presentation in presentations
-    )
-    FreeCADGui.doCommand(
-        "BOPTools.ToleranceFeatures._replace_visible_presentations("
-        f"{result_expression}, [{presentation_expression}])"
-    )
-
-    document.commitTransaction()
 
 
 def getIconPath(icon_dot_svg):

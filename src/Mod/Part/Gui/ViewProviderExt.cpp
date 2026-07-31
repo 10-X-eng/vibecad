@@ -51,6 +51,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QEventLoop>
 #include <QMenu>
 #include <QTimer>
@@ -130,6 +131,8 @@ struct DeferredVisual
 
 std::deque<DeferredVisual> deferredVisuals;
 bool deferredVisualRefreshScheduled = false;
+bool deferredVisualShutdown = false;
+bool deferredVisualShutdownConnected = false;
 std::unique_ptr<Base::SequencerLauncher> deferredVisualProgress;
 Gui::ProgressBar* deferredVisualProgressBar = nullptr;
 int deferredVisualProgressMinimumDuration = -1;
@@ -173,15 +176,43 @@ void finishDeferredVisualProgress()
     }
 }
 
+void shutdownDeferredVisualRestore()
+{
+    deferredVisualShutdown = true;
+    deferredVisuals.clear();
+    deferredVisualRefreshScheduled = false;
+    finishDeferredVisualProgress();
+}
+
+void connectDeferredVisualShutdown()
+{
+    if (deferredVisualShutdownConnected || !qApp) {
+        return;
+    }
+
+    deferredVisualShutdownConnected = true;
+    QObject::connect(qApp,
+                     &QCoreApplication::aboutToQuit,
+                     qApp,
+                     shutdownDeferredVisualRestore,
+                     Qt::DirectConnection);
+}
+
 void refreshNextDeferredVisual();
 
 void scheduleNextDeferredVisual(int delay = 0)
 {
+    if (deferredVisualShutdown || !qApp) {
+        return;
+    }
     QTimer::singleShot(delay, qApp, refreshNextDeferredVisual);
 }
 
 void refreshNextDeferredVisual()
 {
+    if (deferredVisualShutdown) {
+        return;
+    }
     if (App::Document::isAnyRestoring()) {
         scheduleNextDeferredVisual(25);
         return;
@@ -212,11 +243,15 @@ void refreshNextDeferredVisual()
 
 void deferVisualRestore(const ViewProviderPartExt& viewProvider)
 {
+    if (deferredVisualShutdown) {
+        return;
+    }
     const auto* object = viewProvider.getObject();
     const auto* document = object ? object->getDocument() : nullptr;
     if (!object || !document) {
         return;
     }
+    connectDeferredVisualShutdown();
     deferredVisuals.push_back({document->getName(), object->getNameInDocument()});
     if (!deferredVisualRefreshScheduled) {
         deferredVisualRefreshScheduled = true;

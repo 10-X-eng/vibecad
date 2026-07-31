@@ -88,6 +88,32 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         Gui.updateGui()
         QtWidgets.QApplication.instance().processEvents()
 
+    def _finish_native_task(self, *, accept: bool) -> None:
+        """Commit or cancel the one active native task through its real button."""
+
+        import FreeCADGui as Gui
+        from PySide import QtWidgets
+
+        self.assertTrue(Gui.Control.activeDialog())
+        standard_button = (
+            QtWidgets.QDialogButtonBox.Ok
+            if accept
+            else QtWidgets.QDialogButtonBox.Cancel
+        )
+        for button_box in Gui.getMainWindow().findChildren(
+            QtWidgets.QDialogButtonBox
+        ):
+            if not button_box.isVisible():
+                continue
+            button = button_box.button(standard_button)
+            if button is None or not button.isEnabled():
+                continue
+            button.click()
+            self._process_events()
+            self.assertFalse(Gui.Control.activeDialog())
+            return
+        self.fail("The active native task has no enabled completion button.")
+
     def _ribbon_actions(self) -> dict[str, object]:
         """Return the real command actions wired into the Model ribbon."""
 
@@ -470,6 +496,62 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         self.assertEqual(len(feature.Shape.Solids), 1)
         return body, feature, identity
 
+    def _design_fastener_graph(
+        self,
+        body: object,
+    ) -> tuple[object, object, object, object]:
+        """Return and validate one Model-ribbon standard-fastener graph."""
+
+        publication = body.Tip
+        self.assertIsNotNone(publication)
+        self.assertEqual(
+            publication.TypeId,
+            "PartDesign::DesignBodyPublication",
+        )
+        self.assertIs(publication.getParentGeoFeatureGroup(), body)
+
+        state = publication.CurrentState
+        self.assertIsNotNone(state)
+        self.assertEqual(state.TypeId, "PartDesign::DesignBodyState")
+        self.assertIsNone(state.getParentGeoFeatureGroup())
+        self.assertEqual(str(state.BodyId), str(body.VibeCADBodyId))
+
+        operation = state.Operation
+        self.assertIsNotNone(operation)
+        self.assertEqual(
+            operation.TypeId,
+            "PartDesign::DesignGeneratedOperation",
+        )
+        self.assertIsNone(operation.getParentGeoFeatureGroup())
+        self.assertEqual(operation.GeneratorKind, "standard-fastener")
+        self.assertEqual(
+            list(operation.OutputBodyIds),
+            [str(body.VibeCADBodyId)],
+        )
+        self.assertIs(state.Operation, operation)
+        self.assertEqual(str(state.OperationId), str(operation.OperationId))
+
+        generator = operation.Generator
+        self.assertIsNotNone(generator)
+        self.assertIn(
+            generator.TypeId,
+            {"Part::FeaturePython", "PartDesign::FeaturePython"},
+        )
+        self.assertIsNone(generator.getParentGeoFeatureGroup())
+        self.assertEqual(generator.VibeCADTimelineRole, "internal")
+        self.assertNotIn("VibeCADTimelineOwner", generator.PropertiesList)
+        self.assertFalse(generator.ViewObject.ShowInTree)
+        self.assertFalse(generator.ViewObject.Visibility)
+        self.assertEqual(
+            [
+                consumer
+                for consumer in generator.InList
+                if consumer is not body.Document.getObject("VibeCADTimeline")
+            ],
+            [operation],
+        )
+        return publication, state, operation, generator
+
     def _create_matching_hole_fixture(
         self,
         document: object,
@@ -477,11 +559,12 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         standard: str = "ISO4762",
         linked_fastener: bool = False,
     ) -> dict[str, object]:
-        """Create one native plate/sketch/fastener selection for hole commands."""
+        """Create one plate, reusable Design sketch, and explicit hole target."""
 
         import FreeCAD as App
         import FreeCADGui as Gui
         import Part
+        import PartDesign
 
         fastener_body, fastener, identity = self._create_standard_fastener(
             document,
@@ -498,13 +581,27 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             occurrence.Label = "Linked standard fastener"
             selected_fastener = occurrence
 
-        host_body = document.addObject("PartDesign::Body", "HostBody")
-        base = document.addObject("PartDesign::AdditiveBox", "HostPlate")
-        base.Length = 24
-        base.Width = 24
-        base.Height = 8
-        host_body.addObject(base)
+        document.openTransaction("Create matching-hole host plate")
+        host_operation = document.addObject(
+            "PartDesign::DesignBox",
+            "HostPlate",
+        )
+        host_edit = PartDesign.beginDesignOperationEdit(host_operation)
+        host_operation.Length = 24
+        host_operation.Width = 24
+        host_operation.Height = 8
+        PartDesign.setDesignOperationTargets(
+            host_edit,
+            "New Body",
+            [],
+        )
         document.recompute()
+        host_body = PartDesign.finalizeDesignOperationEdit(host_edit)[0]
+        host_body.Label = "Host Body"
+        document.commitTransaction()
+        base = host_body.Tip.CurrentState
+
+        document.openTransaction("Create reusable hole locations")
         sketch = document.addObject(
             "Sketcher::SketchObject",
             "HoleLocations",
@@ -519,12 +616,15 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             ),
             False,
         )
-        host_body.addObject(sketch)
         document.recompute()
+        self.assertIsNone(sketch.getParentGeoFeatureGroup())
+        PartDesign.finalizeDesignDefinition(sketch)
+        document.commitTransaction()
 
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(selected_fastener)
         Gui.Selection.addSelection(sketch)
+        Gui.Selection.addSelection(host_body)
         self._process_events()
         return {
             "fastener_body": fastener_body,
@@ -532,6 +632,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             "identity": identity,
             "occurrence": occurrence,
             "host_body": host_body,
+            "host_operation": host_operation,
             "base": base,
             "sketch": sketch,
         }
@@ -813,8 +914,16 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             fastener_body.Tip = fastener
 
             host_body = document.addObject("PartDesign::Body", "HostBody")
-            sketch = host_body.newObject("Sketcher::SketchObject", "HoleLocations")
+            sketch = document.addObject("Sketcher::SketchObject", "HoleLocations")
             sketch.addGeometry(
+                Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 1.6),
+                False,
+            )
+            body_owned_sketch = host_body.newObject(
+                "Sketcher::SketchObject",
+                "BodyOwnedHoleLocations",
+            )
+            body_owned_sketch.addGeometry(
                 Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 1.6),
                 False,
             )
@@ -832,8 +941,18 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             Gui.Selection.addSelection(fastener_body)
             Gui.Selection.addSelection(sketch)
+            self.assertFalse(matching_hole.IsActive())
+            self.assertFalse(attach.IsActive())
+
+            Gui.Selection.addSelection(host_body)
             self.assertTrue(matching_hole.IsActive())
             self.assertFalse(attach.IsActive())
+
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(fastener_body)
+            Gui.Selection.addSelection(body_owned_sketch)
+            Gui.Selection.addSelection(host_body)
+            self.assertFalse(matching_hole.IsActive())
 
             circular_edges = [
                 index
@@ -846,6 +965,8 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             Gui.Selection.addSelection(fastener_body)
             Gui.Selection.addSelection(cylinder, f"Edge{circular_edge}")
             self.assertFalse(matching_hole.IsActive())
+            # One-feature Body-owned fasteners from earlier VibeCAD releases
+            # are unambiguous and can be promoted when Attach executes.
             self.assertTrue(attach.IsActive())
 
             Gui.Selection.addSelection(
@@ -876,7 +997,9 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             Gui.Selection.clearSelection()
             App.closeDocument(document.Name)
 
-    def test_insert_standard_fastener_ribbon_action_creates_owned_body_tip(self) -> None:
+    def test_insert_standard_fastener_ribbon_action_creates_global_operation(
+        self,
+    ) -> None:
         import FreeCAD as App
         import FreeCADGui as Gui
         from PySide import QtCore, QtWidgets
@@ -905,44 +1028,52 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             body = selected[0]
             self.assertEqual(body.TypeId, "PartDesign::Body")
             self.assertEqual(body.Label, "M3 socket bolt")
-            feature = body.Tip
-            self.assertIsNotNone(feature)
-            self.assertTrue(feature.Label.startswith("M3 socket bolt"))
-            self.assertNotEqual(feature.Label, body.Label)
-            self.assertEqual(feature.TypeId, "PartDesign::FeaturePython")
-            self.assertIs(feature.getParentGeoFeatureGroup(), body)
+            publication, state, operation, generator = (
+                self._design_fastener_graph(body)
+            )
             self.assertEqual(
-                body.VibeCADTimelineRole,
+                operation.VibeCADTimelineRole,
                 "operation",
             )
             self.assertEqual(
-                body.VibeCADTimelineEditCommand,
+                operation.VibeCADTimelineEditCommand,
                 "VibeCAD_EditStandardFastener",
             )
-            self.assertIs(body.VibeCADTimelineEditor, feature)
-            self.assertEqual(feature.VibeCADTimelineRole, "resource")
-            self.assertIs(feature.VibeCADTimelineOwner, body)
-            self.assertEqual(
-                feature.getTypeIdOfProperty("VibeCADTimelineOwner"),
-                "App::PropertyLinkHidden",
+            self.assertNotIn(
+                "VibeCADTimelineEditor",
+                operation.PropertiesList,
             )
-            self.assertEqual(getattr(feature, PROP_SCHEMA), COMPONENT_SCHEMA)
-            self.assertEqual(str(feature.Type), "ISO4762")
-            self.assertEqual(str(feature.Diameter), "M3")
-            self.assertFalse(feature.Shape.isNull())
-            self.assertTrue(feature.Shape.isValid())
-            self.assertEqual(len(feature.Shape.Solids), 1)
-            self.assertIs(
+            self.assertEqual(operation.Label, "Fastener: M3 socket bolt")
+            self.assertEqual(operation.OutputLabel, "M3 socket bolt")
+            self.assertEqual(generator.Label, "M3 socket bolt generator")
+            self.assertEqual(getattr(generator, PROP_SCHEMA), COMPONENT_SCHEMA)
+            self.assertEqual(str(generator.Type), "ISO4762")
+            self.assertEqual(str(generator.Diameter), "M3")
+            self.assertFalse(generator.Shape.isNull())
+            self.assertTrue(generator.Shape.isValid())
+            self.assertEqual(len(generator.Shape.Solids), 1)
+            self.assertTrue(operation.Shape.isNull())
+            self.assertFalse(publication.Shape.isNull())
+            self.assertTrue(publication.Shape.isValid())
+            self.assertEqual(len(publication.Shape.Solids), 1)
+            self.assertFalse(body.Shape.isNull())
+            self.assertTrue(body.Shape.isValid())
+            self.assertEqual(len(body.Shape.Solids), 1)
+            self.assertIsNone(
                 Gui.activeView().getActiveObject("pdbody"),
-                body,
             )
 
             controller = document.getObject("VibeCADTimeline")
             self.assertIsNotNone(controller)
             operations = list(controller.Operations)
-            self.assertEqual(operations[-2:], [feature, body])
-            block_start = operations.index(feature)
-            block_end = operations.index(body) + 1
+            self.assertEqual(operations[-2:], [state, operation])
+            block_start = operations.index(state)
+            block_end = operations.index(operation) + 1
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
 
             timeline = Gui.getMainWindow().findChild(
                 QtWidgets.QListWidget,
@@ -968,23 +1099,36 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 str(timeline.item(row).data(QtCore.Qt.UserRole) or "")
                 for row in range(timeline.count())
             ]
-            self.assertIn(body.Name, timeline_names)
-            self.assertNotIn(feature.Name, timeline_names)
+            self.assertIn(operation.Name, timeline_names)
+            self.assertNotIn(generator.Name, timeline_names)
+            self.assertNotIn(state.Name, timeline_names)
+            self.assertNotIn(publication.Name, timeline_names)
+            self.assertNotIn(body.Name, timeline_names)
 
             end.click()
             self._process_events()
             previous.click()
             self._process_events()
             self.assertEqual(controller.Position, block_start)
-            self.assertFalse(body.Visibility)
-            self.assertFalse(feature.Visibility)
+            # History presence must not overwrite either saved eye state.
+            # Before the creating operation, the stable publication remains
+            # the Tip but resolves to an empty shape.
+            self.assertTrue(body.Visibility)
+            self.assertTrue(publication.Visibility)
+            self.assertTrue(body.Shape.isNull())
+            self.assertTrue(publication.Shape.isNull())
+            self.assertFalse(generator.Visibility)
 
             next_button.click()
             self._process_events()
             self.assertEqual(controller.Position, block_end)
-            self.assertIs(body.Tip, feature)
+            self.assertIs(body.Tip, publication)
+            self.assertIs(publication.CurrentState, state)
             self.assertTrue(body.Visibility)
-            self.assertTrue(feature.Visibility)
+            self.assertTrue(publication.Visibility)
+            self.assertFalse(body.Shape.isNull())
+            self.assertFalse(publication.Shape.isNull())
+            self.assertFalse(generator.Visibility)
         finally:
             Gui.Selection.clearSelection()
             App.closeDocument(document.Name)
@@ -994,6 +1138,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
     ) -> None:
         import FreeCAD as App
         import FreeCADGui as Gui
+        import PartDesign
 
         document = App.newDocument("ModelFastenerLifecycle")
         document.UndoMode = True
@@ -1014,37 +1159,56 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             selected = Gui.Selection.getSelection()
             self.assertEqual(len(selected), 1)
             body = selected[0]
-            feature = body.Tip
+            publication, state, operation, generator = (
+                self._design_fastener_graph(body)
+            )
             body_name = body.Name
-            feature_name = feature.Name
+            publication_name = publication.Name
+            state_name = state.Name
+            operation_name = operation.Name
+            generator_name = generator.Name
+            body_id = str(body.VibeCADBodyId)
+            state_id = str(state.BodyStateId)
+            operation_id = str(operation.OperationId)
             self._assert_exact_timeline_block(
                 document,
-                body,
-                (feature,),
+                operation,
+                (state,),
             )
-            self.assertIs(body.VibeCADTimelineEditor, feature)
-            self.assertIs(feature.getParentGeoFeatureGroup(), body)
-            self.assertFalse(feature.Shape.isNull())
+            self.assertFalse(body.Shape.isNull())
+            PartDesign.validateDesign(operation)
 
             document.undo()
             self._process_events()
-            self.assertIsNone(document.getObject(body_name))
-            self.assertIsNone(document.getObject(feature_name))
+            for name in (
+                body_name,
+                publication_name,
+                state_name,
+                operation_name,
+                generator_name,
+            ):
+                self.assertIsNone(document.getObject(name))
 
             document.redo()
             self._process_events()
             body = document.getObject(body_name)
-            feature = document.getObject(feature_name)
             self.assertIsNotNone(body)
-            self.assertIsNotNone(feature)
-            self.assertIs(body.Tip, feature)
-            self.assertIs(feature.getParentGeoFeatureGroup(), body)
-            self.assertIs(body.VibeCADTimelineEditor, feature)
+            publication, state, operation, generator = (
+                self._design_fastener_graph(body)
+            )
+            self.assertEqual(publication.Name, publication_name)
+            self.assertEqual(state.Name, state_name)
+            self.assertEqual(operation.Name, operation_name)
+            self.assertEqual(generator.Name, generator_name)
+            self.assertEqual(str(body.VibeCADBodyId), body_id)
+            self.assertEqual(str(state.BodyStateId), state_id)
+            self.assertEqual(str(operation.OperationId), operation_id)
             self._assert_exact_timeline_block(
                 document,
-                body,
-                (feature,),
+                operation,
+                (state,),
             )
+            PartDesign.validateDesign(operation)
 
             with tempfile.TemporaryDirectory() as temporary_directory:
                 saved_file = (
@@ -1059,34 +1223,46 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 restored_document.UndoMode = True
                 self._process_events()
                 body = restored_document.getObject(body_name)
-                feature = restored_document.getObject(feature_name)
                 self.assertIsNotNone(body)
-                self.assertIsNotNone(feature)
-                self.assertIs(body.Tip, feature)
-                self.assertIs(feature.getParentGeoFeatureGroup(), body)
-                self.assertIs(body.VibeCADTimelineEditor, feature)
-                self.assertFalse(feature.Shape.isNull())
+                publication, state, operation, generator = (
+                    self._design_fastener_graph(body)
+                )
+                self.assertEqual(publication.Name, publication_name)
+                self.assertEqual(state.Name, state_name)
+                self.assertEqual(operation.Name, operation_name)
+                self.assertEqual(generator.Name, generator_name)
+                self.assertEqual(str(body.VibeCADBodyId), body_id)
+                self.assertEqual(str(state.BodyStateId), state_id)
+                self.assertEqual(str(operation.OperationId), operation_id)
+                self.assertFalse(body.Shape.isNull())
                 self._assert_exact_timeline_block(
                     restored_document,
-                    body,
-                    (feature,),
+                    operation,
+                    (state,),
                 )
+                PartDesign.validateDesign(operation)
 
                 Gui.Selection.clearSelection()
                 Gui.Selection.addSelection(body)
                 undo_before_delete = int(restored_document.UndoCount)
                 Gui.runCommand("Std_Delete", 0)
                 self._process_events()
-                self.assertIsNone(restored_document.getObject(body_name))
-                self.assertIsNone(restored_document.getObject(feature_name))
+                for name in (
+                    body_name,
+                    publication_name,
+                    state_name,
+                    operation_name,
+                    generator_name,
+                ):
+                    self.assertIsNone(restored_document.getObject(name))
                 deleted_timeline_names = {
                     obj.Name
                     for obj in restored_document.getObject(
                         "VibeCADTimeline"
                     ).Operations
                 }
-                self.assertNotIn(body_name, deleted_timeline_names)
-                self.assertNotIn(feature_name, deleted_timeline_names)
+                self.assertNotIn(state_name, deleted_timeline_names)
+                self.assertNotIn(operation_name, deleted_timeline_names)
                 self.assertEqual(
                     int(restored_document.UndoCount),
                     undo_before_delete + 1,
@@ -1095,29 +1271,42 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 restored_document.undo()
                 self._process_events()
                 body = restored_document.getObject(body_name)
-                feature = restored_document.getObject(feature_name)
                 self.assertIsNotNone(body)
-                self.assertIsNotNone(feature)
-                self.assertIs(body.Tip, feature)
-                self.assertIs(feature.getParentGeoFeatureGroup(), body)
+                publication, state, operation, generator = (
+                    self._design_fastener_graph(body)
+                )
+                self.assertEqual(publication.Name, publication_name)
+                self.assertEqual(state.Name, state_name)
+                self.assertEqual(operation.Name, operation_name)
+                self.assertEqual(generator.Name, generator_name)
+                self.assertEqual(str(body.VibeCADBodyId), body_id)
+                self.assertEqual(str(state.BodyStateId), state_id)
+                self.assertEqual(str(operation.OperationId), operation_id)
                 self._assert_exact_timeline_block(
                     restored_document,
-                    body,
-                    (feature,),
+                    operation,
+                    (state,),
                 )
+                PartDesign.validateDesign(operation)
 
                 restored_document.redo()
                 self._process_events()
-                self.assertIsNone(restored_document.getObject(body_name))
-                self.assertIsNone(restored_document.getObject(feature_name))
+                for name in (
+                    body_name,
+                    publication_name,
+                    state_name,
+                    operation_name,
+                    generator_name,
+                ):
+                    self.assertIsNone(restored_document.getObject(name))
                 deleted_timeline_names = {
                     obj.Name
                     for obj in restored_document.getObject(
                         "VibeCADTimeline"
                     ).Operations
                 }
-                self.assertNotIn(body_name, deleted_timeline_names)
-                self.assertNotIn(feature_name, deleted_timeline_names)
+                self.assertNotIn(state_name, deleted_timeline_names)
+                self.assertNotIn(operation_name, deleted_timeline_names)
         finally:
             Gui.Selection.clearSelection()
             if (
@@ -1604,6 +1793,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
     def test_edit_standard_fastener_ribbon_action_updates_in_place(self) -> None:
         import FreeCAD as App
         import FreeCADGui as Gui
+        import PartDesign
 
         from VibeCADFasteners import fastener_feature_identity
 
@@ -1611,23 +1801,55 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         document.UndoMode = True
         try:
             actions = self._ribbon_actions()
-            body, feature, initial = self._create_standard_fastener(document)
-            feature_name = feature.Name
-            initial_height = float(feature.Shape.BoundBox.ZLength)
+            self._trigger_catalog_dialog_action(
+                actions["VibeCAD_InsertStandardFastener"],
+                lambda driver: self._set_catalog_dialog_values(
+                    driver,
+                    standard="ISO4762",
+                    nominal_thread="M3",
+                    length_mm=10,
+                    label="M3 socket bolt",
+                ),
+            )
+
+            selected = Gui.Selection.getSelection()
+            self.assertEqual(len(selected), 1)
+            body = selected[0]
+            publication, state, operation, generator = (
+                self._design_fastener_graph(body)
+            )
+            initial = fastener_feature_identity(generator)
+            initial_height = float(body.Shape.BoundBox.ZLength)
+            names = {
+                "body": body.Name,
+                "publication": publication.Name,
+                "state": state.Name,
+                "operation": operation.Name,
+                "generator": generator.Name,
+            }
+            identities = {
+                "body": str(body.VibeCADBodyId),
+                "state": str(state.BodyStateId),
+                "operation": str(operation.OperationId),
+            }
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
+
             Gui.Selection.clearSelection()
-            # Timeline selection resolves to the native feature rather than
-            # the visible Body row; editing through either route must keep the
-            # Body's user-facing label synchronized.
-            Gui.Selection.addSelection(feature)
+            Gui.Selection.addSelection(body)
             self._process_events()
             edit = actions["VibeCAD_EditStandardFastener"]
             self.assertTrue(edit.isEnabled())
             self.assertEqual(
-                feature.VibeCADTimelineRole,
+                operation.VibeCADTimelineRole,
                 "operation",
             )
             self.assertEqual(
-                feature.VibeCADTimelineEditCommand,
+                operation.VibeCADTimelineEditCommand,
                 "VibeCAD_EditStandardFastener",
             )
             undo_before = int(document.UndoCount)
@@ -1643,29 +1865,58 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 ),
             )
 
-            self.assertIs(document.getObject(feature_name), feature)
-            self.assertIs(feature.getParentGeoFeatureGroup(), body)
-            self.assertIs(body.Tip, feature)
-            self.assertEqual(body.Label, "Edited M3 socket bolt")
-            self.assertTrue(
-                feature.Label.startswith("Edited M3 socket bolt")
+            self.assertIs(document.getObject(names["body"]), body)
+            self.assertIs(document.getObject(names["publication"]), publication)
+            self.assertIs(document.getObject(names["state"]), state)
+            self.assertIs(document.getObject(names["operation"]), operation)
+            self.assertIs(document.getObject(names["generator"]), generator)
+            current_publication, current_state, current_operation, current_generator = (
+                self._design_fastener_graph(body)
             )
-            self.assertNotEqual(feature.Label, body.Label)
-            updated = fastener_feature_identity(feature)
+            self.assertIs(current_publication, publication)
+            self.assertIs(current_state, state)
+            self.assertIs(current_operation, operation)
+            self.assertIs(current_generator, generator)
+            self.assertEqual(str(body.VibeCADBodyId), identities["body"])
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            self.assertEqual(body.Label, "Edited M3 socket bolt")
+            self.assertEqual(
+                operation.Label,
+                "Fastener: Edited M3 socket bolt",
+            )
+            self.assertEqual(operation.OutputLabel, "Edited M3 socket bolt")
+            self.assertEqual(
+                generator.Label,
+                "Edited M3 socket bolt generator",
+            )
+            updated = fastener_feature_identity(generator)
             self.assertNotEqual(
                 updated["canonical_key"],
                 initial["canonical_key"],
             )
             self.assertAlmostEqual(float(updated["length_mm"]), 12.0)
-            self.assertFalse(feature.Shape.isNull())
-            self.assertTrue(feature.Shape.isValid())
-            self.assertEqual(len(feature.Shape.Solids), 1)
-            self.assertTrue(feature.isValid(), feature.getStatusString())
+            self.assertFalse(generator.Shape.isNull())
+            self.assertTrue(generator.Shape.isValid())
+            self.assertEqual(len(generator.Shape.Solids), 1)
+            self.assertTrue(generator.isValid(), generator.getStatusString())
+            self.assertFalse(body.Shape.isNull())
+            self.assertTrue(body.Shape.isValid())
+            self.assertEqual(len(body.Shape.Solids), 1)
             self.assertAlmostEqual(
-                float(feature.Shape.BoundBox.ZLength),
+                float(body.Shape.BoundBox.ZLength),
                 initial_height + 2.0,
             )
-            self.assertEqual(Gui.Selection.getSelection(), [feature])
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
+            self.assertEqual(Gui.Selection.getSelection(), [body])
             self.assertEqual(
                 int(document.UndoCount),
                 undo_before + 1,
@@ -1673,17 +1924,37 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             document.undo()
             self._process_events()
-            restored = fastener_feature_identity(feature)
+            body = document.getObject(names["body"])
+            publication, state, operation, generator = (
+                self._design_fastener_graph(body)
+            )
+            restored = fastener_feature_identity(generator)
             self.assertEqual(
                 restored["canonical_key"],
                 initial["canonical_key"],
             )
             self.assertAlmostEqual(float(restored["length_mm"]), 10.0)
-            self.assertTrue(feature.isValid(), feature.getStatusString())
+            self.assertEqual(body.Label, "M3 socket bolt")
+            self.assertEqual(operation.Label, "Fastener: M3 socket bolt")
+            self.assertEqual(operation.OutputLabel, "M3 socket bolt")
+            self.assertEqual(generator.Label, "M3 socket bolt generator")
+            self.assertTrue(generator.isValid(), generator.getStatusString())
             self.assertAlmostEqual(
-                float(feature.Shape.BoundBox.ZLength),
+                float(body.Shape.BoundBox.ZLength),
                 initial_height,
             )
+            self.assertEqual(str(body.VibeCADBodyId), identities["body"])
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
 
             history_identity = dict(updated)
             history_undo_before = int(document.UndoCount)
@@ -1700,7 +1971,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                     "label": "History-edited M3 socket bolt",
                     "identity": history_identity,
                 }
-                items, item = self._history_item(feature)
+                items, item = self._history_item(operation)
                 items.itemDoubleClicked.emit(item)
             self._process_events()
             self.assertEqual(
@@ -1712,17 +1983,240 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 "History-edited M3 socket bolt",
             )
             self.assertAlmostEqual(
-                float(fastener_feature_identity(feature)["length_mm"]),
+                float(fastener_feature_identity(generator)["length_mm"]),
                 12.0,
             )
-            self.assertTrue(feature.isValid(), feature.getStatusString())
+            self.assertEqual(
+                operation.Label,
+                "Fastener: History-edited M3 socket bolt",
+            )
+            self.assertEqual(
+                generator.Label,
+                "History-edited M3 socket bolt generator",
+            )
+            self.assertTrue(generator.isValid(), generator.getStatusString())
             self.assertAlmostEqual(
-                float(feature.Shape.BoundBox.ZLength),
+                float(body.Shape.BoundBox.ZLength),
                 initial_height + 2.0,
             )
+            self.assertEqual(str(body.VibeCADBodyId), identities["body"])
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
         finally:
             Gui.Selection.clearSelection()
             App.closeDocument(document.Name)
+
+    def test_edit_promotes_legacy_model_fastener_with_exact_lifecycle(
+        self,
+    ) -> None:
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        import PartDesign
+
+        import VibeCADFastenersGui
+        from VibeCADFasteners import fastener_feature_identity
+
+        document = App.newDocument("LegacyFastenerRibbonEdit")
+        document.UndoMode = True
+        restored_document = None
+        try:
+            actions = self._ribbon_actions()
+            body, generator, initial_identity = self._create_standard_fastener(
+                document,
+                body_name="LegacyEditableFastenerBody",
+                standard="ISO4762",
+                nominal_thread="M3",
+                length_mm=10,
+            )
+            body.Label = "Legacy M3 socket bolt"
+            document.recompute()
+            names = {
+                "body": body.Name,
+                "generator": generator.Name,
+            }
+            body_id = str(body.VibeCADBodyId)
+            initial_volume = float(generator.Shape.Volume)
+            legacy_history_names = [
+                obj.Name
+                for obj in document.getObject("VibeCADTimeline").Operations
+            ]
+            self.assertIs(
+                VibeCADFastenersGui._legacy_model_fastener_body(generator),
+                body,
+            )
+
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(body)
+            self._process_events()
+            edit = actions["VibeCAD_EditStandardFastener"]
+            self.assertTrue(edit.isEnabled())
+            undo_before = int(document.UndoCount)
+            self._trigger_catalog_dialog_action(
+                edit,
+                lambda driver: self._set_catalog_dialog_values(
+                    driver,
+                    standard="ISO4762",
+                    nominal_thread="M3",
+                    length_mm=12,
+                    label="Migrated M3 socket bolt",
+                ),
+            )
+
+            self.assertEqual(int(document.UndoCount), undo_before + 1)
+            self.assertIs(document.getObject(names["body"]), body)
+            self.assertIs(document.getObject(names["generator"]), generator)
+            publication, state, operation, current_generator = (
+                self._design_fastener_graph(body)
+            )
+            self.assertIs(current_generator, generator)
+            self.assertEqual(str(body.VibeCADBodyId), body_id)
+            self.assertEqual(operation.ResultOperation, "Modify")
+            self.assertEqual(len(operation.InputStates), 1)
+            initial_state = operation.InputStates[0]
+            self.assertIsNone(initial_state.Operation)
+            self.assertIs(state.PreviousState, initial_state)
+            self.assertEqual(str(initial_state.BodyId), body_id)
+            self.assertAlmostEqual(
+                float(initial_state.Shape.Volume),
+                initial_volume,
+            )
+            self.assertEqual(body.Label, "Migrated M3 socket bolt")
+            self.assertEqual(
+                operation.OutputLabel,
+                "Migrated M3 socket bolt",
+            )
+            self.assertAlmostEqual(
+                float(fastener_feature_identity(generator)["length_mm"]),
+                12.0,
+            )
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
+            names.update(
+                {
+                    "publication": publication.Name,
+                    "state": state.Name,
+                    "initial_state": initial_state.Name,
+                    "operation": operation.Name,
+                }
+            )
+            identities = {
+                "state": str(state.BodyStateId),
+                "initial_state": str(initial_state.BodyStateId),
+                "operation": str(operation.OperationId),
+            }
+
+            document.undo()
+            self._process_events()
+            body = document.getObject(names["body"])
+            generator = document.getObject(names["generator"])
+            self.assertIsNotNone(body)
+            self.assertIsNotNone(generator)
+            self.assertIs(body.Tip, generator)
+            self.assertEqual(list(body.Group), [generator])
+            self.assertEqual(
+                [
+                    obj.Name
+                    for obj in document.getObject(
+                        "VibeCADTimeline"
+                    ).Operations
+                ],
+                legacy_history_names,
+            )
+            self.assertEqual(
+                fastener_feature_identity(generator)["canonical_key"],
+                initial_identity["canonical_key"],
+            )
+            for key in ("publication", "state", "initial_state", "operation"):
+                self.assertIsNone(document.getObject(names[key]))
+
+            document.redo()
+            self._process_events()
+            body = document.getObject(names["body"])
+            self.assertIsNotNone(body)
+            publication, state, operation, generator = (
+                self._design_fastener_graph(body)
+            )
+            initial_state = operation.InputStates[0]
+            self.assertEqual(publication.Name, names["publication"])
+            self.assertEqual(state.Name, names["state"])
+            self.assertEqual(initial_state.Name, names["initial_state"])
+            self.assertEqual(operation.Name, names["operation"])
+            self.assertEqual(generator.Name, names["generator"])
+            self.assertEqual(str(body.VibeCADBodyId), body_id)
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(initial_state.BodyStateId),
+                identities["initial_state"],
+            )
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            PartDesign.validateDesign(operation)
+
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                saved_file = (
+                    Path(temporary_directory)
+                    / "legacy-model-fastener-migration.FCStd"
+                )
+                document.saveAs(str(saved_file))
+                App.closeDocument(document.Name)
+                document = None
+
+                restored_document = App.openDocument(str(saved_file))
+                restored_document.UndoMode = True
+                self._process_events()
+                body = restored_document.getObject(names["body"])
+                self.assertIsNotNone(body)
+                publication, state, operation, generator = (
+                    self._design_fastener_graph(body)
+                )
+                initial_state = operation.InputStates[0]
+                self.assertEqual(publication.Name, names["publication"])
+                self.assertEqual(state.Name, names["state"])
+                self.assertEqual(initial_state.Name, names["initial_state"])
+                self.assertEqual(operation.Name, names["operation"])
+                self.assertEqual(generator.Name, names["generator"])
+                self.assertEqual(str(body.VibeCADBodyId), body_id)
+                self.assertEqual(str(state.BodyStateId), identities["state"])
+                self.assertEqual(
+                    str(initial_state.BodyStateId),
+                    identities["initial_state"],
+                )
+                self.assertEqual(
+                    str(operation.OperationId),
+                    identities["operation"],
+                )
+                self.assertIsNone(generator.getParentGeoFeatureGroup())
+                self.assertEqual(list(body.Group), [publication])
+                self._assert_exact_timeline_block(
+                    restored_document,
+                    operation,
+                    (state,),
+                )
+                PartDesign.validateDesign(operation)
+        finally:
+            Gui.Selection.clearSelection()
+            if (
+                restored_document is not None
+                and restored_document.Name in App.listDocuments()
+            ):
+                App.closeDocument(restored_document.Name)
+            if document is not None and document.Name in App.listDocuments():
+                App.closeDocument(document.Name)
 
     def test_insert_and_edit_cancel_are_exact_no_mutation_operations(self) -> None:
         import FreeCAD as App
@@ -1911,6 +2405,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 elif command_name == "VibeCAD_CreateMatchingFastenerHole":
                     Gui.Selection.addSelection(fixture["fastener_body"])
                     Gui.Selection.addSelection(fixture["sketch"])
+                    Gui.Selection.addSelection(fixture["host_body"])
                 elif command_name == "VibeCAD_AttachStandardFastener":
                     Gui.Selection.addSelection(fixture["fastener_body"])
                     Gui.Selection.addSelection(
@@ -2012,7 +2507,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
     def test_matching_hole_ribbon_action_creates_native_parametric_hole(self) -> None:
         import FreeCAD as App
         import FreeCADGui as Gui
-        import Part
+        import PartDesign
         from PySide import QtGui
 
         from VibeCADFasteners import (
@@ -2024,38 +2519,11 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         document = App.newDocument("FastenerRibbonHole")
         try:
             actions = self._ribbon_actions()
-            fastener_body, _fastener, identity = (
-                self._create_standard_fastener(document)
-            )
-
-            host_body = document.addObject("PartDesign::Body", "HostBody")
-            base = document.addObject("PartDesign::AdditiveBox", "HostPlate")
-            base.Length = 20
-            base.Width = 20
-            base.Height = 6
-            host_body.addObject(base)
-            document.recompute()
-            sketch = document.addObject(
-                "Sketcher::SketchObject",
-                "HoleLocations",
-            )
-            sketch.AttachmentSupport = (base, ["Face6"])
-            sketch.MapMode = "FlatFace"
-            sketch.addGeometry(
-                Part.Circle(
-                    App.Vector(10, 10, 0),
-                    App.Vector(0, 0, 1),
-                    1.5,
-                ),
-                False,
-            )
-            host_body.addObject(sketch)
-            document.recompute()
-
-            Gui.Selection.clearSelection()
-            Gui.Selection.addSelection(fastener_body)
-            Gui.Selection.addSelection(sketch)
-            self._process_events()
+            fixture = self._create_matching_hole_fixture(document)
+            host_body = fixture["host_body"]
+            base = fixture["base"]
+            sketch = fixture["sketch"]
+            identity = fixture["identity"]
             action = actions["VibeCAD_CreateMatchingFastenerHole"]
             self.assertTrue(action.isEnabled())
 
@@ -2083,38 +2551,50 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 action.trigger()
             self._process_events()
             self.assertEqual(input_dialog.getItem.call_count, 2)
+            self.assertTrue(Gui.Control.activeDialog())
 
-            selected = Gui.Selection.getSelection()
-            self.assertEqual(len(selected), 1)
-            hole = selected[0]
-            self.assertEqual(hole.TypeId, "PartDesign::Hole")
-            self.assertIs(hole.getParentGeoFeatureGroup(), host_body)
-            self.assertIs(host_body.Tip, hole)
+            hole = document.ActiveObject
+            self.assertIsNotNone(hole)
+            self.assertEqual(hole.TypeId, "PartDesign::DesignHole")
+            self.assertIsNone(hole.getParentGeoFeatureGroup())
             profile = hole.Profile
             profile_object = profile[0] if isinstance(profile, tuple) else profile
             self.assertIs(profile_object, sketch)
+            self.assertEqual(hole.ResultOperation, "Cut")
+            self.assertEqual(
+                list(hole.InputBodyIds),
+                [str(host_body.VibeCADBodyId)],
+            )
             self.assertEqual(getattr(hole, PROP_HOLE_SCHEMA), HOLE_SCHEMA)
             self.assertEqual(
                 getattr(hole, PROP_HOLE_FASTENER_KEY),
                 identity["canonical_key"],
             )
-            self.assertFalse(hole.Shape.isNull())
-            self.assertTrue(hole.Shape.isValid())
-            self.assertEqual(len(hole.Shape.Solids), 1)
-            self.assertLess(hole.Shape.Volume, base.Shape.Volume)
-            self.assertIs(
-                Gui.activeView().getActiveObject("pdbody"),
-                host_body,
+            self._finish_native_task(accept=True)
+
+            state = host_body.Tip.CurrentState
+            self.assertIs(state.Operation, hole)
+            self.assertEqual(state.BodyId, host_body.VibeCADBodyId)
+            self.assertFalse(host_body.Shape.isNull())
+            self.assertTrue(host_body.Shape.isValid())
+            self.assertEqual(len(host_body.Shape.Solids), 1)
+            self.assertLess(host_body.Shape.Volume, base.Shape.Volume)
+            self._assert_exact_timeline_block(
+                document,
+                hole,
+                (state,),
             )
+            PartDesign.validateDesign(hole)
         finally:
             Gui.Selection.clearSelection()
             App.closeDocument(document.Name)
 
-    def test_matching_hole_is_one_body_history_step_with_full_lifecycle(
+    def test_matching_hole_is_one_global_operation_with_full_lifecycle(
         self,
     ) -> None:
         import FreeCAD as App
         import FreeCADGui as Gui
+        import PartDesign
         from PySide import QtGui
 
         document = App.newDocument("MatchingHoleLifecycle")
@@ -2129,8 +2609,8 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             fastener_body = fixture["fastener_body"]
             fastener = fixture["fastener"]
             prior_tip = host_body.Tip
-            prior_tip_name = prior_tip.Name
-            prior_group_names = tuple(obj.Name for obj in host_body.Group)
+            prior_state = prior_tip.CurrentState
+            prior_state_name = prior_state.Name
             controller = document.getObject("VibeCADTimeline")
             self.assertIsNotNone(controller)
             operations_before = tuple(controller.Operations)
@@ -2154,45 +2634,58 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 actions["VibeCAD_CreateMatchingFastenerHole"].trigger()
             self._process_events()
             self.assertEqual(input_dialog.getItem.call_count, 2)
+            self.assertTrue(Gui.Control.activeDialog())
 
-            hole = Gui.Selection.getSelection()[0]
+            hole = document.ActiveObject
+            self.assertIsNotNone(hole)
             hole_name = hole.Name
             host_body_name = host_body.Name
             base_name = base.Name
             sketch_name = sketch.Name
             fastener_body_name = fastener_body.Name
             fastener_name = fastener.Name
-            self.assertEqual(hole.TypeId, "PartDesign::Hole")
-            self.assertIs(hole.getParentGeoFeatureGroup(), host_body)
-            self.assertIs(host_body.Tip, hole)
+            self.assertEqual(hole.TypeId, "PartDesign::DesignHole")
+            self.assertIsNone(hole.getParentGeoFeatureGroup())
             self.assertEqual(
-                tuple(obj.Name for obj in host_body.Group),
-                prior_group_names + (hole_name,),
+                list(hole.InputBodyIds),
+                [str(host_body.VibeCADBodyId)],
             )
+            self._finish_native_task(accept=True)
+
+            publication = host_body.Tip
+            state = publication.CurrentState
+            publication_name = publication.Name
+            state_name = state.Name
+            operation_id = str(hole.OperationId)
+            state_id = str(state.BodyStateId)
+            body_id = str(host_body.VibeCADBodyId)
+            self.assertEqual(
+                publication.TypeId,
+                "PartDesign::DesignBodyPublication",
+            )
+            self.assertIs(state.Operation, hole)
+            self.assertIs(state.PreviousState, prior_state)
             self.assertEqual(
                 tuple(controller.Operations),
-                operations_before + (hole,),
+                operations_before + (state, hole),
             )
             self._assert_exact_timeline_block(
                 document,
                 hole,
-                explicit_operation=False,
+                (state,),
             )
-            self.assertNotIn(
-                "VibeCADTimelineReplacedInputs",
-                hole.PropertiesList,
-                "A native Part Design Hole is a new Body history step, "
-                "not a replacement of its prior feature",
-            )
+            PartDesign.validateDesign(hole)
 
             document.undo()
             self._process_events()
             host_body = document.getObject(host_body_name)
             self.assertIsNone(document.getObject(hole_name))
-            self.assertIs(host_body.Tip, document.getObject(prior_tip_name))
-            self.assertEqual(
-                tuple(obj.Name for obj in host_body.Group),
-                prior_group_names,
+            self.assertIsNone(document.getObject(state_name))
+            publication = document.getObject(publication_name)
+            self.assertIs(host_body.Tip, publication)
+            self.assertIs(
+                publication.CurrentState,
+                document.getObject(prior_state_name),
             )
             for name in (
                 base_name,
@@ -2207,17 +2700,20 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             host_body = document.getObject(host_body_name)
             hole = document.getObject(hole_name)
             self.assertIsNotNone(hole)
-            self.assertIs(host_body.Tip, hole)
-            self.assertIs(hole.getParentGeoFeatureGroup(), host_body)
-            self.assertNotIn(
-                "VibeCADTimelineReplacedInputs",
-                hole.PropertiesList,
-            )
+            publication = document.getObject(publication_name)
+            state = document.getObject(state_name)
+            self.assertIs(host_body.Tip, publication)
+            self.assertIs(publication.CurrentState, state)
+            self.assertIs(state.Operation, hole)
+            self.assertEqual(str(hole.OperationId), operation_id)
+            self.assertEqual(str(state.BodyStateId), state_id)
+            self.assertEqual(str(host_body.VibeCADBodyId), body_id)
             self._assert_exact_timeline_block(
                 document,
                 hole,
-                explicit_operation=False,
+                (state,),
             )
+            PartDesign.validateDesign(hole)
 
             with tempfile.TemporaryDirectory() as temporary_directory:
                 saved_file = (
@@ -2234,6 +2730,10 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 host_body = restored_document.getObject(host_body_name)
                 hole = restored_document.getObject(hole_name)
                 base = restored_document.getObject(base_name)
+                publication = restored_document.getObject(
+                    publication_name
+                )
+                state = restored_document.getObject(state_name)
                 sketch = restored_document.getObject(sketch_name)
                 fastener_body = restored_document.getObject(
                     fastener_body_name
@@ -2243,32 +2743,44 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                     host_body,
                     hole,
                     base,
+                    publication,
+                    state,
                     sketch,
                     fastener_body,
                     fastener,
                 ):
                     self.assertIsNotNone(obj)
-                self.assertIs(host_body.Tip, hole)
+                self.assertIs(host_body.Tip, publication)
+                self.assertIs(publication.CurrentState, state)
+                self.assertIs(state.Operation, hole)
                 profile = hole.Profile
                 profile_object = (
                     profile[0] if isinstance(profile, tuple) else profile
                 )
                 self.assertIs(profile_object, sketch)
-                self.assertNotIn(
-                    "VibeCADTimelineReplacedInputs",
-                    hole.PropertiesList,
-                )
+                self.assertEqual(str(hole.OperationId), operation_id)
+                self.assertEqual(str(state.BodyStateId), state_id)
+                self.assertEqual(str(host_body.VibeCADBodyId), body_id)
                 self._assert_exact_timeline_block(
                     restored_document,
                     hole,
-                    explicit_operation=False,
+                    (state,),
                 )
+                PartDesign.validateDesign(hole)
 
                 Gui.Selection.clearSelection()
                 Gui.Selection.addSelection(hole)
                 Gui.runCommand("Std_Delete", 0)
                 self._process_events()
                 self.assertIsNone(restored_document.getObject(hole_name))
+                self.assertIsNone(restored_document.getObject(state_name))
+                publication = restored_document.getObject(
+                    publication_name
+                )
+                self.assertIs(
+                    publication.CurrentState,
+                    restored_document.getObject(prior_state_name),
+                )
                 self.assertNotIn(
                     hole_name,
                     {
@@ -2281,7 +2793,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 host_body = restored_document.getObject(host_body_name)
                 self.assertIs(
                     host_body.Tip,
-                    restored_document.getObject(prior_tip_name),
+                    publication,
                 )
                 for name in (
                     host_body_name,
@@ -2299,8 +2811,14 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 self._process_events()
                 host_body = restored_document.getObject(host_body_name)
                 hole = restored_document.getObject(hole_name)
+                publication = restored_document.getObject(
+                    publication_name
+                )
+                state = restored_document.getObject(state_name)
                 self.assertIsNotNone(hole)
-                self.assertIs(host_body.Tip, hole)
+                self.assertIs(host_body.Tip, publication)
+                self.assertIs(publication.CurrentState, state)
+                self.assertIs(state.Operation, hole)
                 profile = hole.Profile
                 profile_object = (
                     profile[0] if isinstance(profile, tuple) else profile
@@ -2312,12 +2830,21 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 self._assert_exact_timeline_block(
                     restored_document,
                     hole,
-                    explicit_operation=False,
+                    (state,),
                 )
+                PartDesign.validateDesign(hole)
 
                 restored_document.redo()
                 self._process_events()
                 self.assertIsNone(restored_document.getObject(hole_name))
+                self.assertIsNone(restored_document.getObject(state_name))
+                publication = restored_document.getObject(
+                    publication_name
+                )
+                self.assertIs(
+                    publication.CurrentState,
+                    restored_document.getObject(prior_state_name),
+                )
                 self.assertNotIn(
                     hole_name,
                     {
@@ -2351,6 +2878,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
     def test_matching_hole_additional_supported_purpose_fit_variants(self) -> None:
         import FreeCAD as App
         import FreeCADGui as Gui
+        import PartDesign
 
         from VibeCADFasteners import (
             HOLE_SCHEMA,
@@ -2390,15 +2918,14 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                         decisions += (("Fit", fit, True),)
                     self._drive_item_dialog_action(action, decisions)
 
-                    selected = Gui.Selection.getSelection()
-                    self.assertEqual(len(selected), 1)
-                    hole = selected[0]
-                    self.assertEqual(hole.TypeId, "PartDesign::Hole")
-                    self.assertIs(
-                        hole.getParentGeoFeatureGroup(),
-                        fixture["host_body"],
+                    self.assertTrue(Gui.Control.activeDialog())
+                    hole = document.ActiveObject
+                    self.assertIsNotNone(hole)
+                    self.assertEqual(
+                        hole.TypeId,
+                        "PartDesign::DesignHole",
                     )
-                    self.assertIs(fixture["host_body"].Tip, hole)
+                    self.assertIsNone(hole.getParentGeoFeatureGroup())
                     profile = hole.Profile
                     profile_object = (
                         profile[0] if isinstance(profile, tuple) else profile
@@ -2418,17 +2945,24 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                     )
                     self.assertEqual(getattr(hole, PROP_HOLE_FIT), fit)
                     self.assertEqual(bool(hole.Threaded), purpose == "tapped")
-                    self.assertFalse(hole.Shape.isNull())
-                    self.assertTrue(hole.Shape.isValid())
-                    self.assertEqual(len(hole.Shape.Solids), 1)
+                    self._finish_native_task(accept=True)
+
+                    host_body = fixture["host_body"]
+                    state = host_body.Tip.CurrentState
+                    self.assertIs(state.Operation, hole)
+                    self.assertFalse(host_body.Shape.isNull())
+                    self.assertTrue(host_body.Shape.isValid())
+                    self.assertEqual(len(host_body.Shape.Solids), 1)
                     self.assertLess(
-                        hole.Shape.Volume,
+                        host_body.Shape.Volume,
                         fixture["base"].Shape.Volume,
                     )
-                    self.assertIs(
-                        Gui.activeView().getActiveObject("pdbody"),
-                        fixture["host_body"],
+                    self._assert_exact_timeline_block(
+                        document,
+                        hole,
+                        (state,),
                     )
+                    PartDesign.validateDesign(hole)
                     occurrence = fixture["occurrence"]
                     if linked_fastener:
                         self.assertIsNotNone(occurrence)
@@ -2445,49 +2979,321 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         import FreeCAD as App
         import FreeCADGui as Gui
         import Part
+        import PartDesign
 
         document = App.newDocument("FastenerRibbonAttach")
+        document.UndoMode = True
+        restored_document = None
         try:
-            actions = self._ribbon_actions()
-            body, fastener, _identity = self._create_standard_fastener(document)
-            host = document.addObject("Part::Cylinder", "AttachmentHost")
-            host.Radius = 6
-            host.Height = 8
-            host.Placement.Base = App.Vector(30, 0, 0)
-            document.recompute()
-            circular_edge = next(
-                index
-                for index, edge in enumerate(host.Shape.Edges, start=1)
-                if isinstance(edge.Curve, Part.Circle)
+            document.openTransaction("Create attachment host")
+            host_operation = document.addObject(
+                "PartDesign::DesignCylinder",
+                "AttachmentHost",
             )
+            host_edit = PartDesign.beginDesignOperationEdit(host_operation)
+            host_operation.Radius = 6
+            host_operation.Height = 8
+            PartDesign.setDesignOperationTargets(
+                host_edit,
+                "New Body",
+                [],
+            )
+            document.recompute()
+            host_body = PartDesign.finalizeDesignOperationEdit(host_edit)[0]
+            document.commitTransaction()
+            host_publication = host_body.Tip
+            host_state = host_publication.CurrentState
+            PartDesign.validateDesign(host_operation)
+
+            actions = self._ribbon_actions()
+            self._trigger_catalog_dialog_action(
+                actions["VibeCAD_InsertStandardFastener"],
+                lambda driver: self._set_catalog_dialog_values(
+                    driver,
+                    standard="ISO4762",
+                    nominal_thread="M3",
+                    length_mm=10,
+                    label="Attached M3 socket bolt",
+                ),
+            )
+            selected = Gui.Selection.getSelection()
+            self.assertEqual(len(selected), 1)
+            body = selected[0]
+            publication, state, operation, fastener = (
+                self._design_fastener_graph(body)
+            )
+            names = {
+                "body": body.Name,
+                "publication": publication.Name,
+                "state": state.Name,
+                "operation": operation.Name,
+                "generator": fastener.Name,
+            }
+            identities = {
+                "body": str(body.VibeCADBodyId),
+                "state": str(state.BodyStateId),
+                "operation": str(operation.OperationId),
+            }
+            initial_center = body.Shape.Solids[0].CenterOfMass
+            circular_edge, selected_curve = max(
+                (
+                    (index, edge.Curve)
+                    for index, edge in enumerate(
+                        host_body.Shape.Edges,
+                        start=1,
+                    )
+                    if isinstance(edge.Curve, Part.Circle)
+                ),
+                key=lambda item: float(item[1].Center.z),
+            )
+            attachment_center = selected_curve.Center
             sub_name = f"Edge{circular_edge}"
 
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(body)
-            Gui.Selection.addSelection(host, sub_name)
+            Gui.Selection.addSelection(host_body, sub_name)
             self._process_events()
             action = actions["VibeCAD_AttachStandardFastener"]
             self.assertTrue(action.isEnabled())
-            action.trigger()
-            self._process_events()
+            undo_before = int(document.UndoCount)
+            with mock.patch(
+                "VibeCADFastenersGui._show_error"
+            ) as show_error:
+                action.trigger()
+                self._process_events()
+            self.assertFalse(
+                show_error.called,
+                str(show_error.call_args),
+            )
 
-            self.assertIs(fastener.getParentGeoFeatureGroup(), body)
-            self.assertIs(body.Tip, fastener)
+            self.assertIs(document.getObject(names["body"]), body)
+            self.assertIs(document.getObject(names["publication"]), publication)
+            self.assertIs(document.getObject(names["state"]), state)
+            self.assertIs(document.getObject(names["operation"]), operation)
+            self.assertIs(document.getObject(names["generator"]), fastener)
+            self.assertIsNone(fastener.getParentGeoFeatureGroup())
+            self.assertIs(body.Tip, publication)
+            self.assertIs(publication.CurrentState, state)
             attachment = fastener.BaseObject
             self.assertIsNotNone(attachment)
-            self.assertIs(attachment[0], host)
-            self.assertEqual(list(attachment[1]), [sub_name])
+            self.assertIs(attachment[0], host_state)
+            exact_subelements = list(attachment[1])
+            self.assertEqual(len(exact_subelements), 1)
+            self.assertFalse(exact_subelements[0].startswith("?"))
+            self.assertEqual(
+                host_state.Shape.getElementIndexedName(
+                    exact_subelements[0]
+                ),
+                sub_name,
+            )
             self.assertFalse(fastener.Shape.isNull())
             self.assertTrue(fastener.Shape.isValid())
             self.assertEqual(len(fastener.Shape.Solids), 1)
-            self.assertAlmostEqual(fastener.Placement.Base.x, 30.0)
-            self.assertAlmostEqual(fastener.Placement.Base.y, 0.0)
+            self.assertAlmostEqual(
+                fastener.Placement.Base.x,
+                attachment_center.x,
+            )
+            self.assertAlmostEqual(
+                fastener.Placement.Base.y,
+                attachment_center.y,
+            )
+            self.assertAlmostEqual(
+                fastener.Placement.Base.z,
+                attachment_center.z,
+            )
+            self.assertFalse(body.Shape.isNull())
+            self.assertTrue(body.Shape.isValid())
+            self.assertEqual(len(body.Shape.Solids), 1)
+            self.assertAlmostEqual(
+                body.getGlobalPlacement().Base.distanceToPoint(
+                    attachment_center
+                ),
+                0.0,
+            )
+            attached_center = body.Shape.Solids[0].CenterOfMass
+            local_body_shape = body.Shape.copy()
+            local_body_shape.Placement = App.Placement()
+            self.assertAlmostEqual(
+                body.Shape.Volume,
+                fastener.Shape.Solids[0].Volume,
+            )
+            self.assertAlmostEqual(
+                attached_center.distanceToPoint(
+                    fastener.Shape.Solids[0].CenterOfMass
+                ),
+                0.0,
+            )
+            self.assertAlmostEqual(
+                local_body_shape.Solids[0].CenterOfMass.distanceToPoint(
+                    operation.OutputShapes[0].Solids[0].CenterOfMass
+                ),
+                0.0,
+            )
+            self.assertAlmostEqual(
+                local_body_shape.Solids[0].CenterOfMass.distanceToPoint(
+                    state.Shape.Solids[0].CenterOfMass
+                ),
+                0.0,
+            )
+            self.assertAlmostEqual(
+                local_body_shape.Solids[0].CenterOfMass.distanceToPoint(
+                    publication.Shape.Solids[0].CenterOfMass
+                ),
+                0.0,
+            )
+            self.assertEqual(str(body.VibeCADBodyId), identities["body"])
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
+            self.assertEqual(int(document.UndoCount), undo_before + 1)
             selected = Gui.Selection.getSelectionEx()
-            self.assertEqual([item.Object for item in selected], [body, host])
+            self.assertEqual(
+                [item.Object for item in selected],
+                [body, host_body],
+            )
             self.assertEqual(list(selected[1].SubElementNames), [sub_name])
+
+            document.undo()
+            self._process_events()
+            body = document.getObject(names["body"])
+            publication, state, operation, fastener = (
+                self._design_fastener_graph(body)
+            )
+            self.assertIsNone(fastener.BaseObject)
+            self.assertAlmostEqual(fastener.Placement.Base.Length, 0.0)
+            self.assertAlmostEqual(
+                body.getGlobalPlacement().Base.Length,
+                0.0,
+            )
+            self.assertAlmostEqual(
+                body.Shape.Solids[0].CenterOfMass.distanceToPoint(
+                    initial_center
+                ),
+                0.0,
+            )
+            self.assertEqual(str(body.VibeCADBodyId), identities["body"])
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            PartDesign.validateDesign(operation)
+
+            document.redo()
+            self._process_events()
+            body = document.getObject(names["body"])
+            publication, state, operation, fastener = (
+                self._design_fastener_graph(body)
+            )
+            attachment = fastener.BaseObject
+            self.assertIsNotNone(attachment)
+            self.assertIs(attachment[0], host_state)
+            self.assertEqual(list(attachment[1]), exact_subelements)
+            self.assertAlmostEqual(
+                body.getGlobalPlacement().Base.distanceToPoint(
+                    attachment_center
+                ),
+                0.0,
+            )
+            self.assertAlmostEqual(
+                body.Shape.Solids[0].CenterOfMass.distanceToPoint(
+                    attached_center
+                ),
+                0.0,
+            )
+            self.assertEqual(str(body.VibeCADBodyId), identities["body"])
+            self.assertEqual(str(state.BodyStateId), identities["state"])
+            self.assertEqual(
+                str(operation.OperationId),
+                identities["operation"],
+            )
+            PartDesign.validateDesign(operation)
+
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                saved_file = (
+                    Path(temporary_directory)
+                    / "attached-standard-fastener.FCStd"
+                )
+                host_body_name = host_body.Name
+                host_state_name = host_state.Name
+                document.saveAs(str(saved_file))
+                App.closeDocument(document.Name)
+                document = None
+
+                restored_document = App.openDocument(str(saved_file))
+                restored_document.UndoMode = True
+                self._process_events()
+                body = restored_document.getObject(names["body"])
+                host_body = restored_document.getObject(host_body_name)
+                host_state = restored_document.getObject(host_state_name)
+                self.assertIsNotNone(body)
+                self.assertIsNotNone(host_body)
+                self.assertIsNotNone(host_state)
+                publication, state, operation, fastener = (
+                    self._design_fastener_graph(body)
+                )
+                attachment = fastener.BaseObject
+                self.assertIsNotNone(attachment)
+                self.assertIs(attachment[0], host_state)
+                self.assertEqual(list(attachment[1]), exact_subelements)
+                self.assertEqual(
+                    host_state.Shape.getElementIndexedName(
+                        attachment[1][0]
+                    ),
+                    sub_name,
+                )
+                self.assertAlmostEqual(
+                    body.getGlobalPlacement().Base.distanceToPoint(
+                        attachment_center
+                    ),
+                    0.0,
+                )
+                self.assertAlmostEqual(
+                    body.Shape.Solids[0].CenterOfMass.distanceToPoint(
+                        fastener.Shape.Solids[0].CenterOfMass
+                    ),
+                    0.0,
+                )
+                self.assertEqual(
+                    str(body.VibeCADBodyId),
+                    identities["body"],
+                )
+                self.assertEqual(
+                    str(state.BodyStateId),
+                    identities["state"],
+                )
+                self.assertEqual(
+                    str(operation.OperationId),
+                    identities["operation"],
+                )
+                self._assert_exact_timeline_block(
+                    restored_document,
+                    operation,
+                    (state,),
+                )
+                PartDesign.validateDesign(operation)
         finally:
             Gui.Selection.clearSelection()
-            App.closeDocument(document.Name)
+            if (
+                restored_document is not None
+                and restored_document.Name in App.listDocuments()
+            ):
+                App.closeDocument(restored_document.Name)
+            if document is not None and document.Name in App.listDocuments():
+                App.closeDocument(document.Name)
 
     def test_attach_accepts_body_owned_edge_and_rejects_assembly_occurrence(
         self,
@@ -2505,7 +3311,24 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         try:
             actions = self._ribbon_actions()
             fastener_body, fastener, _identity = (
-                self._create_standard_fastener(document)
+                self._create_standard_fastener(
+                    document,
+                    body_name="LegacyStandardFastenerBody",
+                    standard="ISO4762",
+                    nominal_thread="M3",
+                    length_mm=10,
+                )
+            )
+            fastener_body.Label = "Body-edge M3 socket bolt"
+            body_name = fastener_body.Name
+            generator_name = fastener.Name
+            body_id = str(fastener_body.VibeCADBodyId)
+            initial_volume = float(fastener.Shape.Volume)
+            self.assertIs(fastener_body.Tip, fastener)
+            self.assertEqual(list(fastener_body.Group), [fastener])
+            self.assertIs(
+                VibeCADFastenersGui._legacy_model_fastener_body(fastener),
+                fastener_body,
             )
             host_body = document.addObject(
                 "PartDesign::Body",
@@ -2528,27 +3351,123 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(fastener_body)
-            Gui.Selection.addSelection(host, sub_name)
+            Gui.Selection.addSelection(host_body, sub_name)
             self._process_events()
             action = actions["VibeCAD_AttachStandardFastener"]
             self.assertTrue(action.isEnabled())
-            action.trigger()
-            self._process_events()
+            with mock.patch(
+                "VibeCADFastenersGui._show_error"
+            ) as show_error:
+                action.trigger()
+                self._process_events()
+            self.assertFalse(
+                show_error.called,
+                str(show_error.call_args),
+            )
 
-            self.assertIs(fastener.getParentGeoFeatureGroup(), fastener_body)
-            self.assertIs(fastener_body.Tip, fastener)
+            migrated_body = document.getObject(body_name)
+            self.assertIs(migrated_body, fastener_body)
+            publication, state, operation, migrated_generator = (
+                self._design_fastener_graph(migrated_body)
+            )
+            self.assertIs(migrated_generator, fastener)
+            self.assertEqual(migrated_generator.Name, generator_name)
+            self.assertEqual(str(migrated_body.VibeCADBodyId), body_id)
+            self.assertEqual(operation.ResultOperation, "Modify")
+            self.assertEqual(len(operation.InputStates), 1)
+            initial_state = operation.InputStates[0]
+            self.assertIsNone(initial_state.Operation)
+            self.assertIs(state.PreviousState, initial_state)
+            self.assertEqual(str(initial_state.BodyId), body_id)
+            self.assertAlmostEqual(
+                float(initial_state.Shape.Volume),
+                initial_volume,
+            )
+            self.assertEqual(list(migrated_body.Group), [publication])
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
+            self.assertIsNone(fastener.getParentGeoFeatureGroup())
+            self.assertIs(fastener_body.Tip, publication)
+            self.assertIs(publication.CurrentState, state)
+            self.assertIs(state.Operation, operation)
             self.assertIs(host.getParentGeoFeatureGroup(), host_body)
             self.assertIs(host_body.Tip, host)
             attachment = fastener.BaseObject
             self.assertIsNotNone(attachment)
-            self.assertIs(attachment[0], host_body)
+            self.assertIs(attachment[0], host)
             self.assertEqual(
-                list(attachment[1]),
-                [f"{host.Name}.{sub_name}"],
+                host.Shape.getElementIndexedName(attachment[1][0]),
+                sub_name,
             )
             self.assertFalse(fastener.Shape.isNull())
             self.assertTrue(fastener.Shape.isValid())
             self.assertEqual(len(fastener.Shape.Solids), 1)
+
+            publication_name = publication.Name
+            state_name = state.Name
+            initial_state_name = initial_state.Name
+            operation_name = operation.Name
+            state_id = str(state.BodyStateId)
+            initial_state_id = str(initial_state.BodyStateId)
+            operation_id = str(operation.OperationId)
+            document.undo()
+            self._process_events()
+            legacy_body = document.getObject(body_name)
+            legacy_generator = document.getObject(generator_name)
+            self.assertIsNotNone(legacy_body)
+            self.assertIsNotNone(legacy_generator)
+            self.assertIs(legacy_body.Tip, legacy_generator)
+            self.assertEqual(list(legacy_body.Group), [legacy_generator])
+            self.assertIs(
+                VibeCADFastenersGui._legacy_model_fastener_body(
+                    legacy_generator
+                ),
+                legacy_body,
+            )
+            self.assertIsNone(legacy_generator.BaseObject)
+            for name in (
+                publication_name,
+                state_name,
+                initial_state_name,
+                operation_name,
+            ):
+                self.assertIsNone(document.getObject(name))
+
+            document.redo()
+            self._process_events()
+            fastener_body = document.getObject(body_name)
+            self.assertIsNotNone(fastener_body)
+            publication, state, operation, fastener = (
+                self._design_fastener_graph(fastener_body)
+            )
+            self.assertEqual(publication.Name, publication_name)
+            self.assertEqual(state.Name, state_name)
+            self.assertEqual(operation.Name, operation_name)
+            self.assertEqual(fastener.Name, generator_name)
+            self.assertEqual(str(fastener_body.VibeCADBodyId), body_id)
+            self.assertEqual(str(state.BodyStateId), state_id)
+            self.assertEqual(str(operation.OperationId), operation_id)
+            self.assertEqual(len(operation.InputStates), 1)
+            initial_state = operation.InputStates[0]
+            self.assertEqual(initial_state.Name, initial_state_name)
+            self.assertEqual(str(initial_state.BodyStateId), initial_state_id)
+            self.assertIsNone(initial_state.Operation)
+            self.assertIs(state.PreviousState, initial_state)
+            attachment = fastener.BaseObject
+            self.assertIsNotNone(attachment)
+            self.assertIs(attachment[0], host)
+            self.assertEqual(
+                host.Shape.getElementIndexedName(attachment[1][0]),
+                sub_name,
+            )
+            self._assert_exact_timeline_block(
+                document,
+                operation,
+                (state,),
+            )
 
             assembly = document.addObject(
                 "Assembly::AssemblyObject",
@@ -2562,7 +3481,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             document.recompute()
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(occurrence)
-            Gui.Selection.addSelection(host, sub_name)
+            Gui.Selection.addSelection(host_body, sub_name)
             self._process_events()
             self.assertFalse(action.isEnabled())
 

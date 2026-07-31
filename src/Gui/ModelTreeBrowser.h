@@ -43,6 +43,12 @@ public:
         Reference,
         Group,
         Other,
+        // Design-global operations are edited through the bottom History,
+        // never duplicated in the model browser.
+        History,
+        // Body states, publications, and other owned implementation objects
+        // have no independent browser representation.
+        Internal,
     };
 
     struct Entry

@@ -39,6 +39,7 @@
 #include <Gui/Inventor/Draggers/Gizmo.h>
 #include <Gui/Inventor/Draggers/SoRotationDragger.h>
 #include <Gui/Utilities.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureDraft.h>
 #include <Mod/PartDesign/Gui/ReferenceSelection.h>
 #include <Mod/Part/App/GizmoHelper.h>
@@ -77,10 +78,7 @@ TaskDraftParameters::TaskDraftParameters(ViewProviderDressUp* DressUpView, QWidg
     bool r = pcDraft->Reversed.getValue();
     ui->checkReverse->setChecked(r);
 
-    std::vector<std::string> strings = pcDraft->Base.getSubValues();
-    for (const auto& string : strings) {
-        ui->listWidgetReferences->addItem(QString::fromStdString(string));
-    }
+    populateReferences(ui->listWidgetReferences);
 
     QMetaObject::connectSlotsByName(this);
 
@@ -109,14 +107,17 @@ TaskDraftParameters::TaskDraftParameters(ViewProviderDressUp* DressUpView, QWidg
     // clang-format on
 
     App::DocumentObject* ref = pcDraft->NeutralPlane.getValue();
-    strings = pcDraft->NeutralPlane.getSubValues();
+    std::vector<std::string> strings =
+        pcDraft->NeutralPlane.getSubValues();
     ui->linePlane->setText(getRefStr(ref, strings));
+    ui->linePlane->setReadOnly(true);
 
     ref = pcDraft->PullDirection.getValue();
     strings = pcDraft->PullDirection.getSubValues();
     ui->lineLine->setText(getRefStr(ref, strings));
+    ui->lineLine->setReadOnly(true);
 
-    if (strings.size() == 0) {
+    if (ui->listWidgetReferences->count() == 0) {
         setSelectionMode(refSel);
     }
     else {
@@ -200,8 +201,11 @@ void TaskDraftParameters::onButtonPlane(bool checked)
                 draft->getDocument()->getName()
             );
         }
+        auto* support = isDesignSubelementOperation()
+            ? getObject<PartDesign::Draft>()
+            : this->getBase();
         Gui::Selection().addSelectionGate(new ReferenceSelection(
-            this->getBase(),
+            support,
             AllowSelection::EDGE | AllowSelection::FACE | AllowSelection::PLANAR
         ));
     }
@@ -218,9 +222,13 @@ void TaskDraftParameters::onButtonLine(bool checked)
                 draft->getDocument()->getName()
             );
         }
-        Gui::Selection().addSelectionGate(
-            new ReferenceSelection(this->getBase(), AllowSelection::EDGE | AllowSelection::PLANAR)
-        );
+        auto* support = isDesignSubelementOperation()
+            ? getObject<PartDesign::Draft>()
+            : this->getBase();
+        Gui::Selection().addSelectionGate(new ReferenceSelection(
+            support,
+            AllowSelection::EDGE | AllowSelection::PLANAR
+        ));
     }
 }
 
@@ -231,22 +239,18 @@ void TaskDraftParameters::onRefDeleted()
 
 void TaskDraftParameters::getPlane(App::DocumentObject*& obj, std::vector<std::string>& sub) const
 {
-    sub = std::vector<std::string>(1, "");
-    QStringList parts = ui->linePlane->text().split(QChar::fromLatin1(':'));
-    obj = getObject()->getDocument()->getObject(parts[0].toStdString().c_str());
-    if (parts.size() > 1) {
-        sub[0] = parts[1].toStdString();
-    }
+    auto* draft = getObject<PartDesign::Draft>();
+    obj = draft ? draft->NeutralPlane.getValue() : nullptr;
+    sub = draft ? draft->NeutralPlane.getSubValues()
+                : std::vector<std::string> {};
 }
 
 void TaskDraftParameters::getLine(App::DocumentObject*& obj, std::vector<std::string>& sub) const
 {
-    sub = std::vector<std::string>(1, "");
-    QStringList parts = ui->lineLine->text().split(QChar::fromLatin1(':'));
-    obj = getObject()->getDocument()->getObject(parts[0].toStdString().c_str());
-    if (parts.size() > 1) {
-        sub[0] = parts[1].toStdString();
-    }
+    auto* draft = getObject<PartDesign::Draft>();
+    obj = draft ? draft->PullDirection.getValue() : nullptr;
+    sub = draft ? draft->PullDirection.getSubValues()
+                : std::vector<std::string> {};
 }
 
 void TaskDraftParameters::onAngleChanged(double angle)
@@ -345,25 +349,93 @@ void TaskDraftParameters::setGizmoPositions()
     if (!draft || draft->isError()) {
         return;
     }
-    Part::TopoShape baseShape = draft->getBaseTopoShape(true);
-    auto faces = draft->getFaces(baseShape);
-    if (faces.empty()) {
+    Part::TopoShape face;
+    Base::Placement frame;
+    try {
+        if (auto* design =
+                dynamic_cast<PartDesign::DesignOperationProperties*>(
+                    draft
+                )) {
+            auto* selections =
+                dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+                    draft
+                );
+            const auto inputs = design->InputStates.getValues();
+            const auto frames = design->InputFrames.getValues();
+            const auto groups = selections
+                ? selections->targetElementGroups()
+                : std::vector<std::vector<std::string>> {};
+            if (inputs.size() != frames.size()
+                || inputs.size() != groups.size()) {
+                return;
+            }
+            for (std::size_t index = 0; index < inputs.size(); ++index) {
+                auto* state = freecad_cast<Part::Feature*>(inputs[index]);
+                if (!state || groups[index].empty()) {
+                    continue;
+                }
+                auto faces = PartDesign::resolveDesignTargetFaces(
+                    state->Shape.getShape(),
+                    {groups[index].front()}
+                );
+                if (!faces.empty()) {
+                    face = std::move(faces.front());
+                    frame = frames[index];
+                    break;
+                }
+            }
+        }
+        else {
+            Part::TopoShape baseShape =
+                draft->getBaseTopoShape(true);
+            auto faces = draft->getFaces(baseShape);
+            if (!faces.empty()) {
+                face = std::move(faces.front());
+            }
+        }
+    }
+    catch (const Base::Exception&) {
+        return;
+    }
+    if (face.isNull()) {
         return;
     }
 
     auto [pullDirection, neutralPlane] = draft->getLastComputedProps();
 
     std::optional<DraggerPlacementPropsWithNormals> props
-        = getDraggerPlacementFromPlaneAndFace(faces[0], neutralPlane);
+        = getDraggerPlacementFromPlaneAndFace(face, neutralPlane);
     if (!props) {
         return;
     }
+    frame.multVec(
+        props->placementProps.position,
+        props->placementProps.position
+    );
+    frame.getRotation().multVec(
+        props->placementProps.dir,
+        props->placementProps.dir
+    );
+    Base::Vector3d pull(
+        pullDirection.X(),
+        pullDirection.Y(),
+        pullDirection.Z()
+    );
+    frame.getRotation().multVec(pull, pull);
 
     if (auto normalProps = props->normalProps) {
+        frame.getRotation().multVec(
+            normalProps->normal,
+            normalProps->normal
+        );
+        frame.getRotation().multVec(
+            normalProps->faceNormal,
+            normalProps->faceNormal
+        );
         auto pos = Base::convertTo<SbVec3f>(props->placementProps.position);
         auto dir = Base::convertTo<SbVec3f>(props->placementProps.dir);
         auto lineDir = Base::convertTo<SbVec3f>(normalProps->normal);
-        auto pp = Base::convertTo<SbVec3f>(pullDirection);
+        auto pp = Base::convertTo<SbVec3f>(pull);
 
         angleGizmo->setDraggerPlacement(pos, (dir.dot(pp) < 0) ? -pp : pp);
 

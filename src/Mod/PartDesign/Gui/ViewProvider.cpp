@@ -42,6 +42,8 @@
 #include <Gui/MainWindow.h>
 #include <Gui/Utilities.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 #include <Mod/PartDesign/App/FeatureAddSub.h>
 #include <Mod/Part/Gui/ViewProvider.h>
 #include <Mod/Part/Gui/ViewProviderExt.h>
@@ -90,14 +92,30 @@ void ViewProvider::attach(App::DocumentObject* pcObject)
 
 bool ViewProvider::doubleClicked()
 {
-    try {
-        QString text = QObject::tr("Edit %1").arg(QString::fromUtf8(getObject()->Label.getValue()));
-        getDocument()->openCommand(text.toUtf8());
-        Gui::cmdSetEdit(pcObject, Gui::Application::Instance->getUserEditMode());
+    // Route every edit entry point—including direct Python/macro replay—
+    // through the common exact-transaction owner. Tree and History gestures
+    // already establish an enclosing command invocation; this method safely
+    // adopts that same transaction instead of opening a nested one.
+    startDefaultEditMode();
+    return getDocument() && getDocument()->getEditViewProvider() == this;
+}
+
+bool ViewProvider::supportsDocumentTimelineOperationDelete() const noexcept
+{
+    return dynamic_cast<const PartDesign::DesignOperationProperties*>(getObject()) != nullptr;
+}
+
+bool ViewProvider::prepareDocumentTimelineOperationDelete()
+{
+    auto* operation = getObject();
+    if (!dynamic_cast<PartDesign::DesignOperationProperties*>(operation)) {
+        return false;
     }
-    catch (const Base::Exception&) {
-        getDocument()->abortCommand();
+    if (freecad_cast<PartDesign::DesignScriptOperation*>(operation)) {
+        throw Base::RuntimeError("This source-owned History operation must be deleted through "
+                                 "its VibeScript lifecycle command");
     }
+    PartDesign::DesignModel::removeOperationResources(*operation);
     return true;
 }
 

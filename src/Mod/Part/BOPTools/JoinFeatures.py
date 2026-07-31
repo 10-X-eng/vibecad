@@ -129,68 +129,65 @@ def cmdCreateJoinFeature(name, mode):
     presentations = _visible_presentations(operands)
 
     document.openTransaction("Create " + mode)
-    FreeCADGui.addModule("BOPTools.JoinFeatures")
-    result = FreeCADGui.runDocumentObjectCommand(
-        document,
-        f"BOPTools.JoinFeatures.make{mode}(name={name!r})",
-        "Part::Feature",
-    )
-    result_expression = _object_expression(result)
-    if mode == "Embed" or mode == "Cutout":
-        FreeCADGui.doCommand(
-            f"{result_expression}.Base = "
-            f"{_object_expression(operands[0])}"
-        )
-        FreeCADGui.doCommand(
-            f"{result_expression}.Tool = "
-            f"{_object_expression(operands[1])}"
-        )
-    elif mode == "Connect":
-        FreeCADGui.doCommand(
-            f"{result_expression}.Objects = ["
-            + ", ".join(_object_expression(operand) for operand in operands)
-            + "]"
-        )
-    else:
-        raise ValueError("cmdCreateJoinFeature: Unexpected mode {mode}".format(mode=repr(mode)))
-
     try:
+        FreeCADGui.addModule("BOPTools.JoinFeatures")
+        result = FreeCADGui.runDocumentObjectCommand(
+            document,
+            f"BOPTools.JoinFeatures.make{mode}(name={name!r})",
+            "Part::Feature",
+        )
+        result_expression = _object_expression(result)
+        if mode == "Embed" or mode == "Cutout":
+            FreeCADGui.doCommand(
+                f"{result_expression}.Base = "
+                f"{_object_expression(operands[0])}"
+            )
+            FreeCADGui.doCommand(
+                f"{result_expression}.Tool = "
+                f"{_object_expression(operands[1])}"
+            )
+        elif mode == "Connect":
+            FreeCADGui.doCommand(
+                f"{result_expression}.Objects = ["
+                + ", ".join(_object_expression(operand) for operand in operands)
+                + "]"
+            )
+        else:
+            raise ValueError(
+                "cmdCreateJoinFeature: Unexpected mode "
+                f"{mode!r}"
+            )
+
         FreeCADGui.doCommand(
             f"{result_expression}.Proxy.execute({result_expression})"
         )
         FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
+        if result.Shape.isNull() or not result.Shape.isValid():
+            raise RuntimeError(
+                f"{mode} did not produce valid geometry"
+            )
+
+        presentation_expression = ", ".join(
+            _object_expression(presentation)
+            for presentation in presentations
+        )
+        FreeCADGui.doCommand(
+            "BOPTools.JoinFeatures._replace_visible_presentations("
+            f"{result_expression}, [{presentation_expression}])"
+        )
+        FreeCADGui.addModule("PartGui")
+        FreeCADGui.doCommand(
+            "PartGui.publishDesignDefinitionBlock("
+            f"[{result_expression}])"
+        )
+        document.commitTransaction()
     except Exception as err:
-        mb = QtGui.QMessageBox()
-        mb.setIcon(mb.Icon.Warning)
-        error_text1 = translate("Part_JoinFeatures", "Computing the result failed with an error:")
-        error_text2 = translate(
-            "Part_JoinFeatures",
-            "Click 'Continue' to create the feature anyway, or 'Abort' to cancel.",
+        document.abortTransaction()
+        QtGui.QMessageBox.warning(
+            FreeCADGui.getMainWindow(),
+            translate("Part_JoinFeatures", "Join failed", None),
+            str(err),
         )
-        mb.setText(error_text1 + "\n\n" + str(err) + "\n\n" + error_text2)
-        mb.setWindowTitle(translate("Part_JoinFeatures", "Bad Selection", None))
-        btnAbort = mb.addButton(QtGui.QMessageBox.StandardButton.Abort)
-        btnOK = mb.addButton(
-            translate("Part_JoinFeatures", "Continue", None),
-            QtGui.QMessageBox.ButtonRole.ActionRole,
-        )
-        mb.setDefaultButton(btnOK)
-        mb.exec_()
-
-        if mb.clickedButton() is btnAbort:
-            document.abortTransaction()
-            return
-
-    presentation_expression = ", ".join(
-        _object_expression(presentation)
-        for presentation in presentations
-    )
-    FreeCADGui.doCommand(
-        "BOPTools.JoinFeatures._replace_visible_presentations("
-        f"{result_expression}, [{presentation_expression}])"
-    )
-
-    document.commitTransaction()
 
 
 def getIconPath(icon_dot_svg):

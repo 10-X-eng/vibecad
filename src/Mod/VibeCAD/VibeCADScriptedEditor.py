@@ -912,12 +912,12 @@ class ScriptedEditorController:
         else:
             self.deactivate()
 
-    def activate(self):
+    def activate(self, preferred_model_id: str = ""):
         if self.editor_active:
-            self.refresh()
+            self.refresh(preferred_model_id)
             return
         self.editor_active = True
-        self.refresh()
+        self.refresh(preferred_model_id)
 
     def deactivate(self):
         self.editor_active = False
@@ -2478,7 +2478,7 @@ def _register_dock_content(widget: Any) -> None:
     register(widget, DOCK_NAME)
 
 
-def show_scripted_model_editor() -> None:
+def show_scripted_model_editor(preferred_model_id: str = "") -> None:
     global _controller
     dock = _find_dock()
     if dock is None and _registered_widget is not None:
@@ -2498,7 +2498,9 @@ def show_scripted_model_editor() -> None:
     dock.show()
     dock.raise_()
     if not _controller.editor_active:
-        _controller.activate()
+        _controller.activate(preferred_model_id)
+    elif preferred_model_id:
+        _controller.refresh(preferred_model_id)
 
 
 def ensure_scripted_model_editor_registered() -> Any:

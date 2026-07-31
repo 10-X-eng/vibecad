@@ -44,6 +44,26 @@ BodyBase::BodyBase()
     App::OriginGroupExtension::initExtension(this);
 }
 
+App::DocumentObject* BodyBase::getModelingState()
+{
+    return Tip.getValue();
+}
+
+const App::DocumentObject* BodyBase::getModelingState() const
+{
+    return Tip.getValue();
+}
+
+const App::DocumentObject* BodyBase::getModelingPresentation() const
+{
+    return this;
+}
+
+bool BodyBase::containsModelingState(const App::DocumentObject* object) const
+{
+    return object && object == getModelingState();
+}
+
 BodyBase* BodyBase::findBodyOf(const App::DocumentObject* f)
 {
     App::Document* doc = f->getDocument();

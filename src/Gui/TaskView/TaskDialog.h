@@ -412,10 +412,12 @@ private:
     static void discardCommandMacroCapture(TaskDialog* dialog);
     void adoptCommandInteractionState(App::Document* document);
     static bool restoreCommandInteractionState(
-        const std::optional<InteractionState>& state
+        const std::optional<InteractionState>& state,
+        bool restorePresentation = true
     );
     static void retainPendingInteractionRollback(
-        const InteractionState& state
+        const InteractionState& state,
+        bool restorePresentation
     );
     static void retryPendingInteractionRollback(
         const App::Document* document,

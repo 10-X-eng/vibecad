@@ -69,7 +69,17 @@ struct AppExport TimelineSegmentReplacementMapping
  * stateSourceIndices is parallel and uses a flattened old-resource index or
  * -1 for accepted live state. consumerReplacementIndices is parallel to the
  * flattened old graph and names the final-resource index already used by
- * every retained direct consumer; -1 is valid only with no such consumer.
+ * every retained direct consumer.
+ *
+ * consumerReplacementObjects is optional. When present, it is also parallel
+ * to the flattened old graph. A non-null object is an exact live replacement
+ * outside this owner's final resource graph and requires the corresponding
+ * consumerReplacementIndices entry to be -1. A null object falls back to the
+ * indexed mapping. Both forms may be absent only when the old resource had no
+ * retained consumer. This supports operations which stop affecting one Body:
+ * downstream consumers can be relinked to that Body's exact preceding state
+ * without falsely making the preceding state a resource of the edited
+ * operation.
  */
 struct AppExport TimelineResourceReconciliationMapping
 {
@@ -77,6 +87,7 @@ struct AppExport TimelineResourceReconciliationMapping
     std::vector<DocumentObject*> orderedFinalResources;
     std::vector<long> stateSourceIndices;
     std::vector<long> consumerReplacementIndices;
+    std::vector<DocumentObject*> consumerReplacementObjects;
 };
 
 /**
@@ -95,14 +106,26 @@ class AppExport DocumentTimeline: public DocumentObject
 public:
     static constexpr const char* ObjectName = "VibeCADTimeline";
     static constexpr long CurrentSchemaVersion = 2;
+    static constexpr long CurrentDesignSchemaVersion = 1;
     static constexpr const char* RolePropertyName = "VibeCADTimelineRole";
     static constexpr const char* OwnerPropertyName = "VibeCADTimelineOwner";
     static constexpr const char* EditorPropertyName = "VibeCADTimelineEditor";
     static constexpr const char* EditCommandPropertyName = "VibeCADTimelineEditCommand";
+    static constexpr const char* DeleteCommandPropertyName = "VibeCADTimelineDeleteCommand";
     static constexpr const char* ReplacedInputsPropertyName = "VibeCADTimelineReplacedInputs";
+    static constexpr const char* DefinitionIdPropertyName = "VibeCADDefinitionId";
+    static constexpr const char* DesignIdPropertyName = "DesignId";
     static constexpr const char* OperationRole = "operation";
     static constexpr const char* ResourceRole = "resource";
     static constexpr const char* InternalRole = "internal";
+
+    /**
+     * Persistent identity and schema of the saved Design which owns every
+     * reusable definition, Body, Component, and History operation in this
+     * document.
+     */
+    PropertyUUID DesignId;
+    PropertyInteger DesignSchemaVersion;
 
     // Timeline properties are occurrence-local dynamic metadata. They never
     // inherit through App::Link or another forwarding property provider: a
@@ -144,6 +167,26 @@ public:
     {
         return ensure(&document);
     }
+
+    /**
+     * Assign the persistent identity shared by every Design-scope definition.
+     *
+     * This core entry point deliberately does not depend on a modeling
+     * workbench. Sketches, datums, curves, surfaces, and other reusable
+     * definitions all use the same saved identity and Design ownership
+     * contract.
+     */
+    static void initializeDesignDefinition(DocumentObject& definition);
+
+    /**
+     * Publish one accepted Design-scope definition as one global History root.
+     *
+     * The caller owns the surrounding transaction and must already have
+     * resolved every modeling input to an exact earlier state. Calling this
+     * for an existing accepted definition validates its identity and History
+     * membership without adding a second entry.
+     */
+    static void finalizeDesignDefinition(DocumentObject& definition);
 
     /**
      * Insert a newly-created user-visible operation at the current boundary
@@ -376,6 +419,18 @@ public:
      * provisional identity and never consumes an owned semantic block.
      */
     void classifyExistingLeafInternalObject(DocumentObject* object);
+
+    /**
+     * Retire one exact pre-existing semantic block into persistent internal
+     * state without deleting or replacing any document identity.
+     *
+     * This migration-only path accepts the explicit root of one canonical
+     * resource-first/root-last block.  The complete block is removed from
+     * History atomically, resource ownership and editor metadata are cleared,
+     * and every retained member receives the internal role.  A marker inside
+     * the block is rejected.
+     */
+    void classifyExistingSemanticBlockInternal(DocumentObject* operation);
 
     /**
      * Stage exact live canonical semantic blocks for many-to-many replacement.

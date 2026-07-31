@@ -649,6 +649,7 @@ void DlgExtrusion::apply()
         if (results.empty()) {
             throw Base::RuntimeError("No extrusion result was created");
         }
+        attempt.markResultAsDesignDefinition(*results.back());
 
         activeDoc->recompute();
         for (auto* result : results) {

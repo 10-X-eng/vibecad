@@ -14,6 +14,7 @@ namespace App
 {
 class Document;
 class DocumentObject;
+class PropertyLinkSubList;
 }
 namespace Part
 {
@@ -86,15 +87,71 @@ PartGuiExport void groupModelingCommandOutputs(
 /**
  * Resolve the object a modeling command must use for a visible selection.
  *
- * A Part::BodyBase is a presentation container whose Shape is supplied by
- * its Tip. Linking a new feature to the Body itself and then making that
- * feature the new Tip creates a circular dependency, so modeling commands
- * must consume the previous Tip instead. Ordinary objects and App::Link
- * occurrences are returned unchanged.
+ * A Part::BodyBase is a presentation container. Modeling commands consume its
+ * exact modeling state rather than the Body or its presentation object. A
+ * legacy Body resolves that state through Tip; a modern Body can publish a
+ * Design-wide state independently. Ordinary objects and App::Link occurrences
+ * are returned unchanged.
  */
 PartGuiExport App::DocumentObject* resolveModelingObject(App::DocumentObject* object);
 PartGuiExport const App::DocumentObject*
 resolveModelingObject(const App::DocumentObject* object);
+
+/**
+ * Find the native Body represented by a modeling object.
+ *
+ * Direct Body members resolve through their GeoFeatureGroup owner. A link or
+ * component presentation resolves through its linked definition, including a
+ * component containing exactly one Body. Ambiguous multi-Body components do
+ * not resolve.
+ */
+PartGuiExport Part::BodyBase* findModelingBody(App::DocumentObject* object) noexcept;
+PartGuiExport const Part::BodyBase*
+findModelingBody(const App::DocumentObject* object) noexcept;
+
+/**
+ * Resolve an operand which will be stored by a feature in \a body.
+ *
+ * A visible Body or same-Body component presentation resolves to the Body's
+ * exact current modeling state. A presentation of a specific same-Body
+ * feature resolves to that feature. Unrelated occurrences retain their exact
+ * identity and placement.
+ */
+PartGuiExport App::DocumentObject*
+resolveModelingObjectForBody(App::DocumentObject* object, const Part::BodyBase* body) noexcept;
+PartGuiExport const App::DocumentObject* resolveModelingObjectForBody(
+    const App::DocumentObject* object,
+    const Part::BodyBase* body
+) noexcept;
+
+/**
+ * Resolve an operand against an explicit result state of \a body.
+ *
+ * This overload is for an already-created feature whose Body Tip may now be
+ * the feature itself. Body/component presentations resolve to \a bodyResult
+ * instead of the current Tip, preventing an in-task reference from becoming
+ * a self-reference. Specific feature links and unrelated occurrences retain
+ * the same semantics as the two-argument overload.
+ */
+PartGuiExport App::DocumentObject* resolveModelingObjectForBody(
+    App::DocumentObject* object,
+    const Part::BodyBase* body,
+    App::DocumentObject* bodyResult
+) noexcept;
+PartGuiExport const App::DocumentObject* resolveModelingObjectForBody(
+    const App::DocumentObject* object,
+    const Part::BodyBase* body,
+    const App::DocumentObject* bodyResult
+) noexcept;
+
+/**
+ * Rewrite attachment/support references which will be owned by \a body.
+ *
+ * This prevents a native feature from linking back through a visible
+ * presentation of its own Body while preserving subelement names.
+ */
+PartGuiExport void
+resolveModelingReferencesForBody(App::PropertyLinkSubList& references, const Part::BodyBase* body);
 
 /**
  * Return whether an exact modeling input belongs to the current History state.
@@ -135,12 +192,24 @@ resolveModelingObjects(const std::vector<App::DocumentObject*>& objects);
 PartGuiExport Gui::SelectionObject
 resolveModelingSelection(const Gui::SelectionObject& selection);
 
+/// Body-aware counterpart to resolveModelingSelection().
+PartGuiExport Gui::SelectionObject resolveModelingSelectionForBody(
+    const Gui::SelectionObject& selection,
+    const Part::BodyBase* body
+);
+
 /**
  * Resolve a selection list and omit inactive History entries and Bodies
  * without a Tip.
  */
 PartGuiExport std::vector<Gui::SelectionObject>
 resolveModelingSelections(const std::vector<Gui::SelectionObject>& selection);
+
+/// Body-aware counterpart to resolveModelingSelections().
+PartGuiExport std::vector<Gui::SelectionObject> resolveModelingSelectionsForBody(
+    const std::vector<Gui::SelectionObject>& selection,
+    const Part::BodyBase* body
+);
 
 /**
  * Return the current selection projected onto modeling inputs.
@@ -152,6 +221,18 @@ resolveModelingSelections(const std::vector<Gui::SelectionObject>& selection);
  */
 PartGuiExport std::vector<Gui::SelectionObject>
 getModelingSelection(const char* documentName = nullptr);
+
+/**
+ * Return current selections as safe operands for features owned by \a body.
+ *
+ * A Body and any component presentation of that same Body collapse to one
+ * native feature identity, so native commands cannot create self-reference
+ * cycles or count one result twice.
+ */
+PartGuiExport std::vector<Gui::SelectionObject> getModelingSelectionForBody(
+    const Part::BodyBase* body,
+    const char* documentName = nullptr
+);
 
 /// Return only projected selections that provide a non-null Part shape.
 PartGuiExport std::vector<Gui::SelectionObject>
@@ -177,6 +258,26 @@ canStartRetainedModelingTask(const App::Document* document);
 PartGuiExport bool setModelingReplacedInputs(
     App::DocumentObject& result,
     const std::vector<App::DocumentObject*>& inputs
+);
+
+/**
+ * Validate and publish one complete reusable Design-definition block.
+ *
+ * Every block member must remain at Design scope. Geometric dependencies
+ * must be reusable definitions or exact immutable Body states; lifecycle
+ * metadata is deliberately excluded from that dependency check.
+ */
+PartGuiExport void finalizeModelingDesignDefinition(
+    App::DocumentObject& definition,
+    const std::vector<App::DocumentObject*>& semanticBlock
+);
+
+/**
+ * Classify, group, validate, and publish newly created root-level outputs as
+ * one reusable Design definition. The final element is the semantic root.
+ */
+PartGuiExport void publishModelingDesignDefinitionBlock(
+    const std::vector<App::DocumentObject*>& semanticBlock
 );
 
 /**
@@ -208,6 +309,16 @@ public:
 
     /// Keep this result at document root even if a Body remains active/selected.
     void keepResultAtDocumentRoot(App::DocumentObject& result);
+
+    /**
+     * Publish the final tracked result as one reusable Design definition.
+     *
+     * The result remains at Design scope, receives stable definition/Design
+     * identities, and must consume exact earlier modeling states. Public
+     * geometry commands use this instead of creating a parallel Body-owned
+     * or anonymous document-root history.
+     */
+    void markResultAsDesignDefinition(App::DocumentObject& result);
 
     /// Place this result in one exact Body, never an inferred active Body.
     void targetResultBody(

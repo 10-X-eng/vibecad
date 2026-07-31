@@ -208,6 +208,17 @@ Box::Box()
 
 App::DocumentObjectExecReturn* Box::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Box::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     double L = Length.getValue();
     double W = Width.getValue();
     double H = Height.getValue();
@@ -231,7 +242,8 @@ App::DocumentObjectExecReturn* Box::execute()
     try {
         // Build a box using the dimension attributes
         BRepPrimAPI_MakeBox mkBox(L, W, H);
-        return FeaturePrimitive::execute(mkBox.Shape());
+        primitive = mkBox.Shape();
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -269,6 +281,17 @@ Cylinder::Cylinder()
 
 App::DocumentObjectExecReturn* Cylinder::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Cylinder::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     // Build a cylinder
     if (Radius.getValue() < Precision::Confusion()) {
         return new App::DocumentObjectExecReturn(
@@ -294,9 +317,8 @@ App::DocumentObjectExecReturn* Cylinder::execute()
 
         // the direction vector for the prism is the height for z and the given angle
         BRepPrim_Cylinder prim = mkCylr.Cylinder();
-        TopoDS_Shape result = makePrism(Height.getValue(), prim.BottomFace());
-
-        return FeaturePrimitive::execute(result);
+        primitive = makePrism(Height.getValue(), prim.BottomFace());
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -336,6 +358,17 @@ Sphere::Sphere()
 
 App::DocumentObjectExecReturn* Sphere::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Sphere::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     // Build a sphere
     if (Radius.getValue() < Precision::Confusion()) {
         return new App::DocumentObjectExecReturn(
@@ -349,7 +382,8 @@ App::DocumentObjectExecReturn* Sphere::execute()
             Base::toRadians<double>(Angle2.getValue()),
             Base::toRadians<double>(Angle3.getValue())
         );
-        return FeaturePrimitive::execute(mkSphere.Shape());
+        primitive = mkSphere.Shape();
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -389,6 +423,17 @@ Cone::Cone()
 
 App::DocumentObjectExecReturn* Cone::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Cone::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     if (Radius1.getValue() < 0.0) {
         return new App::DocumentObjectExecReturn(
             QT_TRANSLATE_NOOP("Exception", "Radius of cone cannot be negative")
@@ -412,7 +457,8 @@ App::DocumentObjectExecReturn* Cone::execute()
                 Height.getValue(),
                 Base::toRadians<double>(Angle.getValue())
             );
-            return FeaturePrimitive::execute(mkCylr.Shape());
+            primitive = mkCylr.Shape();
+            return App::DocumentObject::StdReturn;
         }
         // Build a cone
         BRepPrimAPI_MakeCone mkCone(
@@ -421,7 +467,8 @@ App::DocumentObjectExecReturn* Cone::execute()
             Height.getValue(),
             Base::toRadians<double>(Angle.getValue())
         );
-        return FeaturePrimitive::execute(mkCone.Shape());
+        primitive = mkCone.Shape();
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -478,6 +525,17 @@ Ellipsoid::Ellipsoid()
 
 App::DocumentObjectExecReturn* Ellipsoid::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Ellipsoid::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     // Build a sphere
     if (Radius1.getValue() < Precision::Confusion()) {
         return new App::DocumentObjectExecReturn(
@@ -521,7 +579,8 @@ App::DocumentObjectExecReturn* Ellipsoid::execute()
         mat.SetValue(2, 3, 0.0);
         mat.SetValue(3, 3, scaleZ);
         BRepBuilderAPI_GTransform mkTrsf(mkSphere.Shape(), mat);
-        return FeaturePrimitive::execute(mkTrsf.Shape());
+        primitive = mkTrsf.Shape();
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -578,6 +637,17 @@ Torus::Torus()
 
 App::DocumentObjectExecReturn* Torus::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Torus::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     if (Radius1.getValue() < Precision::Confusion()) {
         return new App::DocumentObjectExecReturn(
             QT_TRANSLATE_NOOP("Exception", "Radius of torus too small")
@@ -599,13 +669,14 @@ App::DocumentObjectExecReturn* Torus::execute()
         return FeaturePrimitive::execute(mkTorus.Solid());
 #else
         Part::TopoShape shape;
-        return FeaturePrimitive::execute(shape.makeTorus(
+        primitive = shape.makeTorus(
             Radius1.getValue(),
             Radius2.getValue(),
             Angle1.getValue(),
             Angle2.getValue(),
             Angle3.getValue()
-        ));
+        );
+        return App::DocumentObject::StdReturn;
 #endif
     }
     catch (Standard_Failure& e) {
@@ -667,6 +738,17 @@ Prism::Prism()
 
 App::DocumentObjectExecReturn* Prism::execute()
 {
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Prism::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
     // Build a prism
     if (Polygon.getValue() < 3) {
         return new App::DocumentObjectExecReturn(
@@ -699,8 +781,8 @@ App::DocumentObjectExecReturn* Prism::execute()
         mkPoly.Add(gp_Pnt(v.x, v.y, v.z));
         BRepBuilderAPI_MakeFace mkFace(mkPoly.Wire());
         // the direction vector for the prism is the height for z and the given angle
-        TopoDS_Shape prism = makePrism(Height.getValue(), mkFace.Face());
-        return FeaturePrimitive::execute(prism);
+        primitive = makePrism(Height.getValue(), mkFace.Face());
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -747,6 +829,17 @@ Wedge::Wedge()
 }
 
 App::DocumentObjectExecReturn* Wedge::execute()
+{
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Wedge::buildPrimitiveShape(TopoDS_Shape& primitive) const
 {
     double xmin = Xmin.getValue();
     double ymin = Ymin.getValue();
@@ -802,7 +895,8 @@ App::DocumentObjectExecReturn* Wedge::execute()
             mkWedge(gp_Ax2(pnt, dir), xmin, ymin, zmin, z2min, x2min, xmax, ymax, zmax, z2max, x2max);
         BRepBuilderAPI_MakeSolid mkSolid;
         mkSolid.Add(mkWedge.Shell());
-        return FeaturePrimitive::execute(mkSolid.Solid());
+        primitive = mkSolid.Solid();
+        return App::DocumentObject::StdReturn;
     }
     catch (Standard_Failure& e) {
         return new App::DocumentObjectExecReturn(e.GetMessageString());
@@ -824,4 +918,110 @@ short int Wedge::mustExecute() const
 
 PROPERTY_SOURCE(PartDesign::AdditiveWedge, PartDesign::Wedge)
 PROPERTY_SOURCE(PartDesign::SubtractiveWedge, PartDesign::Wedge)
+
+
+PROPERTY_SOURCE(PartDesign::Tube, PartDesign::FeaturePrimitive)
+
+Tube::Tube()
+{
+    ADD_PROPERTY_TYPE(
+        OuterRadius,
+        (5.0),
+        "Tube",
+        App::Prop_None,
+        "Outside radius of the tube"
+    );
+    ADD_PROPERTY_TYPE(
+        InnerRadius,
+        (2.0),
+        "Tube",
+        App::Prop_None,
+        "Inside radius of the tube"
+    );
+    ADD_PROPERTY_TYPE(
+        Height,
+        (10.0),
+        "Tube",
+        App::Prop_None,
+        "Height of the tube"
+    );
+    OuterRadius.setConstraints(&quantityRange);
+    InnerRadius.setConstraints(&quantityRangeZero);
+    Height.setConstraints(&quantityRange);
+    primitiveType = FeaturePrimitive::Tube;
+}
+
+App::DocumentObjectExecReturn* Tube::execute()
+{
+    TopoDS_Shape primitive;
+    if (auto* error = buildPrimitiveShape(primitive);
+        error != App::DocumentObject::StdReturn) {
+        return error;
+    }
+    return FeaturePrimitive::execute(primitive);
+}
+
+App::DocumentObjectExecReturn*
+Tube::buildPrimitiveShape(TopoDS_Shape& primitive) const
+{
+    const double outerRadius = OuterRadius.getValue();
+    const double innerRadius = InnerRadius.getValue();
+    const double height = Height.getValue();
+    if (outerRadius < Precision::Confusion()) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Outer radius of tube too small")
+        );
+    }
+    if (innerRadius < 0.0) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Inner radius of tube cannot be negative")
+        );
+    }
+    if (innerRadius >= outerRadius) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP(
+                "Exception",
+                "Inner radius of tube must be smaller than outer radius"
+            )
+        );
+    }
+    if (height < Precision::Confusion()) {
+        return new App::DocumentObjectExecReturn(
+            QT_TRANSLATE_NOOP("Exception", "Height of tube too small")
+        );
+    }
+
+    try {
+        const TopoDS_Shape outside =
+            BRepPrimAPI_MakeCylinder(outerRadius, height).Shape();
+        if (innerRadius < Precision::Confusion()) {
+            primitive = outside;
+            return App::DocumentObject::StdReturn;
+        }
+
+        const TopoDS_Shape inside =
+            BRepPrimAPI_MakeCylinder(innerRadius, height).Shape();
+        FCBRepAlgoAPI_Cut cut(outside, inside);
+        if (!cut.IsDone() || cut.Shape().IsNull()) {
+            return new App::DocumentObjectExecReturn(
+                QT_TRANSLATE_NOOP("Exception", "Failed to create tube wall")
+            );
+        }
+        primitive = cut.Shape();
+        return App::DocumentObject::StdReturn;
+    }
+    catch (Standard_Failure& error) {
+        return new App::DocumentObjectExecReturn(error.GetMessageString());
+    }
+}
+
+short Tube::mustExecute() const
+{
+    if (OuterRadius.isTouched() || InnerRadius.isTouched()
+        || Height.isTouched()) {
+        return 1;
+    }
+    return FeaturePrimitive::mustExecute();
+}
+
 }  // namespace PartDesign

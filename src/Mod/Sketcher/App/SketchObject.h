@@ -105,6 +105,8 @@ public:
     App ::PropertyLinkListHidden Exports;
     Part ::PropertyGeometryList ExternalGeo;
     App ::PropertyBool FullyConstrained;
+    App::PropertyUUID VibeCADSketchId;
+    App::PropertyUUID DesignId;
     App ::PropertyPrecision ArcFitTolerance;
     Part ::PropertyPartShape InternalShape;
     App ::PropertyPrecision InternalTolerance;
@@ -122,6 +124,23 @@ public:
         return "SketcherGui::ViewProviderSketch";
     }
     void setupObject() override;
+
+    /**
+     * Return whether this Sketch is a reusable Design-level definition.
+     *
+     * Design sketches are document-root definitions. A sketch nested in a
+     * Body or another document group remains a legacy compatibility object.
+     */
+    [[nodiscard]] bool isDesignScopeDefinition() const noexcept;
+
+    /**
+     * Persist this document-root Sketch as one global History operation.
+     *
+     * The method is idempotent for an already-published Design sketch and
+     * rejects grouped sketches so new authoring cannot silently reintroduce
+     * Body-owned sketch history.
+     */
+    void finalizeDesignDefinition();
     //@}
 
     /** SketchObject can work in two modes: Recompute Mode and noRecomputes Mode

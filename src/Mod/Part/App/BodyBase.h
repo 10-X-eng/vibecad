@@ -59,6 +59,33 @@ public:
     App::PropertyLink Tip;
 
     /**
+     * Return the exact state which a newly authored modeling operation should
+     * consume for this Body.
+     *
+     * Legacy Bodies use Tip. Modern Body implementations can override this
+     * without exposing their presentation object as a modeling dependency.
+     */
+    virtual App::DocumentObject* getModelingState();
+    virtual const App::DocumentObject* getModelingState() const;
+
+    /**
+     * Return the object which presents this Body's result in the viewport.
+     *
+     * Legacy Bodies present themselves. A modern Body may use an internal
+     * publication while keeping that publication out of modeling links.
+     */
+    virtual const App::DocumentObject* getModelingPresentation() const;
+
+    /**
+     * Return whether object is an exact modeling state of this Body.
+     *
+     * This lets presentation code map Design-root immutable states back to
+     * their stable Body without requiring Part to know a derived workbench's
+     * state type.
+     */
+    virtual bool containsModelingState(const App::DocumentObject* object) const;
+
+    /**
      * A base object of the body, serves as a base object for the first feature of the body.
      * A Part::Feature link to make bodies be able based upon non-PartDesign Features.
      */

@@ -52,6 +52,7 @@
 #include <Mod/Part/App/Attacher.h>
 #include <Mod/Part/App/Part2DObject.h>
 #include <Mod/Part/App/TopoShape.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 #include <Mod/Sketcher/Gui/ViewProviderSketch.h>
 
@@ -297,29 +298,13 @@ public:
 
     void handleSelectedBody(PartDesign::Body* activeBody)
     {
-        App::DocumentObject* object = faceSelection.getObject();
-        std::vector<std::string> elements = faceSelection.getSubNames();
-
-        // In case the selected face belongs to the body then it means its
-        // Display Mode Body is set to Tip. But the body face is not allowed
-        // to be used as support because otherwise it would cause a cyclic
-        // dependency. So, instead we use the tip object as reference.
-        // https://forum.freecad.org/viewtopic.php?f=3&t=37448
-        if (object == activeBody) {
-            App::DocumentObject* tip = activeBody->Tip.getValue();
-            if (tip && tip->isDerivedFrom<Part::Feature>() && elements.size() == 1) {
-                Gui::SelectionChanges msg;
-                msg.pDocName = faceSelection.getDocName();
-                msg.pObjectName = tip->getNameInDocument();
-                msg.pSubName = elements[0].c_str();
-                msg.TypeName = tip->getTypeId().getName();
-                msg.pTypeName = msg.TypeName.c_str();
-
-                faceSelection = Gui::SelectionObject {msg};
-
-                // automatically switch to 'Through' mode
-                setThroughModeOfBody(activeBody);
-            }
+        const auto original = faceSelection.getObject();
+        auto resolved =
+            PartGui::resolveModelingSelectionForBody(faceSelection, activeBody);
+        if (resolved.getObject() && resolved.getObject() != original
+            && resolved.getSubNames().size() == 1) {
+            faceSelection = std::move(resolved);
+            setThroughModeOfBody(activeBody);
         }
     }
 
@@ -447,13 +432,22 @@ public:
             supportString = validator.getSupport();
         }
         else if (planeFilter.match()) {
-            SupportPlaneValidator validator(planeFilter.Result[0][0]);
+            SupportPlaneValidator validator(
+                PartGui::resolveModelingSelectionForBody(
+                    planeFilter.Result[0][0],
+                    activeBody
+                )
+            );
             selectedObject = validator.getObject();
             supportString = validator.getSupport();
         }
         else {
             // For a sketch, the support is the object itself with no sub-element.
-            Gui::SelectionObject sketchSelObject = sketchFilter.Result[0][0];
+            Gui::SelectionObject sketchSelObject =
+                PartGui::resolveModelingSelectionForBody(
+                    sketchFilter.Result[0][0],
+                    activeBody
+                );
             selectedObject = sketchSelObject.getObject();
             supportString = sketchSelObject.getAsPropertyLinkSubString();
         }
@@ -840,7 +834,7 @@ private:
         // This mirrors UnifiedDatumCommand: use attacher to find the best fit mode.
         App::PropertyLinkSubList support;
         Gui::Selection().getAsPropertyLinkSubList(support);
-        support.removeValue(activeBody);
+        PartGui::resolveModelingReferencesForBody(support, activeBody);
 
         // Don't pre-populate when the selection contains sketches. A sketch selected
         // from prior work should not automatically become the attachment reference —

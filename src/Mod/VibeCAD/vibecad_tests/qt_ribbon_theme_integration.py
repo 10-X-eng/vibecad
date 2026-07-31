@@ -14,30 +14,16 @@ import Part
 from PySide import QtCore, QtGui, QtWidgets
 
 _MODEL_COMPOSITES = {
-    "PartDesign_CompSketches": (
-        "PartDesign_NewSketch",
-        "Sketcher_MapSketch",
-        "Sketcher_EditSketch",
-    ),
-    "PartDesign_CompPrimitiveAdditive": (
-        "PartDesign_AdditiveBox",
-        "PartDesign_AdditiveCylinder",
-        "PartDesign_AdditiveSphere",
-        "PartDesign_AdditiveCone",
-        "PartDesign_AdditiveEllipsoid",
-        "PartDesign_AdditiveTorus",
-        "PartDesign_AdditivePrism",
-        "PartDesign_AdditiveWedge",
-    ),
-    "PartDesign_CompPrimitiveSubtractive": (
-        "PartDesign_SubtractiveBox",
-        "PartDesign_SubtractiveCylinder",
-        "PartDesign_SubtractiveSphere",
-        "PartDesign_SubtractiveCone",
-        "PartDesign_SubtractiveEllipsoid",
-        "PartDesign_SubtractiveTorus",
-        "PartDesign_SubtractivePrism",
-        "PartDesign_SubtractiveWedge",
+    "PartDesign_DesignPrimitive": (
+        "PartDesign::DesignBox",
+        "PartDesign::DesignCylinder",
+        "PartDesign::DesignSphere",
+        "PartDesign::DesignCone",
+        "PartDesign::DesignEllipsoid",
+        "PartDesign::DesignTorus",
+        "PartDesign::DesignPrism",
+        "PartDesign::DesignWedge",
+        "PartDesign::DesignTube",
     ),
     "Part_CompCompoundTools": (
         "Part_Compound",
@@ -195,8 +181,10 @@ _MODEL_GROUP_COMMANDS = (
     (
         "STRUCTURE",
         (
-            "PartDesign_Body",
-            "PartDesign_CompSketches",
+            "PartDesign_NewComponent",
+            "PartDesign_NewBody",
+            "Sketcher_NewSketch",
+            "Sketcher_EditSketch",
             "Sketcher_ValidateSketch",
             "PartDesign_SubShapeBinder",
             "PartDesign_Clone",
@@ -205,19 +193,13 @@ _MODEL_GROUP_COMMANDS = (
     (
         "SOLIDS",
         (
-            "PartDesign_Pad",
-            "PartDesign_Revolution",
-            "PartDesign_AdditiveLoft",
-            "PartDesign_AdditivePipe",
-            "PartDesign_AdditiveHelix",
-            "PartDesign_CompPrimitiveAdditive",
-            "PartDesign_Pocket",
+            "PartDesign_DesignExtrude",
+            "PartDesign_DesignRevolve",
+            "PartDesign_DesignLoft",
+            "PartDesign_DesignSweep",
+            "PartDesign_DesignHelix",
+            "PartDesign_DesignPrimitive",
             "PartDesign_Hole",
-            "PartDesign_Groove",
-            "PartDesign_SubtractiveLoft",
-            "PartDesign_SubtractivePipe",
-            "PartDesign_SubtractiveHelix",
-            "PartDesign_CompPrimitiveSubtractive",
         ),
     ),
     (
@@ -232,16 +214,14 @@ _MODEL_GROUP_COMMANDS = (
     (
         "TRANSFORM",
         (
-            "PartDesign_Mirrored",
-            "PartDesign_LinearPattern",
-            "PartDesign_PolarPattern",
-            "PartDesign_MultiTransform",
+            "PartDesign_DesignMirror",
+            "PartDesign_DesignLinearPattern",
+            "PartDesign_DesignCircularPattern",
         ),
     ),
     (
         "GEOMETRY",
         (
-            "Part_Tube",
             "Part_Primitives",
             "Part_Builder",
             "Part_Extrude",
@@ -262,12 +242,9 @@ _MODEL_GROUP_COMMANDS = (
         "MODIFY",
         (
             "Part_CompCompoundTools",
-            "Part_Boolean",
-            "Part_Cut",
-            "Part_Fuse",
-            "Part_Common",
+            "PartDesign_Combine",
             "Part_CompJoinFeatures",
-            "Part_CompSplitFeatures",
+            "PartDesign_Split",
             "Part_Defeaturing",
         ),
     ),
@@ -454,10 +431,7 @@ def _composite_child_action(page, parent_id, child_id):
 
 
 def _assert_synthetic_primitive_children(page):
-    for parent_id in (
-        "PartDesign_CompPrimitiveAdditive",
-        "PartDesign_CompPrimitiveSubtractive",
-    ):
+    for parent_id in ("PartDesign_DesignPrimitive",):
         expected_children = _MODEL_COMPOSITES[parent_id]
         wrappers = _composite_wrappers(page, parent_id)
         assert len(wrappers) == 2, parent_id
@@ -1009,7 +983,15 @@ def _run():
         _process_events()
 
         if os.environ.get("VIBECAD_VERIFY_SAVED_COMBINED_BROWSER"):
-            assert main_window.findChild(QtWidgets.QDockWidget, "Std_TreeView") is None
+            saved_tree = main_window.findChild(
+                QtWidgets.QDockWidget,
+                "Std_TreeView",
+            )
+            assert saved_tree is not None
+            assert saved_tree.isVisible()
+            assert saved_tree.parentWidget().objectName() == (
+                "VibeCADModelBrowserHost"
+            )
             assert (
                 main_window.findChild(QtWidgets.QDockWidget, "Std_PropertyView") is None
             )
@@ -1018,7 +1000,7 @@ def _run():
                 is not None
             )
             print(
-                "VIBECAD_SAVED_BROWSER_LAYOUT_OK mode=Combined",
+                "VIBECAD_SAVED_BROWSER_LAYOUT_OK mode=PermanentModelBrowser",
                 flush=True,
             )
             exit_code = 0
@@ -1113,28 +1095,18 @@ def _run():
             for button in structure_group.findChildren(QtWidgets.QToolButton)
             if button.property("ribbonCommand") and button.defaultAction() is not None
         }
-        assert "PartDesign_CompSketches" in structure_commands
-        sketch_tools = next(
-            button
-            for button in structure_group.findChildren(QtWidgets.QToolButton)
-            if button.property("ribbonCommand")
-            and button.defaultAction() is not None
-            and button.defaultAction().property("VibeCADCommandId")
-            == "PartDesign_CompSketches"
-        )
-        assert sketch_tools.menu() is not None
-        sketch_tool_labels = {
-            action.text().replace("&", "") for action in sketch_tools.menu().actions()
-        }
-        assert {"New Sketch", "Attach Sketch", "Edit Sketch"}.issubset(
-            sketch_tool_labels
-        )
+        assert {
+            "PartDesign_NewComponent",
+            "PartDesign_NewBody",
+            "Sketcher_NewSketch",
+            "Sketcher_EditSketch",
+        }.issubset(structure_commands)
+        assert "PartDesign_CompSketches" not in structure_commands
         model_page = _ribbon_page(main_window)
         _assert_model_group_graphs(model_page)
         _assert_synthetic_primitive_children(model_page)
         del (
             model_page,
-            sketch_tools,
             structure_group,
         )
         print("VIBECAD_RIBBON_STAGE model-graph", flush=True)
@@ -1186,7 +1158,7 @@ def _run():
             for row in range(completion_model.rowCount())
         ]
         assert any("Std_New" in value for value in completion_values)
-        assert any("PartDesign_Body" in value for value in completion_values)
+        assert any("PartDesign_NewBody" in value for value in completion_values)
 
         theme_parameters = App.ParamGet("User parameter:BaseApp/Preferences/MainWindow")
         initial_mode = theme_parameters.GetString("AppearanceMode", "Dark")
@@ -1236,76 +1208,62 @@ def _run():
         assert separate_tree_dock is not None
         if separate_tree_dock is not None:
             tree_toggle = separate_tree_dock.toggleViewAction()
-            original_tree_toggle_state = tree_toggle.isChecked()
             assert str(tree_toggle.data()) == "Std_TreeView"
-            tree_visibility_preferences = App.ParamGet(
-                "User parameter:BaseApp/MainWindow/DockWindows"
+            assert tree_toggle.isChecked()
+            assert not tree_toggle.isEnabled()
+            assert not tree_toggle.isVisible()
+            assert (
+                separate_tree_dock.features()
+                == QtWidgets.QDockWidget.NoDockWidgetFeatures
+            )
+            browser_host = main_window.findChild(
+                QtWidgets.QWidget,
+                "VibeCADModelBrowserHost",
+            )
+            viewport_canvas = main_window.findChild(
+                QtWidgets.QWidget,
+                "VibeCADViewportCanvas",
+            )
+            assert browser_host is not None
+            assert viewport_canvas is not None
+            assert separate_tree_dock.parentWidget() is browser_host
+            assert browser_host.parentWidget() is viewport_canvas
+            assert not any(
+                isinstance(parent, QtWidgets.QSplitter)
+                for parent in (
+                    separate_tree_dock.parentWidget(),
+                    browser_host.parentWidget(),
+                )
             )
 
-            tree_splitter = separate_tree_dock.parentWidget()
-            while tree_splitter is not None and not isinstance(
-                tree_splitter,
-                QtWidgets.QSplitter,
-            ):
-                tree_splitter = tree_splitter.parentWidget()
-            tree_splitter_index = (
-                tree_splitter.indexOf(separate_tree_dock)
-                if tree_splitter is not None
-                else -1
-            )
-
-            def assert_tree_rendered(expected_state):
+            def assert_tree_rendered():
                 for _ in range(3):
                     _process_events()
-                splitter_sizes = (
-                    tree_splitter.sizes() if tree_splitter is not None else []
-                )
                 tree_state = {
-                    "expected": expected_state,
                     "checked": tree_toggle.isChecked(),
-                    "preference": tree_visibility_preferences.GetBool(
-                        "Std_TreeView",
-                        not expected_state,
-                    ),
+                    "enabled": tree_toggle.isEnabled(),
+                    "action_visible": tree_toggle.isVisible(),
                     "visible": separate_tree_dock.isVisible(),
                     "hidden": separate_tree_dock.isHidden(),
                     "visible_region_empty": (
                         separate_tree_dock.visibleRegion().isEmpty()
                     ),
-                    "splitter_sizes": splitter_sizes,
-                    "splitter_visible": (
-                        tree_splitter.isVisible() if tree_splitter is not None else None
-                    ),
+                    "host_visible": browser_host.isVisible(),
+                    "host_geometry": browser_host.geometry().getRect(),
+                    "canvas_geometry": viewport_canvas.geometry().getRect(),
                 }
-                assert tree_toggle.isChecked() == expected_state, tree_state
-                assert (
-                    tree_visibility_preferences.GetBool(
-                        "Std_TreeView",
-                        not expected_state,
-                    )
-                    == expected_state
-                ), tree_state
-                assert (
-                    separate_tree_dock.visibleRegion().isEmpty() != expected_state
-                ), tree_state
-                assert separate_tree_dock.isVisible() == expected_state, tree_state
-                if tree_splitter_index >= 0:
-                    assert (
-                        splitter_sizes[tree_splitter_index] > 0
-                    ) == expected_state, tree_state
-                    assert tree_splitter.isVisible() == expected_state, tree_state
-                if expected_state:
-                    dock_rect = QtCore.QRect(
-                        separate_tree_dock.mapToGlobal(QtCore.QPoint()),
-                        separate_tree_dock.size(),
-                    )
-                    window_rect = QtCore.QRect(
-                        main_window.mapToGlobal(QtCore.QPoint()),
-                        main_window.size(),
-                    )
-                    assert dock_rect.intersects(window_rect)
+                assert tree_toggle.isChecked(), tree_state
+                assert not tree_toggle.isEnabled(), tree_state
+                assert not tree_toggle.isVisible(), tree_state
+                assert browser_host.isVisible(), tree_state
+                assert separate_tree_dock.isVisible(), tree_state
+                assert not separate_tree_dock.visibleRegion().isEmpty(), tree_state
+                assert browser_host.x() == 0, tree_state
+                assert browser_host.y() == 0, tree_state
+                assert browser_host.height() == viewport_canvas.height(), tree_state
+                assert browser_host.width() <= viewport_canvas.width(), tree_state
 
-            def assert_tree_state_survives_switches(expected_state):
+            def assert_tree_survives_switches():
                 for workbench in (
                     "PartDesignWorkbench",
                     "MeshWorkbench",
@@ -1324,15 +1282,15 @@ def _run():
                         )
                         is separate_tree_dock
                     )
-                    assert_tree_rendered(expected_state)
+                    assert_tree_rendered()
 
-            def assert_tree_state_survives_theme_refresh(expected_state):
+            def assert_tree_survives_theme_refresh():
                 starting_mode = theme_parameters.GetString(
                     "AppearanceMode",
                     "",
                 )
                 theme_button.click()
-                assert_tree_rendered(expected_state)
+                assert_tree_rendered()
                 assert (
                     theme_parameters.GetString(
                         "AppearanceMode",
@@ -1341,7 +1299,7 @@ def _run():
                     != starting_mode
                 )
                 theme_button.click()
-                assert_tree_rendered(expected_state)
+                assert_tree_rendered()
                 assert (
                     theme_parameters.GetString(
                         "AppearanceMode",
@@ -1350,11 +1308,14 @@ def _run():
                     == starting_mode
                 )
 
-            if not tree_toggle.isChecked():
-                tree_toggle.trigger()
-                _process_events()
-            assert_tree_rendered(True)
-            assert_tree_state_survives_theme_refresh(True)
+            def assert_tree_stays_rendered():
+                assert_tree_rendered()
+                for _ in range(25):
+                    _process_events()
+                assert_tree_rendered()
+
+            assert_tree_rendered()
+            assert_tree_survives_theme_refresh()
 
             assistant_button.click()
             _process_events()
@@ -1365,25 +1326,16 @@ def _run():
             assert assistant_dock is not None
             assistant_dock.widget().setFocus(QtCore.Qt.OtherFocusReason)
             _process_events()
-            assert_tree_rendered(True)
-            assert_tree_state_survives_switches(True)
+            assert_tree_rendered()
+            assert_tree_survives_switches()
 
+            # Even direct QAction activation cannot hide permanent chrome.
             tree_toggle.trigger()
             _process_events()
             assistant_dock.widget().setFocus(QtCore.Qt.OtherFocusReason)
-            assert_tree_rendered(False)
-            assert_tree_state_survives_theme_refresh(False)
-            assert_tree_state_survives_switches(False)
-
-            tree_toggle.trigger()
-            _process_events()
-            assert_tree_rendered(True)
-            assert_tree_state_survives_switches(True)
-
-            if not original_tree_toggle_state:
-                tree_toggle.trigger()
-                _process_events()
-                assert_tree_rendered(False)
+            assert_tree_rendered()
+            assert_tree_survives_theme_refresh()
+            assert_tree_survives_switches()
 
         App.closeDocument(tree_document.Name)
         tree_document = None
@@ -1611,43 +1563,24 @@ def _run():
         rebuilt_model_page = _ribbon_page(main_window)
         _assert_model_group_graphs(rebuilt_model_page)
         _assert_synthetic_primitive_children(rebuilt_model_page)
-        sketch_wrapper = _page_menu_action(
+        new_sketch_action = _page_menu_action(
             rebuilt_model_page,
-            "PartDesign_CompSketches",
+            "Sketcher_NewSketch",
         )
-        assert sketch_wrapper is not None and not sketch_wrapper.isEnabled()
-        del rebuilt_model_page, sketch_wrapper
+        assert new_sketch_action is not None and not new_sketch_action.isEnabled()
+        del rebuilt_model_page, new_sketch_action
         print("VIBECAD_RIBBON_STAGE lifecycle-rebuild", flush=True)
         document = App.newDocument("VibeCADRibbonSmoke")
         _process_events()
         print("VIBECAD_RIBBON_STAGE primary-document", flush=True)
         rebuilt_model_page = _ribbon_page(main_window)
         _assert_model_group_graphs(rebuilt_model_page)
-        sketch_wrapper = _page_menu_action(
+        new_sketch_action = _page_menu_action(
             rebuilt_model_page,
-            "PartDesign_CompSketches",
+            "Sketcher_NewSketch",
         )
-        assert sketch_wrapper is not None and sketch_wrapper.isEnabled()
-        sketch_wrappers = _composite_wrappers(
-            rebuilt_model_page,
-            "PartDesign_CompSketches",
-        )
-        sketch_child_states = tuple(
-            action.isEnabled()
-            for action in sketch_wrappers[0].menu().actions()
-            if not action.isSeparator()
-        )
-        assert sketch_child_states == (True, False, False)
-        for wrapper in sketch_wrappers[1:]:
-            assert (
-                tuple(
-                    action.isEnabled()
-                    for action in wrapper.menu().actions()
-                    if not action.isSeparator()
-                )
-                == sketch_child_states
-            )
-        del rebuilt_model_page, sketch_wrapper, sketch_wrappers
+        assert new_sketch_action is not None and new_sketch_action.isEnabled()
+        del rebuilt_model_page, new_sketch_action
 
         assembly_page = _select_ribbon_workbench(
             main_window,
@@ -1789,10 +1722,15 @@ def _run():
         )
         assert not source_document_tabs.isVisible()
         print("VIBECAD_RIBBON_STAGE document-tabs", flush=True)
+
+        assert tree_toggle.isChecked()
+        assert_tree_rendered()
+
         sketch = document.addObject("Sketcher::SketchObject", "RibbonSketch")
         document.recompute()
         Gui.activeDocument().setEdit(sketch.Name)
         _process_events()
+        assert_tree_rendered()
         assert Gui.activeWorkbench().name() == "SketcherWorkbench"
         assert tabs.tabText(tabs.currentIndex()) == "Sketch"
         assert [
@@ -1830,10 +1768,12 @@ def _run():
         assert tabs.tabText(tabs.currentIndex()) == "Model"
         assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
         assert all(tabs.isTabEnabled(index) for index in range(tabs.count()))
+        assert_tree_stays_rendered()
         print("VIBECAD_RIBBON_STAGE sketch-finish", flush=True)
 
         Gui.activeDocument().setEdit(sketch.Name)
         _process_events()
+        assert_tree_rendered()
         assert tabs.tabText(tabs.currentIndex()) == "Sketch"
         Gui.runCommand("Sketcher_CancelSketch")
         _process_events()
@@ -1842,6 +1782,7 @@ def _run():
         assert tabs.tabText(tabs.currentIndex()) == "Model"
         assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
         assert all(tabs.isTabEnabled(index) for index in range(tabs.count()))
+        assert_tree_stays_rendered()
         print("VIBECAD_RIBBON_STAGE sketch-cancel", flush=True)
 
         Gui.activateWorkbench("SketcherWorkbench")
@@ -1869,12 +1810,71 @@ def _run():
             "SKETCH",
             "INSPECT",
         ]
+        assert_tree_rendered()
         print("VIBECAD_RIBBON_STAGE sketch-workbench", flush=True)
 
         tabs.setCurrentIndex(0)
         _process_events()
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
         assert [tabs.tabText(index) for index in range(tabs.count())] == expected_tabs
+        assert_tree_rendered()
+
+        task_body = document.addObject("PartDesign::Body", "RibbonTaskBody")
+        task_feature = task_body.newObject(
+            "PartDesign::Feature",
+            "RibbonTaskFeature",
+        )
+        task_feature.Shape = Part.makeBox(20, 14, 8)
+        task_body.Tip = task_feature
+        task_publication = document.addObject(
+            "App::Link",
+            "RibbonTaskPublication",
+        )
+        task_publication.LinkedObject = task_body
+        document.addObject("PartDesign::Body", "RibbonOtherBody")
+        document.recompute()
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(
+            document.Name,
+            task_publication.Name,
+            "Edge1",
+        )
+        Gui.runCommand("PartDesign_Chamfer", 0)
+        _process_events()
+        assert Gui.Control.activeDialog()
+        Gui.Control.activeTaskDialog().reject()
+        _process_events()
+        assert not Gui.Control.activeDialog()
+        assert_tree_stays_rendered()
+
+        Gui.activeView().setActiveObject("pdbody", task_body)
+
+        def open_chamfer_task():
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(
+                document.Name,
+                task_feature.Name,
+                "Edge1",
+            )
+            Gui.runCommand("PartDesign_Chamfer", 0)
+            _process_events()
+            assert Gui.Control.activeDialog()
+        assert_tree_rendered()
+
+        open_chamfer_task()
+        Gui.Control.activeTaskDialog().reject()
+        _process_events()
+        assert not Gui.Control.activeDialog()
+        assert_tree_stays_rendered()
+
+        open_chamfer_task()
+        Gui.Control.activeTaskDialog().accept()
+        _process_events()
+        assert not Gui.Control.activeDialog()
+        assert_tree_stays_rendered()
+        print("VIBECAD_RIBBON_STAGE native-task-tree", flush=True)
 
         draft_objects_before = tuple(document.Objects)
         Gui.activateWorkbench("DraftWorkbench")
@@ -1899,6 +1899,7 @@ def _run():
             _process_events()
         assert not Gui.Control.activeDialog()
         assert tuple(document.Objects) == draft_objects_before
+        assert_tree_rendered()
         assert (
             main_window.findChild(
                 QtWidgets.QDockWidget,
@@ -1913,6 +1914,7 @@ def _run():
         assert Gui.activeWorkbench().name() == "PartDesignWorkbench"
         assert tabs.tabText(tabs.currentIndex()) == "Model"
         assert _visible_main_window_toolbars(main_window) == [ribbon]
+        assert_tree_rendered()
         print("VIBECAD_RIBBON_STAGE draft-compatibility", flush=True)
 
         _key_click(main_window, QtCore.Qt.Key_F10)

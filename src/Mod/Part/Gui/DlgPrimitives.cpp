@@ -39,7 +39,6 @@
 
 
 #include <App/Application.h>
-#include <App/Part.h>
 #include <App/Document.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -55,7 +54,6 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/Selection/SoFCUnifiedSelection.h>
 #include <Gui/TaskView/TaskView.h>
-#include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/PrimitiveFeature.h>
 #include <Mod/Part/App/FeaturePartBox.h>
 #include <Mod/Part/App/FeaturePartCircle.h>
@@ -103,45 +101,6 @@ std::map<const DlgPrimitives*, App::DocumentObject*>& primitiveCreatedResults()
     return results;
 }
 }  // namespace
-
-QString getAutoGroupCommandStr(QString objectName)
-// A Body is the modeling owner when one is active.  Only fall back to an
-// active App::Part when no Body is targeted; assigning both groups violates
-// GeoFeatureGroup's single-owner invariant.
-{
-    auto* activeView = Gui::Application::Instance
-        ? Gui::Application::Instance->activeView()
-        : nullptr;
-    auto* activeDocument = App::GetApplication().getActiveDocument();
-    auto* activeBody = activeView
-        ? activeView->getActiveObject<Part::BodyBase*>(PDBODYKEY)
-        : nullptr;
-    if (activeBody && activeBody->getDocument()
-        && activeBody->getDocument() == activeDocument
-        && activeBody->getNameInDocument()) {
-        return QStringLiteral(
-                   "App.ActiveDocument.getObject('%1')."
-                   "addObject(App.ActiveDocument.getObject('%2'))\n"
-               )
-            .arg(
-                QString::fromUtf8(activeBody->getNameInDocument()),
-                objectName
-            );
-    }
-
-    App::Part* activePart = activeView
-        ? activeView->getActiveObject<App::Part*>(PARTKEY)
-        : nullptr;
-    if (activePart && activePart->getDocument() == activeDocument) {
-        QString activeObjectName = QString::fromUtf8(activePart->getNameInDocument());
-        return QStringLiteral(
-                   "App.ActiveDocument.getObject('%1\')."
-                   "addObject(App.ActiveDocument.getObject('%2\'))\n"
-        )
-            .arg(activeObjectName, objectName);
-    }
-    return QStringLiteral("# Object %1 created at document root").arg(objectName);
-}
 
 const char* gce_ErrorStatusText(gce_ErrorType et)
 {
@@ -267,13 +226,7 @@ App::DocumentObject* Picker::createPrimitiveAndReport(
             );
         }
         attempt.trackCreatedObject(*result);
-        Gui::Command::runCommand(
-            Gui::Command::Doc,
-            getAutoGroupCommandStr(
-                QString::fromUtf8(result->getNameInDocument())
-            )
-                .toUtf8()
-        );
+        attempt.markResultAsDesignDefinition(*result);
         Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
         TaskResultValidation::validatePartResult(result);
 
@@ -2592,6 +2545,7 @@ bool DlgPrimitives::tryCreatePrimitive(const QString& placement)
         Part::Primitive::getClassTypeId()
     );
     attempt.trackCreatedObject(*result);
+    attempt.markResultAsDesignDefinition(*result);
     const QString resultExpression = QString::fromStdString(
         Gui::Command::getObjectCmd(result)
     );
@@ -2605,14 +2559,6 @@ bool DlgPrimitives::tryCreatePrimitive(const QString& placement)
         "Label = \""
             << Base::Tools::escapeEncodeString(label.constData()) << "\""
     );
-    Gui::Command::runCommand(
-        Gui::Command::Doc,
-        getAutoGroupCommandStr(
-            QString::fromUtf8(result->getNameInDocument())
-        )
-            .toUtf8()
-    );
-
     Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
     TaskResultValidation::validatePartResult(result);
 

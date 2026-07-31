@@ -126,6 +126,17 @@ private Q_SLOTS:
 protected:
     void changeEvent(QEvent* e) override;
 
+    /**
+     * Project a picked presentation object onto the definition object that
+     * this attachment task is allowed to persist.
+     *
+     * Generic attachment keeps the exact selection. Specialized workflows
+     * may override this to prevent presentation links from becoming
+     * self-references.
+     */
+    virtual App::DocumentObject*
+    normalizeReference(App::DocumentObject* selected) const;
+
 private:
     void objectDeleted(const Gui::ViewProviderDocumentObject&);
     void documentDeleted(const Gui::Document&);

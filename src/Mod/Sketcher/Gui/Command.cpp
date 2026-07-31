@@ -39,6 +39,7 @@
 #include <App/DocumentObjectGroup.h>
 #include <App/DocumentTimeline.h>
 #include <App/Datums.h>
+#include <App/Part.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <Gui/Action.h>
@@ -364,6 +365,25 @@ bool restoreExactSketchSupport(
     return true;
 }
 
+bool isGlobalSketchContext(const Gui::SelectionObject& selection)
+{
+    if (!selection.getSubNames().empty()) {
+        return false;
+    }
+
+    auto* object = selection.getObject();
+    if (!object) {
+        return false;
+    }
+    if (object->isDerivedFrom<Part::BodyBase>()
+        || object->isDerivedFrom<App::DocumentObjectGroup>()) {
+        return true;
+    }
+
+    auto* component = freecad_cast<App::Part*>(object);
+    return component && component->Type.getStrValue() == "Component";
+}
+
 bool selectionBelongsToExactSketchDocument(App::Document* document)
 {
     if (!document) {
@@ -638,46 +658,19 @@ void CmdSketcherNewSketch::activated(int iMsg)
 
     Attacher::eMapMode mapmode = Attacher::mmDeactivated;
     bool bAttach = false;
-    bool groupSelected = false;
-    ExactSketchObjectIdentity selectedGroupIdentity;
     std::vector<ExactSketchSelectionOccurrence> capturedSupport;
     const auto rawSelection = Gui::Selection().getSelectionEx(
         document->getName(),
         App::DocumentObject::getClassTypeId(),
         Gui::ResolveMode::NoResolve
     );
-    const auto selectedGroup = std::ranges::find_if(
-        rawSelection,
-        [](const Gui::SelectionObject& selected) {
-            return selected.isObjectTypeOf(
-                App::DocumentObjectGroup::getClassTypeId()
-            );
-        }
-    );
-    if (selectedGroup != rawSelection.end()) {
-        if (rawSelection.size() != 1) {
-            Gui::TranslatedUserWarning(
-                getActiveGuiDocument(),
-                QObject::tr("Invalid Selection"),
-                QObject::tr("Too many objects selected"));
-                return;
-        }
-
-        auto* group = freecad_cast<App::DocumentObjectGroup*>(
-            selectedGroup->getObject()
-        );
-        if (!group || group->getDocument() != document) {
-            Gui::TranslatedUserWarning(
-                guiDocument,
-                QObject::tr("Invalid Selection"),
-                QObject::tr(
-                    "The selected group does not belong to this document"
-                )
-            );
-            return;
-        }
-        selectedGroupIdentity = exactSketchObjectIdentity(group);
-        groupSelected = true;
+    const bool contextOnly =
+        rawSelection.size() == 1
+        && isGlobalSketchContext(rawSelection.front());
+    if (contextOnly) {
+        // A VibeCAD Sketch is a Design-level reusable definition. A selected
+        // Body, Component, or presentation group provides UI context only:
+        // it is neither ownership nor attachment support.
     }
     else if (!rawSelection.empty()) {
         const auto supportSelection =
@@ -783,16 +776,7 @@ void CmdSketcherNewSketch::activated(int iMsg)
         }
         std::string supportString = support.getPyReprString();
 
-        ExactSketchObjectIdentity supportGroupIdentity;
         const ExactSketchObjectIdentity* targetGroupIdentity = nullptr;
-        auto* supportPart = freecad_cast<Part::Feature*>(
-            support.getValue()
-        );
-        auto* supportGroup = supportPart ? supportPart->getGroup() : nullptr;
-        if (supportGroup && supportGroup->getDocument() == document) {
-            supportGroupIdentity = exactSketchObjectIdentity(supportGroup);
-            targetGroupIdentity = &supportGroupIdentity;
-        }
 
         if (targetGroupIdentity
             && !resolveExactUsableSketchObject(*targetGroupIdentity)) {
@@ -931,8 +915,7 @@ void CmdSketcherNewSketch::activated(int iMsg)
         if (!document) {
             return;
         }
-        const ExactSketchObjectIdentity* targetGroupIdentity =
-            groupSelected ? &selectedGroupIdentity : nullptr;
+        const ExactSketchObjectIdentity* targetGroupIdentity = nullptr;
         if (targetGroupIdentity
             && !resolveExactUsableSketchGroup(
                 *targetGroupIdentity

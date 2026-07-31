@@ -23,11 +23,17 @@
  ***************************************************************************/
 
 
+#include <exception>
+#include <QMessageBox>
+
 #include <App/Application.h>
 #include <App/Document.h>
+#include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
+#include <Mod/Sketcher/App/SketchObject.h>
 
 #include "TaskDlgEditSketch.h"
 #include "ViewProviderSketch.h"
@@ -239,6 +245,50 @@ bool TaskDlgEditSketch::accept()
     if (!guiDocument || !view
         || guiDocument->getInEdit() != view) {
         return false;
+    }
+
+    auto* sketch = view->getSketchObject();
+    auto* appDocument =
+        sketch ? sketch->getDocument() : nullptr;
+    if (sketch && appDocument
+        && sketch->isDesignScopeDefinition()
+        && appDocument
+               ->isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                   sketch
+               )) {
+        try {
+            sketch->finalizeDesignDefinition();
+        }
+        catch (const Base::Exception& error) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                tr("Cannot save Sketch"),
+                QCoreApplication::translate(
+                    "Exception",
+                    error.what()
+                )
+            );
+            return false;
+        }
+        catch (const std::exception& error) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                tr("Cannot save Sketch"),
+                QString::fromUtf8(error.what())
+            );
+            return false;
+        }
+        catch (...) {
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                tr("Cannot save Sketch"),
+                tr(
+                    "An unexpected error prevented the Sketch from being "
+                    "saved to global History."
+                )
+            );
+            return false;
+        }
     }
 
     // resetEdit() deletes this task. Keep only value copies and verify the

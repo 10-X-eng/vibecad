@@ -584,8 +584,10 @@ def test_native_late_docks_consume_saved_entry_before_default_placement() -> Non
 
 def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     source = _source("src/Gui/DockWindowManager.cpp")
+    main_window = _source("src/Gui/MainWindow.cpp")
     overlay = _source("src/Gui/OverlayManager.cpp")
     overlay_widgets = _source("src/Gui/OverlayWidgets.cpp")
+    tree = _source("src/Gui/Tree.cpp")
     addition = source.split("QDockWidget* DockWindowManager::addDockWindow", 1)[
         1
     ].split("QWidget* DockWindowManager::getDockWindow", 1)[0]
@@ -608,11 +610,14 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     assert "isChecked()" not in save
     assert "dw->isVisible()" not in save
     assert "setDockWidgetVisible(dock, visible)" in source
-    assert 'name == QStringLiteral("Std_TreeView")' in source
+    assert "applyRequestedPresentation(OverlayTabWidget* tabWidget)" in overlay
+    assert "manager->isVisibilityRequested(dock)" in overlay
+    assert "_persistentDocks" not in overlay
+    assert "setDockWidgetPersistent" not in overlay
 
     presentation = overlay.split(
         "bool setDockWidgetVisible(QDockWidget* dock, bool visible)", 1
-    )[1].split("void setDockWidgetPersistent", 1)[0]
+    )[1].split("bool isDockRequestedVisible", 1)[0]
     assert "sizes[index] = 0" in presentation
     assert "dock->hide()" in presentation
     assert "dock->toggleViewAction()->setChecked(false)" in presentation
@@ -633,9 +638,31 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     assert "splitter->widget(i)->setVisible(presented)" in overlay_widgets
     assert "if (count() && !hasPresentedWidget)" in overlay_widgets
     assert overlay_widgets.index(
-        "OverlayManager::instance()->synchronizePersistentPresentation(this)"
+        "OverlayManager::instance()->applyRequestedPresentation(this)"
     ) < overlay_widgets.index("if (count() && !hasPresentedWidget)")
-    assert "DockWindowManager::instance()->isVisibilityRequested(dock)" in overlay
+    overlay_persistence = overlay_widgets.split(
+        "void OverlayTabWidget::saveTabs()", 1
+    )[1].split("void OverlayTabWidget::onTabMoved", 1)[0]
+    assert "applyRequestedPresentation(this)" in overlay_persistence
+    assert "isDockRequestedVisible(dock)" in overlay_persistence
+    assert "os2 << persistedSize" in overlay_persistence
+
+    # The Model browser is permanent viewport chrome, not a dock presentation.
+    assert 'QStringLiteral("VibeCADViewportCanvas")' in main_window
+    assert 'QStringLiteral("VibeCADModelBrowserHost")' in main_window
+    assert "workspaceLayout->addWidget(viewportCanvas, 1)" in main_window
+    permanent = source.split("void presentPermanentModelBrowser", 1)[1].split(
+        "}  // namespace", 1
+    )[0]
+    assert "getMainWindow()->removeDockWidget(dock)" in permanent
+    assert "dock->setParent(host)" in permanent
+    assert "dock->setFeatures(QDockWidget::NoDockWidgetFeatures)" in permanent
+    assert "toggle->setEnabled(false)" in permanent
+    assert "toggle->setVisible(false)" in permanent
+    assert "host->show()" in permanent
+    assert "dock->show()" in permanent
+    assert "VibeCADModelBrowserHost" in tree
+    assert "widget.setUpdatesEnabled(false)" in tree
 
 
 def test_corrupt_duplicate_dock_state_is_repaired_after_startup() -> None:

@@ -38,6 +38,8 @@ set(PartDesign_TestScripts
     PartDesignTests/__init__.py
     PartDesignTests/TestActiveObject.py
     PartDesignTests/TestDatum.py
+    PartDesignTests/TestDesignHoleGui.py
+    PartDesignTests/TestDesignModeling.py
     PartDesignTests/TestShapeBinder.py
     PartDesignTests/TestPad.py
     PartDesignTests/TestPocket.py
@@ -225,6 +227,12 @@ if(BUILD_FEM)
     ADD_CUSTOM_TARGET(WizardShaft ALL
         SOURCES ${all_wizardshaft_files}
     )
+
+    # PartDesignGui depends on PartDesignScripts for every Python module it can
+    # import at runtime.  Keep the nested Shaft Wizard sources in that same
+    # staging closure so a targeted PartDesignGui/PartDesignScripts build
+    # cannot leave an older WizardShaft implementation in the build tree.
+    ADD_DEPENDENCIES(PartDesignScripts WizardShaft)
 
     SET(all_files ${all_wizardshaft_files})
 

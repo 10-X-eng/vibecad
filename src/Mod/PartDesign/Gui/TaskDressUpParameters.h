@@ -42,6 +42,11 @@ namespace Part
 class Feature;
 }
 
+namespace PartDesign
+{
+class Body;
+}
+
 namespace PartDesignGui
 {
 
@@ -60,6 +65,7 @@ public:
 
     const std::vector<std::string> getReferences() const;
     Part::Feature* getBase() const;
+    void populateReferences(QListWidget* widget) const;
 
     void setupTransaction();
 
@@ -90,6 +96,7 @@ protected:
     void addAllEdges(QListWidget* listWidget);
     void deleteRef(QListWidget* listWidget);
     void updateFeature(PartDesign::DressUp* pcDressUp, const std::vector<std::string>& refs);
+    bool isDesignSubelementOperation() const;
 
 protected:
     enum selectionModes
@@ -106,6 +113,13 @@ protected:
     ViewProviderDressUp* getDressUpView() const;
 
 private:
+    void updateDesignFeature(
+        const std::vector<PartDesign::Body*>& bodies,
+        const std::vector<std::vector<std::string>>& groups,
+        QListWidget* widget
+    );
+    std::vector<PartDesign::Body*> designTargetBodies() const;
+    std::vector<std::vector<std::string>> designTargetGroups() const;
     void tryAddSelection(const std::string& doc, const std::string& obj, const std::string& sub);
     void setDressUpVisibility(bool visible);
 

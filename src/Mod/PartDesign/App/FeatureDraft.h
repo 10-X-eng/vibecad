@@ -77,6 +77,12 @@ public:
         return computeProps;
     }
 
+protected:
+    void setLastComputedProps(const DraftComputeProps& props)
+    {
+        computeProps = props;
+    }
+
 private:
     void handleChangedPropertyType(
         Base::XMLReader& reader,

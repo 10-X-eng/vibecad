@@ -1827,6 +1827,34 @@ PyObject* DocumentPy::classifyExistingTimelineLeafInternalObject(PyObject* args)
     PY_CATCH;
 }
 
+PyObject* DocumentPy::classifyExistingTimelineSemanticBlockInternalObject(PyObject* args)
+{
+    PyObject* pyOperation = nullptr;
+    if (!PyArg_ParseTuple(args, "O", &pyOperation)) {
+        return nullptr;
+    }
+    if (!PyObject_TypeCheck(pyOperation, &DocumentObjectPy::Type)) {
+        PyErr_SetString(PyExc_TypeError, "Expected one document object");
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        auto* document = getDocumentPtr();
+        auto* operation
+            = static_cast<DocumentObjectPy*>(pyOperation)->getDocumentObjectPtr();
+        if (!operation || !document->containsObject(operation)
+            || operation->getDocument() != document) {
+            throw Py::ValueError(
+                "The legacy semantic root must be live in this document"
+            );
+        }
+        document->classifyExistingTimelineSemanticBlockInternalObject(operation);
+        Py_Return;
+    }
+    PY_CATCH;
+}
+
 PyObject* DocumentPy::isProvisionallyEnrolledInTimelineByCurrentTransaction(PyObject* args)
 {
     PyObject* pyObject = nullptr;

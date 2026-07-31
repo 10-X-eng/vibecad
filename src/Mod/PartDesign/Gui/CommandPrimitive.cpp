@@ -26,11 +26,14 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QMessageBox>
+#include <array>
+#include <ranges>
 #include <sstream>
 
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/Part.h>
 #include <Base/Exception.h>
 #include <Gui/Action.h>
 #include <Gui/Application.h>
@@ -38,8 +41,12 @@
 #include <Gui/Command.h>
 #include <Gui/Control.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Selection/Selection.h>
 #include <Mod/Part/App/PartFeature.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 #include <Mod/PartDesign/App/FeaturePrimitive.h>
 
 #include "DlgActiveBody.h"
@@ -48,30 +55,384 @@
 
 using namespace std;
 
+DEF_STD_CMD_ACL(CmdPrimitiveDesign)
 DEF_STD_CMD_ACL(CmdPrimtiveCompAdditive)
 
-static const char* primitiveIntToName(int id)
+namespace
 {
-    switch (id) {
-        case 0:
-            return "Box";
-        case 1:
-            return "Cylinder";
-        case 2:
-            return "Sphere";
-        case 3:
-            return "Cone";
-        case 4:
-            return "Ellipsoid";
-        case 5:
-            return "Torus";
-        case 6:
-            return "Prism";
-        case 7:
-            return "Wedge";
-        default:
-            return nullptr;
-    };
+struct PrimitiveDefinition
+{
+    const char* typeName;
+    const char* label;
+    const char* icon;
+    const char* description;
+};
+
+constexpr std::array<PrimitiveDefinition, 9> primitiveDefinitions {{
+    {
+        "PartDesign::DesignBox",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Box"),
+        "PartDesign_AdditiveBox",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric box from its length, width, and height"
+        ),
+    },
+    {
+        "PartDesign::DesignCylinder",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Cylinder"),
+        "PartDesign_AdditiveCylinder",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric cylinder from its radius, height, and angle"
+        ),
+    },
+    {
+        "PartDesign::DesignSphere",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Sphere"),
+        "PartDesign_AdditiveSphere",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric sphere from its radius and angular limits"
+        ),
+    },
+    {
+        "PartDesign::DesignCone",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Cone"),
+        "PartDesign_AdditiveCone",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric cone from two radii, height, and angle"
+        ),
+    },
+    {
+        "PartDesign::DesignEllipsoid",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Ellipsoid"),
+        "PartDesign_AdditiveEllipsoid",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric ellipsoid from its radii and angular limits"
+        ),
+    },
+    {
+        "PartDesign::DesignTorus",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Torus"),
+        "PartDesign_AdditiveTorus",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric torus from its radii and angular limits"
+        ),
+    },
+    {
+        "PartDesign::DesignPrism",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Prism"),
+        "PartDesign_AdditivePrism",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric regular prism"
+        ),
+    },
+    {
+        "PartDesign::DesignWedge",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Wedge"),
+        "PartDesign_AdditiveWedge",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric wedge"
+        ),
+    },
+    {
+        "PartDesign::DesignTube",
+        QT_TRANSLATE_NOOP("CmdPrimitiveDesign", "Tube"),
+        "Part_Tube_Parametric",
+        QT_TRANSLATE_NOOP(
+            "CmdPrimitiveDesign",
+            "Creates a parametric hollow tube from its outside radius, inside radius, and height"
+        ),
+    },
+}};
+
+const PrimitiveDefinition* primitiveDefinition(const int index)
+{
+    if (index < 0
+        || static_cast<std::size_t>(index)
+            >= primitiveDefinitions.size()) {
+        return nullptr;
+    }
+    return &primitiveDefinitions[static_cast<std::size_t>(index)];
+}
+
+const char* primitiveIntToName(const int index)
+{
+    const auto* definition = primitiveDefinition(index);
+    if (!definition) {
+        return nullptr;
+    }
+    constexpr std::string_view prefix = "PartDesign::Design";
+    return definition->typeName + prefix.size();
+}
+
+struct DesignPrimitiveSelection
+{
+    App::Document* document {};
+    App::Part* destinationComponent {};
+    std::vector<PartDesign::Body*> bodies;
+    bool valid {true};
+};
+
+DesignPrimitiveSelection selectedDesignPrimitiveTargets(
+    App::Document* activeDocument
+)
+{
+    DesignPrimitiveSelection result;
+    result.document = activeDocument;
+    for (auto& selected : Gui::Selection().getSelectionEx()) {
+        auto* object = selected.getObject();
+        if (!object || !PartGui::isModelingObjectActive(object)) {
+            result.valid = false;
+            continue;
+        }
+        if (!result.document) {
+            result.document = object->getDocument();
+        }
+        if (object->getDocument() != result.document) {
+            result.valid = false;
+            continue;
+        }
+
+        if (auto* component = freecad_cast<App::Part*>(object);
+            component && component->Type.getStrValue() == "Component") {
+            if (result.destinationComponent
+                && result.destinationComponent != component) {
+                result.valid = false;
+            }
+            result.destinationComponent = component;
+            continue;
+        }
+
+        auto* body = freecad_cast<PartDesign::Body*>(object);
+        if (!body) {
+            body = freecad_cast<PartDesign::Body*>(
+                PartGui::findModelingBody(object)
+            );
+        }
+        if (!body) {
+            result.valid = false;
+            continue;
+        }
+        if (std::ranges::find(result.bodies, body)
+            == result.bodies.end()) {
+            result.bodies.push_back(body);
+        }
+    }
+
+    if (!result.bodies.empty()) {
+        result.destinationComponent = nullptr;
+    }
+    return result;
+}
+
+PartDesign::FeaturePrimitive* createDesignPrimitiveExact(
+    App::Document& document,
+    const PrimitiveDefinition& definition,
+    const std::string& objectName
+)
+{
+    const Base::Type expectedType =
+        Base::Type::fromName(definition.typeName);
+    if (expectedType.isBad()) {
+        throw Base::TypeError(
+            "The requested Design primitive type is not registered"
+        );
+    }
+
+    std::ostringstream expression;
+    expression << "App.getDocument('" << document.getName()
+               << "').addObject('" << definition.typeName << "','"
+               << objectName << "')";
+    auto* object = Gui::Command::runDocumentObjectCommand(
+        Gui::Command::Doc,
+        document,
+        QByteArray(expression.str().c_str()),
+        expectedType
+    );
+    auto* primitive =
+        freecad_cast<PartDesign::FeaturePrimitive*>(object);
+    if (!primitive
+        || !dynamic_cast<PartDesign::DesignOperationProperties*>(
+            primitive
+        )) {
+        throw Base::TypeError(
+            "The Design primitive factory returned an incompatible object"
+        );
+    }
+    return primitive;
+}
+
+}  // namespace
+
+CmdPrimitiveDesign::CmdPrimitiveDesign()
+    : Command("PartDesign_DesignPrimitive")
+{
+    sAppModule = "PartDesign";
+    sGroup = QT_TR_NOOP("PartDesign");
+    sMenuText = QT_TR_NOOP("Primitive");
+    sToolTipText = QT_TR_NOOP(
+        "Creates a parametric primitive as a new Body or applies it to selected Bodies"
+    );
+    sWhatsThis = "PartDesign_DesignPrimitive";
+    sStatusTip = sToolTipText;
+    eType = ForEdit;
+}
+
+void CmdPrimitiveDesign::activated(const int iMsg)
+{
+    const auto* definition = primitiveDefinition(iMsg);
+    auto* document = getDocument();
+    if (!definition || !document
+        || Gui::Control().activeDialog(document)) {
+        return;
+    }
+
+    const auto selected =
+        selectedDesignPrimitiveTargets(document);
+    if (!selected.valid || selected.document != document) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QObject::tr("Select Bodies or one Component"),
+            QObject::tr(
+                "Select zero or more Bodies to create one explicit result "
+                "per Body, or select one Component as the destination for a "
+                "new Body."
+            )
+        );
+        return;
+    }
+
+    Gui::ActionGroup* action =
+        qobject_cast<Gui::ActionGroup*>(_pcAction);
+    if (action && iMsg >= 0
+        && iMsg < action->actions().size()) {
+        action->setIcon(action->actions().at(iMsg)->icon());
+    }
+
+    const std::string primitiveName =
+        primitiveIntToName(iMsg);
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create Primitive")
+    );
+    if (transactionId == App::NullTransaction) {
+        resetTransactionID();
+        return;
+    }
+
+    try {
+        auto* primitive = createDesignPrimitiveExact(
+            *document,
+            *definition,
+            document->getUniqueObjectName(
+                primitiveName.c_str()
+            )
+        );
+        primitive->Label.setValue(primitiveName);
+        if (selected.bodies.empty()) {
+            PartDesign::DesignModel::setOperationTargets(
+                *primitive,
+                "New Body",
+                {},
+                selected.destinationComponent
+            );
+        }
+        else {
+            PartDesign::DesignModel::setOperationTargets(
+                *primitive,
+                "Join",
+                selected.bodies
+            );
+        }
+
+        primitive->recomputeFeature();
+        primitive->recomputePreview();
+        doCommand(
+            Gui::Command::Doc,
+            "Gui.getDocument('%s').setEdit('%s',0)",
+            document->getName(),
+            primitive->getNameInDocument()
+        );
+        if (!Gui::Control().activeDialog(document)) {
+            throw Base::RuntimeError(
+                "The Design primitive task panel did not open"
+            );
+        }
+        Gui::Selection().clearSelection(document->getName());
+    }
+    catch (...) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        throw;
+    }
+}
+
+Gui::Action* CmdPrimitiveDesign::createAction()
+{
+    auto* action =
+        new Gui::ActionGroup(this, Gui::getMainWindow());
+    action->setDropDownMenu(true);
+    applyCommandData(this->className(), action);
+    for (const auto& definition : primitiveDefinitions) {
+        auto* item = action->addAction(QString());
+        item->setIcon(
+            Gui::BitmapFactory().iconFromTheme(definition.icon)
+        );
+        item->setObjectName(
+            QString::fromLatin1(definition.typeName)
+        );
+        item->setWhatsThis(item->objectName());
+    }
+
+    _pcAction = action;
+    languageChange();
+    action->setIcon(action->actions().front()->icon());
+    action->setProperty("defaultAction", QVariant(0));
+    return action;
+}
+
+void CmdPrimitiveDesign::languageChange()
+{
+    Command::languageChange();
+    auto* action =
+        qobject_cast<Gui::ActionGroup*>(_pcAction);
+    if (!action) {
+        return;
+    }
+
+    const auto items = action->actions();
+    for (std::size_t index = 0;
+         index < primitiveDefinitions.size()
+         && index < static_cast<std::size_t>(items.size());
+         ++index) {
+        const auto& definition = primitiveDefinitions[index];
+        auto* item = items.at(static_cast<qsizetype>(index));
+        item->setText(
+            QApplication::translate(
+                "CmdPrimitiveDesign",
+                definition.label
+            )
+        );
+        item->setToolTip(
+            QApplication::translate(
+                "CmdPrimitiveDesign",
+                definition.description
+            )
+        );
+        item->setStatusTip(item->toolTip());
+    }
+}
+
+bool CmdPrimitiveDesign::isActive()
+{
+    return PartDesignGui::canStartModelingCommand();
 }
 
 static bool hasUsableSolidTip(PartDesign::Body* body)
@@ -637,6 +998,7 @@ void CreatePartDesignPrimitiveCommands()
 {
     Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
 
+    rcCmdMgr.addCommand(new CmdPrimitiveDesign);
     rcCmdMgr.addCommand(new CmdPrimtiveCompAdditive);
     rcCmdMgr.addCommand(new CmdPrimtiveCompSubtractive);
 }

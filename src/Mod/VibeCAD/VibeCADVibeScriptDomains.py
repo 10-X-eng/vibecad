@@ -208,7 +208,8 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "partdesign",
         "Part Design",
         ("solid", "shell", "face", "wire", "compound"),
-        "Create source-parametric geometry with editable native Body history. Use "
+        "Create source-parametric Design Bodies; the VibeScript source is their "
+        "editable definition. Use "
         "api.sketch for planar feature profiles. Use api.extrude with "
         "operation='add_material' or 'remove_material' for straight additions and cuts "
         "whose cross-section stays constant. Use api.loft only when the intended "

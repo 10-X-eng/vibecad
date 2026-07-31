@@ -22,6 +22,8 @@ PRIMITIVE_SHAPES = (
     "Wedge",
 )
 
+DESIGN_PRIMITIVE_SHAPES = PRIMITIVE_SHAPES + ("Tube",)
+
 TRANSFORM_COMMANDS = (
     ("PartDesign_Mirrored", "PartDesign::Mirrored"),
     ("PartDesign_LinearPattern", "PartDesign::LinearPattern"),
@@ -29,10 +31,22 @@ TRANSFORM_COMMANDS = (
     ("PartDesign_MultiTransform", "PartDesign::MultiTransform"),
 )
 
+DESIGN_PATTERN_COMMANDS = (
+    ("PartDesign_DesignMirror", "PartDesign::DesignMirror"),
+    (
+        "PartDesign_DesignLinearPattern",
+        "PartDesign::DesignLinearPattern",
+    ),
+    (
+        "PartDesign_DesignCircularPattern",
+        "PartDesign::DesignCircularPattern",
+    ),
+)
+
 FINISH_COMMANDS = (
-    ("PartDesign_Fillet", "PartDesign::Fillet", "Edge1"),
-    ("PartDesign_Chamfer", "PartDesign::Chamfer", "Edge1"),
-    ("PartDesign_Thickness", "PartDesign::Thickness", "Face1"),
+    ("PartDesign_Fillet", "PartDesign::DesignFillet", "Edge1"),
+    ("PartDesign_Chamfer", "PartDesign::DesignChamfer", "Edge1"),
+    ("PartDesign_Thickness", "PartDesign::DesignThickness", "Face1"),
 )
 
 PROFILE_COMMANDS = (
@@ -42,7 +56,7 @@ PROFILE_COMMANDS = (
     ("PartDesign_AdditivePipe", "PartDesign::AdditivePipe", False, "pipe"),
     ("PartDesign_AdditiveHelix", "PartDesign::AdditiveHelix", False, "profile"),
     ("PartDesign_Pocket", "PartDesign::Pocket", True, "profile"),
-    ("PartDesign_Hole", "PartDesign::Hole", True, "hole"),
+    ("PartDesign_Hole", "PartDesign::DesignHole", True, "hole"),
     ("PartDesign_Groove", "PartDesign::Groove", True, "profile"),
     ("PartDesign_SubtractiveLoft", "PartDesign::SubtractiveLoft", True, "loft"),
     ("PartDesign_SubtractivePipe", "PartDesign::SubtractivePipe", True, "pipe"),
@@ -535,6 +549,517 @@ class TestNativeRibbonTools(unittest.TestCase):
             for geometry in sketch.Geometry
         )
 
+    def test_design_body_selection_uses_state_not_publication(self):
+        import PartGui
+
+        body, initial = self._new_body("DesignSelectionBody", solid=True)
+        self.document.openTransaction("Create reusable selection sketch")
+        sketch = self.document.addObject(
+            "Sketcher::SketchObject",
+            "DesignSelectionSketch",
+        )
+        sketch.addGeometry(
+            [
+                Part.LineSegment(App.Vector(2, 2, 0), App.Vector(6, 2, 0)),
+                Part.LineSegment(App.Vector(6, 2, 0), App.Vector(6, 6, 0)),
+                Part.LineSegment(App.Vector(6, 6, 0), App.Vector(2, 6, 0)),
+                Part.LineSegment(App.Vector(2, 6, 0), App.Vector(2, 2, 0)),
+            ],
+            False,
+        )
+        sketch.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "Timeline",
+        )
+        sketch.setPropertyStatus(
+            "VibeCADTimelineRole",
+            ("Hidden", "LockDynamic", "NoRecompute"),
+        )
+        sketch.VibeCADTimelineRole = "operation"
+        self.document.finalizeProvisionalTimelineOperationBlock(
+            sketch,
+            [sketch],
+        )
+        self.document.commitTransaction()
+
+        self.document.openTransaction("Create Design cut")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "DesignSelectionCut",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 5
+        PartDesign.setDesignOperationTargets(edit, "Cut", [body])
+        self.document.recompute()
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        self.document.recompute()
+
+        publication = body.Tip
+        state = publication.CurrentState
+        self.assertIs(state.PreviousState, initial)
+        self.assertIs(PartGui.resolveModelingObject(body), state)
+        self.assertIs(PartGui.resolveModelingObject(publication), state)
+        self.assertIs(
+            PartGui.resolveModelingObjectForBody(body, body),
+            state,
+        )
+        self.assertIs(PartGui.findModelingBody(state), body)
+        self.assertIs(
+            PartGui.resolveModelingPresentationObject(state),
+            body,
+        )
+        self.assertIsNot(
+            PartGui.resolveModelingObject(body),
+            publication,
+        )
+        self.assertTrue(PartGui.isModelingObjectActive(body))
+        self.assertTrue(PartGui.isModelingObjectActive(publication))
+        self.assertTrue(PartGui.isModelingObjectActive(state))
+
+    def test_combine_uses_explicit_selection_roles_and_design_history(self):
+        result_body, result_feature = self._new_body(
+            "CombineResultBody",
+            solid=True,
+        )
+        tool_body, tool_feature = self._new_body(
+            "CombineToolBody",
+            solid=True,
+        )
+        tool_feature.Shape = Part.makeBox(
+            10,
+            10,
+            10,
+            App.Vector(5, 0, 0),
+        )
+        self.document.recompute()
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(result_body)
+        Gui.Selection.addSelection(tool_body)
+        self._process_events()
+
+        self.assertTrue(Gui.isCommandActive("PartDesign_Combine"))
+        Gui.runCommand("PartDesign_Combine", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        operations = [
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::DesignCombine"
+        ]
+        self.assertEqual(len(operations), 1)
+        operation = operations[0]
+        self.assertEqual(operation.ResultOperation, "Join")
+        self.assertEqual(
+            str(operation.ResultBodyId),
+            str(result_body.VibeCADBodyId),
+        )
+        self.assertEqual(
+            list(operation.InputStates),
+            [result_feature, tool_feature],
+        )
+        self.assertEqual(
+            list(operation.InputBodyIds),
+            [
+                str(result_body.VibeCADBodyId),
+                str(tool_body.VibeCADBodyId),
+            ],
+        )
+        self.assertFalse(operation.KeepTools)
+
+        self._accept_task("PartDesign_Combine")
+        self.document.recompute()
+        PartDesign.validateDesign(operation)
+
+        self.assertAlmostEqual(
+            result_body.Tip.Shape.Volume,
+            1500.0,
+            places=6,
+        )
+        self.assertTrue(tool_body.Tip.Shape.isNull())
+        self.assertEqual(
+            result_body.Tip.CurrentState.PreviousState,
+            result_feature,
+        )
+        self.assertEqual(
+            tool_body.Tip.CurrentState.PreviousState,
+            tool_feature,
+        )
+        self.assertFalse(tool_body.Tip.CurrentState.Present)
+
+    def test_thickness_shells_faces_across_bodies_with_one_history_operation(self):
+        first_body, first_feature = self._new_body(
+            "FirstThicknessBody",
+            solid=True,
+        )
+        second_body, second_feature = self._new_body(
+            "SecondThicknessBody",
+            solid=True,
+        )
+        second_body.Placement.Base.x = 20
+        self.document.recompute()
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(first_body, "Face6")
+        Gui.Selection.addSelection(second_body, "Face6")
+        self._process_events()
+
+        self.assertTrue(Gui.isCommandActive("PartDesign_Thickness"))
+        Gui.runCommand("PartDesign_Thickness", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        operations = [
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::DesignThickness"
+        ]
+        self.assertEqual(len(operations), 1)
+        operation = operations[0]
+        self.assertIsNone(operation.Base)
+        self.assertIsNone(operation.BaseFeature)
+        self.assertEqual(
+            list(operation.InputStates),
+            [first_feature, second_feature],
+        )
+        self.assertEqual(
+            list(operation.TargetElementOffsets),
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            list(operation.TargetElements),
+            ["Face6", "Face6"],
+        )
+
+        references = Gui.getMainWindow().findChild(
+            QtGui.QListWidget,
+            "listWidgetReferences",
+        )
+        select_button = Gui.getMainWindow().findChild(
+            QtGui.QToolButton,
+            "buttonRefSel",
+        )
+        self.assertIsNotNone(references)
+        self.assertIsNotNone(select_button)
+        self.assertEqual(references.count(), 2)
+        self.assertIn("FirstThicknessBody", references.item(0).text())
+        self.assertIn("SecondThicknessBody", references.item(1).text())
+
+        select_button.click()
+        Gui.Selection.addSelection(first_body, "Face5")
+        self._process_events(50)
+        self.assertEqual(references.count(), 3)
+        self.assertEqual(
+            list(operation.TargetElementOffsets),
+            [0, 2, 3],
+        )
+        self.assertEqual(
+            list(operation.TargetElements),
+            ["Face6", "Face5", "Face6"],
+        )
+
+        face5_row = next(
+            row
+            for row in range(references.count())
+            if references.item(row).text().endswith("Face5")
+        )
+        references.setCurrentRow(face5_row)
+        remove_action = next(
+            action
+            for action in references.actions()
+            if action.text() == "Remove"
+        )
+        remove_action.trigger()
+        self._process_events(50)
+        self.assertEqual(references.count(), 2)
+        self.assertEqual(
+            list(operation.TargetElementOffsets),
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            list(operation.TargetElements),
+            ["Face6", "Face6"],
+        )
+
+        self._accept_task("PartDesign_Thickness")
+        self.document.recompute()
+        PartDesign.validateDesign(operation)
+
+        self.assertAlmostEqual(first_body.Shape.Volume, 424.0, places=6)
+        self.assertAlmostEqual(second_body.Shape.Volume, 424.0, places=6)
+        self.assertEqual(
+            first_body.Tip.CurrentState.PreviousState,
+            first_feature,
+        )
+        self.assertEqual(
+            second_body.Tip.CurrentState.PreviousState,
+            second_feature,
+        )
+
+    def test_draft_tapers_faces_across_bodies_with_exact_global_references(self):
+        first_body, first_feature = self._new_body(
+            "FirstDraftBody",
+            solid=True,
+        )
+        second_body, second_feature = self._new_body(
+            "SecondDraftBody",
+            solid=True,
+        )
+        first_body.Placement.Base.x = 7
+        second_body.Placement.Base.x = 27
+        self.document.recompute()
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(first_body, "Face1")
+        Gui.Selection.addSelection(second_body, "Face1")
+        self._process_events()
+
+        self.assertTrue(Gui.isCommandActive("PartDesign_Draft"))
+        Gui.runCommand("PartDesign_Draft", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        operations = [
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::DesignDraft"
+        ]
+        self.assertEqual(len(operations), 1)
+        operation = operations[0]
+        self.assertIsNone(operation.Base)
+        self.assertIsNone(operation.BaseFeature)
+        self.assertEqual(
+            list(operation.InputStates),
+            [first_feature, second_feature],
+        )
+        self.assertEqual(
+            list(operation.TargetElementOffsets),
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            list(operation.TargetElements),
+            ["Face1", "Face1"],
+        )
+
+        references = Gui.getMainWindow().findChild(
+            QtGui.QListWidget,
+            "listWidgetReferences",
+        )
+        plane_button = Gui.getMainWindow().findChild(
+            QtGui.QToolButton,
+            "buttonPlane",
+        )
+        line_button = Gui.getMainWindow().findChild(
+            QtGui.QToolButton,
+            "buttonLine",
+        )
+        self.assertIsNotNone(references)
+        self.assertIsNotNone(plane_button)
+        self.assertIsNotNone(line_button)
+        self.assertEqual(references.count(), 2)
+
+        plane_button.click()
+        Gui.Selection.addSelection(first_body, "Face5")
+        self._process_events(50)
+        self.assertEqual(
+            operation.NeutralPlane,
+            (first_feature, ["Face5"]),
+        )
+        self.assertAlmostEqual(operation.NeutralPlaneFrame.Base.x, 7.0)
+
+        line_button.click()
+        Gui.Selection.addSelection(first_body, "Edge1")
+        self._process_events(50)
+        self.assertEqual(
+            operation.PullDirection,
+            (first_feature, ["Edge1"]),
+        )
+        self.assertAlmostEqual(operation.PullDirectionFrame.Base.x, 7.0)
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+        self.assertEqual(len(operation.OutputShapes), 2)
+
+        self._accept_task("PartDesign_Draft")
+        self.document.recompute()
+        PartDesign.validateDesign(operation)
+
+        expected_volume = 986.9070392154064
+        self.assertAlmostEqual(first_body.Shape.Volume, expected_volume)
+        self.assertAlmostEqual(second_body.Shape.Volume, expected_volume)
+
+    def test_split_requires_an_explicit_region_identity_and_publishes_each_body(self):
+        source_body, source_feature = self._new_body(
+            "SplitSourceBody",
+            solid=True,
+        )
+        splitter = self.document.addObject(
+            "Part::Feature",
+            "SplitDefinition",
+        )
+        splitter.Shape = Part.makePlane(
+            30,
+            30,
+            App.Vector(5, 20, -10),
+            App.Vector(1, 0, 0),
+        )
+        second_splitter = self.document.addObject(
+            "Part::Feature",
+            "SecondSplitDefinition",
+        )
+        second_splitter.Shape = Part.makePlane(
+            30,
+            30,
+            App.Vector(7, 20, -10),
+            App.Vector(1, 0, 0),
+        )
+        self.document.recompute()
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(source_body)
+        Gui.Selection.addSelection(splitter)
+        self._process_events()
+
+        self.assertTrue(Gui.isCommandActive("PartDesign_Split"))
+        Gui.runCommand("PartDesign_Split", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        operations = [
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::DesignSplit"
+        ]
+        self.assertEqual(len(operations), 1)
+        operation = operations[0]
+        self.assertEqual(operation.ResultOperation, "Split")
+        self.assertEqual(
+            str(operation.SourceBodyId),
+            str(source_body.VibeCADBodyId),
+        )
+        self.assertEqual(list(operation.InputStates), [source_feature])
+        self.assertFalse(operation.RetainedRegionChosen)
+        self.assertEqual(list(operation.OutputBodyIds), [])
+
+        region_selector = Gui.getMainWindow().findChild(
+            QtGui.QComboBox,
+            "DesignSplitRetainedRegion",
+        )
+        self.assertIsNotNone(region_selector)
+        self.assertEqual(region_selector.count(), 3)
+        self.assertEqual(region_selector.currentIndex(), 0)
+
+        definition_list = Gui.getMainWindow().findChild(
+            QtGui.QListWidget,
+            "DesignBodyList",
+        )
+        add_definition = Gui.getMainWindow().findChild(
+            QtGui.QPushButton,
+            "DesignSplitAddDefinitions",
+        )
+        remove_definition = Gui.getMainWindow().findChild(
+            QtGui.QPushButton,
+            "DesignSplitRemoveDefinitions",
+        )
+        self.assertIsNotNone(definition_list)
+        self.assertIsNotNone(add_definition)
+        self.assertIsNotNone(remove_definition)
+        self.assertEqual(definition_list.count(), 1)
+
+        Gui.Selection.addSelection(second_splitter)
+        add_definition.click()
+        self._process_events(50)
+        self.assertEqual(definition_list.count(), 2)
+        self.assertEqual(region_selector.count(), 4)
+        self.assertFalse(operation.RetainedRegionChosen)
+
+        definition_list.setCurrentRow(1)
+        self._process_events()
+        self.assertTrue(remove_definition.isEnabled())
+        remove_definition.click()
+        self._process_events(50)
+        self.assertEqual(definition_list.count(), 1)
+        self.assertEqual(region_selector.count(), 3)
+        self.assertFalse(operation.RetainedRegionChosen)
+
+        region_selector.setCurrentIndex(1)
+        self._process_events(50)
+
+        self.assertTrue(operation.RetainedRegionChosen)
+        self.assertEqual(len(operation.OutputBodyIds), 2)
+        self.assertEqual(
+            str(operation.OutputBodyIds[0]),
+            str(source_body.VibeCADBodyId),
+        )
+        self.assertEqual(
+            list(operation.OutputPreviousInputIndices),
+            [0, -1],
+        )
+        self.assertEqual(len(operation.OutputShapes), 2)
+
+        self._accept_task("PartDesign_Split")
+        self.document.recompute()
+        PartDesign.validateDesign(operation)
+
+        result_bodies = [
+            body
+            for body in self.document.findObjects("PartDesign::Body")
+            if not body.Tip.Shape.isNull()
+        ]
+        self.assertEqual(len(result_bodies), 2)
+        self.assertEqual(
+            sorted(round(body.Tip.Shape.Volume, 6) for body in result_bodies),
+            [500.0, 500.0],
+        )
+        self.assertIs(
+            source_body.Tip.CurrentState.PreviousState,
+            source_feature,
+        )
+
+    def test_split_cancel_restores_the_exact_document(self):
+        source_body, source_feature = self._new_body(
+            "CancelledSplitSource",
+            solid=True,
+        )
+        splitter = self.document.addObject(
+            "Part::Feature",
+            "CancelledSplitDefinition",
+        )
+        splitter.Shape = Part.makePlane(
+            30,
+            30,
+            App.Vector(5, 20, -10),
+            App.Vector(1, 0, 0),
+        )
+        self.document.recompute()
+        before_objects = tuple(self.document.Objects)
+        timeline = self.document.getObject("VibeCADTimeline")
+        before_history = tuple(timeline.Operations) if timeline else ()
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(source_body)
+        Gui.Selection.addSelection(splitter)
+        self._process_events()
+        Gui.runCommand("PartDesign_Split", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        self._cancel_task("PartDesign_Split")
+        self.assertEqual(tuple(self.document.Objects), before_objects)
+        self.assertIs(source_body.Tip, source_feature)
+        timeline = self.document.getObject("VibeCADTimeline")
+        self.assertEqual(
+            tuple(timeline.Operations) if timeline else (),
+            before_history,
+        )
+
     def test_new_body_is_disabled_while_another_task_is_open(self):
         body, _feature = self._new_body("BodyTaskGate")
         self._activate_body(body)
@@ -896,6 +1421,8 @@ class TestNativeRibbonTools(unittest.TestCase):
     def test_subshape_binder_requires_source_and_undoes_one_command(self):
         body, tip = self._new_body("BinderTargetBody", solid=True)
         self._activate_body(body)
+        Gui.Selection.clearSelection()
+        self._process_events()
         expected = self._snapshot(body)
 
         command_name = "PartDesign_SubShapeBinder"
@@ -912,21 +1439,13 @@ class TestNativeRibbonTools(unittest.TestCase):
             solid=True,
             solid_size=8.0,
         )
-        Gui.activeView().setActiveObject("pdbody", body)
         Gui.Selection.clearSelection()
-        # A single selected Body becomes the active modeling Body. Keep the
-        # destination in this mixed selection so the other whole Body remains
-        # an unambiguous binder source rather than becoming the destination.
-        Gui.Selection.addSelection(body)
         Gui.Selection.addSelection(source_body)
         self._process_events()
-        self.assertIs(
-            Gui.activeView().getActiveObject("pdbody"),
-            body,
-        )
         body_source_names = tuple(obj.Name for obj in self.document.Objects)
         body_source_group = tuple(body.Group)
         body_source_tip = body.Tip
+        source_group = tuple(source_body.Group)
 
         self.assertTrue(Gui.isCommandActive(command_name))
         Gui.runCommand(command_name, 0)
@@ -934,10 +1453,20 @@ class TestNativeRibbonTools(unittest.TestCase):
 
         body_binder = self.document.ActiveObject
         self.assertEqual(body_binder.TypeId, "PartDesign::SubShapeBinder")
-        self.assertIs(body_binder.getParentGeoFeatureGroup(), body)
+        self.assertIsNone(body_binder.getParentGeoFeatureGroup())
         self.assertIs(body.Tip, body_source_tip)
-        self.assertIn(source_body, body_binder.OutList)
+        self.assertEqual(tuple(body.Group), body_source_group)
+        self.assertEqual(tuple(source_body.Group), source_group)
+        self.assertEqual(body_binder.Support[0][0], source_tip)
+        self.assertIn(source_tip, body_binder.OutList)
+        self.assertNotIn(source_body, body_binder.OutList)
         self.assertNotIn(body, body_binder.OutList)
+        self.assertNotEqual(str(body_binder.VibeCADDefinitionId), "")
+        self.assertEqual(body_binder.VibeCADTimelineRole, "operation")
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(body_binder),
+            1,
+        )
         self.assertTrue(body_binder.isValid(), body_binder.getStatusString())
         self.assertFalse(body_binder.Shape.isNull())
         self.assertTrue(body_binder.Shape.isValid())
@@ -946,6 +1475,7 @@ class TestNativeRibbonTools(unittest.TestCase):
             source_tip.Shape.Volume,
             places=7,
         )
+        PartDesign.validateDesign(body_binder)
         self.assertFalse(self.document.HasPendingTransaction)
 
         self.document.undo()
@@ -958,9 +1488,13 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertIs(body.Tip, body_source_tip)
         self.assertFalse(self.document.HasPendingTransaction)
 
+        Gui.activeView().setActiveObject("pdbody", None)
+        self.document.openTransaction("Create standalone source")
         source = self.document.addObject("Part::Feature", "BinderSource")
         source.Shape = Part.makeBox(6, 7, 8, App.Vector(20, 0, 0))
         self.document.recompute()
+        self.document.commitTransaction()
+        self.assertIsNone(source.getParentGeoFeatureGroup())
         Gui.activeView().setActiveObject("pdbody", body)
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(source, "Face1", 20.0, 3.5, 4.0)
@@ -975,13 +1509,17 @@ class TestNativeRibbonTools(unittest.TestCase):
 
         binder = self.document.ActiveObject
         self.assertEqual(binder.TypeId, "PartDesign::SubShapeBinder")
-        self.assertIs(binder.getParentGeoFeatureGroup(), body)
+        self.assertIsNone(binder.getParentGeoFeatureGroup())
         self.assertIs(body.Tip, original_tip)
-        self.assertIn(binder, body.Group)
+        self.assertEqual(tuple(body.Group), original_group)
         self.assertIn(source, binder.OutList)
+        self.assertEqual(binder.Support[0][0], source)
+        self.assertNotEqual(str(binder.VibeCADDefinitionId), "")
+        self.assertEqual(binder.VibeCADTimelineRole, "operation")
         self.assertTrue(binder.isValid(), binder.getStatusString())
         self.assertFalse(binder.Shape.isNull())
         self.assertTrue(binder.Shape.isValid())
+        PartDesign.validateDesign(binder)
         self.assertFalse(self.document.HasPendingTransaction)
 
         self.document.undo()
@@ -995,7 +1533,81 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertIs(body.Tip, tip)
         self.assertFalse(self.document.HasPendingTransaction)
 
-    def test_clone_maps_body_to_tip_and_preserves_body_placement(self):
+    def test_datum_plane_is_one_global_definition_with_exact_lifecycle(self):
+        Gui.Selection.clearSelection()
+        Gui.runCommand("PartDesign_NewComponent", 0)
+        self._process_events()
+        component = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Component"
+        )
+        support = next(
+            obj
+            for obj in component.Origin.OriginFeatures
+            if obj.Name.startswith("XY_Plane")
+        )
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(support)
+        self._process_events()
+        before_cancel = self._snapshot()
+        self.assertTrue(Gui.isCommandActive("PartDesign_Plane"))
+        Gui.runCommand("PartDesign_Plane", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+        self._cancel_task("PartDesign_Plane")
+        self._assert_snapshot(
+            None,
+            before_cancel,
+            "cancel global datum plane",
+        )
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(support)
+        self._process_events()
+        names_before_accept = {
+            obj.Name for obj in self.document.Objects
+        }
+        component_group = tuple(component.Group)
+        Gui.runCommand("PartDesign_Plane", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+        created = [
+            obj
+            for obj in self.document.Objects
+            if obj.Name not in names_before_accept
+            and obj.TypeId == "PartDesign::Plane"
+        ]
+        self.assertEqual(len(created), 1)
+        datum = created[0]
+        datum_name = datum.Name
+        self._accept_task("PartDesign_Plane")
+
+        self.assertIsNone(datum.getParentGeoFeatureGroup())
+        self.assertEqual(tuple(component.Group), component_group)
+        self.assertIs(datum.AttachmentSupport[0][0], support)
+        self.assertNotEqual(str(datum.VibeCADDefinitionId), "")
+        self.assertEqual(
+            str(datum.DesignId),
+            str(self.document.VibeCADTimeline.DesignId),
+        )
+        self.assertEqual(datum.VibeCADTimelineRole, "operation")
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(datum),
+            1,
+        )
+        self.assertTrue(datum.isValid(), datum.getStatusString())
+        PartDesign.validateDesign(datum)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+        self.document.undo()
+        self._process_events()
+        self.assertIsNone(self.document.getObject(datum_name))
+        self.assertEqual(tuple(component.Group), component_group)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_clone_copies_exact_body_state_and_preserves_body_placement(self):
         body, source = self._new_body("CloneSourceBody", solid=True)
         body.Placement = App.Placement(
             App.Vector(13, -7, 4),
@@ -1008,21 +1620,45 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertTrue(Gui.isCommandActive("PartDesign_Clone"))
         Gui.runCommand("PartDesign_Clone", 0)
         self.document.recompute()
-        clone = self.document.ActiveObject
-        clone_body = clone.getParentGeoFeatureGroup()
-        self.assertEqual(clone.TypeId, "PartDesign::FeatureBase")
+        clone = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::DesignClone"
+        )
+        clone_body = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Body"
+            and str(obj.VibeCADBodyId) == clone.OutputBodyIds[0]
+        )
+        self.assertIsNone(clone.getParentGeoFeatureGroup())
+        self.assertIsNone(clone.BaseFeature)
+        self.assertEqual(clone.ResultOperation, "New Bodies")
+        self.assertEqual(clone.InputStates, [source])
+        self.assertEqual(clone.OutputPreviousInputIndices, [-1])
+        self.assertEqual(clone.OutputPresence, (True,))
         self.assertEqual(clone_body.TypeId, "PartDesign::Body")
-        self.assertEqual(clone_body.VibeCADTimelineRole, "internal")
         timeline = self.document.getObject("VibeCADTimeline")
         self.assertIsNotNone(timeline)
         self.assertNotIn(clone_body, timeline.Operations)
         self.assertEqual(list(timeline.Operations).count(clone), 1)
-        self.assertIs(clone.BaseFeature, source)
-        self.assertIsNot(clone.BaseFeature, body)
-        self.assertIs(clone_body.Tip, clone)
+        self.assertEqual(
+            clone_body.Tip.TypeId,
+            "PartDesign::DesignBodyPublication",
+        )
+        self.assertEqual(clone_body.Group, [clone_body.Tip])
+        self.assertIs(clone_body.Tip.CurrentState.Operation, clone)
+        self.assertFalse(
+            any(
+                obj.TypeId == "PartDesign::FeatureBase"
+                for obj in self.document.Objects
+                if obj.Name not in original_names
+            )
+        )
         self.assertEqual(clone_body.Placement, body.Placement)
         self.assertTrue(clone.isValid(), clone.getStatusString())
-        self.assertFalse(clone.Shape.isNull())
+        self.assertTrue(clone.Shape.isNull())
+        self.assertFalse(clone.PreviewShape.isNull())
         source_bounds = body.Shape.BoundBox
         clone_bounds = clone_body.Shape.BoundBox
         for attribute in ("XMin", "XMax", "YMin", "YMax", "ZMin", "ZMax"):
@@ -1032,14 +1668,20 @@ class TestNativeRibbonTools(unittest.TestCase):
                 places=7,
             )
 
-        previous_volume = clone.Shape.Volume
+        previous_volume = clone_body.Shape.Volume
         source.Shape = Part.makeBox(14, 9, 7)
         self.document.recompute()
-        self.assertNotAlmostEqual(clone.Shape.Volume, previous_volume)
-        self.assertAlmostEqual(clone.Shape.Volume, source.Shape.Volume)
+        self.assertNotAlmostEqual(clone_body.Shape.Volume, previous_volume)
+        self.assertAlmostEqual(clone_body.Shape.Volume, source.Shape.Volume)
+        PartDesign.validateDesign(clone)
 
         clone_name = clone.Name
         clone_body_name = clone_body.Name
+        identities = (
+            str(clone.OperationId),
+            str(clone_body.VibeCADBodyId),
+            str(clone_body.Tip.CurrentState.BodyStateId),
+        )
         self.document.undo()
         self._process_events()
         self.assertEqual(
@@ -1056,16 +1698,24 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertIsNotNone(restored_clone)
         self.assertIsNotNone(restored_body)
         self.assertIsNotNone(restored_timeline)
-        self.assertEqual(restored_body.VibeCADTimelineRole, "internal")
         self.assertNotIn(restored_body, restored_timeline.Operations)
         self.assertEqual(
             list(restored_timeline.Operations).count(restored_clone),
             1,
         )
+        self.assertEqual(
+            (
+                str(restored_clone.OperationId),
+                str(restored_body.VibeCADBodyId),
+                str(restored_body.Tip.CurrentState.BodyStateId),
+            ),
+            identities,
+        )
+        PartDesign.validateDesign(restored_clone)
         self.assertFalse(self.document.HasPendingTransaction)
 
-    def test_clone_preserves_a_transformed_link_occurrence(self):
-        body, source = self._new_body("CloneLinkDefinition", solid=True)
+    def test_clone_rejects_an_assembly_occurrence_as_modeling_input(self):
+        body, _source = self._new_body("CloneLinkDefinition", solid=True)
         occurrence = self.document.addObject("App::Link", "CloneOccurrence")
         occurrence.LinkedObject = body
         occurrence.Placement = App.Placement(
@@ -1077,47 +1727,98 @@ class TestNativeRibbonTools(unittest.TestCase):
         Gui.Selection.addSelection(occurrence)
         self._process_events()
 
-        self.assertTrue(Gui.isCommandActive("PartDesign_Clone"))
+        self.assertFalse(Gui.isCommandActive("PartDesign_Clone"))
         Gui.runCommand("PartDesign_Clone", 0)
-        self.document.recompute()
-        clone = self.document.ActiveObject
-        clone_body = clone.getParentGeoFeatureGroup()
-        self.assertEqual(clone.TypeId, "PartDesign::FeatureBase")
-        self.assertIs(clone.BaseFeature, occurrence)
-        self.assertIn(occurrence, clone.OutList)
-        self.assertIs(clone_body.Tip, clone)
-        self.assertEqual(clone_body.Placement, occurrence.Placement)
-        self.assertEqual(clone.Placement, App.Placement())
-        self.assertTrue(clone.isValid(), clone.getStatusString())
-        self.assertFalse(clone.Shape.isNull())
-        source_bounds = source.Shape.BoundBox
-        clone_bounds = clone_body.Shape.BoundBox
-        for attribute, offset in (
-            ("XMin", 25),
-            ("XMax", 25),
-            ("YMin", 7),
-            ("YMax", 7),
-            ("ZMin", 3),
-            ("ZMax", 3),
-        ):
-            self.assertAlmostEqual(
-                getattr(clone_bounds, attribute),
-                getattr(source_bounds, attribute) + offset,
-                places=7,
-            )
-
-        previous_volume = clone.Shape.Volume
-        source.Shape = Part.makeBox(12, 8, 6)
-        self.document.recompute()
-        self.assertNotAlmostEqual(clone.Shape.Volume, previous_volume)
-        self.assertAlmostEqual(clone.Shape.Volume, source.Shape.Volume)
-
-        self.document.undo()
         self._process_events()
         self.assertEqual(
             tuple(obj.Name for obj in self.document.Objects),
             original_names,
         )
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_scale_is_one_global_modify_operation_with_exact_lifecycle(self):
+        body, source = self._new_body("ScaleBody", solid=True)
+        self._launch_and_cancel_exact(
+            "PartDesign_Scale",
+            body,
+            (body,),
+        )
+
+        self._activate_body(body)
+        self.assertTrue(Gui.isCommandActive("PartDesign_Scale"))
+        Gui.runCommand("PartDesign_Scale", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        scale = self.document.ActiveObject
+        self.assertEqual(scale.TypeId, "PartDesign::DesignScale")
+        self.assertIsNone(scale.getParentGeoFeatureGroup())
+        self.assertEqual(scale.ResultOperation, "Modify")
+        self.assertEqual(list(scale.InputStates), [source])
+        self.assertEqual(
+            list(scale.OutputBodyIds),
+            [str(body.VibeCADBodyId)],
+        )
+        self.assertNotIn(scale, body.Group)
+
+        factor = Gui.getMainWindow().findChild(
+            QtGui.QDoubleSpinBox,
+            "DesignScaleUniformFactor",
+        )
+        center_values = [
+            Gui.getMainWindow().findChild(
+                QtGui.QDoubleSpinBox,
+                f"DesignScaleCenter{axis}",
+            )
+            for axis in ("X", "Y", "Z")
+        ]
+        self.assertIsNotNone(factor)
+        self.assertTrue(all(value is not None for value in center_values))
+        factor.setValue(2.0)
+        for value in center_values:
+            value.setValue(5.0)
+        self._process_events(80)
+
+        self.assertTrue(scale.isValid(), scale.getStatusString())
+        self.assertEqual(len(scale.OutputShapes), 1)
+        self.assertAlmostEqual(scale.OutputShapes[0].Volume, 8000.0)
+        self._accept_task("PartDesign_Scale")
+        self.document.recompute()
+
+        self.assertEqual(
+            body.Tip.TypeId,
+            "PartDesign::DesignBodyPublication",
+        )
+        self.assertIn(source, body.Group)
+        self.assertIn(body.Tip, body.Group)
+        self.assertNotIn(scale, body.Group)
+        self.assertIs(body.Tip.CurrentState.Operation, scale)
+        self.assertAlmostEqual(body.Shape.Volume, 8000.0)
+        self.assertFalse(
+            any(obj.TypeId == "Part::Scale" for obj in self.document.Objects)
+        )
+        timeline = self.document.getObject("VibeCADTimeline")
+        self.assertIsNotNone(timeline)
+        self.assertEqual(list(timeline.Operations).count(scale), 1)
+        PartDesign.validateDesign(scale)
+
+        scale_name = scale.Name
+        operation_id = str(scale.OperationId)
+        self.document.undo()
+        self._process_events()
+        self.assertIsNone(self.document.getObject(scale_name))
+        self.assertIs(body.Tip, source)
+        self.assertAlmostEqual(body.Shape.Volume, 1000.0)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+        self.document.redo()
+        self._process_events()
+        restored = self.document.getObject(scale_name)
+        self.assertIsNotNone(restored)
+        self.assertEqual(str(restored.OperationId), operation_id)
+        self.assertIs(body.Tip.CurrentState.Operation, restored)
+        self.assertAlmostEqual(body.Shape.Volume, 8000.0)
+        PartDesign.validateDesign(restored)
         self.assertFalse(self.document.HasPendingTransaction)
 
     def test_edit_sketch_cancel_restores_geometry_and_interaction_state(self):
@@ -1256,6 +1957,100 @@ class TestNativeRibbonTools(unittest.TestCase):
                 if subtractive:
                     self.assertLess(feature.Shape.Volume, base_volume, shape_name)
 
+    def test_unified_primitives_create_global_design_operations(self):
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        self._process_events()
+        self.assertTrue(Gui.isCommandActive("PartDesign_DesignPrimitive"))
+
+        for index, shape_name in enumerate(DESIGN_PRIMITIVE_SHAPES):
+            before_bodies = set(self._bodies())
+            Gui.runCommand("PartDesign_DesignPrimitive", index)
+            self._process_events(50)
+            self.assertTrue(Gui.Control.activeDialog(), shape_name)
+
+            operation = self.document.ActiveObject
+            self.assertEqual(
+                operation.TypeId,
+                f"PartDesign::Design{shape_name}",
+            )
+            self.assertIsNone(operation.getParentGeoFeatureGroup())
+            self.assertIsNone(operation.BaseFeature)
+            self.assertEqual(operation.ResultOperation, "New Body")
+            self.assertEqual(list(operation.InputStates), [])
+            self.assertEqual(
+                list(operation.OutputPreviousInputIndices),
+                [-1],
+            )
+            self.assertEqual(
+                set(self._bodies()),
+                before_bodies,
+                "a provisional operation must not create structural Bodies",
+            )
+
+            self._accept_task(f"PartDesign_DesignPrimitive:{shape_name}")
+            self.document.recompute()
+            created = [
+                body
+                for body in self._bodies()
+                if body not in before_bodies
+            ]
+            self.assertEqual(len(created), 1, shape_name)
+            body = created[0]
+            self.assertEqual(
+                str(body.VibeCADBodyId),
+                str(operation.OutputBodyIds[0]),
+            )
+            self.assertEqual(
+                body.Tip.TypeId,
+                "PartDesign::DesignBodyPublication",
+                (
+                    body.Tip.Name,
+                    body.Tip.TypeId,
+                    [
+                        (member.Name, member.TypeId)
+                        for member in body.Group
+                    ],
+                ),
+            )
+            self.assertIs(body.Tip.CurrentState.Operation, operation)
+            self.assertTrue(body.isValid(), body.getStatusString())
+            self.assertEqual(len(body.Shape.Solids), 1)
+            PartDesign.validateDesign(operation)
+
+        original_names = tuple(
+            obj.Name for obj in self.document.Objects
+        )
+        Gui.runCommand("PartDesign_DesignPrimitive", 0)
+        self._process_events(50)
+        self._cancel_task("PartDesign_DesignPrimitive cancel")
+        self.assertEqual(
+            tuple(obj.Name for obj in self.document.Objects),
+            original_names,
+        )
+
+        target, previous = self._new_body(
+            "DesignPrimitiveJoinBody",
+            solid=True,
+        )
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(target)
+        self._process_events()
+        Gui.runCommand("PartDesign_DesignPrimitive", 0)
+        self._process_events(50)
+        operation = self.document.ActiveObject
+        self.assertEqual(operation.TypeId, "PartDesign::DesignBox")
+        self.assertEqual(operation.ResultOperation, "Join")
+        self.assertEqual(list(operation.InputStates), [previous])
+        operation.Placement.Base.x = 5
+        self.document.recompute()
+        self._accept_task("PartDesign_DesignPrimitive Join")
+        self.document.recompute()
+        self.assertGreater(target.Shape.Volume, previous.Shape.Volume)
+        self.assertIs(target.Tip.CurrentState.Operation, operation)
+        PartDesign.validateDesign(operation)
+
     def test_additive_cancel_removes_its_automatically_created_body(self):
         self.assertEqual(
             self._bodies(),
@@ -1347,9 +2142,12 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertFalse(Gui.isCommandActive(command_name))
         expected = self._snapshot(body)
         actions = Gui.Command.get(command_name).getAction()
-        self.assertTrue(actions)
-        self.assertFalse(actions[0].isEnabled())
-        actions[0].trigger()
+        for action in actions:
+            self.assertFalse(action.isEnabled())
+            action.trigger()
+        # Compatibility-only commands remain callable for old macros even
+        # when the consolidated ribbon deliberately exposes no QAction.
+        Gui.runCommand(command_name, 0)
         self._process_events()
         self.assertFalse(Gui.Control.activeDialog())
         self._assert_snapshot(body, expected, command_name)
@@ -1475,6 +2273,94 @@ class TestNativeRibbonTools(unittest.TestCase):
         finally:
             preferences.SetBool("NewSketchUseAttachmentDialog", previous)
 
+    def test_shipped_new_sketch_is_one_global_reusable_history_definition(self):
+        body, source = self._new_body(
+            "GlobalSketchSupportBody",
+            solid=True,
+        )
+
+        def launch():
+            self._activate_body(body, "Face6")
+            dialog_state = {"complete": False}
+
+            def accept_default_attachment():
+                if dialog_state["complete"]:
+                    return
+                for widget in QtGui.QApplication.topLevelWidgets():
+                    if (
+                        isinstance(widget, QtGui.QInputDialog)
+                        and widget.isVisible()
+                    ):
+                        widget.accept()
+                        return
+                QtCore.QTimer.singleShot(
+                    10,
+                    accept_default_attachment,
+                )
+
+            QtCore.QTimer.singleShot(0, accept_default_attachment)
+            Gui.runCommand("Sketcher_NewSketch", 0)
+            dialog_state["complete"] = True
+            self._process_events(50)
+            self.assertIsNotNone(Gui.activeDocument().getInEdit())
+            sketch = self.document.ActiveObject
+            self.assertTrue(
+                sketch.isDerivedFrom("Sketcher::SketchObject")
+            )
+            return sketch
+
+        self._activate_body(body, "Face6")
+        body_group_before_cancel = tuple(body.Group)
+        before_cancel = self._snapshot(body)
+        cancelled = launch()
+        self.assertIsNone(cancelled.getParentGeoFeatureGroup())
+        self.assertEqual(tuple(body.Group), body_group_before_cancel)
+        Gui.runCommand("Sketcher_CancelSketch", 0)
+        self._process_events(50)
+        self._assert_snapshot(
+            body,
+            before_cancel,
+            "cancel global Sketch",
+        )
+
+        body_group = tuple(body.Group)
+        names_before_accept = {
+            obj.Name for obj in self.document.Objects
+        }
+        sketch = launch()
+        self.assertNotIn(sketch.Name, names_before_accept)
+        self.assertIsNone(sketch.getParentGeoFeatureGroup())
+        self.assertEqual(tuple(body.Group), body_group)
+        self.assertEqual(len(sketch.AttachmentSupport), 1)
+        support_object, support_elements = sketch.AttachmentSupport[0]
+        self.assertIs(support_object, source)
+        self.assertEqual(tuple(support_elements), ("Face6",))
+
+        Gui.runCommand("Sketcher_LeaveSketch", 0)
+        self._process_events(50)
+        self.assertIsNone(Gui.activeDocument().getInEdit())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertIsNone(sketch.getParentGeoFeatureGroup())
+        self.assertEqual(tuple(body.Group), body_group)
+        self.assertNotEqual(str(sketch.VibeCADSketchId), "")
+        self.assertEqual(
+            str(sketch.DesignId),
+            str(self.document.VibeCADTimeline.DesignId),
+        )
+        self.assertEqual(sketch.VibeCADTimelineRole, "operation")
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(sketch),
+            1,
+        )
+        PartDesign.validateDesign(sketch)
+
+        sketch_name = sketch.Name
+        self.document.undo()
+        self._process_events()
+        self.assertIsNone(self.document.getObject(sketch_name))
+        self.assertEqual(tuple(body.Group), body_group)
+        self.assertFalse(self.document.HasPendingTransaction)
+
     def test_profile_tasks_cancel_back_to_the_exact_body_history(self):
         for index, (
             command_name,
@@ -1501,8 +2387,19 @@ class TestNativeRibbonTools(unittest.TestCase):
             self.assertTrue(Gui.Control.activeDialog(), command_name)
             feature = self.document.ActiveObject
             self.assertEqual(feature.TypeId, feature_type, command_name)
-            self.assertIs(feature.getParentGeoFeatureGroup(), body, command_name)
-            if subtractive:
+            if feature_type.startswith("PartDesign::Design"):
+                self.assertIsNone(
+                    feature.getParentGeoFeatureGroup(),
+                    command_name,
+                )
+                self.assertNotIn(feature, body.Group, command_name)
+            else:
+                self.assertIs(
+                    feature.getParentGeoFeatureGroup(),
+                    body,
+                    command_name,
+                )
+            if subtractive and not feature_type.startswith("PartDesign::Design"):
                 self.assertIs(feature.BaseFeature, base, command_name)
 
             self._cancel_task(command_name)
@@ -1610,27 +2507,29 @@ class TestNativeRibbonTools(unittest.TestCase):
                 self.assertEqual(len(created), 1)
                 result = created[0]
                 self.assertEqual(result.TypeId, "Part::Scale")
-                self.assertIs(result.getParentGeoFeatureGroup(), body)
-                self.assertEqual(tuple(body.Group), (source, result))
-                self.assertIs(body.Tip, result)
+                self.assertIsNone(result.getParentGeoFeatureGroup())
+                self.assertEqual(tuple(body.Group), (source,))
+                self.assertIs(body.Tip, source)
                 self.assertTrue(result.isValid(), result.getStatusString())
                 self.assertFalse(result.Shape.isNull())
                 self.assertTrue(result.Shape.isValid())
+                self.assertNotEqual(
+                    str(result.VibeCADDefinitionId),
+                    "",
+                )
                 self.assertEqual(
-                    [
-                        feature
-                        for feature in body.Group
-                        if feature.ViewObject.Visibility
-                    ],
-                    [result],
+                    str(result.DesignId),
+                    str(self.document.VibeCADTimeline.DesignId),
                 )
-                self.assertFalse(
-                    [
-                        obj
-                        for obj in created
-                        if obj.getParentGeoFeatureGroup() is None
-                    ]
+                self.assertEqual(result.VibeCADTimelineRole, "operation")
+                self.assertEqual(
+                    list(self.document.VibeCADTimeline.Operations).count(
+                        result
+                    ),
+                    1,
                 )
+                self.assertFalse(body.ViewObject.Visibility)
+                self.assertTrue(result.ViewObject.Visibility)
 
                 close_button = self._task_button(
                     QtGui.QDialogButtonBox.Close
@@ -1642,9 +2541,9 @@ class TestNativeRibbonTools(unittest.TestCase):
                 self.assertFalse(Gui.Control.activeDialog())
                 self.assertFalse(self.document.HasPendingTransaction)
                 self.assertIs(self.document.getObject(result.Name), result)
-                self.assertEqual(tuple(body.Group), (source, result))
-                self.assertIs(body.Tip, result)
-                self.assertFalse(source.ViewObject.Visibility)
+                self.assertEqual(tuple(body.Group), (source,))
+                self.assertIs(body.Tip, source)
+                self.assertFalse(body.ViewObject.Visibility)
                 self.assertTrue(result.ViewObject.Visibility)
 
     def test_cancel_restores_picked_position_after_selection_gates_are_removed(self):
@@ -1703,6 +2602,243 @@ class TestNativeRibbonTools(unittest.TestCase):
             self.assertFalse(feature.Shape.isNull(), command_name)
             self.assertGreaterEqual(len(feature.Shape.Solids), 1, command_name)
 
+    def test_design_body_patterns_create_independent_global_body_outputs(self):
+        body, source = self._new_body(
+            "GlobalBodyPatternSource",
+            solid=True,
+        )
+        before_bodies = set(self._bodies())
+        self._activate_body(body)
+
+        command_name = "PartDesign_DesignLinearPattern"
+        self.assertTrue(Gui.isCommandActive(command_name))
+        Gui.runCommand(command_name, 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        operation = self.document.ActiveObject
+        self.assertEqual(
+            operation.TypeId,
+            "PartDesign::DesignLinearPattern",
+        )
+        self.assertIsNone(operation.getParentGeoFeatureGroup())
+        self.assertEqual(operation.PatternSource, "Body")
+        self.assertEqual(operation.ResultOperation, "New Bodies")
+        self.assertEqual(list(operation.InputStates), [source])
+        self.assertEqual(
+            str(operation.InputBodyIds[0]),
+            str(body.VibeCADBodyId),
+        )
+        self.assertEqual(
+            set(self._bodies()),
+            before_bodies,
+            "provisional Body Pattern outputs must not create Bodies",
+        )
+
+        occurrences = Gui.getMainWindow().findChild(
+            QtGui.QSpinBox,
+            "DesignPatternOccurrences",
+        )
+        source_mode = Gui.getMainWindow().findChild(
+            QtGui.QComboBox,
+            "DesignPatternSourceMode",
+        )
+        source_object = Gui.getMainWindow().findChild(
+            QtGui.QComboBox,
+            "DesignPatternSourceObject",
+        )
+        target_list = Gui.getMainWindow().findChild(
+            QtGui.QListWidget,
+            "DesignBodyList",
+        )
+        self.assertIsNotNone(occurrences)
+        self.assertIsNotNone(source_mode)
+        self.assertIsNotNone(source_object)
+        self.assertIsNotNone(target_list)
+        self.assertEqual(source_mode.currentData(), "Body")
+        self.assertEqual(
+            source_object.currentData(),
+            str(body.VibeCADBodyId),
+        )
+        self.assertFalse(target_list.isEnabled())
+
+        occurrences.setValue(4)
+        self._process_events(80)
+        self.assertEqual(operation.Occurrences, 4)
+        self.assertEqual(len(operation.OutputBodyIds), 3)
+        self.assertEqual(
+            list(operation.OutputPreviousInputIndices),
+            [-1, -1, -1],
+        )
+        self.assertEqual(set(self._bodies()), before_bodies)
+
+        self._accept_task(command_name)
+        self.document.recompute()
+        generated_bodies = [
+            candidate
+            for candidate in self._bodies()
+            if candidate not in before_bodies
+        ]
+        self.assertEqual(len(generated_bodies), 3)
+        self.assertEqual(
+            {str(candidate.VibeCADBodyId) for candidate in generated_bodies},
+            {str(identity) for identity in operation.OutputBodyIds},
+        )
+        self.assertEqual(
+            sorted(
+                round(candidate.Shape.BoundBox.XMin, 6)
+                for candidate in generated_bodies
+            ),
+            [10.0, 20.0, 30.0],
+        )
+        self.assertTrue(
+            all(
+                candidate.Tip.TypeId
+                == "PartDesign::DesignBodyPublication"
+                and candidate.Tip.CurrentState.Operation is operation
+                for candidate in generated_bodies
+            )
+        )
+        timeline = self.document.getObject("VibeCADTimeline")
+        self.assertIsNotNone(timeline)
+        self.assertEqual(list(timeline.Operations).count(operation), 1)
+        PartDesign.validateDesign(operation)
+
+    def test_design_feature_pattern_uses_exact_source_and_reference_state(self):
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.runCommand("PartDesign_DesignPrimitive", 0)
+        self._process_events(50)
+        source_operation = self.document.ActiveObject
+        self.assertEqual(source_operation.TypeId, "PartDesign::DesignBox")
+        self._accept_task("create feature-pattern source")
+        self.document.recompute()
+
+        source_body = next(
+            body
+            for body in self._bodies()
+            if str(body.VibeCADBodyId)
+            == str(source_operation.OutputBodyIds[0])
+        )
+        exact_source_state = source_body.Tip.CurrentState
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(source_operation)
+        self._process_events()
+        command_name = "PartDesign_DesignLinearPattern"
+        self.assertTrue(Gui.isCommandActive(command_name))
+        Gui.runCommand(command_name, 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+
+        operation = self.document.ActiveObject
+        self.assertEqual(
+            operation.TypeId,
+            "PartDesign::DesignLinearPattern",
+        )
+        self.assertEqual(operation.PatternSource, "Feature")
+        self.assertIs(operation.SourceOperation, source_operation)
+        self.assertEqual(operation.ResultOperation, "Join")
+        self.assertEqual(list(operation.InputStates), [exact_source_state])
+        self.assertEqual(
+            list(operation.OutputBodyIds),
+            [str(source_body.VibeCADBodyId)],
+        )
+        self.assertIsNone(operation.getParentGeoFeatureGroup())
+
+        occurrences = Gui.getMainWindow().findChild(
+            QtGui.QSpinBox,
+            "DesignPatternOccurrences",
+        )
+        reference_button = Gui.getMainWindow().findChild(
+            QtGui.QPushButton,
+            "DesignPatternUseReference",
+        )
+        target_list = Gui.getMainWindow().findChild(
+            QtGui.QListWidget,
+            "DesignBodyList",
+        )
+        self.assertIsNotNone(occurrences)
+        self.assertIsNotNone(reference_button)
+        self.assertIsNotNone(target_list)
+        self.assertTrue(target_list.isEnabled())
+
+        occurrences.setValue(3)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(source_body, "Edge1")
+        raw_reference_selection = Gui.Selection.getSelectionEx()
+        self.assertEqual(
+            len(raw_reference_selection),
+            1,
+            "the Pattern task must allow geometric reference selection",
+        )
+        self.assertIs(raw_reference_selection[0].Object, source_body)
+        self.assertEqual(
+            raw_reference_selection[0].SubElementNames,
+            ("Edge1",),
+        )
+        reference_warnings = []
+        reference_finished = {"value": False}
+
+        def capture_reference_warning():
+            if reference_finished["value"]:
+                return
+            for dialog in QtGui.QApplication.topLevelWidgets():
+                if (
+                    isinstance(dialog, QtGui.QMessageBox)
+                    and dialog.isVisible()
+                ):
+                    reference_warnings.append(
+                        (dialog.windowTitle(), dialog.text())
+                    )
+                    dialog.accept()
+                    return
+            QtCore.QTimer.singleShot(10, capture_reference_warning)
+
+        QtCore.QTimer.singleShot(0, capture_reference_warning)
+        reference_button.click()
+        reference_finished["value"] = True
+        self._process_events(80)
+        self.assertEqual(reference_warnings, [])
+        reference_object, reference_subelements = (
+            operation.DirectionReference
+        )
+        self.assertIs(reference_object, exact_source_state)
+        self.assertEqual(reference_subelements, ["Edge1"])
+        self.assertIsNot(reference_object, source_body)
+        self.assertIsNot(reference_object, source_body.Tip)
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+
+        self._accept_task(command_name)
+        self.document.recompute()
+        self.assertIs(source_body.Tip.CurrentState.Operation, operation)
+        self.assertAlmostEqual(source_body.Shape.Volume, 3000.0)
+        PartDesign.validateDesign(operation)
+
+    def test_design_pattern_cancel_restores_the_exact_document(self):
+        for index, (command_name, feature_type) in enumerate(
+            DESIGN_PATTERN_COMMANDS
+        ):
+            body, source = self._new_body(
+                f"CancelledDesignPatternBody{index}",
+                solid=True,
+            )
+            self._activate_body(body)
+            expected = self._snapshot(body)
+            self.assertTrue(Gui.isCommandActive(command_name), command_name)
+
+            Gui.runCommand(command_name, 0)
+            self._process_events(50)
+            self.assertTrue(Gui.Control.activeDialog(), command_name)
+            operation = self.document.ActiveObject
+            self.assertEqual(operation.TypeId, feature_type, command_name)
+            self.assertEqual(operation.PatternSource, "Body", command_name)
+            self.assertEqual(list(operation.InputStates), [source])
+            self.assertIsNone(operation.getParentGeoFeatureGroup())
+
+            self._cancel_task(command_name)
+            self._assert_snapshot(body, expected, command_name)
+
     def test_every_covered_task_cancel_restores_body_and_transaction(self):
         for command_name, type_prefix, subtractive in (
             ("PartDesign_CompPrimitiveAdditive", "Additive", False),
@@ -1745,7 +2881,7 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertTrue(Gui.Control.activeDialog(), "PartDesign_Draft")
         self.assertEqual(
             self.document.ActiveObject.TypeId,
-            "PartDesign::Draft",
+            "PartDesign::DesignDraft",
         )
         self._cancel_task("PartDesign_Draft")
         self._assert_snapshot(
@@ -1779,8 +2915,8 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events()
 
         commands = (
-            ("PartDesign_Chamfer", "PartDesign::Chamfer", "Edge1"),
-            ("PartDesign_Draft", "PartDesign::Draft", "Face1"),
+            ("PartDesign_Chamfer", "PartDesign::DesignChamfer", "Edge1"),
+            ("PartDesign_Draft", "PartDesign::DesignDraft", "Face1"),
         )
 
         def launch_and_cancel(command_name, feature_type, subelement, context):
@@ -1794,12 +2930,23 @@ class TestNativeRibbonTools(unittest.TestCase):
             provisional = self.document.ActiveObject
             self.assertIsNotNone(provisional, context)
             self.assertEqual(provisional.TypeId, feature_type, context)
-            self.assertIn(provisional, body.Group, context)
-            linked_base, linked_subnames = provisional.Base
-            self.assertIs(linked_base, source, context)
-            self.assertIsNot(linked_base, body, context)
+            self.assertIsNone(
+                provisional.getParentGeoFeatureGroup(),
+                context,
+            )
+            self.assertNotIn(provisional, body.Group, context)
             self.assertEqual(
-                tuple(linked_subnames),
+                list(provisional.InputStates),
+                [source],
+                context,
+            )
+            self.assertEqual(
+                list(provisional.TargetElementOffsets),
+                [0, 1],
+                context,
+            )
+            self.assertEqual(
+                tuple(provisional.TargetElements),
                 (subelement,),
                 context,
             )

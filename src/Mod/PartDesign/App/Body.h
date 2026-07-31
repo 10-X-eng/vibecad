@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <App/PropertyStandard.h>
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/PartDesign/PartDesignGlobal.h>
 
@@ -44,6 +45,9 @@ class PartDesignExport Body: public Part::BodyBase
 
 public:
     App::PropertyBool AllowCompound;
+    App::PropertyUUID VibeCADBodyId;
+    App::PropertyUUID DesignId;
+    App::PropertyString ComponentId;
 
     /// True if this body feature is active or was active when the document was last closed
     // App::PropertyBool IsActive;
@@ -61,6 +65,11 @@ public:
     {
         return "PartDesignGui::ViewProviderBody";
     }
+
+    App::DocumentObject* getModelingState() override;
+    const App::DocumentObject* getModelingState() const override;
+    const App::DocumentObject* getModelingPresentation() const override;
+    bool containsModelingState(const App::DocumentObject* object) const override;
     //@}
 
     /**

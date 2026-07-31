@@ -3976,6 +3976,126 @@ class OpenScriptedModelCommand(_BaseCommand):
         show_scripted_model_editor()
 
 
+def _selected_scripted_model_operation(
+    *,
+    command_property: str = "VibeCADTimelineEditCommand",
+    command_name: str = "VibeCAD_EditScriptedModel",
+) -> Any | None:
+    """Return one exact selected global VibeScript History operation."""
+
+    document = App.ActiveDocument
+    if document is None or Gui.Control.activeDialog():
+        return None
+    selections = Gui.Selection.getSelectionEx(document.Name, 0)
+    if len(selections) != 1:
+        return None
+    selection = selections[0]
+    operation = selection.Object
+    if (
+        selection.SubElementNames
+        or getattr(operation, "Document", None) is not document
+        or document.getObject(str(getattr(operation, "Name", "") or ""))
+        is not operation
+        or str(getattr(operation, "TypeId", "") or "")
+        != "PartDesign::DesignScriptOperation"
+        or str(getattr(operation, "VibeCADTimelineRole", "") or "")
+        != "operation"
+        or str(getattr(operation, command_property, "") or "")
+        != command_name
+    ):
+        return None
+    program_id = str(getattr(operation, "ProgramId", "") or "")
+    root_name = str(getattr(operation, "ProgramObjectName", "") or "")
+    root = document.getObject(root_name) if root_name else None
+    if not program_id or root is None:
+        return None
+    from VibeCADVibeScriptDomains import (
+        PROP_PROGRAM_DOMAIN,
+        PROP_PROGRAM_ID,
+    )
+
+    if (
+        str(getattr(root, PROP_PROGRAM_ID, "") or "") != program_id
+        or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "")
+        != "partdesign"
+    ):
+        return None
+    return operation
+
+
+class EditScriptedModelCommand(_BaseCommand):
+    menu_text = "Edit Model Code"
+    tooltip = "Edit the source for the selected VibeScript History operation"
+    pixmap = ICON_ACTIVITY
+
+    def IsActive(self) -> bool:
+        return _selected_scripted_model_operation() is not None
+
+    def Activated(self) -> None:
+        operation = _selected_scripted_model_operation()
+        if operation is None:
+            return
+        from VibeCADScriptedEditor import show_scripted_model_editor
+
+        show_scripted_model_editor(str(operation.ProgramId))
+
+
+class DeleteScriptedModelCommand(_BaseCommand):
+    menu_text = "Delete Model"
+    tooltip = "Delete the selected VibeScript source operation and all of its outputs"
+    pixmap = "edit-delete"
+
+    def _operation(self) -> Any | None:
+        return _selected_scripted_model_operation(
+            command_property="VibeCADTimelineDeleteCommand",
+            command_name="VibeCAD_DeleteScriptedModel",
+        )
+
+    def IsActive(self) -> bool:
+        return self._operation() is not None
+
+    def Activated(self) -> None:
+        operation = self._operation()
+        if operation is None:
+            return
+        program_id = str(operation.ProgramId)
+        expected_revision = str(operation.ProgramRevision)
+        try:
+            from VibeCADVibeScriptDomainPublication import delete_live_program
+            from VibeCADVibeScriptDomainRuntime import (
+                capture_history_delete_state,
+                finish_delete,
+                prepare_delete,
+                restore_prepared_delete,
+            )
+
+            prepared = prepare_delete(
+                capture_history_delete_state(
+                    get_service(),
+                    "partdesign",
+                    program_id,
+                    expected_revision,
+                    "Deleted from document History",
+                )
+            )
+            try:
+                publication = delete_live_program(get_service(), prepared)
+            except Exception:
+                restore_prepared_delete(prepared)
+                raise
+            finish_delete(prepared, publication)
+            Gui.Selection.clearSelection()
+        except Exception as exc:
+            _warn(f"VibeScript History deletion failed: {exc}")
+            from PySide import QtWidgets
+
+            QtWidgets.QMessageBox.warning(
+                Gui.getMainWindow(),
+                "Delete VibeScript model",
+                str(exc),
+            )
+
+
 class AuthStatusCommand(_BaseCommand):
     menu_text = "VibeCAD Authentication Status"
     tooltip = "Show VibeCAD authentication status"
@@ -4018,6 +4138,19 @@ def ensure_commands_registered() -> None:
     Gui.addCommand("VibeCAD_OpenAssistant", OpenAssistantCommand())
     Gui.addCommand("VibeCAD_OpenPreferences", OpenPreferencesCommand())
     Gui.addCommand("VibeCAD_OpenScriptedModel", OpenScriptedModelCommand())
+    Gui.addCommand("VibeCAD_EditScriptedModel", EditScriptedModelCommand())
+    for action in Gui.Command.get(
+        "VibeCAD_EditScriptedModel"
+    ).ensureAction():
+        action.setProperty("VibeCADTimelineOperationEditor", True)
+    Gui.addCommand(
+        "VibeCAD_DeleteScriptedModel",
+        DeleteScriptedModelCommand(),
+    )
+    for action in Gui.Command.get(
+        "VibeCAD_DeleteScriptedModel"
+    ).ensureAction():
+        action.setProperty("VibeCADTimelineOperationDeleter", True)
     Gui.addCommand("VibeCAD_AuthStatus", AuthStatusCommand())
     try:
         from VibeCADScriptedEditor import ensure_scripted_model_editor_registered

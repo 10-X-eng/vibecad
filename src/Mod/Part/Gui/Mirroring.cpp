@@ -477,6 +477,10 @@ bool Mirroring::accept()
             }
         }
 
+        if (results.empty()) {
+            throw Base::RuntimeError("No mirror result was created");
+        }
+        attempt.markResultAsDesignDefinition(*results.back());
         appliedResults = results;
         attempt.commit();
     }

@@ -481,6 +481,9 @@ public:
      */
     void classifyExistingTimelineLeafInternalObject(DocumentObject* object);
 
+    /** Retire one retained legacy semantic block as internal document state. */
+    void classifyExistingTimelineSemanticBlockInternalObject(DocumentObject* operation);
+
     /**
      * Return whether object is an exact provisional timeline enrollment owned
      * by

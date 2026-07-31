@@ -37,6 +37,7 @@
 #include <Gui/Language/Translator.h>
 
 #include <Mod/Part/App/PreviewExtension.h>
+#include <Mod/Part/App/BodyBase.h>
 
 #include "AttacherTexts.h"
 #include "PropertyEnumAttacherItem.h"
@@ -110,9 +111,23 @@ public:
             "resolveModelingObject",
             &Module::resolveModelingObject,
             "resolveModelingObject(object) -> object or None\n\n"
-            "Return a directly selected Body's previous Tip for modeling "
-            "operations. Ordinary objects and App::Link occurrences are "
-            "returned unchanged."
+            "Return a directly selected Body's exact current modeling state. "
+            "Presentation objects are never returned as geometry inputs. "
+            "Ordinary objects and App::Link occurrences are returned unchanged."
+        );
+        add_varargs_method(
+            "findModelingBody",
+            &Module::findModelingBody,
+            "findModelingBody(object) -> object or None\n\n"
+            "Return the unique native Body represented by a Body member, "
+            "component, or linked presentation."
+        );
+        add_varargs_method(
+            "resolveModelingObjectForBody",
+            &Module::resolveModelingObjectForBody,
+            "resolveModelingObjectForBody(object, body) -> object or None\n\n"
+            "Resolve a visible Body or component presentation to the exact "
+            "state that a new operation may safely consume."
         );
         add_varargs_method(
             "isModelingObjectActive",
@@ -136,6 +151,13 @@ public:
             "Persist exact visible inputs intentionally hidden by a root "
             "modeling result. Body-native results use Tip history and return "
             "False."
+        );
+        add_varargs_method(
+            "publishDesignDefinitionBlock",
+            &Module::publishDesignDefinitionBlock,
+            "publishDesignDefinitionBlock(outputs) -> None\n\n"
+            "Publish newly created root-level outputs as one reusable Design "
+            "definition. The final output is the semantic History root."
         );
         add_varargs_method(
             "canStartRetainedModelingTask",
@@ -187,6 +209,44 @@ private:
         auto* object =
             static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
         auto* resolved = PartGui::resolveModelingObject(object);
+        return resolved ? Py::asObject(resolved->getPyObject()) : Py::None();
+    }
+
+    Py::Object findModelingBody(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonObject)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object must be a document object");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* body = PartGui::findModelingBody(object);
+        return body ? Py::asObject(body->getPyObject()) : Py::None();
+    }
+
+    Py::Object resolveModelingObjectForBody(const Py::Tuple& args)
+    {
+        PyObject* pythonObject = nullptr;
+        PyObject* pythonBody = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &pythonObject, &pythonBody)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)
+            || !PyObject_TypeCheck(pythonBody, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("object and body must be document objects");
+        }
+        auto* object =
+            static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* bodyObject =
+            static_cast<App::DocumentObjectPy*>(pythonBody)->getDocumentObjectPtr();
+        auto* body = freecad_cast<Part::BodyBase*>(bodyObject);
+        if (!body) {
+            throw Py::TypeError("body must derive from Part::BodyBase");
+        }
+        auto* resolved = PartGui::resolveModelingObjectForBody(object, body);
         return resolved ? Py::asObject(resolved->getPyObject()) : Py::None();
     }
 
@@ -251,6 +311,43 @@ private:
         return Py::Boolean(
             PartGui::setModelingReplacedInputs(*result, inputs)
         );
+    }
+
+    Py::Object publishDesignDefinitionBlock(const Py::Tuple& args)
+    {
+        PyObject* pythonOutputs = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pythonOutputs)) {
+            throw Py::Exception();
+        }
+
+        std::vector<App::DocumentObject*> outputs;
+        Py::Sequence sequence(pythonOutputs);
+        outputs.reserve(sequence.size());
+        for (auto iterator = sequence.begin();
+             iterator != sequence.end();
+             ++iterator) {
+            PyObject* item = (*iterator).ptr();
+            if (!PyObject_TypeCheck(
+                    item,
+                    &App::DocumentObjectPy::Type
+                )) {
+                throw Py::TypeError(
+                    "every Design definition output must be a document "
+                    "object"
+                );
+            }
+            outputs.push_back(
+                static_cast<App::DocumentObjectPy*>(item)
+                    ->getDocumentObjectPtr()
+            );
+        }
+        try {
+            PartGui::publishModelingDesignDefinitionBlock(outputs);
+        }
+        catch (const Base::Exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        return Py::None();
     }
 };
 

@@ -34,6 +34,7 @@
 #include <App/DocumentObject.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/ViewProvider.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureFillet.h>
 #include <Mod/Part/App/Attacher.h>
 #include <Mod/Part/App/Geometry.h>
@@ -71,10 +72,7 @@ TaskFilletParameters::TaskFilletParameters(ViewProviderDressUp* DressUpView, QWi
     ui->filletRadius->selectNumber();
     ui->filletRadius->bind(pcFillet->Radius);
     QMetaObject::invokeMethod(ui->filletRadius, "setFocus", Qt::QueuedConnection);
-    std::vector<std::string> strings = pcFillet->Base.getSubValues();
-    for (const auto& string : strings) {
-        ui->listWidgetReferences->addItem(QString::fromStdString(string));
-    }
+    populateReferences(ui->listWidgetReferences);
 
     QMetaObject::connectSlotsByName(this);
 
@@ -101,7 +99,7 @@ TaskFilletParameters::TaskFilletParameters(ViewProviderDressUp* DressUpView, QWi
         this, &TaskFilletParameters::doubleClicked);
     // clang-format on
 
-    if (strings.empty()) {
+    if (ui->listWidgetReferences->count() == 0) {
         setSelectionMode(refSel);
     }
     else {
@@ -237,8 +235,44 @@ void TaskFilletParameters::setGizmoPositions()
         gizmoContainer->visible = false;
         return;
     }
-    Part::TopoShape baseShape = fillet->getBaseTopoShape(true);
-    std::vector<Part::TopoShape> shapes = fillet->getContinuousEdges(baseShape);
+    Part::TopoShape baseShape;
+    std::vector<Part::TopoShape> shapes;
+    if (auto* design =
+            dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+                fillet
+            )) {
+        auto* operation =
+            dynamic_cast<PartDesign::DesignOperationProperties*>(fillet);
+        if (!operation) {
+            gizmoContainer->visible = false;
+            return;
+        }
+        const auto inputs = operation->InputStates.getValues();
+        const auto groups = design->targetElementGroups();
+        auto* state = inputs.empty()
+            ? nullptr
+            : freecad_cast<Part::Feature*>(inputs.front());
+        if (!state || groups.empty()) {
+            gizmoContainer->visible = false;
+            return;
+        }
+        baseShape = state->Shape.getShape();
+        try {
+            shapes = PartDesign::resolveDesignTargetEdges(
+                baseShape,
+                groups.front(),
+                fillet->UseAllEdges.getValue()
+            );
+        }
+        catch (const Base::Exception&) {
+            gizmoContainer->visible = false;
+            return;
+        }
+    }
+    else {
+        baseShape = fillet->getBaseTopoShape(true);
+        shapes = fillet->getContinuousEdges(baseShape);
+    }
 
     if (shapes.size() == 0) {
         gizmoContainer->visible = false;

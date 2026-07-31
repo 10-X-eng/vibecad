@@ -57,6 +57,16 @@ namespace PartDesignGui
  */
 bool canStartModelingCommand();
 
+/**
+ * Copy the complete rendered shape appearance from one modeling object to
+ * another, resolving App::Link material overrides exactly.
+ *
+ * This records normal GUI property assignments in the active transaction so
+ * a newly created Body never loses the appearance of the definition or Body
+ * from which it was derived.
+ */
+void copyShapeVisualProperties(const App::DocumentObject& destination, const App::DocumentObject& source);
+
 /// Activate edit mode of the given object
 bool setEdit(App::DocumentObject* obj, PartDesign::Body* body = nullptr);
 
@@ -134,8 +144,7 @@ void relinkToBody(PartDesign::Feature* feature);
 /// Check if feature is dependent on anything except movable sketches and datums
 bool isFeatureMovable(App::DocumentObject* feature);
 /// Collect dependencies of the features during the move. Dependencies should only be dependent on origin
-std::vector<App::DocumentObject*> collectMovableDependencies(
-    std::vector<App::DocumentObject*>& features
+std::vector<App::DocumentObject*> collectMovableDependencies(std::vector<App::DocumentObject*>& features
 );
 /// Relink sketches and datums to target body's origin
 void relinkToOrigin(App::DocumentObject* feature, PartDesign::Body* body);

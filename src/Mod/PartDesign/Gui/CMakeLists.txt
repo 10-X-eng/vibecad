@@ -105,6 +105,8 @@ SET(PartDesignGuiViewProvider_SRCS
     ViewProviderShapeBinder.cpp
     ViewProviderBoolean.cpp
     ViewProviderBoolean.h
+    ViewProviderDesignOperation.cpp
+    ViewProviderDesignOperation.h
     ViewProviderPrimitive.h
     ViewProviderPrimitive.cpp
     ViewProviderPipe.h
@@ -125,6 +127,8 @@ SET(PartDesignGuiTaskDlgs_SRCS
     ReferenceSelection.cpp
     ReferenceSelection.h
     TaskDialogState.h
+    TaskDesignOperation.cpp
+    TaskDesignOperation.h
     TaskFeatureParameters.cpp
     TaskFeatureParameters.h
     TaskSketchBasedParameters.cpp

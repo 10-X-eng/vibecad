@@ -39,6 +39,7 @@
 #include <Gui/Selection/Selection.h>
 #include <Gui/Tools.h>
 #include <Gui/ViewProvider.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/PartDesign/App/FeatureBoolean.h>
 
@@ -120,14 +121,15 @@ void TaskBooleanParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
             return;
         }
 
-        // if the selected object is not a body then get the body it is part of
-        if (!pcBody->isDerivedFrom<PartDesign::Body>()) {
-            pcBody = PartDesign::Body::findBodyOf(pcBody);
-            if (!pcBody) {
-                return;
-            }
-            body = pcBody->getNameInDocument();
+        // Boolean operands are native Body definitions. A visible component
+        // may publish one of those Bodies, but the destination Body itself is
+        // never a valid operand of its own feature.
+        pcBody = PartGui::findModelingBody(pcBody);
+        auto* destinationBody = PartGui::findModelingBody(pcBoolean);
+        if (!pcBody || pcBody == destinationBody) {
+            return;
         }
+        body = pcBody->getNameInDocument();
 
         std::vector<App::DocumentObject*> bodies = pcBoolean->Group.getValues();
 

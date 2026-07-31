@@ -46,6 +46,7 @@
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
+#include <Gui/CommandT.h>
 #include <Gui/Document.h>
 #include <Gui/Utilities.h>
 #include <Gui/ViewProvider.h>
@@ -351,13 +352,22 @@ void DlgScale::apply()
             Gui::Command::copyVisual(newObj, "LineColor", sourceObj);
             Gui::Command::copyVisual(newObj, "PointColor", sourceObj);
 
-            FCMD_OBJ_HIDE(sourceObj);
+            // The resolved modeling source may be an immutable Body state.
+            // Replacing it visually must hide the stable presentation object,
+            // not an internal state which does not own viewport visibility.
+            if (presentation) {
+                Gui::cmdAppObjectHide(presentation);
+            }
+            else {
+                Gui::cmdAppObjectHide(sourceObj);
+            }
             results.push_back(newObj);
         }
 
         if (results.empty()) {
             throw Base::RuntimeError("No scale result was created");
         }
+        attempt.markResultAsDesignDefinition(*results.back());
 
         activeDoc->recompute();
         for (auto* result : results) {

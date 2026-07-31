@@ -160,55 +160,17 @@ App::DocumentObject* resolveObject(App::Document* document, const TimelineObject
     return resolveObject(document, identity.name, identity.id);
 }
 
-struct ApprovedTimelineEditCommand
+ApprovedDocumentTimelineCommand approvedTimelineEditCommand(
+    App::DocumentObject* operation,
+    bool requireActive
+)
 {
-    std::string name;
-    Gui::Command* command {};
-};
-
-bool isSafeTimelineCommandName(std::string_view name)
-{
-    const auto asciiLetter = [](char character) {
-        return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
-    };
-    return !name.empty() && name.size() <= 128 && asciiLetter(name.front())
-        && std::ranges::all_of(name, [asciiLetter](char character) {
-               return asciiLetter(character) || (character >= '0' && character <= '9')
-                   || character == '_';
-           });
-}
-
-ApprovedTimelineEditCommand approvedTimelineEditCommand(App::DocumentObject* operation, bool requireActive)
-{
-    if (!operation || !operation->isAttachedToDocument() || !operation->getDocument()
-        || !operation->getDocument()->containsObject(operation)
-        || !App::DocumentTimeline::hasTimelineOperationRole(operation)
-        || !Gui::Application::Instance) {
-        return {};
-    }
-
-    const auto* property = dynamic_cast<const App::PropertyString*>(
-        operation->getPropertyByName(App::DocumentTimeline::EditCommandPropertyName)
+    return Gui::approvedDocumentTimelineCommand(
+        operation,
+        App::DocumentTimeline::EditCommandPropertyName,
+        "VibeCADTimelineOperationEditor",
+        requireActive
     );
-    const std::string commandName = property ? property->getValue() : "";
-    if (!isSafeTimelineCommandName(commandName)) {
-        return {};
-    }
-
-    auto* command = Gui::Application::Instance->commandManager().getCommandByName(commandName.c_str());
-    if (!command) {
-        return {};
-    }
-    command->initAction();
-    auto* action = command->getAction();
-    auto* qtAction = action ? action->action() : nullptr;
-    const QVariant capability = qtAction ? qtAction->property("VibeCADTimelineOperationEditor")
-                                         : QVariant {};
-    if (!qtAction || capability.userType() != QMetaType::Bool || !capability.toBool()
-        || (requireActive && !command->canInvoke())) {
-        return {};
-    }
-    return {commandName, command};
 }
 
 QPoint mouseEventPosition(const QMouseEvent* event)
@@ -369,19 +331,19 @@ bool isVisibleTimelineOperation(
         return false;
     }
 
+    // A workbench's explicit, persisted operation contract is more precise
+    // than the browser's generic presentation category or even the presence
+    // of a tree-projection entry.  History is saved modeling state, while the
+    // tree is only one presentation of that state.  For example, a reusable
+    // Design sketch and a CAM Job are durable operations even when the tree
+    // projects them through a virtual folder or container.
+    if (hasExplicitTimelineRole(object, App::DocumentTimeline::OperationRole)) {
+        return true;
+    }
+
     const auto* entry = projection.find(object);
     if (!entry) {
         return false;
-    }
-
-    // A workbench's explicit, persisted operation contract is more precise
-    // than the browser's generic presentation category.  For example, a CAM
-    // Job is one durable user operation while also carrying GroupExtension
-    // to own its setup objects.  Its group capability must not hide the Job
-    // from document history; explicitly owned resources were already
-    // excluded above.
-    if (hasExplicitTimelineRole(object, App::DocumentTimeline::OperationRole)) {
-        return true;
     }
     if (entry->publishedImplementation
         || (entry->publishedOutput && entry->bodyRepresentation)) {
@@ -404,6 +366,10 @@ bool isVisibleTimelineOperation(
             return true;
         case Role::Construction:
             return true;
+        case Role::History:
+            return true;
+        case Role::Internal:
+            return false;
         case Role::Other:
             // A native object with no ViewProvider is application bookkeeping,
             // not a user operation. Other view-backed document objects (for
@@ -1951,8 +1917,36 @@ void FeatureTimeline::setDocumentPosition(int requestedPosition)
             : const_cast<App::DocumentObject*>(
                   App::DocumentTimeline::timelineEditor(body)
               );
+        App::DocumentObject* designPublication = nullptr;
+        for (auto* member : group->getValues()) {
+            if (!isDerivedFrom(member, "PartDesign::DesignBodyPublication")) {
+                continue;
+            }
+            if (designPublication) {
+                Base::Console().error(
+                    "A Design Body contains more than one persistent publication\n"
+                );
+                return;
+            }
+            designPublication = member;
+        }
+        if (designPublication) {
+            nextTip = designPublication;
+        }
         for (auto* member : group->getValues()) {
             plan.group.push_back(objectIdentity(member));
+            if (member == designPublication) {
+                // A Design Body has one stable rendered publication for its
+                // entire lifetime.  Moving the global History marker changes
+                // which immutable Body state that publication resolves; it
+                // must never replace or clear the Body's Tip.
+                nextTip = member;
+                plan.results.push_back(
+                    {objectIdentity(member), macroObjectCommand(member)}
+                );
+                bodyResults.insert(member);
+                continue;
+            }
             const auto operation = operationIndices.find(member);
             if (operation == operationIndices.end()) {
                 if (hasExplicitTimelineRole(member, App::DocumentTimeline::InternalRole)
@@ -1967,6 +1961,7 @@ void FeatureTimeline::setDocumentPosition(int requestedPosition)
                 return;
             }
             if (bodyTracked && bodyActive && member == semanticBodyEditor
+                && !designPublication
                 && isDerivedFrom(member, "Part::Feature")
                 && !isDerivedFrom(member, "Part::Part2DObject")
                 && !isDerivedFrom(member, "Part::BodyBase")
@@ -1979,7 +1974,7 @@ void FeatureTimeline::setDocumentPosition(int requestedPosition)
                 nextTip = member;
                 nextTipOperation = bodyOperation->second;
             }
-            if (bodyActive && operation->second < nextPosition) {
+            if (!designPublication && bodyActive && operation->second < nextPosition) {
                 if (operation->second > nextTipOperation
                     && isNavigableTimelineResult(member, internalTransformations, projection)) {
                     nextTip = member;

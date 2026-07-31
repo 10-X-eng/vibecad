@@ -63,6 +63,7 @@
 #include <Mod/Sketcher/App/SketchObject.h>
 #include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/Component.h>
 #include <Mod/PartDesign/App/FeatureBase.h>
 #include <Mod/PartDesign/App/FeatureSketchBased.h>
 #include <Mod/PartDesign/App/PartDesignParameter.h>
@@ -110,6 +111,41 @@ namespace
 // that exact child path but, unlike FollowLink, never redirects an occurrence
 // to a shared linked definition.
 constexpr Gui::ResolveMode exactBrowserChildResolveMode = Gui::ResolveMode::OldStyleElement;
+
+App::Part* selectedOrActiveDesignComponent(App::Document* document)
+{
+    if (!document) {
+        return nullptr;
+    }
+
+    auto selected = Gui::Selection().getObjectsOfType<App::Part>(
+        document->getName(),
+        exactBrowserChildResolveMode
+    );
+    std::erase_if(selected, [document](const App::Part* candidate) {
+        return !candidate || candidate->getDocument() != document
+            || candidate->Type.getStrValue() != "Component";
+    });
+    if (selected.size() == 1) {
+        return selected.front();
+    }
+    if (selected.size() > 1) {
+        throw Base::ValueError(
+            "Select at most one destination Component"
+        );
+    }
+
+    auto* view = Gui::Application::Instance
+        ? Gui::Application::Instance->activeView()
+        : nullptr;
+    auto* active = view
+        ? view->getActiveObject<App::Part*>(PARTKEY)
+        : nullptr;
+    return active && active->getDocument() == document
+            && active->Type.getStrValue() == "Component"
+        ? active
+        : nullptr;
+}
 
 struct BodyCreationObjectIdentity
 {
@@ -443,6 +479,222 @@ void validateSemanticRootsAtBeginning(
     }
 }
 }  // namespace
+
+// PartDesign_NewComponent
+//===========================================================================
+DEF_STD_CMD_A(CmdPartDesignNewComponent)
+
+CmdPartDesignNewComponent::CmdPartDesignNewComponent()
+    : Command("PartDesign_NewComponent")
+{
+    sAppModule = "PartDesign";
+    sGroup = QT_TR_NOOP("PartDesign");
+    sMenuText = QT_TR_NOOP("New Component");
+    sToolTipText = QT_TR_NOOP(
+        "Creates an assembly and product component without owning sketches or modeling history"
+    );
+    sWhatsThis = "PartDesign_NewComponent";
+    sStatusTip = sToolTipText;
+    sPixmap = "Geofeaturegroup";
+}
+
+void CmdPartDesignNewComponent::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+
+    auto* document = getDocument();
+    if (!document || Gui::Control().activeDialog(document)) {
+        return;
+    }
+
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create a new component")
+    );
+    if (transactionId == App::NullTransaction) {
+        resetTransactionID();
+        return;
+    }
+
+    try {
+        auto* parent = selectedOrActiveDesignComponent(document);
+        const std::string name =
+            document->getUniqueObjectName("Component");
+        std::ostringstream factory;
+        factory << "App.getDocument('" << document->getName()
+                << "').addObject('PartDesign::Component','" << name << "')";
+        auto* component = freecad_cast<PartDesign::Component*>(
+            runDocumentObjectCommand(
+                Doc,
+                *document,
+                QByteArray(factory.str().c_str()),
+                PartDesign::Component::getClassTypeId()
+            )
+        );
+        if (!component) {
+            throw Base::RuntimeError(
+                "The Component factory returned an incompatible object"
+            );
+        }
+
+        FCMD_DOC_CMD(
+            document,
+            "classifyProvisionalTimelineInternalObject("
+                << getObjectCmd(component) << ")"
+        );
+        FCMD_OBJ_CMD(
+            component,
+            "Label = '" << Base::Tools::escapeEncodeString(
+                QObject::tr("Component").toUtf8().toStdString()
+            ) << "'"
+        );
+        if (parent) {
+            FCMD_OBJ_CMD(
+                parent,
+                "addObject(" << getObjectCmd(component) << ")"
+            );
+        }
+
+        doCommand(
+            Gui,
+            "Gui.getDocument('%s').ActiveView.setActiveObject('%s', "
+            "App.getDocument('%s').getObject('%s'))",
+            document->getName(),
+            PARTKEY,
+            document->getName(),
+            component->getNameInDocument()
+        );
+        Gui::Selection().clearSelection(document->getName());
+        Gui::Selection().addSelection(
+            document->getName(),
+            component->getNameInDocument()
+        );
+        updateDocument(document);
+        commitCommand(transactionId);
+        resetTransactionID();
+    }
+    catch (...) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        throw;
+    }
+}
+
+bool CmdPartDesignNewComponent::isActive()
+{
+    return PartDesignGui::canStartModelingCommand();
+}
+
+// PartDesign_NewBody
+//===========================================================================
+DEF_STD_CMD_A(CmdPartDesignNewBody)
+
+CmdPartDesignNewBody::CmdPartDesignNewBody()
+    : Command("PartDesign_NewBody")
+{
+    sAppModule = "PartDesign";
+    sGroup = QT_TR_NOOP("PartDesign");
+    sMenuText = QT_TR_NOOP("New Body");
+    sToolTipText = QT_TR_NOOP(
+        "Creates an empty physical Body without adopting the current selection"
+    );
+    sWhatsThis = "PartDesign_NewBody";
+    sStatusTip = sToolTipText;
+    sPixmap = "PartDesign_Body";
+}
+
+void CmdPartDesignNewBody::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+
+    auto* document = getDocument();
+    if (!document || Gui::Control().activeDialog(document)) {
+        return;
+    }
+
+    const int transactionId = openCommand(
+        document,
+        QT_TRANSLATE_NOOP("Command", "Create a new body")
+    );
+    if (transactionId == App::NullTransaction) {
+        resetTransactionID();
+        return;
+    }
+
+    try {
+        auto* component = selectedOrActiveDesignComponent(document);
+        const std::string name = document->getUniqueObjectName("Body");
+        std::ostringstream factory;
+        factory << "App.getDocument('" << document->getName()
+                << "').addObject('PartDesign::Body','" << name << "')";
+        auto* body = freecad_cast<PartDesign::Body*>(
+            runDocumentObjectCommand(
+                Doc,
+                *document,
+                QByteArray(factory.str().c_str()),
+                PartDesign::Body::getClassTypeId()
+            )
+        );
+        if (!body) {
+            throw Base::RuntimeError(
+                "The Body factory returned an incompatible object"
+            );
+        }
+
+        FCMD_DOC_CMD(
+            document,
+            "classifyProvisionalTimelineInternalObject("
+                << getObjectCmd(body) << ")"
+        );
+        FCMD_OBJ_CMD(
+            body,
+            "AllowCompound = " << Gui::asString(
+                PartDesign::PartDesignParameter::instance()
+                    ->getAllowCompoundDefault()
+            )
+        );
+        FCMD_OBJ_CMD(
+            body,
+            "Label = '" << Base::Tools::escapeEncodeString(
+                QObject::tr("Body").toUtf8().toStdString()
+            ) << "'"
+        );
+        if (component) {
+            FCMD_OBJ_CMD(
+                component,
+                "addObject(" << getObjectCmd(body) << ")"
+            );
+        }
+
+        doCommand(
+            Gui,
+            "Gui.getDocument('%s').ActiveView.setActiveObject('%s', "
+            "App.getDocument('%s').getObject('%s'))",
+            document->getName(),
+            PDBODYKEY,
+            document->getName(),
+            body->getNameInDocument()
+        );
+        Gui::Selection().clearSelection(document->getName());
+        Gui::Selection().addSelection(
+            document->getName(),
+            body->getNameInDocument()
+        );
+        updateDocument(document);
+        commitCommand(transactionId);
+        resetTransactionID();
+    }
+    catch (...) {
+        abortCommand(transactionId);
+        resetTransactionID();
+        throw;
+    }
+}
+
+bool CmdPartDesignNewBody::isActive()
+{
+    return PartDesignGui::canStartModelingCommand();
+}
 
 // PartDesign_Body
 //===========================================================================
@@ -3057,6 +3309,8 @@ void CreatePartDesignBodyCommands()
 {
     Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
 
+    rcCmdMgr.addCommand(new CmdPartDesignNewComponent());
+    rcCmdMgr.addCommand(new CmdPartDesignNewBody());
     rcCmdMgr.addCommand(new CmdPartDesignBody());
     rcCmdMgr.addCommand(new CmdPartDesignMigrate());
     rcCmdMgr.addCommand(new CmdPartDesignMoveTip());

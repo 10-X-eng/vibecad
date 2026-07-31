@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -37,6 +38,7 @@
 #include <App/Part.h>
 #include <App/VarSet.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Tools.h>
 #include <Gui/ActionFunction.h>
 #include <Gui/Application.h>
@@ -46,6 +48,7 @@
 #include <Gui/ViewProviderDatum.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureSketchBased.h>
 #include <Mod/PartDesign/App/FeatureBase.h>
 #include <Mod/PartDesign/App/ShapeBinder.h>
@@ -386,6 +389,58 @@ bool ViewProviderBody::doubleClicked()
 {
     toggleActiveBody();
     return true;
+}
+
+App::DocumentObject* ViewProviderBody::documentTimelineOperationDeleteTarget() const
+{
+    auto* body = getObject<PartDesign::Body>();
+    auto* publication = PartDesign::findDesignBodyPublication(body);
+    if (!body || !publication) {
+        return nullptr;
+    }
+
+    auto* state = freecad_cast<PartDesign::DesignBodyState*>(
+        publication->CurrentState.getValue()
+    );
+    if (!state) {
+        // A purely legacy/imported Body has no Design operation lifecycle yet.
+        return nullptr;
+    }
+
+    std::set<PartDesign::DesignBodyState*> visited;
+    while (auto* previous = freecad_cast<PartDesign::DesignBodyState*>(
+               state->PreviousState.getValue()
+           )) {
+        if (!visited.insert(state).second) {
+            throw Base::RuntimeError(
+                "This Design Body has a cyclic state chain and cannot be deleted"
+            );
+        }
+        state = previous;
+    }
+    if (state->PreviousState.getValue()) {
+        throw Base::RuntimeError(
+            "This imported Body participates in global History and cannot be "
+            "deleted as a legacy container. Remove its History operations first."
+        );
+    }
+
+    auto* operation = state->Operation.getValue();
+    auto* properties =
+        dynamic_cast<PartDesign::DesignOperationProperties*>(operation);
+    const auto outputBodyIds =
+        properties ? properties->OutputBodyIds.getValues()
+                   : std::vector<std::string> {};
+    if (!operation || operation->getDocument() != body->getDocument()
+        || !properties || state->BodyId.getValueStr() != body->VibeCADBodyId.getValueStr()
+        || outputBodyIds.size() != 1
+        || outputBodyIds.front() != body->VibeCADBodyId.getValueStr()) {
+        throw Base::RuntimeError(
+            "This Body is not the sole output of one valid creating History "
+            "operation. Delete the complete operation from History instead."
+        );
+    }
+    return operation;
 }
 
 // TODO To be deleted (2015-09-08, Fat-Zer)

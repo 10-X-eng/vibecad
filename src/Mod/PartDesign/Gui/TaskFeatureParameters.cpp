@@ -36,10 +36,12 @@
 #include <Gui/Inventor/Draggers/Gizmo.h>
 #include <Gui/MainWindow.h>
 #include <Gui/BitmapFactory.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/Feature.h>
 
 #include "ui_TaskPreviewParameters.h"
 
+#include "TaskDesignOperation.h"
 #include "TaskFeatureParameters.h"
 #include "TaskDialogState.h"
 #include "TaskSketchBasedParameters.h"
@@ -193,6 +195,7 @@ void TaskFeatureParameters::recomputeFeature()
 TaskDlgFeatureParameters::TaskDlgFeatureParameters(PartDesignGui::ViewProvider* vp)
     : preview(nullptr)
     , vp(vp)
+    , designTargets(nullptr)
 {
     assert(vp);
     // Gui::Document::resetEdit() is a commit boundary, while cancelEdit() is
@@ -214,6 +217,12 @@ TaskDlgFeatureParameters::TaskDlgFeatureParameters(PartDesignGui::ViewProvider* 
         )
     );
     preview = new TaskPreviewParameters(vp);
+    if (dynamic_cast<PartDesign::DesignOperationProperties*>(
+            vp->getObject()
+        )) {
+        designTargets = new TaskDesignOperationTargets(vp->getObject());
+        Content.push_back(designTargets);
+    }
 }
 
 TaskDlgFeatureParameters::~TaskDlgFeatureParameters()
@@ -248,34 +257,49 @@ bool TaskDlgFeatureParameters::accept()
             throw Base::TypeError("Bad object processed in the feature dialog.");
         }
 
-        if (isUpdateBlocked) {
-            Gui::cmdAppDocument(feature, "recompute()");
+        if (designTargets) {
+            // The Design service first validates this controller alone,
+            // atomically reconciles its complete Body-state graph, and only
+            // then recomputes downstream consumers. Recomputing the whole
+            // document before reconciliation would execute deliberately
+            // retired output slots and show false errors while a target set
+            // is being edited.
+            designTargets->finalize();
         }
         else {
-            // object was already computed, nothing more to do with it...
-            Gui::cmdAppDocument(feature, "purgeTouched()");
+            if (isUpdateBlocked) {
+                Gui::cmdAppDocument(feature, "recompute()");
+            }
+            else {
+                // object was already computed, nothing more to do with it...
+                Gui::cmdAppDocument(feature, "purgeTouched()");
+
+                if (!feature->isValid()) {
+                    throw Base::RuntimeError(getObject()->getStatusString());
+                }
+
+                // ...but touch parents to signal the change...
+                for (auto obj : feature->getInList()) {
+                    obj->touch();
+                }
+                // ...and recompute them
+                Gui::cmdAppDocument(feature->getDocument(), "recompute()");
+            }
 
             if (!feature->isValid()) {
                 throw Base::RuntimeError(getObject()->getStatusString());
             }
 
-            // ...but touch parents to signal the change...
-            for (auto obj : feature->getInList()) {
-                obj->touch();
-            }
-            // ...and recompute them
-            Gui::cmdAppDocument(feature->getDocument(), "recompute()");
+            App::DocumentObject* previous =
+                static_cast<PartDesign::Feature*>(feature)->getBaseObject(
+                    /* silent = */ true
+                );
+            Gui::cmdAppObjectHide(previous);
         }
 
         if (!feature->isValid()) {
             throw Base::RuntimeError(getObject()->getStatusString());
         }
-
-        App::DocumentObject* previous = static_cast<PartDesign::Feature*>(feature)->getBaseObject(
-            /* silent = */ true
-        );
-        Gui::cmdAppObjectHide(previous);
-
         finalizeAcceptedFeature(feature);
 
         // detach the task panel from the selection to avoid to invoke

@@ -287,16 +287,18 @@ void CmdPartPointsFromMesh::activated(int iMsg)
                         "showCompoundFromPoints",
                         args
                     )
-                );
+            );
             attempt.trackCreatedObject(*result);
             commandResults.push_back(result);
-            PartGui::prepareModelingResultsForOperands({result}, {it});
         }
         if (commandResults.size() != geoms.size()) {
             throw Base::RuntimeError(
                 "Points from geometry did not create every selected result"
             );
         }
+        attempt.markResultAsDesignDefinition(
+            *commandResults.back()
+        );
         attempt.commit();
     }
     catch (Py::Exception&) {
@@ -355,10 +357,10 @@ static void _copyShape(
         return;
     }
 
-    int tid = Gui::Command::openActiveDocumentCommand(cmdName);
     std::vector<App::DocumentObject*> commandResults;
     std::vector<App::DocumentObject*> replacedPresentations;
     try {
+        PartGui::ModelingTaskAttempt attempt(*activeDocument, cmdName);
         for (auto& sel : PartGui::getModelingSelection(activeDocument->getName())) {
             const auto resultCountBeforeSelection = commandResults.size();
             std::map<std::string, App::DocumentObject*> subMap;
@@ -409,7 +411,7 @@ static void _copyShape(
                     QByteArray::fromStdString(factory.str()),
                     Part::Feature::getClassTypeId()
                 );
-                PartGui::prepareModelingResultsForOperands({newObj}, {obj});
+                attempt.trackCreatedObject(*newObj);
                 commandResults.push_back(newObj);
                 auto* presentation = PartGui::resolveModelingPresentationObject(obj);
                 if (replacePresentation && presentation && presentation->Visibility.getValue()) {
@@ -426,17 +428,19 @@ static void _copyShape(
                 throw Base::RuntimeError("Copy did not create a result for every selected source");
             }
         }
-        PartGui::groupModelingCommandOutputs(commandResults);
-        if (!commandResults.empty() && !replacedPresentations.empty()
-            && PartGui::setModelingReplacedInputs(*commandResults.back(), replacedPresentations)) {
+        if (commandResults.empty()) {
+            throw Base::RuntimeError("Copy did not create a result");
+        }
+        attempt.markResultAsDesignDefinition(*commandResults.back());
+        if (!replacedPresentations.empty()) {
+            attempt.trackReplacedInputs(*commandResults.back(), replacedPresentations);
             for (auto* presentation : replacedPresentations) {
                 Gui::cmdAppObjectHide(presentation);
             }
         }
-        Gui::Command::commitCommand(tid);
+        attempt.commit();
     }
     catch (...) {
-        Gui::Command::abortCommand(tid);
         throw;
     }
     Gui::Command::updateActive();
@@ -601,10 +605,13 @@ void CmdPartRefineShape::activated(int iMsg)
         if (objs.empty()) {
             return;
         }
-        openCommand(QT_TRANSLATE_NOOP("Command", "Refine shape"));
         std::vector<App::DocumentObject*> commandResults;
         std::vector<App::DocumentObject*> replacedPresentations;
         try {
+            PartGui::ModelingTaskAttempt attempt(
+                *activeDocument,
+                QT_TRANSLATE_NOOP("Command", "Refine shape")
+            );
             for (auto* obj : objs) {
                 auto* presentation = PartGui::resolveModelingPresentationObject(obj);
                 const bool replacesPresentation = presentation && presentation->Visibility.getValue();
@@ -624,6 +631,7 @@ void CmdPartRefineShape::activated(int iMsg)
                     factory.toUtf8(),
                     Part::Refine::getClassTypeId()
                 );
+                attempt.trackCreatedObject(*newObj);
                 FCMD_OBJ_CMD(newObj, "Source = " << objT.getObjectPython());
                 FCMD_OBJ_CMD(newObj, "Label = " << objT.getObjectPython() << ".Label");
                 if (replacesPresentation) {
@@ -640,22 +648,20 @@ void CmdPartRefineShape::activated(int iMsg)
             if (commandResults.size() != objs.size()) {
                 throw Base::RuntimeError("Refine did not create every selected result");
             }
-            PartGui::groupModelingCommandOutputs(commandResults);
-            if (!commandResults.empty() && !replacedPresentations.empty()
-                && PartGui::setModelingReplacedInputs(*commandResults.back(), replacedPresentations)) {
+            attempt.markResultAsDesignDefinition(*commandResults.back());
+            if (!replacedPresentations.empty()) {
+                attempt.trackReplacedInputs(*commandResults.back(), replacedPresentations);
                 for (auto* presentation : replacedPresentations) {
                     Gui::cmdAppObjectHide(presentation);
                 }
             }
-            commitCommand();
+            attempt.commit();
         }
         catch (Base::Exception& e) {
-            abortCommand();
             e.reportException();
             return;
         }
         catch (...) {
-            abortCommand();
             throw;
         }
         updateActive();
@@ -704,11 +710,14 @@ void CmdPartDefeaturing::activated(int iMsg)
     if (objs.empty()) {
         return;
     }
-    openCommand(QT_TRANSLATE_NOOP("Command", "Defeaturing"));
     std::vector<App::DocumentObject*> commandResults;
     std::vector<App::DocumentObject*> replacedPresentations;
-    for (auto it = objs.begin(); it != objs.end(); ++it) {
-        try {
+    try {
+        PartGui::ModelingTaskAttempt attempt(
+            *activeDocument,
+            QT_TRANSLATE_NOOP("Command", "Defeaturing")
+        );
+        for (auto it = objs.begin(); it != objs.end(); ++it) {
             auto* presentation =
                 PartGui::resolveModelingPresentationObject(
                     it->getObject()
@@ -774,15 +783,12 @@ void CmdPartDefeaturing::activated(int iMsg)
                 factory.toUtf8(),
                 Part::Feature::getClassTypeId()
             );
+            attempt.trackCreatedObject(*result);
             FCMD_OBJ_CMD(
                 result,
                 "Shape = "
                     << Gui::Command::getObjectCmd(it->getObject())
                     << ".Shape.defeaturing([" << faces << "])"
-            );
-            PartGui::prepareModelingResultsForOperands(
-                {result},
-                {it->getObject()}
             );
             if (replacesPresentation) {
                 if (std::ranges::find(
@@ -795,43 +801,34 @@ void CmdPartDefeaturing::activated(int iMsg)
             }
             commandResults.push_back(result);
         }
-        catch (const Base::Exception& e) {
-            Base::Console().warning(
-                "%s: %s\n",
-                it->getFeatName(),
-                e.what()
-            );
-            abortCommand();
-            return;
-        }
-        catch (...) {
-            abortCommand();
-            throw;
-        }
-    }
-    try {
         updateDocument(activeDocument);
         for (auto* result : commandResults) {
             PartGui::TaskResultValidation::validatePartResult(result);
         }
-        PartGui::groupModelingCommandOutputs(commandResults);
-        if (!commandResults.empty()
-            && !replacedPresentations.empty()
-            && PartGui::setModelingReplacedInputs(
+        if (commandResults.size() != objs.size()) {
+            throw Base::RuntimeError(
+                "Defeaturing did not create every selected result"
+            );
+        }
+        attempt.markResultAsDesignDefinition(*commandResults.back());
+        if (!replacedPresentations.empty()) {
+            attempt.trackReplacedInputs(
                 *commandResults.back(),
                 replacedPresentations
-            )) {
+            );
             for (auto* presentation : replacedPresentations) {
                 Gui::cmdAppObjectHide(presentation);
             }
         }
+        attempt.commit();
     }
     catch (Base::Exception& e) {
-        abortCommand();
         e.reportException();
         return;
     }
-    commitCommand();
+    catch (...) {
+        throw;
+    }
     updateActive();
 }
 

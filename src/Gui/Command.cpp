@@ -23,20 +23,26 @@
 #include <Inventor/SbSphere.h>
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
 #include <Inventor/nodes/SoOrthographicCamera.h>
+#include <algorithm>
+#include <ranges>
 #include <sstream>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
 #include <QKeySequence>
+#include <QMetaType>
 #include <QMessageBox>
+#include <QVariant>
 
 #include <boost/algorithm/string/replace.hpp>
 
 #include <FCConfig.h>
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
+#include <App/PropertyStandard.h>
 #include <App/Transactions.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -75,6 +81,64 @@ using Base::Interpreter;
 using namespace Gui;
 using namespace Gui::Dialog;
 using namespace Gui::DockWnd;
+
+ApprovedDocumentTimelineCommand Gui::approvedDocumentTimelineCommand(
+    App::DocumentObject* operation,
+    const char* commandProperty,
+    const char* actionCapability,
+    bool requireActive
+)
+{
+    if (!operation || !commandProperty || !commandProperty[0]
+        || !actionCapability || !actionCapability[0]
+        || !operation->isAttachedToDocument()
+        || !operation->getDocument()
+        || !operation->getDocument()->containsObject(operation)
+        || !App::DocumentTimeline::hasTimelineOperationRole(operation)
+        || !Gui::Application::Instance) {
+        return {};
+    }
+
+    const auto* property = dynamic_cast<const App::PropertyString*>(
+        operation->getPropertyByName(commandProperty)
+    );
+    const std::string commandName = property ? property->getValue() : "";
+    const auto asciiLetter = [](char character) {
+        return (character >= 'A' && character <= 'Z')
+            || (character >= 'a' && character <= 'z');
+    };
+    if (commandName.empty() || commandName.size() > 128
+        || !asciiLetter(commandName.front())
+        || !std::ranges::all_of(
+            commandName,
+            [asciiLetter](char character) {
+                return asciiLetter(character)
+                    || (character >= '0' && character <= '9')
+                    || character == '_';
+            }
+        )) {
+        return {};
+    }
+
+    auto* command =
+        Gui::Application::Instance->commandManager().getCommandByName(
+            commandName.c_str()
+        );
+    if (!command) {
+        return {};
+    }
+    command->initAction();
+    auto* action = command->getAction();
+    auto* qtAction = action ? action->action() : nullptr;
+    const QVariant capability =
+        qtAction ? qtAction->property(actionCapability) : QVariant {};
+    if (!qtAction || capability.userType() != QMetaType::Bool
+        || !capability.toBool()
+        || (requireActive && !command->canInvoke())) {
+        return {};
+    }
+    return {commandName, command};
+}
 
 /** \defgroup commands Command Framework
     \ingroup GUI

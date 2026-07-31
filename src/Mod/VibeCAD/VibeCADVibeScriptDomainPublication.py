@@ -73,7 +73,7 @@ _ASSEMBLY_FASTENER_SOURCE_SUFFIX = "__fastener_source"
 _ASSEMBLY_FASTENER_SOURCE_OUTPUT_TYPE = "standard_fastener_source"
 
 _TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN = {
-    "partdesign": "native_body_history",
+    "partdesign": "design_program_operation",
     "sketcher": "public_outputs",
     "part": "public_outputs",
     "draft": "public_outputs",
@@ -318,6 +318,40 @@ def _make_timeline_property_internal(obj: Any, name: str) -> None:
         )
     setter(name, ("Hidden", "LockDynamic", "NoRecompute"))
     _hide_property(obj, name)
+
+
+def _set_partdesign_program_history_commands(operation: Any) -> None:
+    """Bind one global program operation to exact source lifecycle commands."""
+
+    commands = {
+        "VibeCADTimelineEditCommand": (
+            "VibeCAD_EditScriptedModel",
+            "Approved command which edits this VibeScript program.",
+        ),
+        "VibeCADTimelineDeleteCommand": (
+            "VibeCAD_DeleteScriptedModel",
+            "Approved command which deletes this VibeScript program.",
+        ),
+    }
+    for name, (command, description) in commands.items():
+        if name in _properties(operation):
+            if operation.getTypeIdOfProperty(name) != "App::PropertyString":
+                raise RuntimeError(
+                    "A VibeScript History operation has incompatible command "
+                    "metadata."
+                )
+        else:
+            operation.addProperty(
+                "App::PropertyString",
+                name,
+                "Timeline",
+                description,
+                attr=16,
+                hidden=True,
+                locked=True,
+            )
+        setattr(operation, name, command)
+        _make_timeline_property_internal(operation, name)
 
 
 def compact_persisted_input_snapshots(doc: Any) -> dict[str, Any]:
@@ -12965,7 +12999,17 @@ def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
     bodies: dict[tuple[str, str], list[Any]] = {}
     publications: dict[tuple[str, str], list[Any]] = {}
     publication_targets: dict[tuple[str, str], list[Any]] = {}
+    program_operations: list[Any] = []
     for obj in list(getattr(doc, "Objects", []) or []):
+        if (
+            str(getattr(obj, "TypeId", "") or "")
+            == "PartDesign::DesignScriptOperation"
+            and str(
+                getattr(obj, scripted_publication.PROP_ROLE, "") or ""
+            )
+            == scripted_publication.ROLE_IMPLEMENTATION
+        ):
+            program_operations.append(obj)
         if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body":
             identity = _partdesign_presentation_identity(
                 obj,
@@ -12988,6 +13032,21 @@ def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
             publication_targets.setdefault(target_identity, []).append(obj)
 
     changed_objects: set[str] = set()
+    for operation in program_operations:
+        before = {
+            name: str(getattr(operation, name, "") or "")
+            for name in (
+                "VibeCADTimelineEditCommand",
+                "VibeCADTimelineDeleteCommand",
+            )
+        }
+        _set_partdesign_program_history_commands(operation)
+        if before != {
+            name: str(getattr(operation, name, "") or "")
+            for name in before
+        }:
+            changed_objects.add(str(operation.Name))
+
     # Private detached-shape carriers are never a human viewport result. Hide
     # every explicitly tagged target, including orphaned or duplicate targets
     # that cannot be paired unambiguously with a publication. Their document
@@ -13035,6 +13094,33 @@ def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
         publication = publication_matches[0]
         body_name = str(getattr(body, "Name", "") or "")
         publication_name = str(getattr(publication, "Name", "") or "")
+        body_tip = getattr(body, "Tip", None)
+        if (
+            str(getattr(body_tip, "TypeId", "") or "")
+            == "PartDesign::DesignBodyPublication"
+        ):
+            # A global Design Body is already the stable viewport result. Its
+            # Tip publishes one exact Body-state chain and the VibeScript
+            # App::Link remains only the source program's compatibility
+            # boundary. Relinking that App::Link through the old program
+            # container would recreate legacy Body/container ownership and
+            # make the saved graph differ from the graph which was accepted.
+            body_visible = bool(
+                getattr(
+                    getattr(body, "ViewObject", None),
+                    "Visibility",
+                    False,
+                )
+            )
+            _copy_native_body_presentation(publication, body)
+            if _configure_partdesign_history_presentation(
+                body,
+                visible=body_visible,
+            ):
+                changed_objects.add(body_name)
+            if _set_view_visibility(publication, False):
+                changed_objects.add(publication_name)
+            continue
         if _link_publication_to_native_body(publication, body):
             changed_objects.add(publication_name)
         current_schema = str(
@@ -13846,7 +13932,537 @@ def _replace_partdesign_timeline_segments(
             )
 
 
-def _publish_partdesign_candidate(
+def _partdesign_design_program_operation(
+    doc: Any,
+    program_id: str,
+) -> Any | None:
+    matches = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(getattr(obj, "TypeId", "") or "")
+        == "PartDesign::DesignScriptOperation"
+        and str(getattr(obj, "ProgramId", "") or "") == program_id
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Multiple Design History operations claim VibeScript program "
+            f"{program_id!r}."
+        )
+    return matches[0] if matches else None
+
+
+def _partdesign_implementation_bodies(
+    doc: Any,
+    program_id: str,
+) -> dict[str, Any]:
+    bodies: dict[str, Any] = {}
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if (
+            str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body"
+            or scripted_publication.role_of(obj)
+            != scripted_publication.ROLE_IMPLEMENTATION
+            or str(
+                getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
+            )
+            != "vibescript:partdesign"
+            or str(
+                getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+            )
+            != program_id
+        ):
+            continue
+        key = str(
+            getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ).strip()
+        if not key:
+            raise RuntimeError(
+                f"Managed Part Design Body {obj.Name!r} has no output key."
+            )
+        if key in bodies:
+            raise RuntimeError(
+                f"Multiple managed Part Design Bodies claim output {key!r}."
+            )
+        bodies[key] = obj
+    return bodies
+
+
+def _partdesign_body_output(item: Mapping[str, Any]) -> bool:
+    data = item.get("partdesign_data")
+    return (
+        isinstance(data, Mapping)
+        and str(data.get("representation") or "") == "body"
+        and str(item.get("type") or "") == "solid"
+    )
+
+
+def _publish_partdesign_design_candidate(
+    service: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+    doc: Any,
+) -> dict[str, Any]:
+    """Publish one complete program as one Design-global History operation."""
+
+    import PartDesign
+
+    items = [dict(item) for item in list(validated["outputs"])]
+    if not items:
+        raise RuntimeError(
+            "A Part Design VibeScript program must publish at least one output."
+        )
+    body_items = [item for item in items if _partdesign_body_output(item)]
+    program_id = str(prepared["program_id"])
+    revision = str(prepared["revision"])
+    root = _partdesign_program_root(doc, program_id)
+    publications = (
+        _partdesign_publications(doc, root, program_id)
+        if root is not None
+        else {}
+    )
+    operation = _partdesign_design_program_operation(doc, program_id)
+    legacy_bodies = _partdesign_implementation_bodies(doc, program_id)
+
+    previous_presentation = {
+        name: _preflight_partdesign_presentation(obj)
+        for name, obj in publications.items()
+    }
+    for item in items:
+        output_name = str(item["name"])
+        published = publications.get(output_name)
+        if published is None:
+            continue
+        presentation = item.get("partdesign_presentation")
+        if not isinstance(presentation, Mapping):
+            raise RuntimeError(
+                f"Part Design output {output_name!r} has no validated "
+                "presentation state."
+            )
+        desired_channels = _partdesign_presentation_channels(presentation)
+        if not desired_channels:
+            continue
+        for candidate in list(getattr(doc, "Objects", []) or []):
+            if (
+                str(
+                    getattr(
+                        candidate,
+                        contracts.PROP_PROGRAM_DOMAIN,
+                        "",
+                    )
+                    or ""
+                )
+                != "material"
+                or getattr(candidate, PROP_MATERIAL_TARGET, None)
+                is not published
+            ):
+                continue
+            ownership = _material_ownership(candidate)
+            if str(ownership.get("channel") or "") in desired_channels:
+                raise RuntimeError(
+                    f"Part Design output {output_name!r} cannot replace a "
+                    "presentation channel owned by a Material program."
+                )
+
+    previous_interfaces: dict[str, Any] = {}
+    if root is not None:
+        try:
+            previous_interfaces = json.loads(
+                str(
+                    getattr(
+                        root,
+                        scripted_publication.PROP_INTERFACES,
+                        "{}",
+                    )
+                    or "{}"
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Part Design program {program_id} has invalid interface "
+                f"metadata: {exc}"
+            ) from exc
+        if not isinstance(previous_interfaces, dict):
+            raise RuntimeError(
+                f"Part Design program {program_id} has a non-object "
+                "interface table."
+            )
+
+    existing_values = list(publications.values())
+    reference_preflight = (
+        reference_contracts.preflight_regeneration(
+            service,
+            existing_values,
+            model_root=root,
+        )
+        if root is not None and existing_values
+        else None
+    )
+    desired = {str(item["name"]) for item in items}
+    retired_names = sorted(set(publications) - desired)
+    for name in retired_names:
+        uses = scripted_publication.external_reference_uses(
+            doc,
+            [publications[name]],
+            internal_objects=(
+                [root, *existing_values]
+                if root is not None
+                else existing_values
+            ),
+        )
+        if uses:
+            raise _reference_error(
+                f"Cannot retire Part Design VibeScript output {name!r} "
+                "while downstream objects reference it",
+                uses,
+            )
+
+    # Older documents stored each accepted worker feature graph in a generated
+    # Body under the program root. Replace that implementation exactly once;
+    # stable public links remain the downstream compatibility boundary.
+    legacy_objects: list[Any] = []
+    if operation is None:
+        for body in legacy_bodies.values():
+            for obj in [
+                body,
+                *list(getattr(body, "OutListRecursive", []) or []),
+            ]:
+                if obj not in legacy_objects:
+                    legacy_objects.append(obj)
+    legacy_deletion = _prepare_timeline_deletion(doc, legacy_objects)
+    legacy_targets = list(legacy_deletion["delete_objects"])
+    legacy_uses = _external_uses(
+        doc,
+        legacy_targets,
+        [
+            *legacy_targets,
+            *existing_values,
+            *([root] if root is not None else []),
+        ],
+    )
+    if legacy_uses:
+        raise _reference_error(
+            "Cannot migrate generated Part Design history while foreign "
+            "objects reference its private implementation; reference the "
+            "stable published output instead",
+            legacy_uses,
+        )
+
+    rollback_targets: dict[int, Any] = {}
+    for obj in publications.values():
+        rollback_targets[id(obj)] = obj
+        implementation = scripted_publication.publication_target(obj, root)
+        rollback_targets[id(implementation)] = implementation
+    rollback_states = [
+        _material_target_snapshot(obj)
+        for obj in rollback_targets.values()
+    ]
+
+    transaction_open = False
+    created: list[str] = []
+    removed: list[str] = []
+    removed_implementation: list[str] = []
+    created_bodies: list[str] = []
+    try:
+        if hasattr(doc, "openTransaction"):
+            doc.openTransaction(
+                f"Publish Part Design VibeScript: "
+                f"{prepared['program_name']}"
+            )
+            transaction_open = True
+        if root is None:
+            root = doc.addObject(
+                "App::Part",
+                _internal_name(prepared, "Program"),
+            )
+            if root is None:
+                raise RuntimeError(
+                    "FreeCAD did not create the Part Design program metadata "
+                    "object."
+                )
+            created.append(str(root.Name))
+        root.Label = str(prepared["program_name"])
+        _tag_partdesign_root(root, prepared)
+
+        for name in retired_names:
+            removed.extend(
+                scripted_publication.delete_publication(
+                    doc,
+                    root,
+                    publications.pop(name),
+                )
+            )
+        if legacy_targets:
+            removed_implementation.extend(
+                _remove_timeline_deletion(doc, legacy_deletion)
+            )
+
+        if operation is None:
+            operation = doc.addObject(
+                "PartDesign::DesignScriptOperation",
+                _internal_name(prepared, "ProgramOperation"),
+            )
+            if operation is None:
+                raise RuntimeError(
+                    "FreeCAD did not create the Design VibeScript History "
+                    "operation."
+                )
+            created.append(str(operation.Name))
+        operation.Label = str(prepared["program_name"])
+        _set_partdesign_program_history_commands(operation)
+
+        output_keys = [str(item["name"]) for item in body_items]
+        output_labels = [
+            str(
+                dict(item.get("partdesign_data") or {}).get(
+                    "body_label"
+                )
+                or item["name"]
+            )
+            for item in body_items
+        ]
+        before_body_names = {
+            str(obj.Name)
+            for obj in list(getattr(doc, "Objects", []) or [])
+            if str(getattr(obj, "TypeId", "") or "")
+            == "PartDesign::Body"
+        }
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        PartDesign.setDesignScriptOutputs(
+            edit,
+            str(root.Name),
+            program_id,
+            revision,
+            output_keys,
+            output_labels,
+            [item["detached_shape"] for item in body_items],
+            [None] * len(body_items),
+            [str(item["name"]) for item in items],
+            [str(item["type"]) for item in items],
+        )
+        bodies = list(PartDesign.finalizeDesignOperationEdit(edit))
+        if len(bodies) != len(body_items):
+            raise RuntimeError(
+                "The Design VibeScript operation did not publish one Body per "
+                "api.body output."
+            )
+        created_bodies = [
+            str(body.Name)
+            for body in bodies
+            if str(body.Name) not in before_body_names
+        ]
+        scripted_publication.tag_object(
+            operation,
+            role=scripted_publication.ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id=program_id,
+            revision=revision,
+        )
+
+        bodies_by_output = {
+            str(item["name"]): body
+            for item, body in zip(body_items, bodies)
+        }
+        for item in items:
+            name = str(item["name"])
+            output_type = str(item["type"])
+            body = bodies_by_output.get(name)
+            if body is not None:
+                scripted_publication.tag_object(
+                    body,
+                    role=scripted_publication.ROLE_IMPLEMENTATION,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=revision,
+                )
+            carrier = _PartDesignShapeCarrier(item)
+            published = publications.get(name)
+            if published is None:
+                published = scripted_publication.create_publication(
+                    doc,
+                    root,
+                    carrier,
+                    internal_name=_internal_name(prepared, name),
+                    label=carrier.Label,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=revision,
+                )
+                publications[name] = published
+                created.append(str(published.Name))
+                for rollback_target in (
+                    published,
+                    scripted_publication.publication_target(
+                        published,
+                        root,
+                    ),
+                ):
+                    if id(rollback_target) in rollback_targets:
+                        continue
+                    rollback_targets[id(rollback_target)] = rollback_target
+                    rollback_states.append(
+                        _material_target_snapshot(rollback_target)
+                    )
+            else:
+                _restore_partdesign_presentation_baseline(
+                    published,
+                    previous_presentation.get(name),
+                )
+                scripted_publication.tag_object(
+                    published,
+                    role=scripted_publication.ROLE_PUBLICATION,
+                    engine="vibescript:partdesign",
+                    model_id=program_id,
+                    output_key=name,
+                    revision=revision,
+                )
+                scripted_publication.update_publication(
+                    published,
+                    root,
+                    carrier,
+                    revision=revision,
+                )
+                published.Label = carrier.Label
+            _set_metadata(
+                published,
+                prepared,
+                name,
+                output_type,
+                _definition(item),
+            )
+            _configure_partdesign_presentation(published, item)
+            if body is not None:
+                _copy_native_body_presentation(published, body)
+                _configure_partdesign_history_presentation(
+                    body,
+                    visible=True,
+                )
+                _set_view_visibility(published, False)
+            else:
+                # Non-solid outputs retain the stable publication as their
+                # sole viewport result. They belong to the same source
+                # operation but intentionally have no physical Body identity.
+                _set_view_visibility(published, True)
+
+        interface_table = _partdesign_interface_table(
+            validated,
+            publications,
+        )
+        reference_contracts.validate_removed_interfaces(
+            doc,
+            list(publications.values()),
+            program_id,
+            set(previous_interfaces),
+            set(interface_table),
+            preflight=reference_preflight,
+        )
+        setattr(
+            root,
+            scripted_publication.PROP_INTERFACES,
+            json.dumps(
+                interface_table,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        )
+        downstream = reference_contracts.refresh_after_publication(
+            service,
+            program_id,
+            list(publications.values()),
+            revision=revision,
+            preflight=reference_preflight,
+        )
+        if hasattr(doc, "commitTransaction") and transaction_open:
+            doc.commitTransaction()
+            transaction_open = False
+    except Exception as publication_error:
+        rollback_error = None
+        try:
+            _restore_material_target_snapshots(rollback_states)
+        except Exception as exc:
+            rollback_error = exc
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            try:
+                doc.abortTransaction()
+            except Exception:
+                pass
+        if rollback_error is not None:
+            raise RuntimeError(
+                f"{publication_error} Explicit Part Design presentation "
+                f"rollback failed: {rollback_error}"
+            ) from publication_error
+        raise
+
+    live_outputs: dict[str, Any] = {}
+    output_rows: list[dict[str, Any]] = []
+    body_objects = {
+        str(item["name"]): str(body.Name)
+        for item, body in zip(body_items, bodies)
+    }
+    for item in items:
+        name = str(item["name"])
+        output_type = str(item["type"])
+        published = publications[name]
+        row = {
+            "object_name": str(published.Name),
+            "label": str(published.Label),
+            "type_id": str(published.TypeId),
+            "output_type": output_type,
+            "facts": dict(item.get("facts") or {}),
+            "partdesign_data": dict(item.get("partdesign_data") or {}),
+            "derived_state": str(
+                getattr(
+                    published,
+                    reference_contracts.PROP_DERIVED_STATE,
+                    "",
+                )
+                or ""
+            ),
+            "stale_reason": str(
+                getattr(
+                    published,
+                    reference_contracts.PROP_STALE_REASON,
+                    "",
+                )
+                or ""
+            ),
+            "source_revision": str(
+                getattr(
+                    published,
+                    reference_contracts.PROP_SOURCE_REVISION,
+                    "",
+                )
+                or ""
+            ),
+        }
+        live_outputs[name] = row
+        output_rows.append({"name": name, **row})
+    return {
+        "ok": True,
+        "outputs": output_rows,
+        "live_outputs": live_outputs,
+        "interfaces": interface_table,
+        "created_objects": created,
+        "retired_objects": removed,
+        "native_history": {
+            "available": True,
+            "strategy": "design_program_operation",
+            "operation_object": str(operation.Name),
+            "body_objects": body_objects,
+            "created_objects": created_bodies,
+            "retired_objects": removed_implementation,
+            "artifact_sha256": "",
+        },
+        "downstream_references": downstream,
+        "recompute_deferred": True,
+        "stdout": str(validated.get("stdout") or ""),
+        "budget": dict(validated.get("budget") or {}),
+    }
+
+
+def _publish_partdesign_legacy_candidate(
     service: Any,
     prepared: Mapping[str, Any],
     validated: Mapping[str, Any],
@@ -14204,6 +14820,25 @@ def _publish_partdesign_candidate(
         "stdout": str(validated.get("stdout") or ""),
         "budget": dict(validated.get("budget") or {}),
     }
+
+
+def _publish_partdesign_candidate(
+    service: Any,
+    prepared: Mapping[str, Any],
+    validated: Mapping[str, Any],
+    doc: Any,
+) -> dict[str, Any]:
+    outputs = list(validated.get("outputs") or [])
+    if not outputs:
+        raise RuntimeError(
+            "A Part Design VibeScript program must publish at least one output."
+        )
+    return _publish_partdesign_design_candidate(
+        service,
+        prepared,
+        validated,
+        doc,
+    )
 
 
 def publish_candidate(
@@ -15299,6 +15934,111 @@ def _delete_techdraw_program(
     }
 
 
+def _delete_partdesign_design_program(
+    doc: Any,
+    prepared: Mapping[str, Any],
+    root: Any,
+    operation: Any,
+) -> dict[str, Any]:
+    """Delete one global VibeScript operation and every owned Body output."""
+
+    import PartDesign
+
+    program_id = str(prepared["program_id"])
+    publications = _partdesign_publications(doc, root, program_id)
+    body_ids = {
+        str(value)
+        for value in list(getattr(operation, "OutputBodyIds", []) or [])
+    }
+    bodies = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body"
+        and str(getattr(obj, "VibeCADBodyId", "") or "") in body_ids
+    ]
+    if len(bodies) != len(body_ids):
+        raise RuntimeError(
+            "The VibeScript Design operation lost one of its persistent "
+            "Body outputs."
+        )
+    states = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if getattr(obj, "Operation", None) is operation
+        and str(getattr(obj, "TypeId", "") or "")
+        == "PartDesign::DesignBodyState"
+    ]
+    private_objects = [
+        root,
+        *list(getattr(root, "OutListRecursive", []) or []),
+        *publications.values(),
+        operation,
+        *states,
+        *bodies,
+        *[
+            child
+            for body in bodies
+            for child in list(
+                getattr(body, "OutListRecursive", []) or []
+            )
+        ],
+    ]
+    internal: list[Any] = []
+    internal_ids: set[int] = set()
+    for obj in private_objects:
+        if id(obj) not in internal_ids:
+            internal.append(obj)
+            internal_ids.add(id(obj))
+    external = _external_uses(doc, internal, internal)
+    if external:
+        raise _reference_error(
+            "Cannot delete this Part Design VibeScript program while "
+            "downstream objects reference its publications or Bodies",
+            external,
+        )
+
+    deleted = [
+        {
+            "object_name": str(obj.Name),
+            "label": str(obj.Label),
+            "type_id": str(obj.TypeId),
+            "output_name": str(name),
+        }
+        for name, obj in publications.items()
+    ]
+    transaction_open = False
+    try:
+        if hasattr(doc, "openTransaction"):
+            doc.openTransaction("Delete Part Design VibeScript program")
+            transaction_open = True
+        for published in list(publications.values()):
+            scripted_publication.delete_publication(
+                doc,
+                root,
+                published,
+            )
+        PartDesign.removeDesignOperation(operation)
+        for child in reversed(list(getattr(root, "Group", []) or [])):
+            child_name = str(getattr(child, "Name", "") or "")
+            if child_name and doc.getObject(child_name) is not None:
+                doc.removeObject(child_name)
+        root_name = str(root.Name)
+        if doc.getObject(root_name) is not None:
+            doc.removeObject(root_name)
+        if hasattr(doc, "commitTransaction") and transaction_open:
+            doc.commitTransaction()
+            transaction_open = False
+    except Exception:
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            doc.abortTransaction()
+        raise
+    return {
+        "ok": True,
+        "deleted_objects": deleted,
+        "recompute_deferred": True,
+    }
+
+
 def _delete_partdesign_program(
     doc: Any,
     prepared: Mapping[str, Any],
@@ -15307,6 +16047,14 @@ def _delete_partdesign_program(
     root = _partdesign_program_root(doc, program_id)
     if root is None:
         return {"ok": True, "deleted_objects": [], "recompute_deferred": True}
+    operation = _partdesign_design_program_operation(doc, program_id)
+    if operation is not None:
+        return _delete_partdesign_design_program(
+            doc,
+            prepared,
+            root,
+            operation,
+        )
     publications = _partdesign_publications(doc, root, program_id)
     internal = [
         root,
@@ -15390,7 +16138,8 @@ def _delete_partdesign_program(
 
 
 def delete_live_program(service: Any, prepared: Mapping[str, Any]) -> dict[str, Any]:
-    _surface_still_matches(service, prepared)
+    if not bool(prepared.get("history_lifecycle")):
+        _surface_still_matches(service, prepared)
     doc = service._active_document()
     if doc is None or str(getattr(doc, "Name", "") or "") != prepared["document_name"]:
         raise RuntimeError("The active document changed before deletion.")

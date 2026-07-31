@@ -71,6 +71,7 @@ public:
     void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
     bool isActiveBody();
     void toggleActiveBody();
+    App::DocumentObject* documentTimelineOperationDeleteTarget() const override;
 
     std::vector<std::string> getDisplayModes() const override;
     void setDisplayMode(const char* ModeName) override;

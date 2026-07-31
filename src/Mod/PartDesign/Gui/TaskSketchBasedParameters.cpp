@@ -69,8 +69,11 @@ const QString TaskSketchBasedParameters::onAddSelection(
 {
     // Note: The validity checking has already been done in ReferenceSelection.cpp
     auto sketchBased = getObject<PartDesign::ProfileBased>();
-    App::DocumentObject* selObj = sketchBased->getDocument()->getObject(msg.pObjectName);
-    if (selObj == sketchBased) {
+    App::DocumentObject* selObj = resolveModelingReference(
+        sketchBased,
+        sketchBased->getDocument()->getObject(msg.pObjectName)
+    );
+    if (!selObj || selObj == sketchBased) {
         return QString();
     }
 

@@ -66,6 +66,8 @@ public:
     {
         return false;
     }
+    bool supportsDocumentTimelineOperationDelete() const noexcept override;
+    bool prepareDocumentTimelineOperationDelete() override;
     void onChanged(const App::Property* prop) override;
 
     Gui::ViewProvider* startEditing(int ModNum) override;

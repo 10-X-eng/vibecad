@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <App/Application.h>
@@ -17,12 +18,14 @@
 #include <App/DocumentObject.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/GroupExtension.h>
+#include <App/Link.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/ActiveObjectList.h>
 #include <Gui/Application.h>
+#include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/ExactTransaction.h>
 #include <Gui/Macro.h>
@@ -269,18 +272,266 @@ void groupModelingCommandOutputs(const std::vector<App::DocumentObject*>& output
 
 App::DocumentObject* resolveModelingObject(App::DocumentObject* object)
 {
+    if (!object) {
+        return nullptr;
+    }
     if (auto* body = freecad_cast<Part::BodyBase*>(object)) {
-        return body->Tip.getValue();
+        return body->getModelingState();
+    }
+    auto* owner = freecad_cast<Part::BodyBase*>(
+        App::GeoFeatureGroupExtension::getGroupOfObject(object)
+    );
+    if (owner && owner->getModelingPresentation() == object) {
+        return owner->getModelingState();
     }
     return object;
 }
 
 const App::DocumentObject* resolveModelingObject(const App::DocumentObject* object)
 {
+    if (!object) {
+        return nullptr;
+    }
     if (auto* body = freecad_cast<const Part::BodyBase*>(object)) {
-        return body->Tip.getValue();
+        return body->getModelingState();
+    }
+    const auto* owner = freecad_cast<const Part::BodyBase*>(
+        App::GeoFeatureGroupExtension::getGroupOfObject(object)
+    );
+    if (owner && owner->getModelingPresentation() == object) {
+        return owner->getModelingState();
     }
     return object;
+}
+
+namespace
+{
+const Part::BodyBase*
+bodyContainingExactModelingState(const App::DocumentObject* object) noexcept
+{
+    try {
+        if (!object || !object->getDocument()) {
+            return nullptr;
+        }
+
+        const Part::BodyBase* result = nullptr;
+        for (auto* candidate :
+             object->getDocument()->getObjectsOfType<Part::BodyBase>()) {
+            if (!candidate || !candidate->containsModelingState(object)) {
+                continue;
+            }
+            if (result && result != candidate) {
+                return nullptr;
+            }
+            result = candidate;
+        }
+        return result;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+const Part::BodyBase* uniqueBodyInGroup(const App::DocumentObject* object) noexcept
+{
+    try {
+        auto* extension =
+            object ? object->getExtensionByType<App::GroupExtension>() : nullptr;
+        if (!extension) {
+            return nullptr;
+        }
+
+        const Part::BodyBase* result = nullptr;
+        std::set<const App::DocumentObject*> visited;
+        std::vector<const App::DocumentObject*> pending;
+        pending.reserve(extension->getObjects().size());
+        pending.insert(
+            pending.end(),
+            extension->getObjects().begin(),
+            extension->getObjects().end()
+        );
+        while (!pending.empty()) {
+            const auto* candidate = pending.back();
+            pending.pop_back();
+            if (!candidate || !visited.insert(candidate).second) {
+                continue;
+            }
+            if (const auto* body = freecad_cast<const Part::BodyBase*>(candidate)) {
+                if (result && result != body) {
+                    return nullptr;
+                }
+                result = body;
+                continue;
+            }
+            if (auto* childGroup = candidate->getExtensionByType<App::GroupExtension>()) {
+                pending.insert(
+                    pending.end(),
+                    childGroup->getObjects().begin(),
+                    childGroup->getObjects().end()
+                );
+            }
+        }
+        return result;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+const App::DocumentObject* linkedModelingObject(const App::DocumentObject* object) noexcept
+{
+    try {
+        const auto* linked = object ? object->getLinkedObject(true) : nullptr;
+        return linked && linked != object ? linked : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+}  // namespace
+
+Part::BodyBase* findModelingBody(App::DocumentObject* object) noexcept
+{
+    return const_cast<Part::BodyBase*>(
+        findModelingBody(static_cast<const App::DocumentObject*>(object))
+    );
+}
+
+const Part::BodyBase* findModelingBody(const App::DocumentObject* object) noexcept
+{
+    if (!object) {
+        return nullptr;
+    }
+    if (const auto* body = freecad_cast<const Part::BodyBase*>(object)) {
+        return body;
+    }
+    if (const auto* owner = freecad_cast<const Part::BodyBase*>(
+            App::GeoFeatureGroupExtension::getGroupOfObject(object)
+        )) {
+        return owner;
+    }
+    if (const auto* body = bodyContainingExactModelingState(object)) {
+        return body;
+    }
+
+    if (const auto* linked = linkedModelingObject(object)) {
+        if (const auto* body = freecad_cast<const Part::BodyBase*>(linked)) {
+            return body;
+        }
+        if (const auto* owner = freecad_cast<const Part::BodyBase*>(
+                App::GeoFeatureGroupExtension::getGroupOfObject(linked)
+            )) {
+            return owner;
+        }
+        if (const auto* body = bodyContainingExactModelingState(linked)) {
+            return body;
+        }
+        if (const auto* body = uniqueBodyInGroup(linked)) {
+            return body;
+        }
+    }
+    return uniqueBodyInGroup(object);
+}
+
+App::DocumentObject*
+resolveModelingObjectForBody(App::DocumentObject* object, const Part::BodyBase* body) noexcept
+{
+    return const_cast<App::DocumentObject*>(resolveModelingObjectForBody(
+        static_cast<const App::DocumentObject*>(object),
+        body,
+        body ? body->getModelingState() : nullptr
+    ));
+}
+
+const App::DocumentObject* resolveModelingObjectForBody(
+    const App::DocumentObject* object,
+    const Part::BodyBase* body
+) noexcept
+{
+    return resolveModelingObjectForBody(
+        object,
+        body,
+        body ? body->getModelingState() : nullptr
+    );
+}
+
+App::DocumentObject* resolveModelingObjectForBody(
+    App::DocumentObject* object,
+    const Part::BodyBase* body,
+    App::DocumentObject* bodyResult
+) noexcept
+{
+    return const_cast<App::DocumentObject*>(resolveModelingObjectForBody(
+        static_cast<const App::DocumentObject*>(object),
+        body,
+        static_cast<const App::DocumentObject*>(bodyResult)
+    ));
+}
+
+const App::DocumentObject* resolveModelingObjectForBody(
+    const App::DocumentObject* object,
+    const Part::BodyBase* body,
+    const App::DocumentObject* bodyResult
+) noexcept
+{
+    if (!object) {
+        return nullptr;
+    }
+
+    const auto* ordinary = resolveModelingObject(object);
+    if (!body || findModelingBody(object) != body) {
+        return ordinary;
+    }
+
+    if (object == body
+        || object->hasExtension(App::GroupExtension::getExtensionClassTypeId())) {
+        return bodyResult;
+    }
+
+    const auto* linked = linkedModelingObject(object);
+    if (!linked) {
+        return ordinary;
+    }
+    if (linked == body) {
+        return bodyResult;
+    }
+    if (linked->hasExtension(App::GroupExtension::getExtensionClassTypeId())
+        && findModelingBody(linked) == body) {
+        return bodyResult;
+    }
+    return findModelingBody(linked) == body ? resolveModelingObject(linked) : ordinary;
+}
+
+void resolveModelingReferencesForBody(
+    App::PropertyLinkSubList& references,
+    const Part::BodyBase* body
+)
+{
+    if (!body) {
+        return;
+    }
+
+    std::vector<App::PropertyLinkSubList::SubSet> normalized;
+    for (const auto& [object, subElements] : references.getSubListValues()) {
+        auto* resolved = resolveModelingObjectForBody(object, body);
+        if (!resolved || resolved == body) {
+            continue;
+        }
+
+        auto existing = std::ranges::find(normalized, resolved, [](const auto& item) {
+            return item.first;
+        });
+        if (existing == normalized.end()) {
+            normalized.emplace_back(resolved, subElements);
+            continue;
+        }
+        for (const auto& subElement : subElements) {
+            if (std::ranges::find(existing->second, subElement) == existing->second.end()) {
+                existing->second.push_back(subElement);
+            }
+        }
+    }
+    references.setSubListValues(normalized);
 }
 
 namespace
@@ -306,17 +557,29 @@ bool isExactTimelineObjectActive(const App::DocumentObject* object) noexcept
 
 bool isModelingObjectActive(const App::DocumentObject* object) noexcept
 {
-    if (!isExactTimelineObjectActive(object)) {
+    if (!object) {
         return false;
     }
 
     const auto* resolved = resolveModelingObject(object);
-    // An empty Body is still an active modeling container even though it has
-    // no Tip to use as an operand yet.
-    if (!resolved) {
-        return object && object->isDerivedFrom<Part::BodyBase>();
+    // A Design Body and its stable publication are intentionally classified
+    // as timeline-internal presentation objects. Their exact current Body
+    // state—not that presentation classification—determines whether viewport
+    // selection is a usable modeling input at the current History position.
+    if (resolved && resolved != object) {
+        return isExactTimelineObjectActive(resolved);
     }
-    return resolved == object || isExactTimelineObjectActive(resolved);
+
+    // An empty Body is still a selectable structural identity even though it
+    // has no state to use as a shape operand yet.
+    if (!resolved) {
+        auto* document = object->getDocument();
+        return object->isDerivedFrom<Part::BodyBase>() && document
+            && document->containsObject(object)
+            && !object->testStatus(App::ObjectStatus::Remove)
+            && !object->testStatus(App::ObjectStatus::Destroy);
+    }
+    return isExactTimelineObjectActive(object);
 }
 
 App::DocumentObject* resolveModelingPresentationObject(App::DocumentObject* object)
@@ -339,6 +602,11 @@ const App::DocumentObject* resolveModelingPresentationObject(const App::Document
     auto* owner = resolved ? App::GeoFeatureGroupExtension::getGroupOfObject(resolved) : nullptr;
     if (owner && owner->isDerivedFrom<Part::BodyBase>()) {
         return owner;
+    }
+    if (!linkedModelingObject(object)) {
+        if (const auto* body = bodyContainingExactModelingState(resolved)) {
+            return body;
+        }
     }
     return object;
 }
@@ -366,6 +634,16 @@ Gui::SelectionObject resolveModelingSelection(const Gui::SelectionObject& select
     return object == resolved ? selection : selection.withObject(resolved);
 }
 
+Gui::SelectionObject resolveModelingSelectionForBody(
+    const Gui::SelectionObject& selection,
+    const Part::BodyBase* body
+)
+{
+    auto* object = selection.getObject();
+    auto* resolved = resolveModelingObjectForBody(object, body);
+    return object == resolved ? selection : selection.withObject(resolved);
+}
+
 std::vector<Gui::SelectionObject> resolveModelingSelections(
     const std::vector<Gui::SelectionObject>& selection
 )
@@ -389,6 +667,30 @@ std::vector<Gui::SelectionObject> resolveModelingSelections(
     return result;
 }
 
+std::vector<Gui::SelectionObject> resolveModelingSelectionsForBody(
+    const std::vector<Gui::SelectionObject>& selection,
+    const Part::BodyBase* body
+)
+{
+    std::vector<Gui::SelectionObject> result;
+    result.reserve(selection.size());
+    for (const auto& raw : selection) {
+        if (!isModelingObjectActive(raw.getObject())) {
+            continue;
+        }
+        auto resolved = resolveModelingSelectionForBody(raw, body);
+        const bool duplicate
+            = std::ranges::any_of(result, [&resolved](const Gui::SelectionObject& current) {
+                  return current.getObject() == resolved.getObject()
+                      && current.getSubNames() == resolved.getSubNames();
+              });
+        if (resolved.getObject() && !duplicate) {
+            result.push_back(std::move(resolved));
+        }
+    }
+    return result;
+}
+
 std::vector<Gui::SelectionObject> getModelingSelection(const char* documentName)
 {
     auto selection = Gui::Selection().getSelectionEx(
@@ -397,6 +699,19 @@ std::vector<Gui::SelectionObject> getModelingSelection(const char* documentName)
         Gui::ResolveMode::OldStyleElement
     );
     return resolveModelingSelections(selection);
+}
+
+std::vector<Gui::SelectionObject> getModelingSelectionForBody(
+    const Part::BodyBase* body,
+    const char* documentName
+)
+{
+    auto selection = Gui::Selection().getSelectionEx(
+        documentName,
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::OldStyleElement
+    );
+    return resolveModelingSelectionsForBody(selection, body);
 }
 
 std::vector<Gui::SelectionObject> getModelingShapeSelection(const char* documentName)
@@ -499,6 +814,132 @@ bool setModelingReplacedInputs(App::DocumentObject& result, const std::vector<Ap
     replacedInputs->setValues(exactInputs);
     role->setValue(App::DocumentTimeline::OperationRole);
     return true;
+}
+
+void finalizeModelingDesignDefinition(
+    App::DocumentObject& definition,
+    const std::vector<App::DocumentObject*>& semanticBlock
+)
+{
+    for (auto* member : semanticBlock) {
+        if (!member) {
+            throw Base::RuntimeError(
+                "A Design definition has a missing semantic resource"
+            );
+        }
+        if (member->getDocument() != definition.getDocument()) {
+            throw Base::ValueError(
+                "A Design definition block cannot span documents"
+            );
+        }
+        if (App::GeoFeatureGroupExtension::getGroupOfObject(member)) {
+            throw Base::ValueError(
+                "A Design definition resource cannot belong to a Body "
+                "or another modeling group"
+            );
+        }
+        std::vector<App::Property*> properties;
+        member->getPropertyList(properties);
+        for (auto* property : properties) {
+            const char* rawPropertyName =
+                member->getPropertyName(property);
+            const std::string_view propertyName =
+                rawPropertyName ? rawPropertyName : "";
+            // These links describe History ownership, editing, and viewport
+            // replacement. They are lifecycle metadata, not geometric
+            // dependencies of the reusable definition.
+            if (propertyName
+                    == App::DocumentTimeline::OwnerPropertyName
+                || propertyName
+                    == App::DocumentTimeline::EditorPropertyName
+                || propertyName
+                    == App::DocumentTimeline::
+                           ReplacedInputsPropertyName) {
+                continue;
+            }
+            auto* links = freecad_cast<App::PropertyLinkBase*>(property);
+            if (!links) {
+                continue;
+            }
+            std::vector<App::DocumentObject*> targets;
+            links->getLinks(targets, true);
+            for (auto* target : targets) {
+                if (!target) {
+                    continue;
+                }
+
+                auto* root = target;
+                std::set<App::DocumentObject*> owners;
+                while (App::DocumentTimeline::
+                           hasTimelineResourceRole(root)) {
+                    if (!owners.insert(root).second) {
+                        throw Base::RuntimeError(
+                            "A Design definition input has a cyclic History "
+                            "owner"
+                        );
+                    }
+                    root = App::DocumentTimeline::timelineOwner(root);
+                    if (!root) {
+                        throw Base::RuntimeError(
+                            "A Design definition input has no History root"
+                        );
+                    }
+                }
+                if (root == &definition) {
+                    continue;
+                }
+
+                if (freecad_cast<App::Link*>(target)
+                    || freecad_cast<App::LinkElement*>(target)) {
+                    throw Base::ValueError(
+                        "An assembly occurrence cannot be a modeling "
+                        "definition input"
+                    );
+                }
+                if (auto* body = findModelingBody(target)) {
+                    if (target == body
+                        || body->getModelingPresentation() == target
+                        || !body->containsModelingState(target)) {
+                        const char* diagnosticPropertyName =
+                            member->getPropertyName(property);
+                        throw Base::ValueError(
+                            std::string("Design definition ")
+                            + member->getNameInDocument() + "."
+                            + (diagnosticPropertyName
+                                   ? diagnosticPropertyName
+                                   : "<unknown>")
+                            + " references mutable Body presentation "
+                            + target->getNameInDocument()
+                            + "; it must reference the exact Body state"
+                        );
+                    }
+                }
+                if (resolveModelingObject(target) != target) {
+                    throw Base::ValueError(
+                        "A Design definition retained a mutable modeling "
+                        "presentation"
+                    );
+                }
+            }
+        }
+    }
+
+    App::DocumentTimeline::finalizeDesignDefinition(definition);
+}
+
+void publishModelingDesignDefinitionBlock(
+    const std::vector<App::DocumentObject*>& semanticBlock
+)
+{
+    if (semanticBlock.empty() || !semanticBlock.back()) {
+        throw Base::ValueError(
+            "A Design definition block requires one semantic root"
+        );
+    }
+    auto& definition = *semanticBlock.back();
+    App::DocumentTimeline::initializeDesignDefinition(definition);
+    groupModelingCommandOutputs(semanticBlock);
+    finalizeModelingDesignDefinition(definition, semanticBlock);
 }
 
 class ModelingTaskAttempt::Private
@@ -1003,6 +1444,7 @@ public:
     std::unique_ptr<Gui::MacroManager::MacroRedirector> macroRedirector;
     std::vector<Gui::Application::DurableTaskResultIntent> resultIntents;
     std::vector<ReplacedInputIntent> replacedInputIntents;
+    long designDefinitionId {-1};
     bool hadGuiDocument {false};
     bool guiDocumentModified {false};
     bool ownsAttempt {false};
@@ -1058,6 +1500,26 @@ void ModelingTaskAttempt::trackCreatedObject(App::DocumentObject& object)
 void ModelingTaskAttempt::keepResultAtDocumentRoot(App::DocumentObject& result)
 {
     d->setResultIntent(result, Gui::Application::DurableTaskResultOwnership::DocumentRoot, -1);
+}
+
+void ModelingTaskAttempt::markResultAsDesignDefinition(
+    App::DocumentObject& result
+)
+{
+    if (d->designDefinitionId >= 0
+        && d->designDefinitionId != result.getID()) {
+        throw Base::ValueError(
+            "One native modeling attempt can publish only one Design "
+            "definition root"
+        );
+    }
+    d->setResultIntent(
+        result,
+        Gui::Application::DurableTaskResultOwnership::DocumentRoot,
+        -1
+    );
+    App::DocumentTimeline::initializeDesignDefinition(result);
+    d->designDefinitionId = result.getID();
 }
 
 void ModelingTaskAttempt::targetResultBody(App::DocumentObject& result, Part::BodyBase& body)
@@ -1149,11 +1611,25 @@ void ModelingTaskAttempt::commit()
 
     auto ownershipIntents = d->resultIntents;
     for (auto* object : durableResults) {
-        const auto explicitIntent = std::ranges::find(
+        auto explicitIntent = std::ranges::find(
             ownershipIntents,
             object->getID(),
             &Gui::Application::DurableTaskResultIntent::objectId
         );
+        if (d->designDefinitionId >= 0) {
+            const Gui::Application::DurableTaskResultIntent designIntent {
+                .objectId = object->getID(),
+                .ownership = Gui::Application::DurableTaskResultOwnership::DocumentRoot,
+                .ownerObjectId = -1,
+            };
+            if (explicitIntent == ownershipIntents.end()) {
+                ownershipIntents.push_back(designIntent);
+            }
+            else {
+                *explicitIntent = designIntent;
+            }
+            continue;
+        }
         if (explicitIntent != ownershipIntents.end()) {
             continue;
         }
@@ -1251,6 +1727,36 @@ void ModelingTaskAttempt::commit()
         if (object && object->isDerivedFrom<Part::Feature>()) {
             TaskResultValidation::validatePartResult(object);
         }
+    }
+    if (d->designDefinitionId >= 0) {
+        auto* definition =
+            d->document->getObjectByID(d->designDefinitionId);
+        if (!definition || definition != resultObjects.back()) {
+            throw Base::RuntimeError(
+                "The accepted Design definition is not the semantic root of "
+                "its modeling attempt"
+            );
+        }
+        finalizeModelingDesignDefinition(
+            *definition,
+            resultObjects
+        );
+        const std::string definitionExpression =
+            Gui::Command::getObjectCmd(definition);
+        d->macroLines.emplace_back(
+            Gui::MacroManager::App,
+            "import PartDesign"
+        );
+        d->macroLines.emplace_back(
+            Gui::MacroManager::App,
+            "PartDesign.initializeDesignDefinition("
+                + definitionExpression + ")"
+        );
+        d->macroLines.emplace_back(
+            Gui::MacroManager::App,
+            "PartDesign.finalizeDesignDefinition("
+                + definitionExpression + ")"
+        );
     }
     if (blockWasAlreadyPublished
         && !timeline->isExactSemanticBlockPublishedByCurrentTransaction(

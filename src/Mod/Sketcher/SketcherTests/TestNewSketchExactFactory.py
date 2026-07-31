@@ -283,7 +283,7 @@ class TestNewSketchExactFactoryRuntime(SketcherGuiTestCase):
 
         QtCore.QTimer.singleShot(0, accept)
 
-    def _start_group_sketch(self):
+    def _start_sketch_with_group_context(self):
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.group)
         self._accept_orientation_dialog()
@@ -296,10 +296,10 @@ class TestNewSketchExactFactoryRuntime(SketcherGuiTestCase):
         ]
         self.assertEqual(1, len(sketches))
         self.assertIsNotNone(Gui.activeDocument().getInEdit())
-        self.assertTrue(self.group.hasObject(sketches[0]))
+        self.assertFalse(self.group.hasObject(sketches[0]))
         return sketches[0]
 
-    def test_selected_group_owns_exact_result_and_cancel_rolls_it_back(self):
+    def test_group_context_does_not_own_result_and_cancel_rolls_it_back(self):
         original_objects = tuple(self.doc.Objects)
         original_operations = tuple(
             next(
@@ -316,7 +316,7 @@ class TestNewSketchExactFactoryRuntime(SketcherGuiTestCase):
         ) else ()
         original_undo_count = self.doc.UndoCount
 
-        self._start_group_sketch()
+        self._start_sketch_with_group_context()
         Gui.runCommand("Sketcher_CancelSketch", 0)
         self.flush_gui(80)
 
@@ -336,9 +336,9 @@ class TestNewSketchExactFactoryRuntime(SketcherGuiTestCase):
             tuple(timeline.Operations) if timeline else (),
         )
 
-    def test_selected_group_result_accepts_as_one_history_operation(self):
+    def test_group_context_result_accepts_as_one_global_history_operation(self):
         original_undo_count = self.doc.UndoCount
-        sketch = self._start_group_sketch()
+        sketch = self._start_sketch_with_group_context()
         sketch.addGeometry(
             Part.LineSegment(
                 App.Vector(0, 0, 0),
@@ -351,7 +351,7 @@ class TestNewSketchExactFactoryRuntime(SketcherGuiTestCase):
         self.flush_gui(80)
 
         self.assertIs(self.doc.getObject(sketch.Name), sketch)
-        self.assertTrue(self.group.hasObject(sketch))
+        self.assertFalse(self.group.hasObject(sketch))
         timeline = next(
             obj
             for obj in self.doc.Objects

@@ -9,12 +9,14 @@
 #include <utility>
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
 #include <App/Datums.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/GroupExtension.h>
 #include <App/Origin.h>
 #include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/ActiveObjectList.h>
@@ -27,6 +29,7 @@
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/Feature.h>
 
 using namespace PartDesignGui;
@@ -92,8 +95,30 @@ ModelingContext::ModelingContext()
 
 bool ModelingContext::isOrdinaryPartResult(const App::DocumentObject* object)
 {
-    return object && object->isDerivedFrom<Part::Feature>()
-        && !object->isDerivedFrom<PartDesign::Feature>()
+    if (!object || !object->isDerivedFrom<Part::Feature>()) {
+        return false;
+    }
+
+    // Design History controllers and exact Body-state resources are
+    // intentionally document-global. Their Body links describe graph ports,
+    // not ownership. The compatibility bridge for ordinary Part results must
+    // never infer a Body container from those links.
+    const auto* timelineRole =
+        dynamic_cast<const App::PropertyString*>(
+            object->getPropertyByName(
+                App::DocumentTimeline::RolePropertyName
+            )
+        );
+    if ((timelineRole && *timelineRole->getValue())
+        || object->isDerivedFrom<PartDesign::DesignBodyState>()
+        || dynamic_cast<
+            const PartDesign::DesignOperationProperties*>(
+            object
+        )) {
+        return false;
+    }
+
+    return !object->isDerivedFrom<PartDesign::Feature>()
         && !object->isDerivedFrom<Part::Part2DObject>() && !object->isDerivedFrom<Part::BodyBase>()
         && !object->isDerivedFrom<Part::Datum>();
 }

@@ -15,7 +15,7 @@ import VibeCADVibeScriptDomainPublication as domain_publication
 
 def test_every_shipped_domain_has_one_explicit_history_strategy() -> None:
     expected = {
-        "partdesign": "native_body_history",
+        "partdesign": "design_program_operation",
         "sketcher": "public_outputs",
         "part": "public_outputs",
         "draft": "public_outputs",
@@ -107,6 +107,21 @@ class _Object:
         self.Group: list[_Object] = []
         self.Visibility = True
         self._property_types: dict[str, str] = {}
+        self._property_status: dict[str, tuple[str, ...]] = {}
+        self._editor_modes: dict[str, int] = {}
+
+    def addProperty(
+        self,
+        property_type: str,
+        name: str,
+        _group: str = "",
+        _description: str = "",
+        **_kwargs,
+    ) -> None:
+        if name not in self.PropertiesList:
+            self.PropertiesList.append(name)
+        self._property_types[name] = property_type
+        setattr(self, name, "")
 
     def add_reference(
         self,
@@ -120,6 +135,43 @@ class _Object:
 
     def getTypeIdOfProperty(self, name: str) -> str:
         return self._property_types[name]
+
+    def setPropertyStatus(self, name: str, status) -> None:
+        self._property_status[name] = tuple(status)
+
+    def getPropertyStatus(self, name: str) -> tuple[str, ...]:
+        return self._property_status.get(name, ())
+
+    def setEditorMode(self, name: str, mode: int) -> None:
+        self._editor_modes[name] = int(mode)
+
+    def getEditorMode(self, name: str) -> int:
+        return self._editor_modes.get(name, 0)
+
+
+def test_partdesign_program_history_has_exact_edit_and_delete_commands() -> None:
+    operation = _Object(
+        "ProgramOperation",
+        42,
+        "PartDesign::DesignScriptOperation",
+    )
+
+    domain_publication._set_partdesign_program_history_commands(operation)
+    domain_publication._set_partdesign_program_history_commands(operation)
+
+    expected = {
+        "VibeCADTimelineEditCommand": "VibeCAD_EditScriptedModel",
+        "VibeCADTimelineDeleteCommand": "VibeCAD_DeleteScriptedModel",
+    }
+    for name, command in expected.items():
+        assert operation.getTypeIdOfProperty(name) == "App::PropertyString"
+        assert getattr(operation, name) == command
+        assert set(operation.getPropertyStatus(name)) == {
+            "Hidden",
+            "LockDynamic",
+            "NoRecompute",
+        }
+        assert operation.getEditorMode(name) == 2
 
 
 class _Timeline(_Object):

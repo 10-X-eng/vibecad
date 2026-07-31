@@ -44,6 +44,7 @@
 #include <Mod/PartDesign/App/ShapeBinder.h>
 
 #include "ui_TaskShapeBinder.h"
+#include "ReferenceSelection.h"
 #include "TaskDialogState.h"
 #include "TaskShapeBinder.h"
 
@@ -260,8 +261,16 @@ void TaskShapeBinder::removeFromListWidget(QListWidget* widget, QString itemstr)
 
 void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
 {
-    auto setObjectLabel = [this](const Gui::SelectionChanges& msg) {
-        App::DocumentObject* obj = msg.Object.getObject();
+    auto setObjectLabel = [this]() {
+        App::GeoFeature* obj = nullptr;
+        std::vector<std::string> references;
+        if (!vp.expired()) {
+            PartDesign::ShapeBinder::getFilteredReferences(
+                &vp->getObject<PartDesign::ShapeBinder>()->Support,
+                obj,
+                references
+            );
+        }
         if (obj) {
             ui->baseEdit->setText(QString::fromStdString(obj->Label.getStrValue()));
         }
@@ -279,7 +288,7 @@ void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
                     ui->listWidgetReferences->addItem(sub);
                 }
 
-                setObjectLabel(msg);
+                setObjectLabel();
             }
             else if (selectionMode == refRemove) {
                 QString sub = QString::fromUtf8(msg.pSubName);
@@ -289,7 +298,7 @@ void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
             }
             else if (selectionMode == refObjAdd) {
                 ui->listWidgetReferences->clear();
-                setObjectLabel(msg);
+                setObjectLabel();
             }
 
             clearButtons();
@@ -339,13 +348,17 @@ bool TaskShapeBinder::referenceSelected(const SelectionChanges& msg) const
         );
 
         // get selected object
-        auto docObj = vp->getObject()->getDocument()->getObject(msg.pObjectName);
+        auto* binder = vp->getObject<PartDesign::ShapeBinder>();
+        auto* docObj = resolveModelingReference(
+            binder,
+            binder->getDocument()->getObject(msg.pObjectName)
+        );
         if (docObj && docObj->isDerivedFrom<Part::Feature>()) {
             selectedObj = static_cast<Part::Feature*>(docObj);
         }
 
         // ensure we have a valid object
-        if (!selectedObj) {
+        if (!selectedObj || selectedObj == binder) {
             return false;
         }
         if (!obj) {
@@ -355,7 +368,7 @@ bool TaskShapeBinder::referenceSelected(const SelectionChanges& msg) const
 
         if (selectionMode != refObjAdd) {
             // ensure the new selected subref belongs to the same object
-            if (strcmp(msg.pObjectName, obj->getNameInDocument()) != 0) {
+            if (selectedObj != obj) {
                 return false;
             }
 

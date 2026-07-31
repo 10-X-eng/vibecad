@@ -614,6 +614,7 @@ void DlgRevolution::accept()
         if (results.empty()) {
             throw Base::RuntimeError("No revolution result was created");
         }
+        attempt.markResultAsDesignDefinition(*results.back());
 
         activeDoc->recompute();
         for (auto* result : results) {

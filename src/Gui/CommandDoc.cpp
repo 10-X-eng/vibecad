@@ -1600,6 +1600,94 @@ void StdCmdDelete::activated(int iMsg)
         }
         const std::string commandDocumentUid =
             commandDocument->Uid.getValueStr();
+        const auto semanticDeleteTarget =
+            [](App::DocumentObject* selected) -> App::DocumentObject* {
+            if (!selected) {
+                return nullptr;
+            }
+            auto* view =
+                Application::Instance->getViewProvider(selected);
+            auto* target = view
+                ? view->documentTimelineOperationDeleteTarget()
+                : nullptr;
+            if (!target) {
+                return selected;
+            }
+            auto* document = selected->getDocument();
+            if (!document || target == selected
+                || target->getDocument() != document
+                || !document->containsObject(target)) {
+                throw Base::RuntimeError(
+                    "A presentation object resolved an invalid History "
+                    "deletion target"
+                );
+            }
+            return target;
+        };
+
+        // Some semantic History roots own lifecycle state outside their
+        // ordinary document-resource block. A VibeScript operation, for
+        // example, owns its embedded source contract and portable artifact as
+        // well as Body states. Dispatch its explicitly approved delete
+        // command before the generic object-deletion transaction can remove
+        // only half of that model.
+        Gui::Command* timelineDeleteCommand = nullptr;
+        std::string timelineDeleteCommandName;
+        for (auto& selection : sels) {
+            auto* selected = selection.getObject();
+            auto* object = selection.getSubNames().empty()
+                ? semanticDeleteTarget(selected)
+                : selected;
+            if (!object
+                || !object->getPropertyByName(
+                    App::DocumentTimeline::DeleteCommandPropertyName
+                )) {
+                continue;
+            }
+            if (!selection.getSubNames().empty()) {
+                throw Base::RuntimeError(
+                    "A History operation must be selected as a whole before "
+                    "it can be deleted"
+                );
+            }
+            const auto approved =
+                Gui::approvedDocumentTimelineCommand(
+                    object,
+                    App::DocumentTimeline::DeleteCommandPropertyName,
+                    "VibeCADTimelineOperationDeleter",
+                    true
+                );
+            if (!approved) {
+                throw Base::RuntimeError(
+                    "The selected History operation's exact deletion command "
+                    "is unavailable"
+                );
+            }
+            if (timelineDeleteCommand
+                && (timelineDeleteCommand != approved.command
+                    || timelineDeleteCommandName != approved.name)) {
+                throw Base::RuntimeError(
+                    "History operations with different lifecycle owners must "
+                    "be deleted separately"
+                );
+            }
+            timelineDeleteCommand = approved.command;
+            timelineDeleteCommandName = approved.name;
+        }
+        if (timelineDeleteCommand) {
+            if (sels.size() != 1) {
+                throw Base::RuntimeError(
+                    "A source-owned History operation must be deleted by "
+                    "itself"
+                );
+            }
+            timelineDeleteCommand->invoke(
+                0,
+                Gui::Command::TriggerAction
+            );
+            return;
+        }
+
         struct TimelineObjectIdentity
         {
             App::Document* document {};
@@ -1609,9 +1697,11 @@ void StdCmdDelete::activated(int iMsg)
         };
         struct TimelineDeletePlan
         {
+            TimelineObjectIdentity selection;
             TimelineObjectIdentity target;
             std::vector<TimelineObjectIdentity> resources;
             std::vector<TimelineObjectIdentity> reveal;
+            bool semanticDelete {};
         };
         const auto objectIdentity = [](App::DocumentObject* object) {
             if (!object || !object->getDocument()
@@ -1668,11 +1758,13 @@ void StdCmdDelete::activated(int iMsg)
 
         std::vector<TimelineDeletePlan> timelinePlans;
         std::set<std::pair<App::Document*, long>> plannedDeletionKeys;
+        std::set<std::pair<App::Document*, long>> plannedTimelineTargets;
         for (auto& selection : sels) {
-            auto* object = selection.getObject();
-            if (!object || !selection.getSubNames().empty()) {
+            auto* selected = selection.getObject();
+            if (!selected || !selection.getSubNames().empty()) {
                 continue;
             }
+            auto* object = semanticDeleteTarget(selected);
             const auto plan =
                 App::DocumentTimeline::timelineDeletionPlan(object);
             if (!plan.valid) {
@@ -1686,9 +1778,26 @@ void StdCmdDelete::activated(int iMsg)
             }
 
             TimelineDeletePlan captured;
+            captured.selection = objectIdentity(selected);
             captured.target = objectIdentity(object);
+            if (!plannedTimelineTargets
+                     .insert(identityKey(captured.target))
+                     .second) {
+                throw Base::RuntimeError(
+                    "The same History operation was selected through more "
+                    "than one presentation object"
+                );
+            }
+            if (auto* view =
+                    Application::Instance->getViewProvider(object)) {
+                captured.semanticDelete =
+                    view->supportsDocumentTimelineOperationDelete();
+            }
             plannedDeletionKeys.insert(
                 identityKey(captured.target)
+            );
+            plannedDeletionKeys.insert(
+                identityKey(captured.selection)
             );
             captured.resources.reserve(plan.ownedResources.size());
             for (auto* resource : plan.ownedResources) {
@@ -1706,6 +1815,18 @@ void StdCmdDelete::activated(int iMsg)
                 );
             }
             timelinePlans.push_back(std::move(captured));
+        }
+        std::set<std::pair<App::Document*, long>>
+            semanticDeletionKeys;
+        for (const auto& plan : timelinePlans) {
+            if (!plan.semanticDelete) {
+                continue;
+            }
+            semanticDeletionKeys.insert(identityKey(plan.selection));
+            semanticDeletionKeys.insert(identityKey(plan.target));
+            for (const auto& resource : plan.resources) {
+                semanticDeletionKeys.insert(identityKey(resource));
+            }
         }
         struct SelectedDeleteTarget
         {
@@ -1828,6 +1949,11 @@ void StdCmdDelete::activated(int iMsg)
             std::vector<App::DocumentObject*> dependencyTargets;
             std::set<std::pair<App::Document*, long>> dependencyTargetKeys;
             for (const auto& selected : selectedTargets) {
+                if (semanticDeletionKeys.contains(
+                        identityKey(selected.identity)
+                    )) {
+                    continue;
+                }
                 auto* object = resolveIdentity(selected.identity);
                 if (object
                     && dependencyTargetKeys
@@ -1839,6 +1965,9 @@ void StdCmdDelete::activated(int iMsg)
                 }
             }
             for (const auto& plan : timelinePlans) {
+                if (plan.semanticDelete) {
+                    continue;
+                }
                 for (const auto& resource : plan.resources) {
                     auto* object = resolveIdentity(resource);
                     if (object
@@ -1981,6 +2110,12 @@ void StdCmdDelete::activated(int iMsg)
                     }
                 }
                 for (const auto& plan : timelinePlans) {
+                    if (!resolveIdentity(plan.selection)) {
+                        throw Base::RuntimeError(
+                            "A selected History presentation object changed "
+                            "while deletion was being confirmed"
+                        );
+                    }
                     if (!resolveIdentity(plan.target)) {
                         throw Base::RuntimeError(
                             "A document-history operation changed while "
@@ -2078,9 +2213,79 @@ void StdCmdDelete::activated(int iMsg)
                     }
                 }
 
+                for (const auto& plan : timelinePlans) {
+                    if (!plan.semanticDelete) {
+                        continue;
+                    }
+                    auto* operation =
+                        resolveIdentity(plan.target);
+                    if (!operation) {
+                        throw Base::RuntimeError(
+                            "A semantic document-history operation "
+                            "disappeared before deletion"
+                        );
+                    }
+                    auto* view =
+                        Application::Instance->getViewProvider(
+                            operation
+                        );
+                    if (!view
+                        || !view
+                                ->supportsDocumentTimelineOperationDelete()) {
+                        throw Base::RuntimeError(
+                            "A semantic document-history operation lost its "
+                            "model deletion contract"
+                        );
+                    }
+                    manageDocCommand(operation->getDocument());
+                    docs.insert(operation->getDocument());
+                    if (!view
+                             ->prepareDocumentTimelineOperationDelete()) {
+                        throw Base::RuntimeError(
+                            "A semantic document-history operation refused "
+                            "model-resource deletion"
+                        );
+                    }
+                    operation = resolveIdentity(plan.target);
+                    if (!operation) {
+                        throw Base::RuntimeError(
+                            "A semantic document-history operation deleted "
+                            "itself from inside its model-resource hook"
+                        );
+                    }
+                    for (const auto& resource : plan.resources) {
+                        if (resolveIdentity(resource)) {
+                            throw Base::RuntimeError(
+                                "A semantic document-history resource "
+                                "survived model deletion"
+                            );
+                        }
+                    }
+                    if (!view->onDelete({}) && !forceDeletion) {
+                        throw Base::RuntimeError(
+                            "A semantic document-history operation refused "
+                            "deletion"
+                        );
+                    }
+                    FCMD_OBJ_DOC_CMD(
+                        operation,
+                        "removeObject('"
+                            << operation->getNameInDocument() << "')"
+                    );
+                    if (resolveIdentity(plan.target)) {
+                        throw Base::RuntimeError(
+                            "A semantic document-history operation survived "
+                            "deletion"
+                        );
+                    }
+                }
+
                 std::set<std::pair<App::Document*, long>>
                     processedResources;
                 for (const auto& plan : timelinePlans) {
+                    if (plan.semanticDelete) {
+                        continue;
+                    }
                     auto* semanticOwner = resolveIdentity(plan.target);
                     if (!semanticOwner) {
                         throw Base::RuntimeError(
@@ -2200,7 +2405,16 @@ void StdCmdDelete::activated(int iMsg)
                             "its resource cleanup was rolled back"
                         );
                     }
+                    if (resolveIdentity(plan.selection)) {
+                        throw Base::RuntimeError(
+                            "A semantic History presentation object survived "
+                            "operation deletion"
+                        );
+                    }
                     deletedPlans.push_back(&plan);
+                    actualDeletionKeys.insert(
+                        identityKey(plan.selection)
+                    );
                     actualDeletionKeys.insert(
                         identityKey(plan.target)
                     );

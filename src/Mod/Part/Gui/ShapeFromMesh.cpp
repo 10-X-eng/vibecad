@@ -280,6 +280,7 @@ bool ShapeFromMesh::perform()
         if (!operation) {
             throw Base::RuntimeError("Mesh conversion produced no result");
         }
+        attempt.markResultAsDesignDefinition(*operation);
 
         std::vector<App::DocumentObject*> replacedMeshes;
         replacedMeshes.reserve(meshes.size());

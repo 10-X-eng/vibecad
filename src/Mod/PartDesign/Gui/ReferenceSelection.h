@@ -103,6 +103,19 @@ public:
     bool allow(App::Document* pDoc, App::DocumentObject* pObj, const char* sSubName) override;
 };
 // Convenience methods
+/**
+ * Resolve a selected presentation object to the history state available
+ * immediately before the consuming Part Design feature.
+ *
+ * This keeps native task-panel references on feature definitions instead of
+ * linking a feature back through the visible component that publishes its
+ * own Body.
+ */
+App::DocumentObject* resolveModelingReference(
+    const App::DocumentObject* consumer,
+    App::DocumentObject* selected
+) noexcept;
+
 /// Extract reference from Selection
 bool getReferencedSelection(
     const App::DocumentObject* thisObj,

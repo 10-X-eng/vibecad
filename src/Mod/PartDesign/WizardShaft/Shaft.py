@@ -106,19 +106,56 @@ class Shaft:
 
     def addSegment(self, l, d, di):
         self.segments.append(ShaftSegment(l, d, di))
-        self.feature.addSegment(l, d, di)
+        # A parametric shaft edit replaces the generated face map.  Release
+        # FEM subelement links before that replacement and bind them again to
+        # the exact section faces afterward; otherwise PropertyLinkSub tries
+        # to resolve a transient, already-retired face token.
+        self._clearConstraintReferences()
+        try:
+            self.feature.addSegment(l, d, di)
+        finally:
+            self._refreshConstraintReferences()
         # We don't call equilibrium() here because the new segment has no constraints defined yet
-        # Fix face reference of fixed segment if it is the last one
-        for i in range(1, len(self.segments)):
-            if self.segments[i].constraintType != "Fixed":
-                continue
-            if i == len(self.segments) - 1:
-                self.segments[index].constraint.References = [
-                    (self.feature.feature, "Face%u" % (2 * (index + 1) + 1))
-                ]
-            else:
-                # Remove reference since it is now in the middle of the shaft (which is not allowed)
-                self.segments[index].constraint.References = [(None, "")]
+
+    def _constraintReference(self, index):
+        constraint_type = self.segments[index].constraintType
+        if constraint_type == "Fixed":
+            if index == 0:
+                return (self.feature.body, "Face1")
+            if index == len(self.segments) - 1:
+                return (
+                    self.feature.body,
+                    "Face%u" % (2 * (index + 1) + 1),
+                )
+            return (None, "")
+        if constraint_type in ("Bearing", "Gear", "Pulley"):
+            return (
+                self.feature.body,
+                "Face%u" % (2 * (index + 1)),
+            )
+        return None
+
+    def _clearConstraintReferences(self):
+        for segment in self.segments:
+            constraint = segment.constraint
+            if (
+                constraint is not None
+                and "References" in constraint.PropertiesList
+            ):
+                constraint.References = [(None, "")]
+
+    def _refreshConstraintReferences(self):
+        if self.feature.body is None:
+            return
+        for index, segment in enumerate(self.segments):
+            constraint = segment.constraint
+            reference = self._constraintReference(index)
+            if (
+                constraint is not None
+                and reference is not None
+                and "References" in constraint.PropertiesList
+            ):
+                constraint.References = [reference]
 
     def updateSegment(self, index, length=None, diameter=None, innerdiameter=None):
         oldLength = self.segments[index].length
@@ -130,13 +167,17 @@ class Shaft:
         if innerdiameter is not None:
             self.segments[index].innerdiameter = innerdiameter
 
-        self.feature.updateSegment(
-            index,
-            oldLength,
-            self.segments[index].length,
-            self.segments[index].diameter,
-            self.segments[index].innerdiameter,
-        )
+        self._clearConstraintReferences()
+        try:
+            self.feature.updateSegment(
+                index,
+                oldLength,
+                self.segments[index].length,
+                self.segments[index].diameter,
+                self.segments[index].innerdiameter,
+            )
+        finally:
+            self._refreshConstraintReferences()
         self.equilibrium()
         self.updateDiagrams()
 
@@ -161,31 +202,23 @@ class Shaft:
                 elif constraintType == "Fixed":
                     # TODO: Use robust reference as soon as it is available for the face
                     constraint = self.doc.addObject("Fem::ConstraintFixed", "ShaftConstraintFixed")
-                    if index == 0:
-                        constraint.References = [(self.feature.feature, "Face1")]
-                    elif index == len(self.segments) - 1:
-                        constraint.References = [
-                            (self.feature.feature, "Face%u" % (2 * (index + 1) + 1))
-                        ]
                     self.segments[index].constraint = constraint
                 elif constraintType == "Bearing":
                     # TODO: Use robust reference as soon as it is available for the cylindrical face reference
                     constraint = self.doc.addObject(
                         "Fem::ConstraintBearing", "ShaftConstraintBearing"
                     )
-                    constraint.References = [(self.feature.feature, "Face%u" % (2 * (index + 1)))]
                     constraint.AxialFree = True
                     self.segments[index].constraint = constraint
                 elif constraintType == "Pulley":
                     constraint = self.doc.addObject(
                         "Fem::ConstraintPulley", "ShaftConstraintPulley"
                     )
-                    constraint.References = [(self.feature.feature, "Face%u" % (2 * (index + 1)))]
                     self.segments[index].constraint = constraint
                 elif constraintType == "Gear":
                     constraint = self.doc.addObject("Fem::ConstraintGear", "ShaftConstraintGear")
-                    constraint.References = [(self.feature.feature, "Face%u" % (2 * (index + 1)))]
                     self.segments[index].constraint = constraint
+                self._refreshConstraintReferences()
 
         self.equilibrium()
         self.updateDiagrams()

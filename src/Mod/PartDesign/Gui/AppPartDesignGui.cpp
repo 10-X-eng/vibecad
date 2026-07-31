@@ -39,6 +39,7 @@
 #include "ViewProviderBase.h"
 #include "ViewProviderBody.h"
 #include "ViewProviderBoolean.h"
+#include "ViewProviderDesignOperation.h"
 #include "ViewProviderChamfer.h"
 #include "ViewProviderDatumCS.h"
 #include "ViewProviderDatumLine.h"
@@ -195,6 +196,7 @@ PyMOD_INIT_FUNC(PartDesignGui)
     PartDesignGui::ViewProviderSubShapeBinder::init();
     PartDesignGui::ViewProviderSubShapeBinderPython::init();
     PartDesignGui::ViewProviderBoolean       ::init();
+    PartDesignGui::ViewProviderDesignOperation::init();
     PartDesignGui::ViewProviderPrimitive     ::init();
     PartDesignGui::ViewProviderPipe          ::init();
     PartDesignGui::ViewProviderLoft          ::init();

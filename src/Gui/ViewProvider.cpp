@@ -810,6 +810,11 @@ bool ViewProvider::onDeleteOwnedTimelineResource(App::DocumentObject* semanticOw
     return onDelete({});
 }
 
+bool ViewProvider::prepareDocumentTimelineOperationDelete()
+{
+    return false;
+}
+
 bool ViewProvider::canDelete(App::DocumentObject*) const
 {
     return false;

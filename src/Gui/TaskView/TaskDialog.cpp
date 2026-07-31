@@ -24,7 +24,9 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <utility>
+#include <vector>
 
 #include <QMessageBox>
 
@@ -140,6 +142,7 @@ struct TaskDialog::PendingInteractionRollback
     std::shared_ptr<fastsignals::connection> stable;
     std::shared_ptr<fastsignals::connection> lockChanged;
     std::shared_ptr<fastsignals::connection> deleted;
+    bool restorePresentation {true};
     bool retrying {false};
 };
 
@@ -451,9 +454,22 @@ void TaskDialog::beginCommandInvocation()
         if (!root) {
             return;
         }
-        captureObjectVisibility(root);
-        for (auto* dependency : root->getOutListRecursive()) {
-            captureObjectVisibility(dependency);
+
+        // Visibility capture is presentation bookkeeping, not dependency
+        // validation. Traverse with an explicit visited set so a malformed
+        // live graph cannot prevent the command transaction from reaching its
+        // normal validation/rollback path.
+        std::set<const App::DocumentObject*> visited;
+        std::vector<const App::DocumentObject*> pending {root};
+        while (!pending.empty()) {
+            const auto* object = pending.back();
+            pending.pop_back();
+            if (!object || !visited.insert(object).second) {
+                continue;
+            }
+            captureObjectVisibility(object);
+            const auto dependencies = object->getOutList();
+            pending.insert(pending.end(), dependencies.begin(), dependencies.end());
         }
     };
 
@@ -764,7 +780,10 @@ void TaskDialog::adoptCommandInteractionState(App::Document* document)
     }
 }
 
-bool TaskDialog::restoreCommandInteractionState(const std::optional<InteractionState>& state)
+bool TaskDialog::restoreCommandInteractionState(
+    const std::optional<InteractionState>& state,
+    bool restorePresentation
+)
 {
     if (!state || !Gui::Application::Instance) {
         return true;
@@ -782,7 +801,7 @@ bool TaskDialog::restoreCommandInteractionState(const std::optional<InteractionS
         // publish a presentation that disagrees with the actual document.
         // Preserve the complete checkpoint and exact transaction ownership
         // until the same document can close T.
-        retainPendingInteractionRollback(*state);
+        retainPendingInteractionRollback(*state, restorePresentation);
         return false;
     }
 
@@ -791,6 +810,15 @@ bool TaskDialog::restoreCommandInteractionState(const std::optional<InteractionS
     // be established (for example, a locked document).
     if (!state->commandUndoEnabled && !state->temporaryRollbackJournal) {
         removeUnacceptedObjects(*state);
+    }
+
+    if (!restorePresentation) {
+        // The command document is being closed. Its model transaction still
+        // has to be rolled back exactly, but replaying its launch selection,
+        // visibility, or active-object state would overwrite the live
+        // interaction state of whichever document the user is now viewing.
+        restoreOriginalUndoMode(*state);
+        return true;
     }
 
     for (const auto& visibility : state->visibility) {
@@ -909,7 +937,10 @@ bool TaskDialog::restoreCommandInteractionState(const std::optional<InteractionS
     return true;
 }
 
-void TaskDialog::retainPendingInteractionRollback(const InteractionState& state)
+void TaskDialog::retainPendingInteractionRollback(
+    const InteractionState& state,
+    bool restorePresentation
+)
 {
     auto* document = state.commandDocument;
     const int transactionId = state.commandTransactionId;
@@ -927,6 +958,7 @@ void TaskDialog::retainPendingInteractionRollback(const InteractionState& state)
 
     auto rollback = std::make_shared<PendingInteractionRollback>();
     rollback->interaction = state;
+    rollback->restorePresentation = restorePresentation;
     rollback->stable = std::make_shared<fastsignals::connection>();
     rollback->lockChanged = std::make_shared<fastsignals::connection>();
     rollback->deleted = std::make_shared<fastsignals::connection>();
@@ -977,9 +1009,10 @@ void TaskDialog::retryPendingInteractionRollback(const App::Document* document, 
     }
 
     InteractionState interaction = std::move(rollback->interaction);
+    const bool restorePresentation = rollback->restorePresentation;
     interaction.commandTransactionCompleted = true;
     pending.erase(key);
-    (void)restoreCommandInteractionState(interaction);
+    (void)restoreCommandInteractionState(interaction, restorePresentation);
 }
 
 void TaskDialog::removeUnacceptedObjects(const InteractionState& state)

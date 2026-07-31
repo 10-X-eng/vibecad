@@ -43,6 +43,7 @@
 #include <Gui/ViewProvider.h>
 #include <Gui/Widgets.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeaturePipe.h>
 
 #include "ui_TaskPipeParameters.h"
@@ -53,6 +54,7 @@
 #include "TaskDialogState.h"
 #include "TaskPipeParameters.h"
 #include "TaskFeaturePick.h"
+#include "ReferenceSelection.h"
 #include "TaskSketchBasedParameters.h"
 #include "Utils.h"
 
@@ -340,9 +342,8 @@ void TaskPipeParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
     if (msg.Type == Gui::SelectionChanges::AddSelection) {
         if (referenceSelected(msg)) {
             if (stateHandler->getSelectionMode() == StateHandlerTaskPipe::SelectionModes::refProfile) {
-                App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-                App::DocumentObject* object = document ? document->getObject(msg.pObjectName)
-                                                       : nullptr;
+                auto* pipe = getObject<PartDesign::Pipe>();
+                App::DocumentObject* object = pipe ? pipe->Profile.getValue() : nullptr;
                 if (object) {
                     QString label = make2DLabel(object, {msg.pSubName});
                     ui->profileBaseEdit->setText(label);
@@ -359,9 +360,8 @@ void TaskPipeParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
                     ui->listWidgetReferences->addItem(item);
                 }
 
-                App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-                App::DocumentObject* object = document ? document->getObject(msg.pObjectName)
-                                                       : nullptr;
+                auto* pipe = getObject<PartDesign::Pipe>();
+                App::DocumentObject* object = pipe ? pipe->Spine.getValue() : nullptr;
                 if (object) {
                     QString label = QString::fromUtf8(object->Label.getValue());
                     ui->spineBaseEdit->setText(label);
@@ -384,9 +384,8 @@ void TaskPipeParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
             ) {
                 ui->listWidgetReferences->clear();
 
-                App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-                App::DocumentObject* object = document ? document->getObject(msg.pObjectName)
-                                                       : nullptr;
+                auto* pipe = getObject<PartDesign::Pipe>();
+                App::DocumentObject* object = pipe ? pipe->Spine.getValue() : nullptr;
                 if (object) {
                     QString label = QString::fromUtf8(object->Label.getValue());
                     ui->spineBaseEdit->setText(label);
@@ -503,7 +502,10 @@ bool TaskPipeParameters::referenceSelected(const SelectionChanges& msg) const
                 getViewObject<ViewProviderPipe>()->highlightReferences(ViewProviderPipe::Profile, false);
 
                 bool success = true;
-                App::DocumentObject* profile = pipe->getDocument()->getObject(msg.pObjectName);
+                App::DocumentObject* profile = resolveModelingReference(
+                    pipe,
+                    pipe->getDocument()->getObject(msg.pObjectName)
+                );
                 if (profile) {
                     rememberPipeInputVisibility(this, profile);
                     std::vector<App::DocumentObject*> sections = pipe->Sections.getValues();
@@ -530,8 +532,13 @@ bool TaskPipeParameters::referenceSelected(const SelectionChanges& msg) const
                 // change the references
                 const std::string subName(msg.pSubName);
                 const auto pipe = getObject<PartDesign::Pipe>();
-                auto* selected =
-                    getAppDocument()->getObject(msg.pObjectName);
+                auto* selected = resolveModelingReference(
+                    pipe,
+                    getAppDocument()->getObject(msg.pObjectName)
+                );
+                if (!selected || selected == pipe) {
+                    return false;
+                }
                 rememberPipeInputVisibility(
                     this,
                     pipe->Spine.getValue()
@@ -546,6 +553,9 @@ bool TaskPipeParameters::referenceSelected(const SelectionChanges& msg) const
                         false
                     );
                     refs.clear();
+                }
+                else if (pipe->Spine.getValue() != selected) {
+                    return false;
                 }
                 else if (selectionMode == StateHandlerTaskPipe::SelectionModes::refSpineEdgeAdd) {
                     if (f == refs.end()) {
@@ -1035,9 +1045,8 @@ void TaskPipeOrientation::onSelectionChanged(const SelectionChanges& msg)
                     ui->listWidgetReferences->addItem(item);
                 }
 
-                App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-                App::DocumentObject* object = document ? document->getObject(msg.pObjectName)
-                                                       : nullptr;
+                auto* pipe = getObject<PartDesign::Pipe>();
+                App::DocumentObject* object = pipe ? pipe->AuxiliarySpine.getValue() : nullptr;
                 if (object) {
                     QString label = QString::fromUtf8(object->Label.getValue());
                     ui->profileBaseEdit->setText(label);
@@ -1060,9 +1069,8 @@ void TaskPipeOrientation::onSelectionChanged(const SelectionChanges& msg)
             ) {
                 ui->listWidgetReferences->clear();
 
-                App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-                App::DocumentObject* object = document ? document->getObject(msg.pObjectName)
-                                                       : nullptr;
+                auto* pipe = getObject<PartDesign::Pipe>();
+                App::DocumentObject* object = pipe ? pipe->AuxiliarySpine.getValue() : nullptr;
                 if (object) {
                     QString label = QString::fromUtf8(object->Label.getValue());
                     ui->profileBaseEdit->setText(label);
@@ -1101,8 +1109,13 @@ bool TaskPipeOrientation::referenceSelected(const SelectionChanges& msg) const
         if (const auto pipe = getObject<PartDesign::Pipe>()) {
             // change the references
             const std::string subName(msg.pSubName);
-            auto* selected =
-                pipe->getDocument()->getObject(msg.pObjectName);
+            auto* selected = resolveModelingReference(
+                pipe,
+                pipe->getDocument()->getObject(msg.pObjectName)
+            );
+            if (!selected || selected == pipe) {
+                return false;
+            }
             rememberPipeInputVisibility(
                 pipe,
                 pipe->AuxiliarySpine.getValue()
@@ -1113,6 +1126,9 @@ bool TaskPipeOrientation::referenceSelected(const SelectionChanges& msg) const
 
             if (selectionMode == StateHandlerTaskPipe::SelectionModes::refAuxSpine) {
                 refs.clear();
+            }
+            else if (pipe->AuxiliarySpine.getValue() != selected) {
+                return false;
             }
             else if (selectionMode == StateHandlerTaskPipe::SelectionModes::refAuxSpineEdgeAdd) {
                 if (f != refs.end()) {
@@ -1390,19 +1406,13 @@ void TaskPipeScaling::onSelectionChanged(const SelectionChanges& msg)
 
     if (msg.Type == Gui::SelectionChanges::AddSelection) {
         if (referenceSelected(msg)) {
-            App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-            App::DocumentObject* object = document ? document->getObject(msg.pObjectName) : nullptr;
-            if (object) {
-                const auto mode = stateHandler->getSelectionMode();
-                if (mode
-                        == StateHandlerTaskPipe::SelectionModes::refSectionAdd
-                    || mode
-                        == StateHandlerTaskPipe::SelectionModes::refSectionRemove) {
-                    // The live Sections property is authoritative. This also
-                    // avoids confusing two inputs with the same display
-                    // label.
-                    rebuildSectionRows();
-                }
+            const auto mode = stateHandler->getSelectionMode();
+            if (mode == StateHandlerTaskPipe::SelectionModes::refSectionAdd
+                || mode == StateHandlerTaskPipe::SelectionModes::refSectionRemove) {
+                // The live Sections property is authoritative. This also
+                // avoids confusing two inputs with the same display label or
+                // a component presentation with its native definition.
+                rebuildSectionRows();
             }
 
             clearButtons();
@@ -1433,7 +1443,13 @@ bool TaskPipeScaling::referenceSelected(const SelectionChanges& msg) const
         // change the references
         if (const auto pipe = getObject<PartDesign::Pipe>()) {
             std::vector<App::DocumentObject*> refs = pipe->Sections.getValues();
-            App::DocumentObject* obj = pipe->getDocument()->getObject(msg.pObjectName);
+            App::DocumentObject* obj = resolveModelingReference(
+                pipe,
+                pipe->getDocument()->getObject(msg.pObjectName)
+            );
+            if (!obj || obj == pipe) {
+                return false;
+            }
             rememberPipeInputVisibility(pipe, obj);
             const auto f = std::ranges::find(refs, obj);
 
@@ -1632,6 +1648,19 @@ void TaskDlgPipeParameters::onButtonToggled(QAbstractButton* button, bool checke
 
 bool TaskDlgPipeParameters::accept()
 {
+    // Design-wide sweeps reference reusable sketches and paths directly.
+    // The legacy Pipe acceptance path assumes that the operation and every
+    // reference must belong to one active Body, and may copy those references
+    // into that Body.  That would destroy shared-definition semantics.
+    if (getObject<PartDesign::DesignSweep>()) {
+        const bool accepted =
+            TaskDlgSketchBasedParameters::accept();
+        if (accepted) {
+            parameter->setVisibilityOfSpineAndProfile();
+        }
+        return accepted;
+    }
+
     return parameter->accept();
 }
 

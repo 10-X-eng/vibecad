@@ -23,6 +23,7 @@
 # ******************************************************************************/
 
 import FreeCAD, FreeCADGui
+import PartDesign
 import traceback
 from PySide import QtCore, QtGui
 from PartDesign.PartDesignTimeline import (
@@ -212,27 +213,33 @@ class TaskWizardShaft:
             raise RuntimeError("The shaft wizard has no live result")
         if self.doc.recompute() is False:
             raise RuntimeError("The shaft wizard document failed to recompute")
-        if (
-            not shaft_feature.isValid()
-            or shaft_feature.Shape.isNull()
-            or not shaft_feature.Shape.isValid()
-        ):
+        if not shaft_feature.isValid():
             status = shaft_feature.getStatusString()
             raise RuntimeError(status or "The shaft wizard result is invalid")
-        shaft_profile = getattr(
-            getattr(self.shaft, "feature", None),
-            "sketch",
-            None,
-        )
+        shaft_profile = getattr(getattr(self.shaft, "feature", None), "sketch", None)
         if (
             shaft_profile is None
             or shaft_profile.Document is not self.doc
         ):
             raise RuntimeError("The shaft wizard has no live profile")
-        self.doc.finalizeProvisionalTimelineOperationBlock(
-            shaft_feature,
-            [shaft_profile, shaft_feature],
+        if shaft_profile.getParentGeoFeatureGroup() is not None:
+            raise RuntimeError("The shaft profile is not a reusable Design sketch")
+        shaft_body = getattr(
+            getattr(self.shaft, "feature", None),
+            "body",
+            None,
         )
+        if (
+            shaft_body is None
+            or shaft_body.Document is not self.doc
+            or shaft_body.TypeId != "PartDesign::Body"
+            or shaft_body.Tip is None
+            or not shaft_body.isValid()
+            or shaft_body.Shape.isNull()
+            or not shaft_body.Shape.isValid()
+        ):
+            raise RuntimeError("The shaft wizard has no stable Body output")
+        PartDesign.validateDesign(shaft_feature)
         self._release()
         return True
 

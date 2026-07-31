@@ -4,3 +4,25 @@ import _PartDesign
 
 makeFilletArc = _PartDesign.makeFilletArc
 getHoleThreadCatalog = _PartDesign.getHoleThreadCatalog
+beginDesignOperationEdit = _PartDesign.beginDesignOperationEdit
+initializeDesignDefinition = _PartDesign.initializeDesignDefinition
+resolveDesignDefinitionReference = _PartDesign.resolveDesignDefinitionReference
+resolveDesignDefinitionSubelementReference = (
+    _PartDesign.resolveDesignDefinitionSubelementReference
+)
+initializeDesignBodyFromLegacyFeature = (
+    _PartDesign.initializeDesignBodyFromLegacyFeature
+)
+finalizeDesignDefinition = _PartDesign.finalizeDesignDefinition
+setDesignOperationTargets = _PartDesign.setDesignOperationTargets
+setDesignFeaturePatternTargets = _PartDesign.setDesignFeaturePatternTargets
+setDesignBodyPatternSource = _PartDesign.setDesignBodyPatternSource
+setDesignCloneSource = _PartDesign.setDesignCloneSource
+setDesignScriptOutputs = _PartDesign.setDesignScriptOutputs
+setDesignCombineBodies = _PartDesign.setDesignCombineBodies
+setDesignSplitDefinition = _PartDesign.setDesignSplitDefinition
+assignDesignSplitRegions = _PartDesign.assignDesignSplitRegions
+setDesignSeparateDefinition = _PartDesign.setDesignSeparateDefinition
+finalizeDesignOperationEdit = _PartDesign.finalizeDesignOperationEdit
+removeDesignOperation = _PartDesign.removeDesignOperation
+validateDesign = _PartDesign.validateDesign

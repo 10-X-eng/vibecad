@@ -65,7 +65,7 @@ class TestExactTransactionContract(unittest.TestCase):
             "if (!finishCommandTransaction(*state, false))"
         )
         retention = dialog.index(
-            "retainPendingInteractionRollback(*state);",
+            "retainPendingInteractionRollback(*state, restorePresentation);",
             close_check,
         )
         visibility_restore = dialog.index(
@@ -167,6 +167,79 @@ class TestExactTransactionContract(unittest.TestCase):
             "The legacy replay command omits semantic closure and exact "
             "cross-document deletion",
         )
+
+    def test_hole_overlay_defers_updates_during_transaction_replay(self):
+        view = self.read("src/Mod/PartDesign/Gui/ViewProviderHole.cpp")
+        update_start = view.index("void ViewProviderHole::updateOverlay()")
+        transaction_guard = view.index(
+            "document->isPerformingTransaction()",
+            update_start,
+        )
+        recompute_guard = view.index(
+            "document->testStatus(App::Document::Recomputing)",
+            update_start,
+        )
+        restore_exemption = view.index(
+            "!documentRestoreFinished",
+            update_start,
+        )
+        restore_guard = view.index(
+            "document->testStatus(App::Document::Restoring)",
+            update_start,
+        )
+        first_scene_update = view.index(
+            "updateDesignHoleOverlays(hole);",
+            update_start,
+        )
+        self.assertLess(transaction_guard, first_scene_update)
+        self.assertLess(recompute_guard, first_scene_update)
+        self.assertLess(restore_exemption, restore_guard)
+        self.assertLess(restore_guard, first_scene_update)
+
+    def test_hole_normal_reports_empty_profile_as_no_overlay(self):
+        view = self.read("src/Mod/PartDesign/Gui/ViewProviderHole.cpp")
+        normal_start = view.index("ViewProviderHole::getHoleNormal(")
+        normal_end = view.index(
+            "ViewProviderHole::getHoleOrigin(",
+            normal_start,
+        )
+        normal = view[normal_start:normal_end]
+
+        profile_read = normal.index("pcHole->getProfileShape()")
+        base_catch = normal.index(
+            "catch (const Base::Exception&)",
+            profile_read,
+        )
+        occ_catch = normal.index(
+            "catch (const Standard_Failure&)",
+            base_catch,
+        )
+        self.assertLess(normal.index("try {"), profile_read)
+        self.assertLess(
+            base_catch,
+            normal.index("return std::nullopt;", base_catch),
+        )
+        self.assertLess(
+            occ_catch,
+            normal.index("return std::nullopt;", occ_catch),
+        )
+
+    def test_hole_overlay_refreshes_after_document_becomes_stable(self):
+        view = self.read("src/Mod/PartDesign/Gui/ViewProviderHole.cpp")
+        stable_connect = view.index("signalBecameStable.connect")
+        stable_refresh = view.index("this->updateOverlay();", stable_connect)
+        restore_connect = view.index("signalFinishRestoreDocument.connect")
+        restore_recorded = view.index(
+            ".documentRestoreFinished = true;",
+            restore_connect,
+        )
+        restore_refresh = view.index(
+            "this->updateOverlay();",
+            restore_recorded,
+        )
+        self.assertLess(stable_connect, stable_refresh)
+        self.assertLess(restore_connect, restore_recorded)
+        self.assertLess(restore_recorded, restore_refresh)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ import unittest
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
+import PartDesign
+import Materials
 from PySide import QtCore, QtGui
 
 
@@ -2300,7 +2302,7 @@ class TestConsolidatedPartTools(unittest.TestCase):
         bodies_before = {
             obj for obj in self.document.Objects if obj.TypeId == "PartDesign::Body"
         }
-        Gui.runCommand("PartDesign_Body", 0)
+        Gui.runCommand("PartDesign_NewBody", 0)
         bodies_after = {
             obj for obj in self.document.Objects if obj.TypeId == "PartDesign::Body"
         }
@@ -2312,34 +2314,65 @@ class TestConsolidatedPartTools(unittest.TestCase):
             created_body,
         )
 
-        source = self.document.addObject("Part::Feature", "StructureSource")
+        source = created_body.newObject(
+            "PartDesign::Feature",
+            "StructureSource",
+        )
         source.Shape = Part.makeBox(10, 10, 10, App.Vector(20, 0, 0))
+        created_body.Tip = source
         self.document.recompute()
 
         Gui.activeView().setActiveObject("pdbody", self.body)
         Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(source, "Face1")
+        Gui.Selection.addSelection(created_body, "Face1")
         Gui.runCommand("PartDesign_SubShapeBinder", 0)
         binder = self.document.ActiveObject
         self.assertEqual(binder.TypeId, "PartDesign::SubShapeBinder")
-        self.assertEqual(binder.getParentGeoFeatureGroup(), self.body)
+        self.assertIsNone(binder.getParentGeoFeatureGroup())
+        self.assertIs(self.body.Tip, None)
+        self.assertEqual(tuple(self.body.Group), ())
         self.assertIn(source, self._linked_objects(binder.Support))
+        self.assertNotIn(created_body, self._linked_objects(binder.Support))
+        self.assertNotEqual(str(binder.VibeCADDefinitionId), "")
+        self.assertEqual(binder.VibeCADTimelineRole, "operation")
         self.document.recompute()
         self.assertFalse(binder.Shape.isNull())
 
+        names_before_clone = {
+            obj.Name for obj in self.document.Objects
+        }
         Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(source)
+        Gui.Selection.addSelection(created_body)
         Gui.runCommand("PartDesign_Clone", 0)
-        clone = self.document.ActiveObject
-        clone_body = clone.getParentGeoFeatureGroup()
-        self.assertEqual(clone.TypeId, "PartDesign::FeatureBase")
-        self.assertIsNotNone(clone_body)
+        clone = next(
+            obj
+            for obj in self.document.Objects
+            if obj.Name not in names_before_clone
+            and obj.TypeId == "PartDesign::DesignClone"
+        )
+        clone_body = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Body"
+            and str(obj.VibeCADBodyId) == clone.OutputBodyIds[0]
+        )
+        self.assertIsNone(clone.getParentGeoFeatureGroup())
         self.assertIsNot(clone_body, self.body)
+        self.assertIsNot(clone_body, created_body)
         self.assertEqual(clone_body.TypeId, "PartDesign::Body")
-        self.assertEqual(clone.BaseFeature, source)
+        self.assertIsNone(clone.BaseFeature)
+        self.assertEqual(clone.InputStates, [source])
+        self.assertEqual(clone.ResultOperation, "New Bodies")
         self.document.recompute()
-        self.assertFalse(clone.Shape.isNull())
-        self.assertEqual(clone_body.Tip, clone)
+        self.assertTrue(clone.Shape.isNull())
+        self.assertFalse(clone.PreviewShape.isNull())
+        self.assertFalse(clone_body.Shape.isNull())
+        self.assertEqual(
+            clone_body.Tip.TypeId,
+            "PartDesign::DesignBodyPublication",
+        )
+        self.assertIs(clone_body.Tip.CurrentState.Operation, clone)
+        PartDesign.validateDesign(clone)
 
     def test_sketch_composite_children_and_validation_use_native_dialogs(self):
         preferences = App.ParamGet("User parameter:BaseApp/Preferences/Mod/PartDesign")
@@ -3340,6 +3373,347 @@ class TestConsolidatedPartTools(unittest.TestCase):
         filtered = self.document.ActiveObject
         self._assert_body_result(filtered)
 
+    def test_separate_creates_stable_global_body_outputs(self):
+        source = self.document.addObject(
+            "Part::Feature",
+            "SeparateSource",
+        )
+        source.Label = "Separate Source"
+        source.Shape = Part.makeCompound(
+            [
+                Part.makeBox(10, 10, 10),
+                Part.makeBox(
+                    6,
+                    6,
+                    6,
+                    App.Vector(20, 0, 0),
+                ),
+            ]
+        )
+        source.ShapeMaterial = Materials.MaterialManager().getMaterial(
+            "94370b96-c97e-4a3f-83b2-11d7461f7da7"
+        )
+        self.document.recompute()
+        original_names = tuple(
+            obj.Name for obj in self.document.Objects
+        )
+        original_bodies = {
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Body"
+        }
+        original_components = {
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "App::Part"
+        }
+        self.document.UndoMode = True
+
+        self._select(source)
+        self.assertTrue(Gui.isCommandActive("PartDesign_Separate"))
+        Gui.runCommand("PartDesign_Separate", 0)
+        self.document.recompute()
+        self._process_events()
+        self.assertFalse(self.document.HasPendingTransaction)
+
+        operations = self.document.findObjects(
+            "PartDesign::DesignSeparate"
+        )
+        self.assertEqual(len(operations), 1)
+        operation = operations[0]
+        output_bodies = [
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Body"
+            and obj not in original_bodies
+        ]
+        self.assertEqual(len(output_bodies), 2)
+        self.assertEqual(
+            {
+                obj
+                for obj in self.document.Objects
+                if obj.TypeId == "App::Part"
+            },
+            original_components,
+        )
+        self.assertFalse(source.Visibility)
+        self.assertIsNone(operation.getParentGeoFeatureGroup())
+        self.assertEqual(operation.Source, source)
+        self.assertEqual(operation.ResultOperation, "New Bodies")
+        self.assertEqual(
+            operation.OutputPreviousInputIndices,
+            [-1, -1],
+        )
+        self.assertEqual(
+            sorted(round(body.Shape.Volume) for body in output_bodies),
+            [216, 1000],
+        )
+        self.assertTrue(
+            all(
+                str(body.ShapeMaterial.UUID)
+                == str(source.ShapeMaterial.UUID)
+                for body in output_bodies
+            )
+        )
+        self.assertTrue(
+            all(
+                body.Tip.CurrentState.Operation is operation
+                for body in output_bodies
+            )
+        )
+        self.assertEqual(
+            self.document.VibeCADTimeline.Operations.count(operation),
+            1,
+        )
+        self.assertLess(
+            self.document.VibeCADTimeline.Operations.index(source),
+            self.document.VibeCADTimeline.Operations.index(operation),
+        )
+        PartDesign.validateDesign(operation)
+
+        output_identity = [
+            (
+                body.Name,
+                str(body.VibeCADBodyId),
+                str(body.Tip.CurrentState.BodyStateId),
+            )
+            for body in output_bodies
+        ]
+        self.assertTrue(operation.ViewObject.doubleClicked())
+        self._process_events()
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        Gui.Control.activeTaskDialog().reject()
+        self._process_events()
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertEqual(
+            [
+                (
+                    self.document.getObject(name).Name,
+                    str(self.document.getObject(name).VibeCADBodyId),
+                    str(
+                        self.document.getObject(
+                            name
+                        ).Tip.CurrentState.BodyStateId
+                    ),
+                )
+                for name, _body_id, _state_id in output_identity
+            ],
+            output_identity,
+        )
+        PartDesign.validateDesign(operation)
+
+        undo_count = self.document.UndoCount
+        self.assertTrue(operation.ViewObject.doubleClicked())
+        self._process_events()
+        self.assertTrue(Gui.Control.activeDialog())
+        Gui.Control.activeTaskDialog().accept()
+        self._process_events()
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertGreaterEqual(self.document.UndoCount, undo_count)
+        self.assertEqual(
+            [
+                (
+                    self.document.getObject(name).Name,
+                    str(self.document.getObject(name).VibeCADBodyId),
+                    str(
+                        self.document.getObject(
+                            name
+                        ).Tip.CurrentState.BodyStateId
+                    ),
+                )
+                for name, _body_id, _state_id in output_identity
+            ],
+            output_identity,
+        )
+        PartDesign.validateDesign(operation)
+
+        self.document.undo()
+        self.document.recompute()
+        self._process_events()
+        operation = self.document.getObject(operation.Name)
+        self.assertIsNotNone(operation)
+        self.assertEqual(
+            [
+                (
+                    self.document.getObject(name).Name,
+                    str(self.document.getObject(name).VibeCADBodyId),
+                    str(
+                        self.document.getObject(
+                            name
+                        ).Tip.CurrentState.BodyStateId
+                    ),
+                )
+                for name, _body_id, _state_id in output_identity
+            ],
+            output_identity,
+        )
+        PartDesign.validateDesign(operation)
+
+        self.document.undo()
+        self.document.recompute()
+        self._process_events()
+        self.assertEqual(
+            tuple(obj.Name for obj in self.document.Objects),
+            original_names,
+        )
+        self.assertTrue(source.Visibility)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_separate_edit_reconciles_new_output_with_material_and_appearance(self):
+        source = self.document.addObject(
+            "Part::Feature",
+            "ChangingSeparateSource",
+        )
+        source.Label = "Machined Segment"
+        source.Shape = Part.makeCompound(
+            [
+                Part.makeBox(10, 10, 10),
+                Part.makeBox(6, 6, 6, App.Vector(20, 0, 0)),
+            ]
+        )
+        source.ShapeMaterial = Materials.MaterialManager().getMaterial(
+            "94370b96-c97e-4a3f-83b2-11d7461f7da7"
+        )
+        source.ViewObject.ShapeColor = (0.18, 0.42, 0.76)
+        source.ViewObject.LineColor = (0.04, 0.05, 0.06)
+        source.ViewObject.Transparency = 17
+        self.document.recompute()
+        self.document.UndoMode = True
+
+        self._select(source)
+        Gui.runCommand("PartDesign_Separate", 0)
+        self.document.recompute()
+        self._process_events()
+        operation = self.document.findObjects(
+            "PartDesign::DesignSeparate"
+        )[0]
+        accepted_ids = list(operation.OutputBodyIds)
+        accepted_state_ids = {
+            str(body.VibeCADBodyId): str(
+                body.Tip.CurrentState.BodyStateId
+            )
+            for body in self.document.findObjects("PartDesign::Body")
+            if str(body.VibeCADBodyId) in accepted_ids
+        }
+
+        self.document.openTransaction("Add source solid")
+        source.Shape = Part.makeCompound(
+            [
+                Part.makeBox(12, 10, 10),
+                Part.makeBox(8, 6, 6, App.Vector(20, 0, 0)),
+                Part.makeBox(4, 5, 6, App.Vector(40, 0, 0)),
+            ]
+        )
+        self.document.commitTransaction()
+        self.document.recompute()
+        self.assertFalse(operation.isValid())
+
+        self.assertTrue(operation.ViewObject.doubleClicked())
+        self._process_events()
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        output_lists = [
+            widget
+            for widget in Gui.getMainWindow().findChildren(
+                QtGui.QListWidget
+            )
+            if widget.objectName() == "DesignBodyList"
+        ]
+        self.assertEqual(len(output_lists), 1)
+        self.assertEqual(output_lists[0].count(), 3)
+        summaries = [
+            widget
+            for widget in Gui.getMainWindow().findChildren(QtGui.QLabel)
+            if widget.objectName() == "DesignSeparateSummary"
+        ]
+        self.assertEqual(len(summaries), 1)
+        self.assertIn("2 preserved", summaries[0].text())
+        self.assertIn("1 new", summaries[0].text())
+
+        Gui.Control.activeTaskDialog().reject()
+        self._process_events()
+        self.document.recompute()
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertEqual(list(operation.OutputBodyIds), accepted_ids)
+        self.assertEqual(
+            len(
+                [
+                    body
+                    for body in self.document.findObjects(
+                        "PartDesign::Body"
+                    )
+                    if str(body.VibeCADBodyId) in accepted_ids
+                ]
+            ),
+            2,
+        )
+        self.assertFalse(operation.isValid())
+
+        self.assertTrue(operation.ViewObject.doubleClicked())
+        self._process_events()
+        self.assertTrue(Gui.Control.activeDialog())
+        self.assertTrue(self.document.HasPendingTransaction)
+        output_lists = [
+            widget
+            for widget in Gui.getMainWindow().findChildren(
+                QtGui.QListWidget
+            )
+            if widget.objectName() == "DesignBodyList"
+        ]
+        self.assertEqual(len(output_lists), 1)
+        self.assertEqual(output_lists[0].count(), 3)
+
+        Gui.Control.activeTaskDialog().accept()
+        self._process_events()
+        self.document.recompute()
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+
+        self.assertEqual(list(operation.OutputBodyIds)[:2], accepted_ids)
+        output_ids = list(operation.OutputBodyIds)
+        bodies_by_id = {
+            str(body.VibeCADBodyId): body
+            for body in self.document.findObjects("PartDesign::Body")
+            if str(body.VibeCADBodyId) in output_ids
+        }
+        self.assertEqual(len(bodies_by_id), 3)
+        self.assertEqual(
+            [
+                str(bodies_by_id[body_id].Tip.CurrentState.BodyStateId)
+                for body_id in accepted_ids
+            ],
+            [accepted_state_ids[body_id] for body_id in accepted_ids],
+        )
+        new_body_id = operation.OutputBodyIds[2]
+        new_body = bodies_by_id[new_body_id]
+        self.assertEqual(new_body.Label, "Machined Segment 3")
+        self.assertEqual(
+            str(new_body.ShapeMaterial.UUID),
+            str(source.ShapeMaterial.UUID),
+        )
+        self.assertEqual(
+            new_body.ViewObject.ShapeColor,
+            source.ViewObject.ShapeColor,
+        )
+        self.assertEqual(
+            new_body.ViewObject.LineColor,
+            source.ViewObject.LineColor,
+        )
+        self.assertEqual(
+            new_body.ViewObject.Transparency,
+            source.ViewObject.Transparency,
+        )
+        self.assertEqual(
+            sorted(round(body.Shape.Volume) for body in bodies_by_id.values()),
+            [120, 288, 1200],
+        )
+        PartDesign.validateDesign(operation)
+
     def test_explode_compound_creates_independent_visible_output_bodies(self):
         source = self.document.addObject("Part::Feature", "ExplodeSource")
         source.Label = "Explode Source"
@@ -3727,6 +4101,72 @@ class TestConsolidatedPartTools(unittest.TestCase):
         occurrence.LinkedObject = self.body
         self.document.recompute()
         self.assertEqual(PartGui.resolveModelingObject(occurrence), occurrence)
+        self.assertEqual(PartGui.findModelingBody(occurrence), self.body)
+        self.assertEqual(
+            PartGui.resolveModelingObjectForBody(occurrence, self.body),
+            tip,
+        )
+
+        other_body = self.document.addObject("PartDesign::Body", "OtherBody")
+        self.assertEqual(
+            PartGui.resolveModelingObjectForBody(occurrence, other_body),
+            occurrence,
+        )
+
+    def test_component_publication_finish_tool_uses_previous_tip_without_cycle(self):
+        import PartGui
+
+        source = self._native_pad(self.body, "PublishedFinishSource")
+        program = self.document.addObject("App::Part", "PublishedProgram")
+        program.addObject(self.body)
+        publication = self.document.addObject(
+            "App::Link",
+            "PublishedBody",
+        )
+        publication.LinkedObject = (program, f"{self.body.Name}.")
+        self.document.recompute()
+        self.assertIs(
+            PartGui.resolveModelingObjectForBody(publication, self.body),
+            source,
+        )
+
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.body, "Edge1")
+        Gui.Selection.addSelection(publication, "Edge1")
+        self.assertEqual(len(Gui.Selection.getSelectionEx()), 2)
+        self.assertTrue(Gui.isCommandActive("PartDesign_Chamfer"))
+
+        original_names = tuple(obj.Name for obj in self.document.Objects)
+        original_group = tuple(self.body.Group)
+        Gui.runCommand("PartDesign_Chamfer", 0)
+
+        self.assertTrue(Gui.Control.activeDialog())
+        temporary = self.document.ActiveObject
+        self.assertEqual(temporary.TypeId, "PartDesign::Chamfer")
+        self.assertEqual(temporary.Base[0], source)
+        self.assertNotIn(publication, temporary.OutList)
+        self.assertNotIn(program, temporary.OutList)
+        self.assertIs(
+            PartGui.findModelingBody(publication),
+            self.body,
+        )
+        self.assertIs(
+            PartGui.resolveModelingObjectForBody(publication, self.body),
+            temporary,
+        )
+        self.assertNotIn(
+            publication,
+            self.body.OutListRecursive,
+        )
+
+        self._cancel_task_dialog()
+        self.assertEqual(self.body.Tip, source)
+        self.assertEqual(tuple(self.body.Group), original_group)
+        self.assertEqual(
+            tuple(obj.Name for obj in self.document.Objects),
+            original_names,
+        )
 
     def test_transformed_copy_preserves_link_occurrence_placement(self):
         source = self._native_pad(self.body, "OccurrenceSource")

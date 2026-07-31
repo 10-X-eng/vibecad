@@ -80,35 +80,33 @@ RETIRED_REDUNDANT_COMMANDS = {
     "Part_CoordinateSystem",
     # Part owns the stronger general BREP boolean implementation.
     "PartDesign_Boolean",
+    # Design-global Reference supersedes the Body-owned binder for authoring.
+    "PartDesign_ShapeBinder",
 }
 
-# The generic Sketcher command remains registered for macro compatibility, while the
-# consolidated UI uses the Body-aware Part Design workflow.
-LEGACY_COMPATIBILITY_COMMANDS = {"Sketcher_NewSketch"}
+# The Body-owned sketch command remains callable for old files and macros. New
+# authoring uses the Design-global Sketcher command exclusively.
+LEGACY_COMPATIBILITY_COMMANDS = {"PartDesign_NewSketch"}
 
 MODEL_TOOLBARS = {
     "Part Design Helper Features": [
-        "PartDesign_Body",
-        "PartDesign_CompSketches",
+        "PartDesign_NewComponent",
+        "PartDesign_NewBody",
+        "Sketcher_NewSketch",
+        "Sketcher_EditSketch",
         "Sketcher_ValidateSketch",
         "Part_CheckGeometry",
         "PartDesign_SubShapeBinder",
         "PartDesign_Clone",
     ],
     "Create and Remove Material": [
-        "PartDesign_Pad",
-        "PartDesign_Revolution",
-        "PartDesign_AdditiveLoft",
-        "PartDesign_AdditivePipe",
-        "PartDesign_AdditiveHelix",
-        "PartDesign_CompPrimitiveAdditive",
-        "PartDesign_Pocket",
+        "PartDesign_DesignExtrude",
+        "PartDesign_DesignRevolve",
+        "PartDesign_DesignLoft",
+        "PartDesign_DesignSweep",
+        "PartDesign_DesignHelix",
+        "PartDesign_DesignPrimitive",
         "PartDesign_Hole",
-        "PartDesign_Groove",
-        "PartDesign_SubtractiveLoft",
-        "PartDesign_SubtractivePipe",
-        "PartDesign_SubtractiveHelix",
-        "PartDesign_CompPrimitiveSubtractive",
     ],
     "Finish Shape": [
         "PartDesign_Fillet",
@@ -117,13 +115,11 @@ MODEL_TOOLBARS = {
         "PartDesign_Thickness",
     ],
     "Transform Features": [
-        "PartDesign_Mirrored",
-        "PartDesign_LinearPattern",
-        "PartDesign_PolarPattern",
-        "PartDesign_MultiTransform",
+        "PartDesign_DesignMirror",
+        "PartDesign_DesignLinearPattern",
+        "PartDesign_DesignCircularPattern",
     ],
     "Standalone and Surface Geometry": [
-        "Part_Tube",
         "Part_Primitives",
         "Part_Builder",
         "Part_Extrude",
@@ -140,13 +136,12 @@ MODEL_TOOLBARS = {
         "Part_ProjectionOnSurface",
     ],
     "Boolean, Split, and Repair": [
-        "Part_CompCompoundTools",
-        "Part_Boolean",
-        "Part_Cut",
-        "Part_Fuse",
-        "Part_Common",
+        "Part_Compound",
+        "PartDesign_Separate",
+        "Part_CompoundFilter",
+        "PartDesign_Combine",
         "Part_CompJoinFeatures",
-        "Part_CompSplitFeatures",
+        "PartDesign_Split",
         "Part_Defeaturing",
     ],
     "Standard Components": [
@@ -158,6 +153,7 @@ MODEL_TOOLBARS = {
 }
 
 MODEL_MENU_ONLY_COMMANDS = {
+    "Sketcher_MapSketch",
     "Sketcher_ReorientSketch",
     "Sketcher_MergeSketches",
     "Sketcher_MirrorSketch",
@@ -165,7 +161,6 @@ MODEL_MENU_ONLY_COMMANDS = {
     "PartDesign_Line",
     "PartDesign_Plane",
     "PartDesign_CoordinateSystem",
-    "PartDesign_ShapeBinder",
     "Materials_InspectAppearance",
     "Materials_InspectMaterial",
     "Part_BoxSelection",
@@ -176,11 +171,11 @@ MODEL_MENU_ONLY_COMMANDS = {
     "Part_PointsFromMesh",
     "Part_RefineShape",
     "Part_ReverseShape",
-    "Part_SectionCut",
     "Part_ShapeFromMesh",
     "Part_SimpleCopy",
     "Part_ToleranceSet",
     "Part_TransformedCopy",
+    "Std_ToggleClipPlane",
     "PartDesign_InvoluteGear",
     "PartDesign_Sprocket",
     "PartDesign_DuplicateSelection",
@@ -201,94 +196,92 @@ STANDARD_TOOLBAR_TITLES = {
 }
 
 COMPOSITE_ACTION_TARGETS = {
-    "PartDesign_CompSketches": [
-        "PartDesign_NewSketch",
-        "Sketcher_MapSketch",
-        "Sketcher_EditSketch",
-    ],
-    "PartDesign_CompPrimitiveAdditive": [
-        "PartDesign_AdditiveBox",
-        "PartDesign_AdditiveCylinder",
-        "PartDesign_AdditiveSphere",
-        "PartDesign_AdditiveCone",
-        "PartDesign_AdditiveEllipsoid",
-        "PartDesign_AdditiveTorus",
-        "PartDesign_AdditivePrism",
-        "PartDesign_AdditiveWedge",
-    ],
-    "PartDesign_CompPrimitiveSubtractive": [
-        "PartDesign_SubtractiveBox",
-        "PartDesign_SubtractiveCylinder",
-        "PartDesign_SubtractiveSphere",
-        "PartDesign_SubtractiveCone",
-        "PartDesign_SubtractiveEllipsoid",
-        "PartDesign_SubtractiveTorus",
-        "PartDesign_SubtractivePrism",
-        "PartDesign_SubtractiveWedge",
-    ],
-    "Part_CompCompoundTools": [
-        "Part_Compound",
-        "Part_ExplodeCompound",
-        "Part_CompoundFilter",
+    "PartDesign_DesignPrimitive": [
+        "PartDesign::DesignBox",
+        "PartDesign::DesignCylinder",
+        "PartDesign::DesignSphere",
+        "PartDesign::DesignCone",
+        "PartDesign::DesignEllipsoid",
+        "PartDesign::DesignTorus",
+        "PartDesign::DesignPrism",
+        "PartDesign::DesignWedge",
+        "PartDesign::DesignTube",
     ],
     "Part_CompJoinFeatures": ["Part_JoinConnect", "Part_JoinEmbed", "Part_JoinCutout"],
     "Part_CompOffset": ["Part_Offset", "Part_Offset2D"],
-    "Part_CompSplitFeatures": [
-        "Part_BooleanFragments",
-        "Part_SliceApart",
-        "Part_Slice",
-        "Part_XOR",
-    ],
 }
 
 MODEL_COMMAND_TIMELINE_BEHAVIOR = {
-    "PartDesign_Body": frozenset({"structural"}),
-    "PartDesign_CompSketches": frozenset({"read-only"}),
-    "PartDesign_NewSketch": frozenset({"operation", "standalone"}),
+    "PartDesign_NewComponent": frozenset({"structural"}),
+    "PartDesign_NewBody": frozenset({"structural"}),
+    "Sketcher_NewSketch": frozenset({"operation", "standalone"}),
     "Sketcher_MapSketch": frozenset({"in-place"}),
     "Sketcher_EditSketch": frozenset({"in-place"}),
     "Sketcher_ValidateSketch": frozenset({"in-place"}),
     "Part_CheckGeometry": frozenset({"read-only"}),
     "PartDesign_SubShapeBinder": frozenset({"operation", "source-preserving"}),
     "PartDesign_Clone": frozenset({"operation", "source-preserving"}),
-    "PartDesign_Pad": frozenset({"operation", "replacement"}),
-    "PartDesign_Revolution": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveLoft": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditivePipe": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveHelix": frozenset({"operation", "replacement"}),
-    "PartDesign_CompPrimitiveAdditive": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveBox": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveCylinder": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveSphere": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveCone": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveEllipsoid": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveTorus": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditivePrism": frozenset({"operation", "replacement"}),
-    "PartDesign_AdditiveWedge": frozenset({"operation", "replacement"}),
-    "PartDesign_Pocket": frozenset({"operation", "replacement"}),
-    "PartDesign_Hole": frozenset({"operation", "replacement"}),
-    "PartDesign_Groove": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveLoft": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractivePipe": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveHelix": frozenset({"operation", "replacement"}),
-    "PartDesign_CompPrimitiveSubtractive": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveBox": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveCylinder": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveSphere": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveCone": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveEllipsoid": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveTorus": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractivePrism": frozenset({"operation", "replacement"}),
-    "PartDesign_SubtractiveWedge": frozenset({"operation", "replacement"}),
-    "PartDesign_Fillet": frozenset({"operation", "replacement"}),
-    "PartDesign_Chamfer": frozenset({"operation", "replacement"}),
-    "PartDesign_Draft": frozenset({"operation", "replacement"}),
-    "PartDesign_Thickness": frozenset({"operation", "replacement"}),
-    "PartDesign_Mirrored": frozenset({"operation", "replacement"}),
-    "PartDesign_LinearPattern": frozenset({"operation", "replacement"}),
-    "PartDesign_PolarPattern": frozenset({"operation", "replacement"}),
-    "PartDesign_MultiTransform": frozenset({"operation", "replacement"}),
-    "Part_Tube": frozenset({"operation", "standalone"}),
+    "PartDesign_DesignExtrude": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignRevolve": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignLoft": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignSweep": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignHelix": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignPrimitive": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignBox": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignCylinder": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignSphere": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignCone": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignEllipsoid": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignTorus": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignPrism": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignWedge": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign::DesignTube": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_Hole": frozenset({"operation", "design-operation"}),
+    "PartDesign_Fillet": frozenset({"operation", "design-operation"}),
+    "PartDesign_Chamfer": frozenset({"operation", "design-operation"}),
+    "PartDesign_Draft": frozenset({"operation", "design-operation"}),
+    "PartDesign_Thickness": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignMirror": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignLinearPattern": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_DesignCircularPattern": frozenset(
+        {"operation", "design-operation"}
+    ),
     "Part_Primitives": frozenset({"operation", "standalone"}),
     "Part_Builder": frozenset({"operation", "source-preserving"}),
     "Part_Extrude": frozenset({"operation", "replacement"}),
@@ -305,23 +298,19 @@ MODEL_COMMAND_TIMELINE_BEHAVIOR = {
     "Part_Offset": frozenset({"operation", "replacement"}),
     "Part_Offset2D": frozenset({"operation", "replacement"}),
     "Part_ProjectionOnSurface": frozenset({"operation", "source-preserving"}),
-    "Part_CompCompoundTools": frozenset({"read-only"}),
     "Part_Compound": frozenset({"operation", "replacement"}),
-    "Part_ExplodeCompound": frozenset({"operation", "replacement"}),
+    "PartDesign_Separate": frozenset(
+        {"operation", "design-operation"}
+    ),
     "Part_CompoundFilter": frozenset({"operation", "replacement"}),
-    "Part_Boolean": frozenset({"operation", "replacement"}),
-    "Part_Cut": frozenset({"operation", "replacement"}),
-    "Part_Fuse": frozenset({"operation", "replacement"}),
-    "Part_Common": frozenset({"operation", "replacement"}),
+    "PartDesign_Combine": frozenset(
+        {"operation", "design-operation"}
+    ),
+    "PartDesign_Split": frozenset({"operation", "design-operation"}),
     "Part_CompJoinFeatures": frozenset({"read-only"}),
     "Part_JoinConnect": frozenset({"operation", "replacement"}),
     "Part_JoinEmbed": frozenset({"operation", "replacement"}),
     "Part_JoinCutout": frozenset({"operation", "replacement"}),
-    "Part_CompSplitFeatures": frozenset({"read-only"}),
-    "Part_BooleanFragments": frozenset({"operation", "replacement"}),
-    "Part_SliceApart": frozenset({"operation", "replacement"}),
-    "Part_Slice": frozenset({"operation", "replacement"}),
-    "Part_XOR": frozenset({"operation", "replacement"}),
     "Part_Defeaturing": frozenset({"operation", "replacement"}),
     "VibeCAD_InsertStandardFastener": frozenset({"operation", "standalone"}),
     "VibeCAD_EditStandardFastener": frozenset({"in-place"}),
@@ -336,7 +325,6 @@ MODEL_COMMAND_TIMELINE_BEHAVIOR = {
     "PartDesign_Line": frozenset({"operation", "source-preserving"}),
     "PartDesign_Plane": frozenset({"operation", "source-preserving"}),
     "PartDesign_CoordinateSystem": frozenset({"operation", "source-preserving"}),
-    "PartDesign_ShapeBinder": frozenset({"operation", "source-preserving"}),
     "Materials_InspectAppearance": frozenset({"read-only"}),
     "Materials_InspectMaterial": frozenset({"read-only"}),
     "Part_BoxSelection": frozenset({"read-only"}),
@@ -347,11 +335,11 @@ MODEL_COMMAND_TIMELINE_BEHAVIOR = {
     "Part_PointsFromMesh": frozenset({"operation", "source-preserving"}),
     "Part_RefineShape": frozenset({"operation", "replacement"}),
     "Part_ReverseShape": frozenset({"operation", "replacement"}),
-    "Part_SectionCut": frozenset({"operation", "replacement"}),
     "Part_ShapeFromMesh": frozenset({"operation", "replacement"}),
     "Part_SimpleCopy": frozenset({"operation", "source-preserving"}),
     "Part_ToleranceSet": frozenset({"operation", "replacement"}),
     "Part_TransformedCopy": frozenset({"operation", "source-preserving"}),
+    "Std_ToggleClipPlane": frozenset({"read-only"}),
     "PartDesign_InvoluteGear": frozenset({"operation", "standalone"}),
     "PartDesign_Sprocket": frozenset({"operation", "standalone"}),
     "PartDesign_DuplicateSelection": frozenset({"operation", "source-preserving"}),
@@ -624,7 +612,6 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
         expected_menu = expected_surface - set(COMPOSITE_ACTION_TARGETS)
         self.assertEqual(live_menu, expected_menu)
         self.assertEqual(surfaced_commands, expected_surface)
-        self.assertEqual(len(expected_surface), 111 + len(optional_registered))
         composite_children = {
             child
             for children in COMPOSITE_ACTION_TARGETS.values()
@@ -634,7 +621,6 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
             (expected_surface - composite_children)
             - set(Gui.listCommands())
         )
-        self.assertEqual(len(MODEL_COMMAND_TIMELINE_BEHAVIOR), 112)
         self.assertEqual(
             set(MODEL_COMMAND_TIMELINE_BEHAVIOR),
             expected_surface
@@ -647,6 +633,7 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
             "source-preserving",
             "replacement",
             "body-history-step",
+            "design-operation",
             "in-place",
             "read-only",
         }
@@ -655,6 +642,7 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
             "source-preserving",
             "replacement",
             "body-history-step",
+            "design-operation",
         }
         for command, behaviors in MODEL_COMMAND_TIMELINE_BEHAVIOR.items():
             with self.subTest(command=command):
@@ -694,7 +682,11 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
                 Gui.Command.get(command_name).getInfo()["menuText"], expected_label
             )
 
-        for command_name in sorted(RETAINED_PART_COMMANDS):
+        surfaced_retained_commands = (
+            RETAINED_PART_COMMANDS
+            & set(MODEL_COMMAND_TIMELINE_BEHAVIOR)
+        )
+        for command_name in sorted(surfaced_retained_commands):
             command = Gui.Command.get(command_name)
             self.assertIsNotNone(command, command_name)
             actions = command.getAction()

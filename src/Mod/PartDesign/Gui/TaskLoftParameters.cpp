@@ -35,9 +35,10 @@
 #include <Gui/Document.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Tools.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureLoft.h>
-
 #include "ui_TaskLoftParameters.h"
+#include "ReferenceSelection.h"
 #include "TaskLoftParameters.h"
 #include "TaskSketchBasedParameters.h"
 
@@ -277,21 +278,19 @@ void TaskLoftParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
 
     if (msg.Type == Gui::SelectionChanges::AddSelection) {
         if (referenceSelected(msg)) {
-            App::Document* document = App::GetApplication().getDocument(msg.pDocName);
-            App::DocumentObject* object = document ? document->getObject(msg.pObjectName) : nullptr;
-            if (object) {
-                // TODO: if it is a single vertex of a sketch, use that subshape's name
-                QString label = make2DLabel(object, {msg.pSubName});
-                if (selectionMode == refProfile) {
-                    ui->profileBaseEdit->setText(label);
-                }
-                else if (selectionMode == refAdd
-                         || selectionMode == refRemove) {
-                    // The property is authoritative. Rebuilding also handles
-                    // duplicate display labels without deleting the wrong
-                    // section row.
-                    rebuildSectionRows();
-                }
+            auto* loft = getObject<PartDesign::Loft>();
+            if (selectionMode == refProfile && loft && loft->Profile.getValue()) {
+                ui->profileBaseEdit->setText(
+                    make2DLabel(
+                        loft->Profile.getValue(),
+                        loft->Profile.getSubValues()
+                    )
+                );
+            }
+            else if (selectionMode == refAdd || selectionMode == refRemove) {
+                // The property is authoritative. Rebuilding also handles
+                // duplicate display labels and component presentations.
+                rebuildSectionRows();
             }
 
             clearButtons();
@@ -325,7 +324,13 @@ bool TaskLoftParameters::referenceSelected(const Gui::SelectionChanges& msg) con
         // change the references
         auto loft = getObject<PartDesign::Loft>();
         App::Document* doc = loft->getDocument();
-        App::DocumentObject* obj = doc->getObject(msg.pObjectName);
+        App::DocumentObject* obj = resolveModelingReference(
+            loft,
+            doc->getObject(msg.pObjectName)
+        );
+        if (!obj) {
+            return false;
+        }
 
         if (selectionMode == refProfile) {
             auto view = getViewObject<ViewProviderLoft>();
@@ -562,12 +567,20 @@ bool TaskDlgLoftParameters::accept()
 {
     if (auto loft = getObject<PartDesign::Loft>()) {
         getViewObject<ViewProviderLoft>()->highlightReferences(ViewProviderLoft::Both, false);
+        const bool designWide =
+            getObject<PartDesign::DesignLoft>() != nullptr;
 
         // First verify that the loft can be built and then hide the sections as otherwise
         // they will remain hidden if the loft's recompute fails
         if (TaskDlgSketchBasedParameters::accept()) {
-            for (App::DocumentObject* obj : loft->Sections.getValues()) {
-                Gui::cmdAppObjectHide(obj);
+            // A Design loft's section sketches are reusable definitions at
+            // the Design root.  Their visibility is independent of accepting
+            // this operation; legacy Body-owned lofts keep their established
+            // auto-hide behavior.
+            if (!designWide) {
+                for (App::DocumentObject* obj : loft->Sections.getValues()) {
+                    Gui::cmdAppObjectHide(obj);
+                }
             }
 
             return true;

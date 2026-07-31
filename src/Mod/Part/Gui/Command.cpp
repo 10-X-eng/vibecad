@@ -79,6 +79,7 @@
 #include "SectionCutting.h"
 #include "TaskCheckGeometry.h"
 #include "TaskLoft.h"
+#include "TaskOffset.h"
 #include "TaskResultValidation.h"
 #include "TaskShapeBuilder.h"
 #include "TaskSweep.h"
@@ -1219,8 +1220,11 @@ void CmdPartCompound::activated(int iMsg)
         return;
     }
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Compound"));
     try {
+        PartGui::ModelingTaskAttempt attempt(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Compound")
+        );
         const std::string resultName =
             document->getUniqueObjectName("Compound");
         const QString factory = QStringLiteral(
@@ -1239,6 +1243,8 @@ void CmdPartCompound::activated(int iMsg)
             factory.toUtf8(),
             Part::Compound::getClassTypeId()
         );
+        attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
 
         std::stringstream links;
         links << "Links = [";
@@ -1248,25 +1254,20 @@ void CmdPartCompound::activated(int iMsg)
         links << "]";
         FCMD_OBJ_CMD(result, links.str());
 
-        if (!presentations.empty()
-            && PartGui::setModelingReplacedInputs(
-                *result,
-                presentations
-            )) {
+        if (!presentations.empty()) {
+            attempt.trackReplacedInputs(*result, presentations);
             for (auto* presentation : presentations) {
                 Gui::cmdAppObjectHide(presentation);
             }
         }
         updateDocument(document);
         PartGui::TaskResultValidation::validatePartResult(result);
-        commitCommand();
+        attempt.commit();
     }
     catch (Base::Exception& error) {
-        abortCommand();
         error.reportException();
     }
     catch (...) {
-        abortCommand();
         throw;
     }
 }
@@ -1326,9 +1327,12 @@ void CmdPartSection::activated(int iMsg)
         }
     }
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Section"));
     App::DocumentObject* result = nullptr;
     try {
+        PartGui::ModelingTaskAttempt attempt(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Section")
+        );
         const QString factory
             = QStringLiteral("App.getDocument('%1').addObject("
                              "'Part::Section','%2')")
@@ -1339,9 +1343,12 @@ void CmdPartSection::activated(int iMsg)
             factory.toUtf8(),
             Part::Section::getClassTypeId()
         );
+        attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
         FCMD_OBJ_CMD(result, "Base = " << Gui::Command::getObjectCmd(base));
         FCMD_OBJ_CMD(result, "Tool = " << Gui::Command::getObjectCmd(tool));
-        if (!presentations.empty() && PartGui::setModelingReplacedInputs(*result, presentations)) {
+        if (!presentations.empty()) {
+            attempt.trackReplacedInputs(*result, presentations);
             for (auto* presentation : presentations) {
                 Gui::cmdAppObjectHide(presentation);
             }
@@ -1354,14 +1361,13 @@ void CmdPartSection::activated(int iMsg)
             Gui::Command::getObjectCmd(base).c_str()
         );
         updateActive();
-        commitCommand();
+        PartGui::TaskResultValidation::validatePartResult(result);
+        attempt.commit();
     }
     catch (Base::Exception& error) {
-        abortCommand();
         error.reportException();
     }
     catch (...) {
-        abortCommand();
         throw;
     }
 }
@@ -1668,10 +1674,6 @@ void CmdPartMakeSolid::activated(int iMsg)
                 result,
                 "Shape = " << shapeExpression
             );
-            PartGui::prepareModelingResultsForOperands(
-                {result},
-                {source}
-            );
             auto* presentation =
                 PartGui::resolveModelingPresentationObject(source);
             if (presentation
@@ -1690,6 +1692,9 @@ void CmdPartMakeSolid::activated(int iMsg)
                 "Convert to solid did not create every selected result"
             );
         }
+        attempt.markResultAsDesignDefinition(
+            *commandResults.back()
+        );
         attempt.commit();
     }
     catch (Base::Exception& e) {
@@ -1755,87 +1760,83 @@ void CmdPartReverseShape::activated(int iMsg)
     if (selection.empty()) {
         return;
     }
-    openCommand(QT_TRANSLATE_NOOP("Command", "Reverse"));
     std::vector<App::DocumentObject*> commandResults;
     std::vector<App::DocumentObject*> replacedPresentations;
-    for (auto& selected : selection) {
-        auto* it = selected.getObject();
-        const TopoDS_Shape& shape = Part::Feature::getShape(
-            it,
-            Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
+    try {
+        PartGui::ModelingTaskAttempt attempt(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Reverse")
         );
-        if (!shape.IsNull()) {
+        for (auto& selected : selection) {
+            auto* it = selected.getObject();
+            const TopoDS_Shape& shape = Part::Feature::getShape(
+                it,
+                Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform
+            );
+            if (shape.IsNull()) {
+                throw Base::ValueError(
+                    "Reverse requires a valid shape for every selected object"
+                );
+            }
             std::string name = it->getNameInDocument();
             name += "_rev";
             name = getUniqueObjectName(name.c_str());
 
-            try {
-                const QString factory = QStringLiteral("App.getDocument('%1').addObject("
-                                                       "'Part::Reverse','%2')")
-                                            .arg(
-                                                QString::fromLatin1(document->getName()),
-                                                QString::fromStdString(name)
-                                            );
-                auto* result = Gui::Command::runDocumentObjectCommand(
-                    Gui::Command::Doc,
-                    *document,
-                    factory.toUtf8(),
-                    Part::Reverse::getClassTypeId()
-                );
-                FCMD_OBJ_CMD(result, "Source = " << Gui::Command::getObjectCmd(it));
-                FCMD_OBJ_CMD(
-                    result,
-                    "Label = \"" << Base::Tools::escapeEncodeString(it->Label.getValue()) << " (Rev)\""
-                );
-                PartGui::prepareModelingResultsForOperands({result}, {it});
-                auto* presentation = PartGui::resolveModelingPresentationObject(it);
-                if (presentation && presentation->Visibility.getValue()) {
-                    if (std::ranges::find(replacedPresentations, presentation)
-                        == replacedPresentations.end()) {
-                        replacedPresentations.push_back(presentation);
-                    }
+            const QString factory = QStringLiteral("App.getDocument('%1').addObject("
+                                                   "'Part::Reverse','%2')")
+                                        .arg(
+                                            QString::fromLatin1(document->getName()),
+                                            QString::fromStdString(name)
+                                        );
+            auto* result = Gui::Command::runDocumentObjectCommand(
+                Gui::Command::Doc,
+                *document,
+                factory.toUtf8(),
+                Part::Reverse::getClassTypeId()
+            );
+            attempt.trackCreatedObject(*result);
+            FCMD_OBJ_CMD(result, "Source = " << Gui::Command::getObjectCmd(it));
+            FCMD_OBJ_CMD(
+                result,
+                "Label = \"" << Base::Tools::escapeEncodeString(it->Label.getValue()) << " (Rev)\""
+            );
+            auto* presentation = PartGui::resolveModelingPresentationObject(it);
+            if (presentation && presentation->Visibility.getValue()) {
+                if (std::ranges::find(replacedPresentations, presentation)
+                    == replacedPresentations.end()) {
+                    replacedPresentations.push_back(presentation);
                 }
-                commandResults.push_back(result);
-                copyVisual(result, "ShapeAppearance", it);
-                copyVisual(result, "LineColor", it);
-                copyVisual(result, "PointColor", it);
             }
-            catch (const Base::Exception& e) {
-                Base::Console().error("Cannot reverse %s because %s.\n", it->Label.getValue(), e.what());
-                abortCommand();
-                return;
-            }
-            catch (...) {
-                abortCommand();
-                throw;
-            }
+            commandResults.push_back(result);
+            copyVisual(result, "ShapeAppearance", it);
+            copyVisual(result, "LineColor", it);
+            copyVisual(result, "PointColor", it);
         }
-    }
-    if (commandResults.size() != selection.size()) {
-        abortCommand();
-        Base::Console().error("Reverse did not create every selected result.\n");
-        return;
-    }
 
-    try {
-        PartGui::groupModelingCommandOutputs(commandResults);
-        if (!commandResults.empty() && !replacedPresentations.empty()
-            && PartGui::setModelingReplacedInputs(*commandResults.back(), replacedPresentations)) {
+        if (commandResults.size() != selection.size()) {
+            throw Base::RuntimeError(
+                "Reverse did not create every selected result"
+            );
+        }
+        attempt.markResultAsDesignDefinition(*commandResults.back());
+        if (!replacedPresentations.empty()) {
+            attempt.trackReplacedInputs(
+                *commandResults.back(),
+                replacedPresentations
+            );
             for (auto* presentation : replacedPresentations) {
                 Gui::cmdAppObjectHide(presentation);
             }
         }
+        attempt.commit();
     }
     catch (Base::Exception& e) {
-        abortCommand();
         e.reportException();
         return;
     }
     catch (...) {
-        abortCommand();
         throw;
     }
-    commitCommand();
     updateActive();
 }
 
@@ -1973,8 +1974,11 @@ void CmdPartMakeFace::activated(int iMsg)
         return;
     }
 
-    openCommand(QT_TRANSLATE_NOOP("Command", "Make face"));
     try {
+        PartGui::ModelingTaskAttempt attempt(
+            *document,
+            QT_TRANSLATE_NOOP("Command", "Make face")
+        );
         const std::string resultName =
             document->getUniqueObjectName("Face");
         const QString factory = QStringLiteral(
@@ -1993,6 +1997,8 @@ void CmdPartMakeFace::activated(int iMsg)
             factory.toUtf8(),
             Part::Face::getClassTypeId()
         );
+        attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
 
         std::stringstream sources;
         sources << "Sources = (";
@@ -2019,25 +2025,20 @@ void CmdPartMakeFace::activated(int iMsg)
         sources << ")";
         FCMD_OBJ_CMD(result, sources.str());
 
-        if (!presentations.empty()
-            && PartGui::setModelingReplacedInputs(
-                *result,
-                presentations
-            )) {
+        if (!presentations.empty()) {
+            attempt.trackReplacedInputs(*result, presentations);
             for (auto* presentation : presentations) {
                 Gui::cmdAppObjectHide(presentation);
             }
         }
         updateDocument(document);
         PartGui::TaskResultValidation::validatePartResult(result);
-        commitCommand();
+        attempt.commit();
     }
     catch (Base::Exception& error) {
-        abortCommand();
         error.reportException();
     }
     catch (...) {
-        abortCommand();
         throw;
     }
 }
@@ -2362,43 +2363,28 @@ void CmdPartOffset::activated(int iMsg)
     if (!document || selection.size() != 1) {
         return;
     }
-    const App::DocumentObject* shape = selection.front().getObject();
+    auto* shape = const_cast<App::DocumentObject*>(
+        selection.front().getObject()
+    );
     if (!shape) {
         return;
     }
-    std::string offset = getUniqueObjectName("Offset");
-
-    openCommand(QT_TRANSLATE_NOOP("Command", "Make Offset"));
     try {
-        const QString factory
-            = QStringLiteral("App.getDocument('%1').addObject('Part::Offset','%2')")
-                  .arg(QString::fromLatin1(document->getName()), QString::fromStdString(offset));
-        auto* result = freecad_cast<Part::Offset*>(Gui::Command::runDocumentObjectCommand(
-            Gui::Command::Doc,
+        auto* task = new PartGui::TaskOffset(
             *document,
-            factory.toUtf8(),
-            Part::Offset::getClassTypeId()
-        ));
-        if (!result) {
-            throw Base::RuntimeError("Offset returned an incompatible result");
-        }
-        doCommand(Doc, "%s.Source = %s", getObjectCmd(result).c_str(), getObjectCmd(shape).c_str());
-        doCommand(Doc, "%s.Value = 1.0", getObjectCmd(result).c_str());
-        updateDocument(document);
-
-        if (!shape->isDerivedFrom<Part::Part2DObject>()) {
-            copyVisual(result, "ShapeAppearance", shape);
-            copyVisual(result, "LineColor", shape);
-            copyVisual(result, "PointColor", shape);
-        }
-        Gui::cmdSetEdit(result);
+            *shape,
+            false
+        );
+        Gui::Control().showDialog(
+            task,
+            document
+        );
+        Gui::cmdSetEdit(task->getObject());
     }
     catch (Base::Exception& error) {
-        abortCommand();
         error.reportException();
     }
     catch (...) {
-        abortCommand();
         throw;
     }
 }
@@ -2436,43 +2422,28 @@ void CmdPartOffset2D::activated(int iMsg)
     if (!document || selection.size() != 1 || !PartGui::isOffset2DSelection()) {
         return;
     }
-    const App::DocumentObject* shape = selection.front().getObject();
+    auto* shape = const_cast<App::DocumentObject*>(
+        selection.front().getObject()
+    );
     if (!shape) {
         return;
     }
-    std::string offset = getUniqueObjectName("Offset2D");
-
-    openCommand(QT_TRANSLATE_NOOP("Command", "Make 2D Offset"));
     try {
-        const QString factory
-            = QStringLiteral("App.getDocument('%1').addObject('Part::Offset2D','%2')")
-                  .arg(QString::fromLatin1(document->getName()), QString::fromStdString(offset));
-        auto* result = freecad_cast<Part::Offset2D*>(Gui::Command::runDocumentObjectCommand(
-            Gui::Command::Doc,
+        auto* task = new PartGui::TaskOffset(
             *document,
-            factory.toUtf8(),
-            Part::Offset2D::getClassTypeId()
-        ));
-        if (!result) {
-            throw Base::RuntimeError("2D Offset returned an incompatible result");
-        }
-        doCommand(Doc, "%s.Source = %s", getObjectCmd(result).c_str(), getObjectCmd(shape).c_str());
-        doCommand(Doc, "%s.Value = 1.0", getObjectCmd(result).c_str());
-        updateDocument(document);
-
-        if (!shape->isDerivedFrom<Part::Part2DObject>()) {
-            copyVisual(result, "ShapeAppearance", shape);
-            copyVisual(result, "LineColor", shape);
-            copyVisual(result, "PointColor", shape);
-        }
-        Gui::cmdSetEdit(result);
+            *shape,
+            true
+        );
+        Gui::Control().showDialog(
+            task,
+            document
+        );
+        Gui::cmdSetEdit(task->getObject());
     }
     catch (Base::Exception& error) {
-        abortCommand();
         error.reportException();
     }
     catch (...) {
-        abortCommand();
         throw;
     }
 }
@@ -2907,6 +2878,7 @@ void CmdPartRuledSurface::activated(int iMsg)
             throw Base::RuntimeError("Ruled Surface returned an incompatible result");
         }
         attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
         doCommand(
             Doc,
             "%s.Curve1=(%s,['%s'])",

@@ -915,6 +915,24 @@ QDockWidget QTreeView, QDockWidget QListView {
   border: none;
   border-radius: 0px; }
 
+/* Permanent model browser: viewport-owned chrome, never a dock surface. */
+QWidget#VibeCADModelBrowserHost,
+QWidget#VibeCADModelBrowserHost QWidget,
+QDockWidget#Std_TreeView {
+  background-color: transparent;
+  border: none; }
+
+QDockWidget#Std_TreeView QTreeView {
+  background-color: transparent;
+  alternate-background-color: transparent;
+  border: none;
+  border-radius: 0px; }
+
+QDockWidget#Std_TreeView QHeaderView,
+QDockWidget#Std_TreeView QHeaderView::section {
+  background-color: transparent;
+  border: none; }
+
 QStatusBar {
   min-height: 32px;
   max-height: 40px;

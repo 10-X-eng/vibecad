@@ -2,7 +2,7 @@
 
 Status: In Progress
 Scope owner: VibeCAD native human-tool experience
-Last updated: 2026-07-30
+Last updated: 2026-07-31
 
 This is the completion ledger for the current effort. It is intentionally
 short. A ribbon is not complete because code exists or a test happens to pass;
@@ -14,8 +14,9 @@ remains.
 VibeCAD must provide:
 
 1. One Fusion-style global History timeline at the bottom of the application.
-2. A clear model tree: Bodies show final results, Sketches are independently
-   visible, and feature operations are edited or suppressed through History.
+2. A clear design model and tree: the Design owns reusable Sketches and global
+   History; stable Bodies may be grouped into Components for assembly/BOM
+   meaning. Feature operations are edited or suppressed through History.
 3. Predictable native ribbon tools for Model, Assemble, Mesh, Analyze,
    Manufacture, and Drawing.
 4. Sketcher is a first-class editing surface with its own command and lifecycle
@@ -65,8 +66,8 @@ For every applicable command:
 
 | Surface | Current state | Must be true before `DONE` |
 |---|---|---|
-| Shared application shell | **Open regression:** full release and no-op rebuild; 22 source-contract, 21 core transaction/timeline, 19 cross-ribbon/Inspect GUI, 4 grid, 1 startup across 17 workbenches, 47 timeline, and 21 tree tests pass, but exiting Sketcher can still hide the tree panel until it is toggled off and on | Global timeline, tree, grid, document tabs, ribbon switching, selection, visibility, save/reopen, and undo pass together |
-| Model: Part Design + retained Part + Fasteners | **Verified:** clean build; 13 ownership/inventory, 64 retained-Part lifecycle, 26 retained-dialog, 34 native-ribbon, 52 exact-input, 27 native-task, 47 timeline, 21 tree, and 20 fastener tests pass | Every shipped command is classified and exercised; native solid, surface, datum, dress-up, pattern, transform, and fastener tools use correct selection, task, Body-result, and History semantics |
+| Shared application shell | **Implementation complete; full gate pending:** the Model browser is permanent transparent viewport chrome with no dock, tab, splitter, close, float, resize, or visibility control; command dialogs remain in the separate Task pane. `FreeCADGui`, 26 source contracts, and a clean-profile live Model/Mesh/Assemble tree-host smoke pass | Global timeline, permanent tree, separate Task pane, grid, document tabs, ribbon switching, selection, visibility, save/reopen, and undo pass together |
+| Model: Design + Components + Part Design + retained Part + Fasteners | **Reopened:** the Body-pinned sketch/history model cannot reuse one sketch across Bodies or represent one atomic multi-Body operation; see `design-modeling-completion.md` | New Component is first-class; global reusable sketches, stable Bodies, explicit multi-Body operations, and every retained native tool satisfy the Design contract |
 | Sketcher | **Verified:** clean build; 35 complete-ribbon GUI, 45 internal-profile, 9 exact-factory, 6 source transaction, and 32 surrounding native regression tests pass | Every shipped command and composite leaf is classified; create/edit/close/cancel, geometry, constraints, attachment, visibility, exact-document selection, undo/redo, save/reopen, and Model-ribbon return preserve one coherent sketch and transaction |
 | Assemble | **Verified:** clean build; 48 GUI lifecycle and 16 core tests pass, including rendered-handle transform commit, no-op cancel, undo/redo, and edit re-entry | Transform dragger passes clean-profile start/move/finish/cancel acceptance |
 | Mesh + MeshPart | **Verified:** clean build; 69 GUI lifecycle and 3 source-contract tests pass with no skips | All shipped convert, modify, boolean, cut, segment, and analysis commands satisfy their declared operation/read-only contract; command icons, exact transactions, suppression, undo/redo, and save/reopen are covered |
@@ -85,9 +86,9 @@ For every applicable command:
 Only concrete product defects belong here. Remove an item only after its full
 lifecycle is verified.
 
-- Exiting Sketcher can hide the tree panel. Toggling the panel off and on
-  restores it, but the edit-teardown visibility transition must be found and
-  fixed rather than masked by reload logic.
+- The current Part Design ownership graph pins sketches and feature history to
+  one Body. Complete `design-modeling-completion.md`; do not infer ownership
+  from active Body, tree order, visibility, or presentation links.
 
 ## Objective `DONE` gate
 

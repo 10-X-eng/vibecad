@@ -21,7 +21,7 @@
 # *                                                                         *
 # ***************************************************************************
 
-import FreeCAD, Part
+import FreeCAD, Part, PartDesign
 from fcsprocket import fcsprocket
 from fcsprocket import sprocket
 from PartDesign.PartDesignTimeline import (
@@ -52,15 +52,7 @@ def makeSprocket(name, document=None):
     Sprocket(obj)
     if FreeCAD.GuiUp:
         ViewProviderSprocket(obj.ViewObject)
-    # FreeCAD.ActiveDocument.recompute()
-    if FreeCAD.GuiUp:
-        gui_document = FreeCADGui.getDocument(document.Name)
-        body = gui_document.ActiveView.getActiveObject("pdbody")
-        part = gui_document.ActiveView.getActiveObject("part")
-        if body:
-            body.Group = body.Group + [obj]
-        elif part:
-            part.Group = part.Group + [obj]
+    PartDesign.initializeDesignDefinition(obj)
     mark_operation(obj)
     return obj
 
@@ -405,6 +397,7 @@ class SprocketTaskPanel:
         ):
             status = self.obj.getStatusString()
             raise RuntimeError(status or "The sprocket is invalid")
+        PartDesign.finalizeDesignDefinition(self.obj)
         self.gui_document.resetEdit()
         return True
 

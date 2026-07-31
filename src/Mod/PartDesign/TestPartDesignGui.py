@@ -44,6 +44,7 @@ from PartDesignTests.TestContextMenuTracking import (
     TestContextMenuSurfaceContract,
     TestContextMenuTracking,
 )
+from PartDesignTests.TestDesignHoleGui import TestDesignHoleGui
 from PartDesignTests.TestExactTransactionContract import TestExactTransactionContract
 from PartDesignTests.TestFeatureBasePlacement import TestFeatureBasePlacement
 from PartDesignTests.TestFeatureTimeline import TestFeatureTimeline

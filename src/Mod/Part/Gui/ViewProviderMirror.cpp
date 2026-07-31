@@ -589,10 +589,7 @@ bool ViewProviderOffset::setEdit(int ModNum)
         Gui::Selection().clearSelection();
 
         // start the edit dialog
-        if (offsetDlg) {
-            Gui::Control().showDialog(offsetDlg, getDocument()->getDocument());
-        }
-        else {
+        if (!offsetDlg) {
             Gui::Control().showDialog(
                 new TaskOffset(getObject<Part::Offset>()),
                 getDocument()->getDocument()

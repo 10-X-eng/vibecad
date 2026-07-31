@@ -26,10 +26,12 @@
 #include <QApplication>
 #include <QDataStream>
 #include <QDockWidget>
+#include <QLayout>
 #include <QMap>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QSet>
+#include <QSignalBlocker>
 
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -111,6 +113,66 @@ QString dockVisibilityName(const QDockWidget* dock)
     }
     const QString actionName = dock->toggleViewAction()->data().toString();
     return actionName.isEmpty() ? dock->objectName() : actionName;
+}
+
+bool isPermanentModelBrowser(const QDockWidget* dock)
+{
+    return dockVisibilityName(dock) == QStringLiteral("Std_TreeView");
+}
+
+void presentPermanentModelBrowser(QDockWidget* dock)
+{
+    if (!dock || !getMainWindow()) {
+        return;
+    }
+
+    auto* host = getMainWindow()->findChild<QWidget*>(QStringLiteral("VibeCADModelBrowserHost"));
+    if (!host || !host->layout()) {
+        Base::Console().error("VibeCAD model-browser host is unavailable\n");
+        return;
+    }
+
+    if (dock->parentWidget() != host) {
+        getMainWindow()->removeDockWidget(dock);
+        dock->setParent(host);
+        host->layout()->addWidget(dock);
+    }
+
+    dock->setProperty("vibecadPermanentModelBrowser", true);
+    dock->setAllowedAreas(Qt::NoDockWidgetArea);
+    dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    dock->setAttribute(Qt::WA_NoSystemBackground);
+    dock->setAttribute(Qt::WA_TranslucentBackground);
+    dock->setAutoFillBackground(false);
+    if (auto* content = dock->widget()) {
+        content->setAttribute(Qt::WA_NoSystemBackground);
+        content->setAttribute(Qt::WA_TranslucentBackground);
+        content->setAutoFillBackground(false);
+    }
+
+    auto* titleBar = dock->titleBarWidget();
+    if (!titleBar || titleBar->objectName() != QStringLiteral("VibeCADModelBrowserTitle")) {
+        auto* replacement = new QWidget(dock);
+        replacement->setObjectName(QStringLiteral("VibeCADModelBrowserTitle"));
+        replacement->setFixedHeight(0);
+        dock->setTitleBarWidget(replacement);
+        if (titleBar) {
+            titleBar->deleteLater();
+        }
+    }
+
+    QAction* toggle = dock->toggleViewAction();
+    {
+        QSignalBlocker blocker(toggle);
+        toggle->setChecked(true);
+    }
+    toggle->setEnabled(false);
+    toggle->setVisible(false);
+
+    host->show();
+    dock->show();
+    dock->raise();
+    host->raise();
 }
 
 }  // namespace
@@ -450,6 +512,10 @@ bool DockWindowManager::managesDockWidget(const QDockWidget* dock) const
 
 bool DockWindowManager::isVisibilityRequested(const QDockWidget* dock) const
 {
+    if (isPermanentModelBrowser(dock)) {
+        return true;
+    }
+
     const QString name = dockVisibilityName(dock);
     if (name.isEmpty()) {
         return false;
@@ -471,15 +537,19 @@ void DockWindowManager::applyRequestedVisibility(QDockWidget* dock, bool visible
     }
 
     const QString name = dockVisibilityName(dock);
+    if (isPermanentModelBrowser(dock)) {
+        visible = true;
+    }
     if (!name.isEmpty()) {
         d->_requestedVisibility.insert(name, visible);
     }
 
+    if (isPermanentModelBrowser(dock)) {
+        presentPermanentModelBrowser(dock);
+        return;
+    }
+
     if (d->overlayManager) {
-        d->overlayManager->setDockWidgetPersistent(
-            dock,
-            name == QStringLiteral("Std_TreeView")
-        );
         if (d->overlayManager->setDockWidgetVisible(dock, visible)) {
             return;
         }
@@ -549,7 +619,7 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
     // QDockWidget is hidden by the overlay container.
     dw->toggleViewAction()->setData(QString::fromUtf8(name));
 
-    if (d->overlayManager) {
+    if (d->overlayManager && !isPermanentModelBrowser(dw)) {
         d->overlayManager->setupTitleBar(dw);
     }
 
@@ -602,7 +672,10 @@ QDockWidget* DockWindowManager::addDockWindow(const char* name, QWidget* widget,
         applyRequestedVisibility(dw, checked);
     });
 
-    if (d->overlayManager) {
+    if (isPermanentModelBrowser(dw)) {
+        presentPermanentModelBrowser(dw);
+    }
+    else if (d->overlayManager) {
         d->overlayManager->initDockWidget(dw);
     }
 

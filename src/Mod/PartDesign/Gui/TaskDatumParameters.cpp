@@ -24,10 +24,12 @@
  ***************************************************************************/
 
 
+#include <exception>
 #include <QMessageBox>
 #include <Standard_Failure.hxx>
 
 
+#include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/Origin.h>
 #include <App/Part.h>
@@ -36,6 +38,7 @@
 #include <Gui/Selection/Selection.h>
 #include <Mod/Part/App/DatumFeature.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 
 #include <ui_DlgReference.h>
 
@@ -68,6 +71,15 @@ TaskDatumParameters::~TaskDatumParameters()
         static_cast<ViewProviderDatum*>(this->ViewProvider)->setPickable(true);
     }
     Gui::Selection().rmvSelectionGate();
+}
+
+App::DocumentObject*
+TaskDatumParameters::normalizeReference(App::DocumentObject* selected) const
+{
+    return resolveModelingReference(
+        ViewProvider ? ViewProvider->getObject() : nullptr,
+        selected
+    );
 }
 
 
@@ -182,6 +194,88 @@ bool TaskDlgDatumParameters::accept()
             }
 
             pcDatum->AttachmentSupport.setValues(copyObjects, copySubValues);
+        }
+    }
+
+    if (pcDatum->getPropertyByName("VibeCADDefinitionId")
+        && !pcActiveBody) {
+        try {
+            std::vector<App::DocumentObject*> references =
+                pcDatum->AttachmentSupport.getValues();
+            std::vector<std::string> subElements =
+                pcDatum->AttachmentSupport.getSubValues();
+            if (references.size() != subElements.size()) {
+                throw Base::RuntimeError(
+                    "The datum has inconsistent attachment references"
+                );
+            }
+            for (auto*& reference : references) {
+                if (!reference) {
+                    throw Base::ValueError(
+                        "The datum has a missing attachment reference"
+                    );
+                }
+                reference =
+                    PartDesign::DesignModel::
+                        resolveDefinitionReference(
+                            *pcDatum,
+                            *reference
+                        );
+            }
+            pcDatum->AttachmentSupport.setValues(
+                std::move(references),
+                std::move(subElements)
+            );
+            pcDatum->getDocument()->recomputeFeature(
+                pcDatum,
+                true
+            );
+            if (pcDatum->getDocument()
+                    ->isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                        pcDatum
+                    )) {
+                PartDesign::DesignModel::finalizeDefinition(
+                    *pcDatum
+                );
+            }
+        }
+        catch (const Base::Exception& error) {
+            QMessageBox::warning(
+                parameter,
+                tr("Datum dialog: input error"),
+                QCoreApplication::translate(
+                    "Exception",
+                    error.what()
+                )
+            );
+            return false;
+        }
+        catch (const Standard_Failure& error) {
+            QMessageBox::warning(
+                parameter,
+                tr("Datum dialog: input error"),
+                QString::fromLatin1(error.GetMessageString())
+            );
+            return false;
+        }
+        catch (const std::exception& error) {
+            QMessageBox::warning(
+                parameter,
+                tr("Datum dialog: input error"),
+                QString::fromUtf8(error.what())
+            );
+            return false;
+        }
+        catch (...) {
+            QMessageBox::warning(
+                parameter,
+                tr("Datum dialog: input error"),
+                tr(
+                    "An unexpected error prevented the reference geometry "
+                    "from being saved."
+                )
+            );
+            return false;
         }
     }
 

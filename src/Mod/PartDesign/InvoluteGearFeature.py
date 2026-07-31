@@ -22,7 +22,7 @@
 # ***************************************************************************
 
 import pathlib
-import FreeCAD, Part
+import FreeCAD, Part, PartDesign
 from PySide import QtCore
 from fcgear import involute
 from fcgear import fcgear
@@ -51,15 +51,7 @@ def makeInvoluteGear(name, document=None):
     _InvoluteGear(obj)
     if FreeCAD.GuiUp:
         _ViewProviderInvoluteGear(obj.ViewObject)
-    # FreeCAD.ActiveDocument.recompute()
-    if FreeCAD.GuiUp:
-        gui_document = FreeCADGui.getDocument(document.Name)
-        body = gui_document.ActiveView.getActiveObject("pdbody")
-        part = gui_document.ActiveView.getActiveObject("part")
-        if body:
-            body.Group = body.Group + [obj]
-        elif part:
-            part.Group = part.Group + [obj]
+    PartDesign.initializeDesignDefinition(obj)
     mark_operation(obj)
     return obj
 
@@ -438,6 +430,7 @@ class _InvoluteGearTaskPanel:
         ):
             status = self.obj.getStatusString()
             raise RuntimeError(status or "The involute gear is invalid")
+        PartDesign.finalizeDesignDefinition(self.obj)
         self.gui_document.resetEdit()
         return True
 

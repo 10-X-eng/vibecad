@@ -24,14 +24,17 @@
 
 
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/GeoFeature.h>
 #include <App/VarSet.h>
 #include <App/Origin.h>
 #include <Base/Console.h>
 #include <Base/Placement.h>
+#include <Base/Uuid.h>
 
 #include "Body.h"
 #include "BodyPy.h"
+#include "DesignFeature.h"
 #include "FeatureBase.h"
 #include "FeatureSketchBased.h"
 #include "FeatureSolid.h"
@@ -46,8 +49,59 @@ PROPERTY_SOURCE(PartDesign::Body, Part::BodyBase)
 Body::Body()
 {
     ADD_PROPERTY_TYPE(AllowCompound, (true), "Base", App::Prop_None, "Allow multiple solids in Body");
+    Base::Uuid bodyId;
+    ADD_PROPERTY_TYPE(
+        VibeCADBodyId,
+        (bodyId),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly),
+        "Persistent identity of this physical Body"
+    );
+    Base::Uuid designId;
+    ADD_PROPERTY_TYPE(
+        DesignId,
+        (designId),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Hidden),
+        "Persistent identity of the Design which owns this Body"
+    );
+    ADD_PROPERTY_TYPE(
+        ComponentId,
+        (""),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Hidden),
+        "Persistent identity of the Component containing this Body"
+    );
 
     _GroupTouched.setStatus(App::Property::Output, true);
+}
+
+App::DocumentObject* Body::getModelingState()
+{
+    return designBodyStateBefore(this, nullptr);
+}
+
+const App::DocumentObject* Body::getModelingState() const
+{
+    return designBodyStateBefore(this, nullptr);
+}
+
+const App::DocumentObject* Body::getModelingPresentation() const
+{
+    if (const auto* publication = findDesignBodyPublication(this)) {
+        return publication;
+    }
+    return Part::BodyBase::getModelingPresentation();
+}
+
+bool Body::containsModelingState(const App::DocumentObject* object) const
+{
+    if (Part::BodyBase::containsModelingState(object)) {
+        return true;
+    }
+    const auto* state = freecad_cast<const DesignBodyState*>(object);
+    return state && state->getDocument() == getDocument()
+        && state->BodyId.getValueStr() == VibeCADBodyId.getValueStr();
 }
 
 /*
@@ -419,6 +473,10 @@ std::vector<App::DocumentObject*> Body::removeObject(App::DocumentObject* featur
     if (it != model.end()) {
         model.erase(it);
         Group.setValues(model);
+        if (auto* partDesignFeature = freecad_cast<PartDesign::Feature*>(feature);
+            partDesignFeature && partDesignFeature->_Body.getValue() == this) {
+            partDesignFeature->_Body.setValue(nullptr);
+        }
     }
     std::vector<App::DocumentObject*> result = {feature};
     return result;
@@ -458,6 +516,18 @@ App::DocumentObjectExecReturn* Body::execute()
         tipShape = static_cast<Part::Feature*>(tip)->Shape.getShape();
 
         if (tipShape.getShape().IsNull()) {
+            // A Design Body keeps its persistent identity when History says
+            // the Body is absent (before creation, after consumption, or
+            // while its creation operation is suppressed). The publication
+            // is the only Body tip allowed to represent that valid empty
+            // state; an empty legacy/native feature remains an error.
+            const auto* publication =
+                freecad_cast<const DesignBodyPublication*>(tip);
+            if (publication && publication->isValid()
+                && !designBodyStateBefore(this, nullptr)) {
+                Shape.setValue(Part::TopoShape());
+                return App::DocumentObject::StdReturn;
+            }
             return new App::DocumentObjectExecReturn(
                 QT_TRANSLATE_NOOP("Exception", "Tip shape is empty")
             );
@@ -556,6 +626,13 @@ void Body::onChanged(const App::Property* prop)
 void Body::setupObject()
 {
     Part::BodyBase::setupObject();
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)) {
+        return;
+    }
+    if (auto* timeline = App::DocumentTimeline::ensure(document)) {
+        DesignId.setValue(timeline->DesignId.getValue());
+    }
 }
 
 void Body::unsetupObject()

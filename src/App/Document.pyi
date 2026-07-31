@@ -685,6 +685,22 @@ class Document(PropertyContainer):
         """
         ...
 
+    def classifyExistingTimelineSemanticBlockInternalObject(
+        self,
+        operation: DocumentObject,
+        /,
+    ) -> None:
+        """
+        Retire one exact pre-existing semantic History block as internal state.
+
+        The caller must own the active transaction. The supplied object must
+        be the explicit root of one canonical resource-first/root-last block,
+        and the History marker cannot split that block. All identities remain
+        live while ownership/editor metadata is cleared and the complete block
+        is removed from user-visible History atomically.
+        """
+        ...
+
     def isProvisionallyEnrolledInTimelineByCurrentTransaction(
         self,
         object: DocumentObject,

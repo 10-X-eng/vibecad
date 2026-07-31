@@ -1872,11 +1872,9 @@ class TestModelTreeBrowser(unittest.TestCase):
             )
             Gui.runCommand("PartDesign_Chamfer", 0)
             self.assertTrue(Gui.Control.activeDialog())
-            self.assertTrue(
-                self.document.ActiveObject.isDerivedFrom(
-                    "PartDesign::Chamfer"
-                )
-            )
+            operation = self.document.ActiveObject
+            self.assertEqual(operation.TypeId, "PartDesign::DesignChamfer")
+            self.assertNotIn(operation, self.feature_body.Group)
 
         open_chamfer_task()
         Gui.Control.activeTaskDialog().reject()
@@ -1895,16 +1893,30 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertIsNotNone(
             _wait_until(lambda: not Gui.Control.activeDialog())
         )
-        accepted_tip = self.feature_body.Tip
-        self.assertIsNotNone(accepted_tip)
-        self.assertIsNot(accepted_tip, original_tip)
-        self.assertTrue(accepted_tip.isDerivedFrom("PartDesign::Chamfer"))
+        publication = self.feature_body.Tip
+        self.assertIsNotNone(publication)
+        self.assertIsNot(publication, original_tip)
+        self.assertEqual(
+            publication.TypeId,
+            "PartDesign::DesignBodyPublication",
+        )
+        accepted_state = publication.CurrentState
+        self.assertEqual(
+            accepted_state.TypeId,
+            "PartDesign::DesignBodyState",
+        )
+        accepted_operation = accepted_state.Operation
+        self.assertEqual(
+            accepted_operation.TypeId,
+            "PartDesign::DesignChamfer",
+        )
+        self.assertNotIn(accepted_operation, self.feature_body.Group)
         self.assertEqual(
             (self.profile_beta.Visibility, datum.Visibility),
             independent_visibility,
         )
         self.assertTrue(self.feature_body.Visibility)
-        self.assertTrue(accepted_tip.Visibility)
+        self.assertTrue(publication.Visibility)
         self.assertFalse(self.document.HasPendingTransaction)
 
     def test_chamfer_requires_selection_and_cancel_is_safe(self):
@@ -1952,8 +1964,8 @@ class TestModelTreeBrowser(unittest.TestCase):
             self.assertTrue(Gui.Control.activeDialog())
             temporary = self.document.ActiveObject
             self.assertIsNotNone(temporary)
-            self.assertTrue(temporary.isDerivedFrom("PartDesign::Chamfer"))
-            self.assertIn(temporary, self.feature_body.Group)
+            self.assertEqual(temporary.TypeId, "PartDesign::DesignChamfer")
+            self.assertNotIn(temporary, self.feature_body.Group)
             self.assertFalse(
                 _snapshot_has_label(self._snapshot(), temporary.Label),
                 self._snapshot(),

@@ -484,12 +484,6 @@ bool LoftWidget::accept()
         hasSubElement = hasSubElement || !subElement.empty();
     }
 
-    std::vector<const App::DocumentObject*> operands(
-        profiles.begin(),
-        profiles.end()
-    );
-    const auto resultOwner =
-        PartGui::inferModelingOperandOwner(*appDocument, operands);
     std::vector<App::DocumentObject*> replacedPresentations;
     std::vector<App::DocumentObject*> objectsToHide;
     const auto appendVisible = [](std::vector<App::DocumentObject*>& objects,
@@ -501,13 +495,10 @@ bool LoftWidget::accept()
     };
     for (auto* profile : profiles) {
         appendVisible(objectsToHide, profile);
-        if (resultOwner.ownership
-            == PartGui::ModelingResultOwnership::DocumentRoot) {
-            auto* presentation =
-                PartGui::resolveModelingPresentationObject(profile);
-            appendVisible(replacedPresentations, presentation);
-            appendVisible(objectsToHide, presentation);
-        }
+        auto* presentation =
+            PartGui::resolveModelingPresentationObject(profile);
+        appendVisible(replacedPresentations, presentation);
+        appendVisible(objectsToHide, presentation);
     }
 
     try {
@@ -517,13 +508,7 @@ bool LoftWidget::accept()
             throw Base::RuntimeError("Could not create the loft feature");
         }
         attempt.trackCreatedObject(*loft);
-        if (resultOwner.ownership
-            == PartGui::ModelingResultOwnership::Body) {
-            attempt.targetResultBody(*loft, *resultOwner.body);
-        }
-        else {
-            attempt.keepResultAtDocumentRoot(*loft);
-        }
+        attempt.markResultAsDesignDefinition(*loft);
         if (!replacedPresentations.empty()) {
             attempt.trackReplacedInputs(
                 *loft,
@@ -557,7 +542,7 @@ bool LoftWidget::accept()
             profiles,
             subElements,
             hasSubElement,
-            resultOwner.body
+            nullptr
         );
         for (auto* object : objectsToHide) {
             Gui::cmdAppObjectHide(object);

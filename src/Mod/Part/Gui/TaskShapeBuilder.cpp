@@ -289,21 +289,9 @@ void ShapeBuilderWidget::onCreateButtonClicked()
             );
         }
         attempt.trackCreatedObject(*result);
+        attempt.markResultAsDesignDefinition(*result);
         appDocument->recompute();
         TaskResultValidation::validatePartResult(result);
-        const auto owner =
-            PartGui::inferModelingOperandOwner(
-                *appDocument,
-                d->exactOperands
-            );
-        if (owner.ownership
-            == PartGui::ModelingResultOwnership::DocumentRoot) {
-            attempt.keepResultAtDocumentRoot(*result);
-        }
-        else if (owner.ownership
-                 == PartGui::ModelingResultOwnership::Body) {
-            attempt.targetResultBody(*result, *owner.body);
-        }
 
         attempt.commit();
         createdResults.push_back(result);

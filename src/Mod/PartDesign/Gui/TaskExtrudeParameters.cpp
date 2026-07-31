@@ -505,7 +505,11 @@ void TaskExtrudeParameters::selectedShapeFace(const Gui::SelectionChanges& msg, 
     if (!base) {
         base = static_cast<Part::Feature*>(extrude);
     }
-    else if (strcmp(msg.pObjectName, base->getNameInDocument()) != 0) {
+    auto* selected = resolveModelingReference(
+        extrude,
+        document->getObject(msg.pObjectName)
+    );
+    if (selected != base) {
         return;
     }
 
@@ -542,8 +546,16 @@ void PartDesignGui::TaskExtrudeParameters::selectedFace(
         QSignalBlocker block(side.lineFaceName);
 
         side.lineFaceName->setText(refText);
-        side.lineFaceName->setProperty("FeatureName", QByteArray(msg.pObjectName));
-        side.lineFaceName->setProperty("FaceName", QByteArray(msg.pSubName));
+        auto* reference = side.UpToFace->getValue();
+        const auto subElements = side.UpToFace->getSubValues();
+        side.lineFaceName->setProperty(
+            "FeatureName",
+            reference ? QByteArray(reference->getNameInDocument()) : QByteArray()
+        );
+        side.lineFaceName->setProperty(
+            "FaceName",
+            subElements.empty() ? QByteArray() : QByteArray(subElements.front().c_str())
+        );
 
         // Turn off reference selection mode
         side.buttonFace->setChecked(false);
@@ -568,7 +580,13 @@ void PartDesignGui::TaskExtrudeParameters::selectedShape(
 
     Gui::Selection().clearSelection(document->getName());
 
-    auto ref = document->getObject(msg.pObjectName);
+    auto* ref = resolveModelingReference(
+        getObject(),
+        document->getObject(msg.pObjectName)
+    );
+    if (!ref) {
+        return;
+    }
 
     side.UpToShape->setValue(ref);
 

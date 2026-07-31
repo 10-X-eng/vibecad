@@ -26,6 +26,11 @@
 #include <QMenu>
 #include <QMessageBox>
 
+#include <algorithm>
+#include <map>
+#include <string>
+#include <string_view>
+
 #include <gp_Ax1.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Lin.hxx>
@@ -39,21 +44,26 @@
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_Surface.hxx>
 #include <Precision.hxx>
+#include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/Material.h>
 #include <Gui/Application.h>
 #include <Gui/ViewProvider.h>
+#include <Gui/ViewProviderDocumentObject.h>
 #include <Mod/Part/App/Tools.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/Feature.h>
 #include <Mod/PartDesign/App/FeatureHole.h>
 #include <Mod/PartDesign/Gui/ViewProviderHole.h>
 
+#include <Base/Exception.h>
 #include <Base/Placement.h>
 #include <Base/Tools.h>
 #include <App/Property.h>
@@ -61,6 +71,7 @@
 
 #include <Inventor/nodes/SoClipPlane.h>
 #include <Inventor/nodes/SoCoordinate3.h>
+#include <Inventor/nodes/SoGroup.h>
 #include <Inventor/nodes/SoIndexedFaceSet.h>
 #include <Inventor/nodes/SoMaterial.h>
 #include <Inventor/nodes/SoNormal.h>
@@ -74,11 +85,155 @@
 #include <Inventor/nodes/SoTransparencyType.h>
 
 #include "ViewProviderHole.h"
+#include "ViewProviderBody.h"
 #include "TaskHoleParameters.h"
 
 using namespace PartDesignGui;
 
 PROPERTY_SOURCE(PartDesignGui::ViewProviderHole, PartDesignGui::ViewProvider)
+
+namespace
+{
+
+struct DesignThreadOverlay
+{
+    SoGroup* root {};
+    SoSwitch* node {};
+};
+
+struct HolePresentationState
+{
+    fastsignals::scoped_connection recomputedConnection;
+    fastsignals::scoped_connection stableConnection;
+    fastsignals::scoped_connection restoredConnection;
+    fastsignals::scoped_connection changedConnection;
+    std::map<std::string, DesignThreadOverlay> designOverlays;
+    // signalFinishRestoreDocument is emitted immediately before the
+    // document's Restoring status bit is cleared. The overlay refresh
+    // triggered by that signal must not be rejected by the Restoring
+    // guard in updateOverlay(), so the callback records completion here
+    // first (same contract as ViewProviderBody's documentRestoreFinished).
+    bool documentRestoreFinished {false};
+};
+
+std::map<const ViewProviderHole*, HolePresentationState>&
+holePresentationStates()
+{
+    static auto* states =
+        new std::map<const ViewProviderHole*, HolePresentationState>;
+    return *states;
+}
+
+PartDesign::Body* bodyWithIdentity(
+    const App::Document& document,
+    const std::string& bodyId
+)
+{
+    PartDesign::Body* result = nullptr;
+    for (auto* body : document.getObjectsOfType<PartDesign::Body>()) {
+        if (!body || body->VibeCADBodyId.getValueStr() != bodyId) {
+            continue;
+        }
+        if (result) {
+            return nullptr;
+        }
+        result = body;
+    }
+    return result;
+}
+
+bool operationIsInCurrentBodyState(
+    const PartDesign::Hole& hole,
+    const PartDesign::Body& body
+)
+{
+    const auto* publication =
+        PartDesign::findDesignBodyPublication(&body);
+    auto* state = publication
+        ? freecad_cast<PartDesign::DesignBodyState*>(
+              publication->CurrentState.getValue()
+          )
+        : nullptr;
+    while (state) {
+        if (state->Operation.getValue() == &hole) {
+            return state->Present.getValue();
+        }
+        state = freecad_cast<PartDesign::DesignBodyState*>(
+            state->PreviousState.getValue()
+        );
+    }
+    return false;
+}
+
+gp_Pnt transformedPoint(
+    const gp_Pnt& point,
+    const Base::Placement& placement
+)
+{
+    Base::Vector3d source(point.X(), point.Y(), point.Z());
+    Base::Vector3d target;
+    placement.multVec(source, target);
+    return gp_Pnt(target.x, target.y, target.z);
+}
+
+gp_Dir transformedDirection(
+    const gp_Dir& direction,
+    const Base::Placement& placement
+)
+{
+    Base::Vector3d source(direction.X(), direction.Y(), direction.Z());
+    const Base::Vector3d target =
+        placement.getRotation().multVec(source);
+    return gp_Dir(target.x, target.y, target.z);
+}
+
+void configureThreadClipper(
+    const PartDesign::Hole& hole,
+    const gp_Dir& normal,
+    const gp_Pnt& origin,
+    SoClipPlane& clipper
+)
+{
+    if (hole.ThreadDepthType.getValue() == 0) {
+        clipper.on = FALSE;
+        return;
+    }
+
+    clipper.on = TRUE;
+    const gp_Pnt endPoint = origin.Translated(
+        gp_Vec(normal) * -hole.ThreadDepth.getValue()
+    );
+    clipper.plane.setValue(
+        SbPlane(
+            Base::convertTo<SbVec3f>(normal),
+            Base::convertTo<SbVec3f>(endPoint)
+        )
+    );
+}
+
+void configureTextureTransform(
+    const PartDesign::Hole& hole,
+    SoTexture2Transform& transform
+)
+{
+    transform.scaleFactor.setValue(
+        hole.ThreadDirection.getValue() == 0
+            ? SbVec2f(-1.0F, 1.0F)
+            : SbVec2f(1.0F, 1.0F)
+    );
+
+    const std::string key = hole.getNameInDocument();
+    const unsigned hash = std::hash<std::string> {}(key);
+    constexpr float invMax =
+        1.0F / static_cast<float>(
+                   std::numeric_limits<unsigned>::max()
+               );
+    transform.translation.setValue(
+        SbVec2f(static_cast<float>(hash) * invMax, 0.0F)
+    );
+}
+
+}  // namespace
 
 
 ViewProviderHole::ViewProviderHole()
@@ -87,7 +242,72 @@ ViewProviderHole::ViewProviderHole()
     sPixmap = "PartDesign_Hole.svg";
 }
 
-ViewProviderHole::~ViewProviderHole() = default;
+ViewProviderHole::~ViewProviderHole()
+{
+    clearThreadTextures();
+    holePresentationStates().erase(this);
+}
+
+void ViewProviderHole::attach(App::DocumentObject* object)
+{
+    ViewProvider::attach(object);
+    if (!object || !object->getDocument()) {
+        return;
+    }
+
+    auto& state = holePresentationStates()[this];
+    App::Document* document = object->getDocument();
+    state.recomputedConnection = document->signalRecomputed.connect(
+        [this](
+            const App::Document&,
+            const std::vector<App::DocumentObject*>&
+        ) {
+            this->updateOverlay();
+        }
+    );
+    state.stableConnection = document->signalBecameStable.connect(
+        [this](const App::Document&) {
+            this->updateOverlay();
+        }
+    );
+    state.restoredConnection =
+        App::GetApplication().signalFinishRestoreDocument.connect(
+            [this, document](const App::Document& restored) {
+                if (&restored == document) {
+                    holePresentationStates()[this]
+                        .documentRestoreFinished = true;
+                    this->updateOverlay();
+                }
+            }
+        );
+    if (Gui::Application::Instance) {
+        state.changedConnection =
+            Gui::Application::Instance->signalChangedObject.connect(
+                [this, document](
+                    const Gui::ViewProvider& viewProvider,
+                    const App::Property& property
+                ) {
+                    const char* name = property.getName();
+                    if (!name
+                        || std::string_view(name) != "Visibility") {
+                        return;
+                    }
+                    const auto* objectView =
+                        dynamic_cast<
+                            const Gui::ViewProviderDocumentObject*>(
+                            &viewProvider
+                        );
+                    const auto* changed = objectView
+                        ? objectView->getObject()
+                        : nullptr;
+                    if (changed
+                        && changed->getDocument() == document) {
+                        this->updateOverlay();
+                    }
+                }
+            );
+    }
+}
 
 bool ViewProviderHole::onDelete(const std::vector<std::string>& arg)
 {
@@ -97,10 +317,6 @@ bool ViewProviderHole::onDelete(const std::vector<std::string>& arg)
 
 void ViewProviderHole::clearThreadTextures()
 {
-    if (m_threadOverlays.empty()) {
-        return;
-    }
-
     auto* bodyVp = getBodyViewProvider();
     SoGroup* root = bodyVp ? bodyVp->getRoot() : nullptr;
 
@@ -111,6 +327,28 @@ void ViewProviderHole::clearThreadTextures()
         sw->unref();
     }
     m_threadOverlays.clear();
+    m_endThreadClipper = nullptr;
+    m_textureTransform = nullptr;
+
+    auto stateIt = holePresentationStates().find(this);
+    if (stateIt == holePresentationStates().end()) {
+        return;
+    }
+    for (auto& [bodyId, overlay] :
+         stateIt->second.designOverlays) {
+        Q_UNUSED(bodyId);
+        if (overlay.root && overlay.node
+            && overlay.root->findChild(overlay.node) >= 0) {
+            overlay.root->removeChild(overlay.node);
+        }
+        if (overlay.node) {
+            overlay.node->unref();
+        }
+        if (overlay.root) {
+            overlay.root->unref();
+        }
+    }
+    stateIt->second.designOverlays.clear();
 }
 
 std::vector<App::DocumentObject*> ViewProviderHole::claimChildren() const
@@ -145,20 +383,40 @@ void ViewProviderHole::updateData(const App::Property* prop)
         return;
     }
 
+    const bool designHole =
+        pcHole->isDerivedFrom<PartDesign::DesignHole>();
     if (prop == &pcHole->Threaded || prop == &pcHole->CosmeticThread || prop == &pcHole->ModelThread) {
-        if (pcHole->getParents().empty()) {
+        if (!designHole && pcHole->getParents().empty()) {
             return;
         }
         updateOverlay();
         return;
     }
     if (prop == &pcHole->ThreadDepth || prop == &pcHole->ThreadDepthType) {
+        if (designHole) {
+            updateOverlay();
+            return;
+        }
         updateThreadClipper(pcHole);
         return;
     }
     if (prop == &pcHole->ThreadDirection) {
+        if (designHole) {
+            updateOverlay();
+            return;
+        }
         updateThreadDirection(pcHole);
         return;
+    }
+
+    if (designHole
+        && (prop == &pcHole->Diameter
+            || prop == &pcHole->Tapered
+            || prop == &pcHole->TaperedAngle
+            || prop == &pcHole->ThreadType
+            || prop == &pcHole->ThreadSize
+            || prop == &pcHole->Profile)) {
+        updateOverlay();
     }
 }
 
@@ -175,20 +433,60 @@ SoSeparator* ViewProviderHole::createThreadTextureSeparator()
         return nullptr;
     }
     holeOriginPnt = *holeOriginOpt;
+    const auto holeNormal = getHoleNormal(pcHole);
+    if (!holeNormal) {
+        return nullptr;
+    }
+
+    return createThreadTextureSeparator(
+        pcHole,
+        getCurrentlyVisibleShape(pcHole),
+        getHoleLocations(pcHole),
+        *holeNormal,
+        holeOriginPnt,
+        getGlobalMaterial(),
+        &m_endThreadClipper,
+        &m_textureTransform
+    );
+}
+
+SoSeparator* ViewProviderHole::createThreadTextureSeparator(
+    const PartDesign::Hole* hole,
+    const TopoDS_Shape& visibleShape,
+    const std::vector<gp_Pnt>& holeLocations,
+    const gp_Dir& holeNormal,
+    const gp_Pnt& holeOrigin,
+    const App::Material& material,
+    SoClipPlane** threadClipper,
+    SoTexture2Transform** textureTransform
+)
+{
+    if (!hole || visibleShape.IsNull() || holeLocations.empty()) {
+        return nullptr;
+    }
 
     std::vector<SbVec3f> vertices;
     std::vector<SbVec3f> normals;
     std::vector<int> indices;
     std::vector<SbVec2f> uvs;
 
-    if (!generateBoreMeshData(pcHole, holeOriginPnt, vertices, normals, indices, uvs)
+    if (!generateBoreMeshData(
+            hole,
+            holeOrigin,
+            visibleShape,
+            holeLocations,
+            holeNormal,
+            vertices,
+            normals,
+            indices,
+            uvs
+        )
         || vertices.empty() || normals.empty() || indices.empty() || uvs.empty()) {
         return nullptr;
     }
 
     // Create subtree
     auto* threadSep = new SoSeparator();
-    threadSep->ref();
 
     // The face is selectable but not the texture
     auto* pickStyle = new SoPickStyle();
@@ -201,12 +499,16 @@ SoSeparator* ViewProviderHole::createThreadTextureSeparator()
     threadSep->addChild(tt);
 
     // End Clipping plane
-    m_endThreadClipper = new SoClipPlane();
-    threadSep->addChild(m_endThreadClipper);
+    auto* clipper = new SoClipPlane();
+    configureThreadClipper(*hole, holeNormal, holeOrigin, *clipper);
+    threadSep->addChild(clipper);
+    if (threadClipper) {
+        *threadClipper = clipper;
+    }
 
     // Material
     auto* mat = new SoMaterial();
-    textureExtension->setCoinAppearance(mat, getGlobalMaterial());
+    textureExtension->setCoinAppearance(mat, material);
     threadSep->addChild(mat);
 
     // Texture
@@ -217,9 +519,12 @@ SoSeparator* ViewProviderHole::createThreadTextureSeparator()
     threadSep->addChild(threadTexture);
 
     // --- Texture transform for flipping ---
-    m_textureTransform = new SoTexture2Transform();
-    updateThreadDirection(pcHole);  // apply initial direction
-    threadSep->addChild(m_textureTransform);
+    auto* transform = new SoTexture2Transform();
+    configureTextureTransform(*hole, *transform);
+    threadSep->addChild(transform);
+    if (textureTransform) {
+        *textureTransform = transform;
+    }
 
     // Texcoords / normals / geometry
     auto* tc = new SoTextureCoordinate2();
@@ -241,9 +546,6 @@ SoSeparator* ViewProviderHole::createThreadTextureSeparator()
     auto* faces = new SoIndexedFaceSet();
     faces->coordIndex.setValues(0, (int)indices.size(), indices.data());
     threadSep->addChild(faces);
-
-    updateThreadClipper(pcHole);
-    applyThreadPhaseOffset(pcHole);
 
     return threadSep;
 }
@@ -282,12 +584,6 @@ void ViewProviderHole::updateThreadClipper(const PartDesign::Hole* pcHole)
     if (!pcHole || pcHole->isRecomputing() || !m_endThreadClipper) {
         return;
     }
-    std::string theadDepthType = pcHole->ThreadDepthType.getValueAsString();
-    if (theadDepthType == "Hole depth") {
-        m_endThreadClipper->on = FALSE;
-        return;
-    }
-    m_endThreadClipper->on = TRUE;
 
     auto holeNormalOpt = getHoleNormal(pcHole);
     if (!holeNormalOpt.has_value()) {
@@ -300,17 +596,12 @@ void ViewProviderHole::updateThreadClipper(const PartDesign::Hole* pcHole)
         return;
     }
     gp_Pnt holeOriginPnt = *holeOriginOpt;
-
-    // Compute clipping plane origin at the end of the threaded portion
-    gp_Pnt endPlanePnt = holeOriginPnt.Translated(
-        gp_Vec(holeNormalAxis) * -pcHole->ThreadDepth.getValue()
+    configureThreadClipper(
+        *pcHole,
+        holeNormalAxis,
+        holeOriginPnt,
+        *m_endThreadClipper
     );
-
-    SbVec3f endPlanePoint = Base::convertTo<SbVec3f>(endPlanePnt);
-    SbVec3f endPlaneNormal = Base::convertTo<SbVec3f>(holeNormalAxis);
-
-    // Update the end thread clipper plane
-    m_endThreadClipper->plane.setValue(SbPlane(endPlaneNormal, endPlanePoint));
 }
 
 std::optional<gp_Dir> ViewProviderHole::getHoleNormal(const PartDesign::Hole* pcHole) const
@@ -319,14 +610,26 @@ std::optional<gp_Dir> ViewProviderHole::getHoleNormal(const PartDesign::Hole* pc
         return std::nullopt;
     }
 
-    Base::Vector3d normal = pcHole->guessNormalDirection(pcHole->getProfileShape());
+    // An empty or incomplete profile (e.g. mid-transaction, partially restored
+    // links) is a normal transient presentation state: report "no overlay"
+    // instead of letting Part::NullShapeException or an OCC failure escape
+    // from presentation code. Mirrors Hole::getHoleLocations().
+    try {
+        Base::Vector3d normal = pcHole->guessNormalDirection(pcHole->getProfileShape());
 
-    // Reject if direction is mathematically zero (invalid for gp_Dir)
-    if (normal.IsNull()) {
+        // Reject if direction is mathematically zero (invalid for gp_Dir)
+        if (normal.IsNull()) {
+            return std::nullopt;
+        }
+
+        return Base::convertTo<gp_Dir>(normal);
+    }
+    catch (const Base::Exception&) {
         return std::nullopt;
     }
-
-    return Base::convertTo<gp_Dir>(normal);
+    catch (const Standard_Failure&) {
+        return std::nullopt;
+    }
 }
 
 std::optional<gp_Pnt> ViewProviderHole::getHoleOrigin(const PartDesign::Hole* pcHole) const
@@ -351,35 +654,44 @@ std::vector<gp_Pnt> ViewProviderHole::getHoleLocations(const PartDesign::Hole* p
 
 std::vector<TopoDS_Face> ViewProviderHole::collectBoreFaces(const PartDesign::Hole* pcHole) const
 {
-    std::vector<TopoDS_Face> boreFaces;
     if (!pcHole) {
+        return {};
+    }
+
+    const auto holeNormal = getHoleNormal(pcHole);
+    if (!holeNormal) {
+        return {};
+    }
+    return collectBoreFaces(
+        pcHole,
+        getCurrentlyVisibleShape(pcHole),
+        getHoleLocations(pcHole),
+        *holeNormal
+    );
+}
+
+std::vector<TopoDS_Face> ViewProviderHole::collectBoreFaces(
+    const PartDesign::Hole* hole,
+    const TopoDS_Shape& visibleShape,
+    const std::vector<gp_Pnt>& holeLocations,
+    const gp_Dir& holeNormal
+) const
+{
+    std::vector<TopoDS_Face> boreFaces;
+    if (!hole || visibleShape.IsNull() || holeLocations.empty()) {
         return boreFaces;
     }
 
-    TopoDS_Shape bodyShape = getCurrentlyVisibleShape(pcHole);
-    if (bodyShape.IsNull()) {
-        return boreFaces;
-    }
-
-    auto holeNormalOpt = getHoleNormal(pcHole);
-    if (!holeNormalOpt.has_value()) {
-        return boreFaces;
-    }
-    gp_Dir holeAxis = *holeNormalOpt;
-
-    std::vector<gp_Pnt> validLocations = getHoleLocations(pcHole);
-    if (validLocations.empty()) {
-        return boreFaces;
-    }
-
-    const double holeRadius = pcHole->Diameter.getValue() / 2.0;
+    const double holeRadius = hole->Diameter.getValue() / 2.0;
     const double distTolerance = 2 * Precision::Confusion();
-    const bool isTapered = pcHole->Tapered.getValue();
+    const bool isTapered = hole->Tapered.getValue();
     const double taperSemiAngleRad = isTapered
-        ? Base::toRadians(90 - pcHole->TaperedAngle.getValue())
+        ? Base::toRadians(90 - hole->TaperedAngle.getValue())
         : 0.0;
 
-    for (TopExp_Explorer expl(bodyShape, TopAbs_FACE); expl.More(); expl.Next()) {
+    for (TopExp_Explorer expl(visibleShape, TopAbs_FACE);
+         expl.More();
+         expl.Next()) {
         const TopoDS_Face& face = TopoDS::Face(expl.Current());
         Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
         if (surf.IsNull()) {
@@ -416,7 +728,7 @@ std::vector<TopoDS_Face> ViewProviderHole::collectBoreFaces(const PartDesign::Ho
             axis = con->Axis();
         }
 
-        for (const auto& loc : validLocations) {
+        for (const auto& loc : holeLocations) {
             if (gp_Lin(axis).Distance(loc) < distTolerance) {
                 isMatch = true;
                 break;
@@ -427,7 +739,10 @@ std::vector<TopoDS_Face> ViewProviderHole::collectBoreFaces(const PartDesign::Ho
             continue;
         }
 
-        if (!axis.Direction().IsParallel(holeAxis, Precision::Angular())) {
+        if (!axis.Direction().IsParallel(
+                holeNormal,
+                Precision::Angular()
+            )) {
             continue;
         }
 
@@ -449,6 +764,27 @@ App::Material ViewProviderHole::getGlobalMaterial()
         }
     }
 
+    return App::Material::getDefaultAppearance();
+}
+
+App::Material ViewProviderHole::getBodyMaterial(
+    const PartDesign::Body* body
+) const
+{
+    auto* document = getDocument();
+    auto* viewProvider =
+        body && document
+        ? document->getViewProvider(
+              const_cast<PartDesign::Body*>(body)
+          )
+        : nullptr;
+    if (viewProvider) {
+        if (auto* material = freecad_cast<App::PropertyMaterial*>(
+                viewProvider->getPropertyByName("Material")
+            )) {
+            return material->getValue();
+        }
+    }
     return App::Material::getDefaultAppearance();
 }
 
@@ -595,7 +931,42 @@ bool ViewProviderHole::generateBoreMeshData(
     std::vector<SbVec2f>& uvs
 )
 {
-    const double threadPitch = pcHole->getThreadPitch();
+    if (!pcHole) {
+        return false;
+    }
+    const auto holeNormal = getHoleNormal(pcHole);
+    if (!holeNormal) {
+        return false;
+    }
+    return generateBoreMeshData(
+        pcHole,
+        holeOriginPnt,
+        getCurrentlyVisibleShape(pcHole),
+        getHoleLocations(pcHole),
+        *holeNormal,
+        vertices,
+        normals,
+        indices,
+        uvs
+    );
+}
+
+bool ViewProviderHole::generateBoreMeshData(
+    const PartDesign::Hole* hole,
+    const gp_Pnt& holeOrigin,
+    const TopoDS_Shape& visibleShape,
+    const std::vector<gp_Pnt>& holeLocations,
+    const gp_Dir& holeNormal,
+    std::vector<SbVec3f>& vertices,
+    std::vector<SbVec3f>& normals,
+    std::vector<int>& indices,
+    std::vector<SbVec2f>& uvs
+)
+{
+    if (!hole) {
+        return false;
+    }
+    const double threadPitch = hole->getThreadPitch();
     if (threadPitch == 0.0) {
         return false;
     }
@@ -605,19 +976,17 @@ bool ViewProviderHole::generateBoreMeshData(
     indices.clear();
     uvs.clear();
 
-    const auto& boreFaces = collectBoreFaces(pcHole);
+    const auto boreFaces = collectBoreFaces(
+        hole,
+        visibleShape,
+        holeLocations,
+        holeNormal
+    );
     if (boreFaces.empty()) {
         return false;
     }
 
-    auto holeNormalOpt = getHoleNormal(pcHole);
-    if (!holeNormalOpt.has_value()) {
-        return false;
-    }
-    gp_Dir holeNormalAxis = *holeNormalOpt;
-
     double minProj = std::numeric_limits<double>::max();
-    double maxProj = std::numeric_limits<double>::lowest();
 
     // --- Compute projection bounds ---
     for (const auto& face : boreFaces) {
@@ -625,16 +994,18 @@ bool ViewProviderHole::generateBoreMeshData(
         std::vector<Poly_Triangle> meshFacets;
         if (Part::Tools::getTriangulation(face, meshPoints, meshFacets)) {
             for (const auto& p : meshPoints) {
-                double proj = gp_Vec(holeOriginPnt, p).Dot(holeNormalAxis);
+                double proj = gp_Vec(holeOrigin, p).Dot(holeNormal);
                 minProj = std::min(minProj, proj);
-                maxProj = std::max(maxProj, proj);
             }
         }
     }
+    if (!std::isfinite(minProj)) {
+        return false;
+    }
 
-    const double holeRadius = pcHole->Diameter.getValue() / 2.0;
-    const double coneSemiAngleRad = pcHole->Tapered.getValue()
-        ? Base::toRadians(pcHole->TaperedAngle.getValue() * 0.5)
+    const double holeRadius = hole->Diameter.getValue() / 2.0;
+    const double coneSemiAngleRad = hole->Tapered.getValue()
+        ? Base::toRadians(hole->TaperedAngle.getValue() * 0.5)
         : 0.0;
     const double initialRadius = (minProj * std::tan(coneSemiAngleRad)) + holeRadius;
 
@@ -697,6 +1068,28 @@ bool ViewProviderHole::generateBoreMeshData(
 bool ViewProviderHole::isHoleThreadVisible() const
 {
     auto* hole = getObject<PartDesign::Hole>();
+    if (!hole) {
+        return false;
+    }
+    if (hole->isDerivedFrom<PartDesign::DesignHole>()) {
+        auto* document = hole->getDocument();
+        const auto* operation =
+            dynamic_cast<
+                const PartDesign::DesignOperationProperties*>(hole);
+        if (!document || !operation) {
+            return false;
+        }
+        for (const auto& bodyId :
+             operation->OutputBodyIds.getValues()) {
+            if (const auto* body =
+                    bodyWithIdentity(*document, bodyId);
+                body && isDesignHoleThreadVisible(hole, body)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     auto* body = PartDesign::Body::findBodyOf(hole);
     if (!body || !body->Visibility.getValue() || hole->Suppressed.getValue()
         || !hole->Threaded.getValue() || !hole->CosmeticThread.getValue()
@@ -718,24 +1111,180 @@ bool ViewProviderHole::isHoleThreadVisible() const
     return false;
 }
 
+bool ViewProviderHole::isDesignHoleThreadVisible(
+    const PartDesign::Hole* hole,
+    const PartDesign::Body* body
+) const
+{
+    if (!hole || !body || hole->getDocument() != body->getDocument()
+        || hole->Suppressed.getValue() || !hole->Threaded.getValue()
+        || !hole->CosmeticThread.getValue()
+        || hole->ModelThread.getValue()
+        || !operationIsInCurrentBodyState(*hole, *body)) {
+        return false;
+    }
+
+    const auto* publication =
+        PartDesign::findDesignBodyPublication(body);
+    auto* guiDocument = getDocument();
+    auto* bodyView =
+        guiDocument
+        ? dynamic_cast<ViewProviderBody*>(
+              guiDocument->getViewProvider(
+                  const_cast<PartDesign::Body*>(body)
+              )
+          )
+        : nullptr;
+    auto* publicationView =
+        publication && guiDocument
+        ? guiDocument->getViewProvider(
+              const_cast<
+                  PartDesign::DesignBodyPublication*>(publication)
+          )
+        : nullptr;
+    return publication && bodyView && publicationView
+        && bodyView->isShow() && publicationView->isShow()
+        && !publication->Shape.getShape().isNull();
+}
+
+void ViewProviderHole::updateDesignHoleOverlays(
+    PartDesign::Hole* hole
+)
+{
+    clearThreadTextures();
+    if (!hole || hole->isRecomputing()
+        || !hole->isDerivedFrom<PartDesign::DesignHole>()) {
+        return;
+    }
+
+    auto* document = hole->getDocument();
+    auto* operation =
+        dynamic_cast<PartDesign::DesignOperationProperties*>(hole);
+    if (!document || !operation || !getDocument()) {
+        return;
+    }
+    const auto& bodyIds = operation->OutputBodyIds.getValues();
+    const auto& frames = operation->OutputFrames.getValues();
+    if (bodyIds.size() != frames.size()) {
+        return;
+    }
+
+    const auto normal = getHoleNormal(hole);
+    const auto origin = getHoleOrigin(hole);
+    const auto locations = getHoleLocations(hole);
+    if (!normal || !origin || locations.empty()) {
+        return;
+    }
+
+    auto& overlays =
+        holePresentationStates()[this].designOverlays;
+    for (std::size_t index = 0; index < bodyIds.size(); ++index) {
+        auto* body = bodyWithIdentity(*document, bodyIds[index]);
+        if (!body || !isDesignHoleThreadVisible(hole, body)) {
+            continue;
+        }
+        auto* publication =
+            PartDesign::findDesignBodyPublication(body);
+        auto* bodyView = dynamic_cast<ViewProviderBody*>(
+            getDocument()->getViewProvider(body)
+        );
+        if (!publication || !bodyView) {
+            continue;
+        }
+
+        const Base::Placement designToBody =
+            frames[index].inverse();
+        std::vector<gp_Pnt> bodyLocations;
+        bodyLocations.reserve(locations.size());
+        std::ranges::transform(
+            locations,
+            std::back_inserter(bodyLocations),
+            [&designToBody](const gp_Pnt& location) {
+                return transformedPoint(location, designToBody);
+            }
+        );
+        const gp_Dir bodyNormal =
+            transformedDirection(*normal, designToBody);
+        const gp_Pnt bodyOrigin =
+            transformedPoint(*origin, designToBody);
+
+        SoSeparator* separator = createThreadTextureSeparator(
+            hole,
+            publication->Shape.getValue(),
+            bodyLocations,
+            bodyNormal,
+            bodyOrigin,
+            getBodyMaterial(body),
+            nullptr,
+            nullptr
+        );
+        if (!separator) {
+            continue;
+        }
+
+        auto* threadSwitch = new SoSwitch();
+        threadSwitch->ref();
+        threadSwitch->addChild(separator);
+        threadSwitch->whichChild = SO_SWITCH_ALL;
+
+        SoGroup* root = bodyView->getRoot();
+        root->ref();
+        root->addChild(threadSwitch);
+        overlays.emplace(
+            bodyIds[index],
+            DesignThreadOverlay {root, threadSwitch}
+        );
+    }
+}
+
 void ViewProviderHole::updateOverlay()
 {
     auto* hole = getObject<PartDesign::Hole>();
-    bool isThreadVisible = isHoleThreadVisible();
-    auto* bodyVp = getBodyViewProvider();
-    if (!bodyVp) {
+    if (!hole) {
+        clearThreadTextures();
         return;
     }
+
+    // During undo/redo replay, Cancel rollback, restore, and recompute,
+    // property replay owns the object graph: links such as Profile may be
+    // temporarily incomplete. Presentation code must not observe that
+    // state. Leave the existing overlay untouched and let the
+    // signalBecameStable / signalFinishRestoreDocument connections rebuild
+    // it once the document is coherent again — the same lifecycle boundary
+    // as ViewProviderBody::normalizeResultPresentation().
+    if (const auto* document = hole->getDocument()) {
+        const auto stateIt = holePresentationStates().find(this);
+        const bool documentRestoreFinished =
+            stateIt != holePresentationStates().end()
+            && stateIt->second.documentRestoreFinished;
+        if (document->isPerformingTransaction()
+            || document->testStatus(App::Document::Recomputing)
+            || (!documentRestoreFinished
+                && document->testStatus(App::Document::Restoring))) {
+            return;
+        }
+    }
+
+    if (hole->isDerivedFrom<PartDesign::DesignHole>()) {
+        updateDesignHoleOverlays(hole);
+        return;
+    }
+
+    bool isThreadVisible = isHoleThreadVisible();
+    auto* bodyVp = getBodyViewProvider();
     // Cleanup
     auto it = m_threadOverlays.find(hole);
     if (it != m_threadOverlays.end()) {
         SoSwitch* existingSwitch = it->second;
-        bodyVp->getRoot()->removeChild(existingSwitch);
+        if (bodyVp
+            && bodyVp->getRoot()->findChild(existingSwitch) >= 0) {
+            bodyVp->getRoot()->removeChild(existingSwitch);
+        }
         existingSwitch->unref();
         m_threadOverlays.erase(it);
     }
     // Add the thread
-    if (isThreadVisible) {
+    if (isThreadVisible && bodyVp) {
         if (SoSeparator* newSep = createThreadTextureSeparator()) {
             auto* threadSwitch = new SoSwitch();
             threadSwitch->ref();

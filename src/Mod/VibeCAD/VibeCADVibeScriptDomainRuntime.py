@@ -556,7 +556,7 @@ def _assembly_live_output_state(obj: Any) -> dict[str, Any]:
 
 def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
     programs: dict[str, dict[str, Any]] = {}
-    native_history: dict[str, list[dict[str, str]]] = {}
+    design_history: dict[str, dict[str, list[dict[str, str]]]] = {}
     if domain == "partdesign":
         for obj in list(getattr(doc, "Objects", []) or []):
             if str(getattr(obj, "VibeCADScriptedRole", "") or "") != "implementation":
@@ -566,11 +566,21 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
             )
             if not program_id:
                 continue
-            native_history.setdefault(program_id, []).append(
+            type_id = str(getattr(obj, "TypeId", "") or "")
+            if type_id == "PartDesign::DesignScriptOperation":
+                kind = "operations"
+            elif type_id == "PartDesign::Body":
+                kind = "bodies"
+            else:
+                continue
+            design_history.setdefault(
+                program_id,
+                {"operations": [], "bodies": []},
+            )[kind].append(
                 {
                     "object_name": str(getattr(obj, "Name", "") or ""),
                     "label": str(getattr(obj, "Label", "") or ""),
-                    "type_id": str(getattr(obj, "TypeId", "") or ""),
+                    "type_id": type_id,
                     "output_name": str(
                         getattr(obj, "VibeCADScriptedOutputKey", "") or ""
                     ),
@@ -621,15 +631,26 @@ def _live_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
         item["revisions"] = sorted(item["revisions"])
         item["outputs"] = sorted(item["outputs"], key=lambda output: output["name"])
         if domain == "partdesign":
+            history = design_history.get(
+                program_id,
+                {"operations": [], "bodies": []},
+            )
+            operations = sorted(
+                history["operations"],
+                key=lambda operation: operation["object_name"],
+            )
             bodies = sorted(
-                native_history.get(program_id, []),
+                history["bodies"],
                 key=lambda body: (
                     body["output_name"],
                     body["object_name"],
                 ),
             )
             item["native_history"] = {
-                "available": bool(bodies),
+                "available": len(operations) == 1,
+                "strategy": "design_program_operation",
+                "operation_count": len(operations),
+                "operation": operations[0] if len(operations) == 1 else None,
                 "body_count": len(bodies),
                 "bodies": bodies,
             }
@@ -2181,14 +2202,14 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             expected_history_bodies = sum(
                 1
                 for item in dict(manifest.get("live_outputs") or {}).values()
-                if int(
+                if str(
                     dict(item.get("partdesign_data") or {}).get(
-                        "feature_count",
-                        0,
+                        "representation",
+                        "",
                     )
-                    or 0
+                    or ""
                 )
-                > 0
+                == "body"
             )
             live_program = next(
                 (
@@ -2204,10 +2225,12 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 else {}
             )
             native_history_repair_required = (
-                expected_history_bodies > 0
-                and live_program is not None
-                and int(live_history.get("body_count") or 0)
-                < expected_history_bodies
+                live_program is not None
+                and (
+                    int(live_history.get("operation_count") or 0) != 1
+                    or int(live_history.get("body_count") or 0)
+                    < expected_history_bodies
+                )
             )
 
         clean = contracts.validate_program_contract(
@@ -16075,6 +16098,79 @@ def capture_editor_inspection_state(service: Any, domain: str, program_id: str) 
     }
 
 
+def capture_history_delete_state(
+    service: Any,
+    domain: str,
+    program_id: str,
+    expected_revision: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Capture one human History deletion independently of the active ribbon.
+
+    History is document-global. Deleting its exact source operation must not
+    become unavailable merely because the user switched from Model to another
+    workbench after selecting it.
+    """
+
+    clean_domain = str(domain or "").strip().lower()
+    clean_program_id = str(program_id or "").strip().lower()
+    if not _PROGRAM_ID.fullmatch(clean_program_id):
+        raise ValueError("A History VibeScript operation has an invalid program id.")
+    packs = [
+        pack
+        for pack in contracts.VIBESCRIPT_WORKBENCH_PACKS.values()
+        if pack.domain == clean_domain
+    ]
+    if len(packs) != 1:
+        raise ValueError(
+            f"No unique VibeScript domain is registered for {clean_domain!r}."
+        )
+    pack = packs[0]
+    doc = service._active_document()
+    if doc is None:
+        raise RuntimeError("No active document is available for History deletion.")
+    live_programs = _live_programs(doc, clean_domain)
+    live = [
+        item
+        for item in live_programs
+        if str(item.get("program_id") or "") == clean_program_id
+    ]
+    if len(live) != 1:
+        raise RuntimeError(
+            "The selected History operation does not resolve to one live "
+            "VibeScript program."
+        )
+    revisions = list(live[0].get("revisions") or [])
+    if len(revisions) != 1 or str(revisions[0]) != str(expected_revision or ""):
+        raise RuntimeError(
+            "The selected VibeScript program changed before History deletion."
+        )
+    scope = service.project_scope_snapshot()
+    return {
+        "tool_name": f"vibescript.{clean_domain}.delete_program",
+        "operation": "delete_program",
+        "arguments": {
+            "program_id": clean_program_id,
+            "expected_revision": str(expected_revision or ""),
+            "reason": str(reason or ""),
+        },
+        "pack": pack,
+        "project_root": str(scope.get("root") or ""),
+        "project_id": str(scope.get("project_id") or ""),
+        "document_name": str(getattr(doc, "Name", "") or ""),
+        "document_uid": str(getattr(doc, "Uid", "") or ""),
+        "document_revision": str(service.provider_document_revision()),
+        "live_programs": live_programs,
+        "document_program": contracts.capture_document_program_payload(
+            doc,
+            clean_domain,
+            clean_program_id,
+        ),
+        "surface": {"history_lifecycle": True},
+        "history_lifecycle": True,
+    }
+
+
 def complete_inspection(captured: Mapping[str, Any]) -> dict[str, Any]:
     pack: contracts.VibeScriptWorkbenchPack = captured["pack"]
     program_id = str(captured["program_id"])
@@ -16790,13 +16886,15 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     "transparency": "integer percentage from 0 through 100",
                 },
                 "evaluation_model": (
-                    "API calls build an immutable graph regenerated from inputs. Publication "
-                    "updates stable output identities and restores native Body feature history."
+                    "API calls build an immutable graph regenerated from inputs. "
+                    "Publication updates one global History operation and retains "
+                    "each output Body identity by result key."
                 ),
                 "authoring_priority": {
                     "default": (
-                        "Use api.sketch plus native feature operations for solids defined by "
-                        "planar profiles. This preserves editable Body history."
+                        "Use api.sketch plus feature operations for solids defined "
+                        "by planar profiles. The source code is the editable "
+                        "parametric definition."
                     ),
                     "planar_profile_rule": (
                         "Every planar feature profile is an api.sketch with plane and "
@@ -16807,13 +16905,12 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "standalone, or otherwise unrepresentable geometry."
                     ),
                     "do_not_regress": (
-                        "Do not replace valid native history with direct topology to shorten "
-                        "source or bypass a failing feature."
+                        "Do not replace clear sketch-and-feature intent with direct "
+                        "topology merely to shorten source or bypass a failing feature."
                     ),
                     "verification": (
-                        "A sketch-driven Body must report sketches and native feature types in "
-                        "accepted partdesign_data. An empty sketch list with one adopted feature "
-                        "means native history was not preserved."
+                        "A sketch-driven Body must report its sketches and feature "
+                        "types in accepted validation evidence."
                     ),
                 },
                 "profile_contract": {
@@ -16871,8 +16968,9 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "draft",
                     ],
                     "publication": (
-                        "api.body publishes one connected solid with native history. api.publish "
-                        "publishes standalone solid, shell, face, wire, or compound topology."
+                        "api.body publishes one connected solid as a stable Design "
+                        "Body. api.publish publishes standalone solid, shell, face, "
+                        "wire, or compound topology."
                     ),
                 },
                 "operation_selection": {

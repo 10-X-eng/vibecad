@@ -2167,6 +2167,16 @@ bool TaskProjectOnSurface::accept()
             return false;
         }
         try {
+            if (found->second.creation) {
+                auto* feature = found->second.feature.get();
+                if (!feature) {
+                    throw Base::RuntimeError(
+                        "The projection result was removed before Accept"
+                    );
+                }
+                found->second.attempt
+                    ->markResultAsDesignDefinition(*feature);
+            }
             found->second.attempt->commit();
         }
         catch (const Base::Exception& error) {

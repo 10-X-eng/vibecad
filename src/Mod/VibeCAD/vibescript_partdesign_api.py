@@ -2490,11 +2490,11 @@ class PartDesignDomainAPI:
         appearance: DomainValue | None = None,
         label: str = "",
     ) -> DomainValue:
-        """Publish one connected solid as an editable Part Design Body.
+        """Publish one connected solid as a stable parametric Design Body.
 
-        Pass the final feature to preserve its sketches and native feature history.
-        A standalone solid is accepted only when native feature history cannot
-        represent it. Attach checks, material, appearance, and semantic interfaces here.
+        Pass the final feature from this source graph. Editing the VibeScript
+        regenerates that same Body identity. Attach checks, material,
+        appearance, and semantic interfaces here.
         """
 
         return self._graph(

@@ -27,11 +27,13 @@
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Type.h>
+#include <Base/Uuid.h>
 
 #include "Application.h"
 #include "Datums.h"
 #include "Document.h"
 #include "DocumentObjectGroup.h"
+#include "GeoFeatureGroupExtension.h"
 #include "Origin.h"
 #include "SuppressibleExtension.h"
 
@@ -63,6 +65,39 @@ const Property* localTimelineMetadataProperty(const DocumentObject* object, cons
         return nullptr;
     }
     return object->PropertyContainer::getPropertyByName(name);
+}
+
+PropertyUUID& ensureDesignDefinitionUuid(
+    DocumentObject& definition,
+    const char* name,
+    const char* description
+)
+{
+    auto* property =
+        definition.PropertyContainer::getPropertyByName(name);
+    if (!property) {
+        property = definition.addDynamicProperty(
+            "App::PropertyUUID",
+            name,
+            "VibeCAD Design",
+            description,
+            Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* uuid = dynamic_cast<PropertyUUID*>(property);
+    if (!uuid) {
+        throw Base::TypeError(
+            std::string("Design definition property '") + name
+            + "' has an incompatible type"
+        );
+    }
+    uuid->setStatus(Property::ReadOnly, true);
+    uuid->setStatus(Property::Hidden, true);
+    uuid->setStatus(Property::LockDynamic, true);
+    uuid->setStatus(Property::NoRecompute, true);
+    return *uuid;
 }
 
 class ApplyingScope
@@ -406,6 +441,21 @@ void validateCanonicalTimelineMetadataStatus(const Property* property, const cha
 DocumentTimeline::DocumentTimeline()
 {
     constexpr auto flags = static_cast<PropertyType>(Prop_Hidden | Prop_NoRecompute);
+    Base::Uuid designId;
+    ADD_PROPERTY_TYPE(
+        DesignId,
+        (designId),
+        "Design",
+        static_cast<PropertyType>(flags | Prop_ReadOnly),
+        "Persistent identity of this saved Design"
+    );
+    ADD_PROPERTY_TYPE(
+        DesignSchemaVersion,
+        (CurrentDesignSchemaVersion),
+        "Design",
+        static_cast<PropertyType>(flags | Prop_ReadOnly),
+        "Persistent Design model schema version"
+    );
     ADD_PROPERTY_TYPE(
         Operations,
         (),
@@ -500,6 +550,218 @@ DocumentTimeline* DocumentTimeline::ensure(Document* document)
         );
     }
     return timeline;
+}
+
+void DocumentTimeline::initializeDesignDefinition(
+    DocumentObject& definition
+)
+{
+    auto* document = definition.getDocument();
+    if (!document || !document->containsObject(&definition)
+        || definition.testStatus(ObjectStatus::Remove)
+        || definition.testStatus(ObjectStatus::Destroy)
+        || definition.isDerivedFrom<DocumentTimeline>()) {
+        throw Base::ValueError(
+            "A Design definition must be a live document object"
+        );
+    }
+    if (GeoFeatureGroupExtension::getGroupOfObject(&definition)
+        || GroupExtension::getGroupOfObject(&definition)) {
+        throw Base::ValueError(
+            "A reusable Design definition must remain at Design scope"
+        );
+    }
+
+    if (const auto* role = dynamic_cast<const PropertyString*>(
+            localTimelineMetadataProperty(
+                &definition,
+                RolePropertyName
+            )
+        );
+        role && std::string_view(role->getValue()) != OperationRole
+        && !std::string_view(role->getValue()).empty()) {
+        throw Base::ValueError(
+            "A reusable Design definition cannot be a History resource or "
+            "internal object"
+        );
+    }
+    if (const auto* ownerProperty =
+            localTimelineMetadataProperty(
+                &definition,
+                OwnerPropertyName
+            )) {
+        const auto* owner =
+            dynamic_cast<const PropertyLinkHidden*>(ownerProperty);
+        if (!owner || owner->getValue()) {
+            throw Base::ValueError(
+                "A reusable Design definition cannot belong to another "
+                "History operation"
+            );
+        }
+    }
+
+    auto& definitionId = ensureDesignDefinitionUuid(
+        definition,
+        DefinitionIdPropertyName,
+        "Persistent identity of this reusable Design definition"
+    );
+    if (definitionId.getValueStr().empty()) {
+        definitionId.setValue(Base::Uuid::createUuid());
+    }
+
+    auto* timeline = ensure(document);
+    const bool hadDesignId =
+        definition.PropertyContainer::getPropertyByName(
+            DesignIdPropertyName
+        );
+    auto& designId = ensureDesignDefinitionUuid(
+        definition,
+        DesignIdPropertyName,
+        "Persistent identity of the owning Design"
+    );
+    if (!hadDesignId || designId.getValueStr().empty()) {
+        designId.setValue(timeline->DesignId.getValue());
+    }
+    else if (designId.getValueStr()
+             != timeline->DesignId.getValueStr()) {
+        throw Base::ValueError(
+            "A reusable definition belongs to a different Design"
+        );
+    }
+}
+
+void DocumentTimeline::finalizeDesignDefinition(
+    DocumentObject& definition
+)
+{
+    initializeDesignDefinition(definition);
+    auto* document = definition.getDocument();
+    if (!definition.isValid()) {
+        throw Base::RuntimeError(definition.getStatusString());
+    }
+
+    auto* roleProperty = localTimelineMetadataProperty(
+        &definition,
+        RolePropertyName
+    );
+    if (!roleProperty) {
+        roleProperty = definition.addDynamicProperty(
+            "App::PropertyString",
+            RolePropertyName,
+            "Timeline",
+            "Document timeline classification",
+            Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* role = dynamic_cast<PropertyString*>(roleProperty);
+    if (!role) {
+        throw Base::TypeError(
+            "A Design definition has incompatible History metadata"
+        );
+    }
+    role->setStatus(Property::Hidden, true);
+    role->setStatus(Property::LockDynamic, true);
+    role->setStatus(Property::NoRecompute, true);
+    if (std::string_view(role->getValue()) != OperationRole
+        && !std::string_view(role->getValue()).empty()) {
+        throw Base::ValueError(
+            "A reusable Design definition cannot change another History role"
+        );
+    }
+    role->setValue(OperationRole);
+
+    auto* timeline = ensure(document);
+    const auto& history = timeline->Operations.getValues();
+    const auto occurrences =
+        std::ranges::count(history, &definition);
+    if (occurrences > 1) {
+        throw Base::RuntimeError(
+            "A reusable Design definition occurs more than once in History"
+        );
+    }
+
+    const auto definitionPosition =
+        std::ranges::find(history, &definition);
+    std::vector<Property*> properties;
+    definition.getPropertyList(properties);
+    for (auto* property : properties) {
+        auto* links = freecad_cast<PropertyLinkBase*>(property);
+        if (!links) {
+            continue;
+        }
+        std::vector<DocumentObject*> targets;
+        links->getLinks(targets, true);
+        for (auto* target : targets) {
+            if (!target) {
+                continue;
+            }
+            if (target == &definition) {
+                throw Base::ValueError(
+                    "A reusable Design definition cannot reference itself"
+                );
+            }
+
+            auto* root = target;
+            std::unordered_set<DocumentObject*> owners;
+            while (hasTimelineResourceRole(root)) {
+                if (!owners.insert(root).second) {
+                    throw Base::RuntimeError(
+                        "A Design definition input has a cyclic History owner"
+                    );
+                }
+                root = timelineOwner(root);
+                if (!root) {
+                    throw Base::RuntimeError(
+                        "A Design definition input has no History root"
+                    );
+                }
+            }
+            if (root == &definition) {
+                continue;
+            }
+
+            const bool requiresHistory =
+                hasTimelineOperationRole(root)
+                || target->PropertyContainer::getPropertyByName(
+                    DefinitionIdPropertyName
+                );
+            if (!requiresHistory) {
+                continue;
+            }
+            const auto targetPosition =
+                std::ranges::find(history, root);
+            if (targetPosition == history.end()
+                || (definitionPosition != history.end()
+                    && targetPosition >= definitionPosition)) {
+                throw Base::ValueError(
+                    "A reusable Design definition can reference only an "
+                    "earlier History state"
+                );
+            }
+        }
+    }
+
+    if (occurrences == 1) {
+        return;
+    }
+
+    if (document
+            ->isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                &definition
+            )) {
+        timeline->finalizeProvisionalOperationBlock(
+            &definition,
+            {&definition}
+        );
+    }
+    else {
+        timeline->publishProvisionalOperationBlock(
+            &definition,
+            {}
+        );
+    }
 }
 
 bool DocumentTimeline::isOperationCandidate(const DocumentObject* operation) noexcept
@@ -1539,7 +1801,8 @@ void DocumentTimeline::classifyTimelineLeafInternalObject(
     }
     if (localTimelineMetadataProperty(object, ReplacedInputsPropertyName)
         || localTimelineMetadataProperty(object, EditorPropertyName)
-        || localTimelineMetadataProperty(object, EditCommandPropertyName)) {
+        || localTimelineMetadataProperty(object, EditCommandPropertyName)
+        || localTimelineMetadataProperty(object, DeleteCommandPropertyName)) {
         throw Base::RuntimeError("An internal leaf cannot retain replacement or editor contracts");
     }
     for (auto* candidate : operations) {
@@ -1729,6 +1992,251 @@ void DocumentTimeline::classifyTimelineLeafInternalObject(
                 }
             );
         }
+    }
+}
+
+void DocumentTimeline::classifyExistingSemanticBlockInternal(DocumentObject* operation)
+{
+    auto* document = getDocument();
+    if (!document || document->testStatus(Document::TempDoc)
+        || document->testStatus(Document::Restoring) || document->isPerformingTransaction()
+        || isApplying() || document->getBookedTransactionID() == App::NullTransaction) {
+        throw Base::RuntimeError(
+            "Retiring a legacy semantic block requires one normal document "
+            "and one caller-owned transaction"
+        );
+    }
+    if (!operation || !document->containsObject(operation) || operation->getDocument() != document
+        || !operation->getNameInDocument()) {
+        throw Base::ValueError("The legacy semantic root must be live in this document");
+    }
+
+    pruneProvisionalEnrollments();
+    pruneStagedResourceAdoptions();
+    pruneProvisionalInternalObjects();
+    pruneStagedSegmentReplacement();
+    pruneStagedResourceReconciliation();
+    const int transactionId = document->getBookedTransactionID();
+    if (!App::GetApplication().transactionIsActive(transactionId)) {
+        throw Base::RuntimeError("The legacy-block migration transaction is no longer active");
+    }
+    if (!_stagedResourceAdoptions.empty() || !_stagedSegmentReplacements.empty()
+        || !_stagedResourceReconciliations.empty()) {
+        throw Base::RuntimeError(
+            "Another exact History graph rewrite is already staged by this transaction"
+        );
+    }
+    if (isProvisionallyEnrolledByCurrentTransaction(operation)) {
+        throw Base::ValueError(
+            "A current-transaction provisional object is not a legacy semantic root"
+        );
+    }
+
+    const auto operations = Operations.getValues();
+    const auto visibility = VisibilityAtEnd.getValues();
+    const auto suppression = SuppressionAtEnd.getValues();
+    const long position = Position.getValue();
+    if (visibility.size() != operations.size() || suppression.size() != operations.size()
+        || position < 0 || position > static_cast<long>(operations.size())) {
+        throw Base::RuntimeError("The timeline state is inconsistent");
+    }
+    std::unordered_map<DocumentObject*, std::size_t> indices;
+    indices.reserve(operations.size());
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+        auto* candidate = operations[index];
+        if (!candidate || !document->containsObject(candidate) || candidate->getDocument() != document
+            || !indices.emplace(candidate, index).second || !isOperationCandidate(candidate)
+            || !hasValidTimelineOwnerChain(candidate) || !replacementInputContract(candidate).valid) {
+            throw Base::RuntimeError(
+                "The timeline contains a missing, duplicate, internal, or malformed operation"
+            );
+        }
+    }
+    const auto rootIndex = indices.find(operation);
+    if (rootIndex == indices.end() || !hasTimelineOperationRole(operation)
+        || hasTimelineResourceRole(operation) || timelineOwner(operation)
+        || semanticOperationRoot(operation, document) != operation) {
+        throw Base::ValueError("The migration target must be one explicit legacy semantic root");
+    }
+
+    std::size_t blockBegin = operations.size();
+    std::size_t blockEnd = 0;
+    std::size_t blockCount = 0;
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+        if (semanticOperationRoot(operations[index], document) != operation) {
+            continue;
+        }
+        blockBegin = std::min(blockBegin, index);
+        blockEnd = std::max(blockEnd, index + 1);
+        ++blockCount;
+    }
+    if (blockCount == 0 || blockEnd - blockBegin != blockCount || blockEnd == 0
+        || operations[blockEnd - 1] != operation) {
+        throw Base::RuntimeError(
+            "The legacy semantic block is not one contiguous resource-first/root-last block"
+        );
+    }
+    std::vector<DocumentObject*> block(
+        operations.begin() + static_cast<std::ptrdiff_t>(blockBegin),
+        operations.begin() + static_cast<std::ptrdiff_t>(blockEnd)
+    );
+    validateCanonicalSemanticBlockOrder(
+        block,
+        operation,
+        "The legacy semantic block is not in canonical resource-first/root-last order"
+    );
+    if (position > static_cast<long>(blockBegin) && position < static_cast<long>(blockEnd)) {
+        throw Base::ValueError(
+            "Move History to a semantic operation boundary before converting this legacy object"
+        );
+    }
+    for (auto* candidate : block) {
+        if (isProvisionallyEnrolledByCurrentTransaction(candidate)) {
+            throw Base::ValueError(
+                "A legacy semantic block cannot contain current-transaction identities"
+            );
+        }
+        auto* role = dynamic_cast<PropertyString*>(
+            localTimelineMetadataProperty(candidate, RolePropertyName)
+        );
+        if (!role
+            || (candidate == operation ? std::string_view(role->getValue()) != OperationRole
+                                       : std::string_view(role->getValue()) != ResourceRole)) {
+            throw Base::RuntimeError("The legacy semantic block has malformed role metadata");
+        }
+        validateCanonicalTimelineMetadataStatus(
+            role,
+            "Legacy semantic role metadata is not hidden, locked, and non-recomputing"
+        );
+        if (auto* ownerProperty = localTimelineMetadataProperty(candidate, OwnerPropertyName)) {
+            auto* owner = dynamic_cast<PropertyLinkHidden*>(ownerProperty);
+            if (!owner
+                || (candidate == operation ? owner->getValue() != nullptr
+                                           : owner->getValue() == nullptr)) {
+                throw Base::RuntimeError("The legacy semantic block has malformed ownership metadata");
+            }
+            validateCanonicalTimelineMetadataStatus(
+                owner,
+                "Legacy semantic owner metadata is not hidden, locked, and non-recomputing"
+            );
+        }
+        for (const char* propertyName : {
+                 EditorPropertyName,
+                 EditCommandPropertyName,
+                 DeleteCommandPropertyName,
+                 ReplacedInputsPropertyName,
+             }) {
+            if (auto* property = localTimelineMetadataProperty(candidate, propertyName)) {
+                validateCanonicalTimelineMetadataStatus(
+                    property,
+                    "Legacy semantic metadata is not hidden, locked, and non-recomputing"
+                );
+            }
+        }
+    }
+
+    std::vector<DocumentObject*> finalOperations;
+    finalOperations.reserve(operations.size() - blockCount);
+    boost::dynamic_bitset<> finalVisibility(operations.size() - blockCount);
+    boost::dynamic_bitset<> finalSuppression(operations.size() - blockCount);
+    for (std::size_t oldIndex = 0, newIndex = 0; oldIndex < operations.size(); ++oldIndex) {
+        if (oldIndex >= blockBegin && oldIndex < blockEnd) {
+            continue;
+        }
+        finalOperations.push_back(operations[oldIndex]);
+        finalVisibility.set(newIndex, visibility.test(oldIndex));
+        finalSuppression.set(newIndex, suppression.test(oldIndex));
+        ++newIndex;
+    }
+    const long finalPosition = position <= static_cast<long>(blockBegin)
+        ? position
+        : position - static_cast<long>(blockCount);
+    std::vector<TimelineObjectIdentity> blockIdentities;
+    blockIdentities.reserve(block.size());
+    for (auto* candidate : block) {
+        blockIdentities.push_back(
+            TimelineObjectIdentity {
+                .objectId = candidate->getID(),
+                .objectName = candidate->getNameInDocument(),
+            }
+        );
+    }
+
+    ApplyingScope applying(*this);
+    for (const auto& identity : blockIdentities) {
+        auto* candidate
+            = resolveExactTimelineIdentity(document, identity.objectId, identity.objectName);
+        if (!candidate) {
+            throw Base::RuntimeError(
+                "A legacy semantic identity changed before internal classification"
+            );
+        }
+        if (auto* owner = dynamic_cast<PropertyLinkHidden*>(
+                localTimelineMetadataProperty(candidate, OwnerPropertyName)
+            )) {
+            owner->setValue(nullptr);
+        }
+        if (auto* editor = dynamic_cast<PropertyLinkHidden*>(
+                localTimelineMetadataProperty(candidate, EditorPropertyName)
+            )) {
+            editor->setValue(nullptr);
+        }
+        if (auto* command = dynamic_cast<PropertyString*>(
+                localTimelineMetadataProperty(candidate, EditCommandPropertyName)
+            )) {
+            command->setValue("");
+        }
+        if (auto* command = dynamic_cast<PropertyString*>(
+                localTimelineMetadataProperty(candidate, DeleteCommandPropertyName)
+            )) {
+            command->setValue("");
+        }
+        if (auto* replacements = dynamic_cast<PropertyLinkListHidden*>(
+                localTimelineMetadataProperty(candidate, ReplacedInputsPropertyName)
+            )) {
+            replacements->setValues({});
+        }
+        auto* role = dynamic_cast<PropertyString*>(
+            localTimelineMetadataProperty(candidate, RolePropertyName)
+        );
+        if (!role) {
+            throw Base::RuntimeError(
+                "A legacy semantic identity lost its role during internal classification"
+            );
+        }
+        role->setValue(InternalRole);
+    }
+
+    Operations.setValues(finalOperations);
+    VisibilityAtEnd.setValues(finalVisibility);
+    SuppressionAtEnd.setValues(finalSuppression);
+    Position.setValue(finalPosition);
+    SchemaVersion.setValue(CurrentSchemaVersion);
+
+    for (const auto& identity : blockIdentities) {
+        auto* candidate
+            = resolveExactTimelineIdentity(document, identity.objectId, identity.objectName);
+        const auto* role = candidate ? dynamic_cast<const PropertyString*>(
+                                           localTimelineMetadataProperty(candidate, RolePropertyName)
+                                       )
+                                     : nullptr;
+        const auto* owner = candidate
+            ? dynamic_cast<const PropertyLinkHidden*>(
+                  localTimelineMetadataProperty(candidate, OwnerPropertyName)
+              )
+            : nullptr;
+        if (!candidate || !role || std::string_view(role->getValue()) != InternalRole
+            || (owner && owner->getValue())) {
+            throw Base::RuntimeError(
+                "The legacy semantic block did not become retained internal state"
+            );
+        }
+    }
+    if (Operations.getValues() != finalOperations || VisibilityAtEnd.getValues() != finalVisibility
+        || SuppressionAtEnd.getValues() != finalSuppression || Position.getValue() != finalPosition) {
+        throw Base::RuntimeError(
+            "The validated legacy semantic block migration changed while it was applied"
+        );
     }
 }
 
@@ -2094,6 +2602,22 @@ void DocumentTimeline::publishProvisionalOperationBlock(
             validateCanonicalTimelineMetadataStatus(
                 editCommand,
                 "Published edit-command metadata is not hidden, locked, and non-recomputing"
+            );
+        }
+
+        const auto* deleteCommandProperty =
+            localTimelineMetadataProperty(candidate, DeleteCommandPropertyName);
+        const auto* deleteCommand =
+            dynamic_cast<const PropertyString*>(deleteCommandProperty);
+        if (deleteCommandProperty && !deleteCommand) {
+            throw Base::RuntimeError(
+                "Published delete-command metadata has the wrong property type"
+            );
+        }
+        if (deleteCommand) {
+            validateCanonicalTimelineMetadataStatus(
+                deleteCommand,
+                "Published delete-command metadata is not hidden, locked, and non-recomputing"
             );
         }
 
@@ -3172,6 +3696,22 @@ void DocumentTimeline::adoptExistingOperationBlock(
             validateCanonicalTimelineMetadataStatus(
                 editCommand,
                 "Adopted edit-command metadata is not hidden, locked, and non-recomputing"
+            );
+        }
+
+        const auto* deleteCommandProperty =
+            localTimelineMetadataProperty(candidate, DeleteCommandPropertyName);
+        const auto* deleteCommand =
+            dynamic_cast<const PropertyString*>(deleteCommandProperty);
+        if (deleteCommandProperty && !deleteCommand) {
+            throw Base::RuntimeError(
+                "Adopted delete-command metadata has the wrong property type"
+            );
+        }
+        if (deleteCommand) {
+            validateCanonicalTimelineMetadataStatus(
+                deleteCommand,
+                "Adopted delete-command metadata is not hidden, locked, and non-recomputing"
             );
         }
 
@@ -4494,7 +5034,9 @@ void DocumentTimeline::adoptImportedOperations(
         }
         const std::string_view roleValue = role ? std::string_view(role->getValue())
                                                 : std::string_view();
-        if (role && roleValue != OperationRole && roleValue != ResourceRole) {
+        if (role && roleValue != OperationRole
+            && roleValue != ResourceRole
+            && roleValue != InternalRole) {
             throw Base::RuntimeError("Imported timeline role metadata has an unknown value");
         }
 
@@ -4550,6 +5092,24 @@ void DocumentTimeline::adoptImportedOperations(
             validateCanonicalTimelineMetadataStatus(
                 editCommandProperty,
                 "Imported edit-command metadata is not hidden, locked, and non-recomputing"
+            );
+        }
+
+        const auto* deleteCommandProperty =
+            localTimelineMetadataProperty(object, DeleteCommandPropertyName);
+        if (deleteCommandProperty
+            && !dynamic_cast<const PropertyString*>(
+                deleteCommandProperty
+            )) {
+            throw Base::RuntimeError(
+                "Imported timeline delete-command metadata has the wrong "
+                "property type"
+            );
+        }
+        if (deleteCommandProperty) {
+            validateCanonicalTimelineMetadataStatus(
+                deleteCommandProperty,
+                "Imported delete-command metadata is not hidden, locked, and non-recomputing"
             );
         }
 
@@ -5644,6 +6204,25 @@ void DocumentTimeline::finalizeProvisionalOperationBlock(
                 "Timeline edit-command metadata is not hidden, locked, and non-recomputing"
             );
         }
+        const auto* deleteCommandProperty =
+            localTimelineMetadataProperty(
+                candidate,
+                DeleteCommandPropertyName
+            );
+        if (deleteCommandProperty
+            && !dynamic_cast<const PropertyString*>(
+                deleteCommandProperty
+            )) {
+            throw Base::RuntimeError(
+                "Timeline delete-command metadata has the wrong property type"
+            );
+        }
+        if (deleteCommandProperty) {
+            validateCanonicalTimelineMetadataStatus(
+                deleteCommandProperty,
+                "Timeline delete-command metadata is not hidden, locked, and non-recomputing"
+            );
+        }
         const auto* replacementProperty
             = localTimelineMetadataProperty(candidate, ReplacedInputsPropertyName);
         if (replacementProperty && !dynamic_cast<const PropertyLinkListHidden*>(replacementProperty)) {
@@ -6568,6 +7147,7 @@ void DocumentTimeline::finalizeProvisionalOperationSegmentReplacement(
                  OwnerPropertyName,
                  EditorPropertyName,
                  EditCommandPropertyName,
+                 DeleteCommandPropertyName,
                  ReplacedInputsPropertyName,
              }) {
             if (auto* property = localTimelineMetadataProperty(candidate, propertyName)) {
@@ -7045,7 +7625,9 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
     }
 
     if (mapping.stateSourceIndices.size() != mapping.orderedFinalResources.size()
-        || mapping.consumerReplacementIndices.size() != staged.oldResources.size()) {
+        || mapping.consumerReplacementIndices.size() != staged.oldResources.size()
+        || (!mapping.consumerReplacementObjects.empty()
+            && mapping.consumerReplacementObjects.size() != staged.oldResources.size())) {
         throw Base::ValueError(
             "Resource state and consumer mappings must match their flattened "
             "final and old graph sizes"
@@ -7228,8 +7810,12 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
             || currentVisibility.test(current->second) != snapshot.visibility
             || currentSuppression.test(current->second) != snapshot.suppression) {
             throw Base::RuntimeError(
-                "A retained operation's accepted state changed during "
-                "resource reconciliation"
+                std::string("Retained operation '")
+                + (live->getNameInDocument()
+                       ? live->getNameInDocument()
+                       : "<detached>")
+                + "' changed its accepted visibility or suppression during "
+                  "resource reconciliation"
             );
         }
     }
@@ -7237,19 +7823,34 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
     for (std::size_t oldIndex = 0; oldIndex < staged.oldResources.size(); ++oldIndex) {
         const long target = mapping.consumerReplacementIndices[oldIndex];
         const auto& old = staged.oldResources[oldIndex];
+        auto* externalReplacement =
+            mapping.consumerReplacementObjects.empty()
+            ? nullptr
+            : mapping.consumerReplacementObjects[oldIndex];
         if (target < -1 || target >= static_cast<long>(mapping.orderedFinalResources.size())
-            || (target == -1
+            || (externalReplacement && target != -1)
+            || (!externalReplacement && target == -1
                 && (!old.retainedConsumers.empty() || !old.retainedHiddenConsumers.empty()))) {
             throw Base::ValueError(
                 "Every consumed old resource requires one explicit final "
                 "replacement target"
             );
         }
-        if (target < 0) {
+        if (!externalReplacement && target < 0) {
             continue;
         }
 
-        auto* replacement = mapping.orderedFinalResources[static_cast<std::size_t>(target)];
+        auto* replacement = externalReplacement
+            ? externalReplacement
+            : mapping.orderedFinalResources[static_cast<std::size_t>(target)];
+        if (!replacement || !document->containsObject(replacement)
+            || replacement->getDocument() != document
+            || retiredLiveSet.contains(replacement)) {
+            throw Base::ValueError(
+                "A consumer replacement must be one exact retained object in "
+                "this document"
+            );
+        }
         auto* oldLive
             = resolveExactTimelineIdentity(document, old.object.objectId, old.object.objectName);
         for (const auto& consumerIdentity : old.retainedConsumers) {
@@ -7623,6 +8224,26 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
             validateCanonicalTimelineMetadataStatus(
                 editCommandProperty,
                 "Reconciled edit-command metadata is not hidden, locked, and non-recomputing"
+            );
+        }
+        const auto* deleteCommandProperty =
+            localTimelineMetadataProperty(
+                candidate,
+                DeleteCommandPropertyName
+            );
+        if (deleteCommandProperty
+            && !dynamic_cast<const PropertyString*>(
+                deleteCommandProperty
+            )) {
+            throw Base::RuntimeError(
+                "Timeline delete-command metadata has the wrong property "
+                "type"
+            );
+        }
+        if (deleteCommandProperty) {
+            validateCanonicalTimelineMetadataStatus(
+                deleteCommandProperty,
+                "Reconciled delete-command metadata is not hidden, locked, and non-recomputing"
             );
         }
         const auto* replacementProperty

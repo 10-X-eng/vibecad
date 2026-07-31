@@ -4223,6 +4223,7 @@ struct UpdateDisabler
     int& blocked;
     bool visible {false};
     bool focus {false};
+    bool updatesDisabled {false};
 
     // Note! DO NOT block signal here, or else
     // QTreeWidgetItem::setChildIndicatorPolicy() does not work
@@ -4236,6 +4237,23 @@ struct UpdateDisabler
         focus = widget.hasFocus();
         visible = widget.isVisible();
         if (visible) {
+            bool permanentModelBrowser = false;
+            for (QWidget* ancestor = &widget; ancestor; ancestor = ancestor->parentWidget()) {
+                if (ancestor->objectName() == QStringLiteral("VibeCADModelBrowserHost")) {
+                    permanentModelBrowser = true;
+                    break;
+                }
+            }
+
+            if (permanentModelBrowser) {
+                // The permanent browser is application chrome. Temporarily
+                // disabling painting keeps its QWidget visibility immutable,
+                // so a model refresh can never be mistaken for a user hide.
+                widget.setUpdatesEnabled(false);
+                updatesDisabled = true;
+                return;
+            }
+
             // setUpdatesEnabled(false) does not seem to speed up anything.
             // setVisible(false) on the other hand makes QTreeWidget::setData
             // (i.e. any change to QTreeWidgetItem) faster by 10+ times.
@@ -4252,7 +4270,13 @@ struct UpdateDisabler
         }
 
         if (visible) {
-            widget.setVisible(true);
+            if (updatesDisabled) {
+                widget.setUpdatesEnabled(true);
+                widget.update();
+            }
+            else {
+                widget.setVisible(true);
+            }
             if (focus) {
                 widget.setFocus();
             }
@@ -6296,6 +6320,7 @@ void DocumentItem::rebuildModelBrowser()
             continue;
         }
         if (entry.publishedImplementation || entry.bodyRepresentation
+            || entry.role == Role::History || entry.role == Role::Internal
             || (entry.role == Role::Feature && entry.body)) {
             rendered.insert(entry.object);
             continue;

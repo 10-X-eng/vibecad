@@ -42,12 +42,15 @@
 #include <Gui/MainWindow.h>
 #include <Mod/Part/App/Part2DObject.h>
 #include <Mod/Part/App/PartFeature.h>
+#include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/Part/App/TopoShape.h>
 #include <Mod/PartDesign/App/Feature.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/PartDesign/App/DatumLine.h>
 #include <Mod/PartDesign/App/DatumPlane.h>
 #include <Mod/PartDesign/App/DatumPoint.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
+#include <Mod/PartDesign/App/DesignModel.h>
 
 #include "ui_DlgReference.h"
 #include "ReferenceSelection.h"
@@ -67,6 +70,11 @@ bool ReferenceSelection::allow(App::Document* pDoc, App::DocumentObject* pObj, c
     }
     PartDesign::Body* body = getBody();
     App::OriginGroupExtension* originGroup = getOriginGroupExtension(body);
+    const bool designWide =
+        support
+        && dynamic_cast<const PartDesign::DesignOperationProperties*>(
+            support
+        );
 
     // Don't allow selection in other document
     if (support && pDoc != support->getDocument()) {
@@ -75,10 +83,24 @@ bool ReferenceSelection::allow(App::Document* pDoc, App::DocumentObject* pObj, c
 
     // Enable selection from origin of current part/
     if (pObj->isDerivedFrom<App::DatumElement>()) {
+        if (designWide) {
+            return (type.testFlag(AllowSelection::FACE)
+                    && pObj->isDerivedFrom<App::Plane>())
+                || (type.testFlag(AllowSelection::EDGE)
+                    && pObj->isDerivedFrom<App::Line>());
+        }
         return allowOrigin(body, originGroup, pObj);
     }
 
     if (pObj->isDerivedFrom<Part::Datum>()) {
+        if (designWide) {
+            return (type.testFlag(AllowSelection::FACE)
+                    && pObj->isDerivedFrom<PartDesign::Plane>())
+                || (type.testFlag(AllowSelection::EDGE)
+                    && pObj->isDerivedFrom<PartDesign::Line>())
+                || (type.testFlag(AllowSelection::POINT)
+                    && pObj->isDerivedFrom<PartDesign::Point>());
+        }
         return allowDatum(body, pObj);
     }
 
@@ -299,6 +321,58 @@ bool CombineSelectionFilterGates::allow(App::Document* pDoc, App::DocumentObject
 namespace PartDesignGui
 {
 
+App::DocumentObject* resolveModelingReference(
+    const App::DocumentObject* consumer,
+    App::DocumentObject* selected
+) noexcept
+{
+    if (!consumer || !selected) {
+        return selected;
+    }
+
+    if (consumer->getPropertyByName("VibeCADDefinitionId")) {
+        try {
+            return PartDesign::DesignModel::resolveDefinitionReference(
+                *const_cast<App::DocumentObject*>(consumer),
+                *selected
+            );
+        }
+        catch (...) {
+            return nullptr;
+        }
+    }
+
+    if (dynamic_cast<const PartDesign::DesignOperationProperties*>(
+            consumer
+        )) {
+        try {
+            auto* body = freecad_cast<PartDesign::Body*>(
+                PartGui::findModelingBody(selected)
+            );
+            return body
+                ? PartDesign::designBodyStateBefore(body, consumer)
+                : selected;
+        }
+        catch (...) {
+            return nullptr;
+        }
+    }
+
+    auto* body = freecad_cast<PartDesign::Body*>(
+        PartGui::findModelingBody(
+            const_cast<App::DocumentObject*>(consumer)
+        )
+    );
+    if (!body) {
+        return selected;
+    }
+
+    auto* previousResult = body->getPrevResultFeature(
+        const_cast<App::DocumentObject*>(consumer)
+    );
+    return PartGui::resolveModelingObjectForBody(selected, body, previousResult);
+}
+
 bool getReferencedSelection(
     const App::DocumentObject* thisObj,
     const Gui::SelectionChanges& msg,
@@ -315,8 +389,11 @@ bool getReferencedSelection(
         return false;
     }
 
-    selObj = thisObj->getDocument()->getObject(msg.pObjectName);
-    if (selObj == thisObj) {
+    selObj = resolveModelingReference(
+        thisObj,
+        thisObj->getDocument()->getObject(msg.pObjectName)
+    );
+    if (!selObj || selObj == thisObj) {
         return false;
     }
 

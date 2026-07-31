@@ -900,6 +900,8 @@ void OverlayTabWidget::saveTabs()
         return;
     }
 
+    OverlayManager::instance()->applyRequestedPresentation(this);
+
     std::ostringstream os, os2;
     std::map<QDockWidget*, int> savedPositiveSizes;
     auto sizes = splitter->sizes();
@@ -917,13 +919,17 @@ void OverlayTabWidget::saveTabs()
             else {
                 os2 << ",";
             }
-            os2 << sizes[i];
         }
-        int rememberedSize = sizes[i];
+        int rememberedSize = sizes.value(i, 0);
         const auto previousSize = _sizemap.find(dock);
-        if (rememberedSize <= 0 && previousSize != _sizemap.end()
-            && previousSize->second > 0) {
+        if (rememberedSize <= 0 && previousSize != _sizemap.end() && previousSize->second > 0) {
             rememberedSize = previousSize->second;
+        }
+        const int persistedSize = OverlayManager::instance()->isDockRequestedVisible(dock)
+            ? rememberedSize
+            : sizes.value(i, 0);
+        if (dock->objectName().size()) {
+            os2 << persistedSize;
         }
         savedPositiveSizes[dock] = rememberedSize;
     }
@@ -1231,10 +1237,6 @@ void OverlayTabWidget::setState(State state)
 
 bool OverlayTabWidget::checkAutoHide() const
 {
-    if (OverlayManager::instance()->keepsOverlayVisible(this)) {
-        return false;
-    }
-
     if (autoMode == AutoMode::AutoHide) {
         return true;
     }
@@ -1738,7 +1740,7 @@ void OverlayTabWidget::setRect(QRect rect)
     setGeometry(rectOverlay.translated(offset));
     proxyWidget->setGeometry(rectOverlay.translated(offset));
     setupLayout();
-    OverlayManager::instance()->synchronizePersistentPresentation(this);
+    OverlayManager::instance()->applyRequestedPresentation(this);
 
     const QList<int> sizes = splitter->sizes();
     bool hasPresentedWidget = false;

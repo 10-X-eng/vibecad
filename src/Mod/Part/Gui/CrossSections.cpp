@@ -43,6 +43,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -257,8 +258,16 @@ void recordAcceptedCrossSection(
     manager->addLine(Gui::MacroManager::App, "__vibecad_cross_doc.recompute()");
     manager->addLine(
         Gui::MacroManager::App,
+        ("__vibecad_cross_outputs.setdefault("
+         + pythonString(result.getDocument()->getName())
+         + ", []).append(__vibecad_cross)")
+            .c_str()
+    );
+    manager->addLine(
+        Gui::MacroManager::App,
         parent
-            ? "del __vibecad_cross_parent, __vibecad_cross, __vibecad_cross_doc"
+            ? "del __vibecad_cross_parent, __vibecad_cross, "
+              "__vibecad_cross_doc"
             : "del __vibecad_cross, __vibecad_cross_doc"
     );
 }
@@ -368,28 +377,44 @@ public:
             );
         }
 
-        if (Gui::Application::Instance) {
-            std::map<App::Document*, std::vector<long>> resultsByDocument;
-            for (auto* result : results) {
-                if (result && result->getDocument()) {
-                    resultsByDocument[result->getDocument()].push_back(
-                        result->getID()
-                    );
-                }
-            }
-            for (const auto& [document, ids] : resultsByDocument) {
-                Gui::Application::Instance->prepareDurableTaskResults(
-                    *document,
-                    ids
-                );
-            }
-        }
         std::map<App::Document*, std::vector<App::DocumentObject*>>
             groupedResultsByDocument;
         for (auto* result : results) {
             if (result && result->getDocument()) {
                 groupedResultsByDocument[result->getDocument()].push_back(
                     result
+                );
+            }
+        }
+
+        if (Gui::Application::Instance) {
+            for (const auto& [document, groupedResults] :
+                 groupedResultsByDocument) {
+                if (groupedResults.empty()) {
+                    continue;
+                }
+                App::DocumentTimeline::initializeDesignDefinition(
+                    *groupedResults.back()
+                );
+                std::vector<long> ids;
+                std::vector<
+                    Gui::Application::DurableTaskResultIntent>
+                    ownership;
+                ids.reserve(groupedResults.size());
+                ownership.reserve(groupedResults.size());
+                for (auto* result : groupedResults) {
+                    ids.push_back(result->getID());
+                    ownership.push_back({
+                        .objectId = result->getID(),
+                        .ownership = Gui::Application::
+                            DurableTaskResultOwnership::DocumentRoot,
+                        .ownerObjectId = -1,
+                    });
+                }
+                Gui::Application::Instance->prepareDurableTaskResults(
+                    *document,
+                    ids,
+                    ownership
                 );
             }
         }
@@ -411,6 +436,16 @@ public:
                     status && *status
                         ? status
                         : "Cross-section result validation failed"
+                );
+            }
+        }
+        for (const auto& [document, groupedResults] :
+             groupedResultsByDocument) {
+            Q_UNUSED(document);
+            if (!groupedResults.empty()) {
+                PartGui::finalizeModelingDesignDefinition(
+                    *groupedResults.back(),
+                    groupedResults
                 );
             }
         }
@@ -748,6 +783,16 @@ bool CrossSections::apply()
         batch.commit(results);
         state.appliedResults.assign(results.begin(), results.end());
         const Base::Vector3d normal(a, b, c);
+        auto* macroManager =
+            Gui::Application::Instance
+                ? Gui::Application::Instance->macroManager()
+                : nullptr;
+        if (macroManager) {
+            macroManager->addLine(
+                Gui::MacroManager::App,
+                "__vibecad_cross_outputs = {}"
+            );
+        }
         for (std::size_t index = 0; index < results.size(); ++index) {
             try {
                 recordAcceptedCrossSection(*results[index], sources[index], normal, d);
@@ -757,6 +802,24 @@ bool CrossSections::apply()
                     "A cross-section was committed, but its macro record could not be written.\n"
                 );
             }
+        }
+        if (macroManager) {
+            macroManager->addLine(
+                Gui::MacroManager::App,
+                "import PartGui"
+            );
+            macroManager->addLine(
+                Gui::MacroManager::App,
+                "for __vibecad_cross_group in "
+                "__vibecad_cross_outputs.values(): "
+                "PartGui.publishDesignDefinitionBlock("
+                "__vibecad_cross_group)"
+            );
+            macroManager->addLine(
+                Gui::MacroManager::App,
+                "del __vibecad_cross_group, "
+                "__vibecad_cross_outputs"
+            );
         }
     }
     catch (Base::Exception& error) {

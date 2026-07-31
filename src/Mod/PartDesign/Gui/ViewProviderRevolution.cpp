@@ -25,6 +25,7 @@
 
 #include <QMenu>
 
+#include <Mod/PartDesign/App/DesignFeature.h>
 
 #include "TaskRevolutionParameters.h"
 #include "ViewProviderRevolution.h"
@@ -42,7 +43,12 @@ ViewProviderRevolution::~ViewProviderRevolution() = default;
 
 void ViewProviderRevolution::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)
 {
-    addDefaultAction(menu, QObject::tr("Edit Revolution"));
+    addDefaultAction(
+        menu,
+        getObject<PartDesign::DesignRevolve>()
+            ? QObject::tr("Edit Revolve")
+            : QObject::tr("Edit Revolution")
+    );
     PartDesignGui::ViewProviderSketchBased::setupContextMenu(menu, receiver, member);
 }
 

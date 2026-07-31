@@ -38,9 +38,12 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentTimeline.h>
 #include <App/ElementNamingUtils.h>
 #include <App/Expression.h>
 #include <App/FeaturePythonPyImp.h>
+#include <App/GeoFeatureGroupExtension.h>
+#include <App/GroupExtension.h>
 #include <App/IndexedName.h>
 #include <App/MappedName.h>
 #include <App/ObjectIdentifier.h>
@@ -61,6 +64,7 @@
 #include "Constraint.h"
 #include "SketchObjectPy.h"
 #include "ExternalGeometryFacade.h"
+#include <Base/Uuid.h>
 
 
 #undef DEBUG
@@ -78,6 +82,22 @@ PROPERTY_SOURCE(Sketcher::SketchObject, Part::Part2DObject)
 
 SketchObject::SketchObject() : geoLastId(0)
 {
+    Base::Uuid sketchId;
+    ADD_PROPERTY_TYPE(
+        VibeCADSketchId,
+        (sketchId),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly),
+        "Persistent identity of this reusable Sketch"
+    );
+    Base::Uuid designId;
+    ADD_PROPERTY_TYPE(
+        DesignId,
+        (designId),
+        "VibeCAD Design",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Hidden),
+        "Persistent identity of the Design which owns this reusable Sketch"
+    );
     ADD_PROPERTY_TYPE(
         Geometry, (nullptr), "Sketch", (App::PropertyType)(App::Prop_None), "Sketch geometry");
     ADD_PROPERTY_TYPE(Constraints,
@@ -171,6 +191,134 @@ void SketchObject::setupObject()
     ArcFitTolerance.setValue(hGrpp->GetFloat("ArcFitTolerance", Precision::Confusion()*10.0));
     MakeInternals.setValue(hGrpp->GetBool("MakeInternals", true));
     inherited::setupObject();
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)) {
+        return;
+    }
+    if (auto* timeline = App::DocumentTimeline::ensure(document)) {
+        DesignId.setValue(timeline->DesignId.getValue());
+    }
+}
+
+bool SketchObject::isDesignScopeDefinition() const noexcept
+{
+    try {
+        return getDocument()
+            && !App::GeoFeatureGroupExtension::getGroupOfObject(
+                const_cast<SketchObject*>(this)
+            )
+            && !App::GroupExtension::getGroupOfObject(
+                const_cast<SketchObject*>(this)
+            );
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+void SketchObject::finalizeDesignDefinition()
+{
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)) {
+        throw Base::RuntimeError(
+            "A Design Sketch must belong to one live document"
+        );
+    }
+    if (!isDesignScopeDefinition()) {
+        throw Base::ValueError(
+            "A reusable Design Sketch must remain at document scope"
+        );
+    }
+
+    auto* timeline = App::DocumentTimeline::ensure(document);
+    if (!timeline) {
+        throw Base::RuntimeError(
+            "A reusable Design Sketch requires global History"
+        );
+    }
+    if (VibeCADSketchId.getValueStr().empty()) {
+        VibeCADSketchId.setValue(Base::Uuid::createUuid());
+    }
+    if (DesignId.getValueStr().empty()) {
+        DesignId.setValue(timeline->DesignId.getValue());
+    }
+    else if (DesignId.getValueStr()
+             != timeline->DesignId.getValueStr()) {
+        throw Base::RuntimeError(
+            "A reusable Sketch belongs to a different Design"
+        );
+    }
+
+    auto* roleProperty = getPropertyByName(
+        App::DocumentTimeline::RolePropertyName
+    );
+    if (!roleProperty) {
+        roleProperty = addDynamicProperty(
+            "App::PropertyString",
+            App::DocumentTimeline::RolePropertyName,
+            "VibeCAD Design",
+            "Document timeline classification",
+            App::Prop_NoRecompute,
+            true,
+            true
+        );
+    }
+    auto* role = dynamic_cast<App::PropertyString*>(roleProperty);
+    const std::string roleValue =
+        role ? role->getValue() : std::string();
+    if (!role
+        || (!roleValue.empty()
+            && roleValue != App::DocumentTimeline::OperationRole)) {
+        throw Base::TypeError(
+            "A reusable Sketch has incompatible History classification"
+        );
+    }
+    role->setStatus(App::Property::Hidden, true);
+    role->setStatus(App::Property::LockDynamic, true);
+    role->setStatus(App::Property::NoRecompute, true);
+    role->setValue(App::DocumentTimeline::OperationRole);
+
+    if (auto* ownerProperty = getPropertyByName(
+            App::DocumentTimeline::OwnerPropertyName
+        )) {
+        auto* owner =
+            dynamic_cast<App::PropertyLinkHidden*>(ownerProperty);
+        if (!owner || owner->getValue()) {
+            throw Base::TypeError(
+                "A reusable Sketch cannot be a History resource"
+            );
+        }
+        owner->setStatus(App::Property::Hidden, true);
+        owner->setStatus(App::Property::LockDynamic, true);
+        owner->setStatus(App::Property::NoRecompute, true);
+    }
+    if (!isValid()) {
+        throw Base::RuntimeError(getStatusString());
+    }
+
+    const auto& history = timeline->Operations.getValues();
+    const auto count =
+        std::ranges::count(history, this);
+    if (count > 1) {
+        throw Base::RuntimeError(
+            "A reusable Sketch appears more than once in global History"
+        );
+    }
+    if (count == 1) {
+        return;
+    }
+    if (document
+            ->isProvisionallyEnrolledInTimelineByCurrentTransaction(
+                this
+            )) {
+        timeline->finalizeProvisionalOperationBlock(
+            this,
+            {this}
+        );
+    }
+    else {
+        timeline->publishProvisionalOperationBlock(this, {});
+    }
 }
 
 short SketchObject::mustExecute() const

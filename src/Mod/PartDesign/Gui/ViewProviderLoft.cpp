@@ -29,6 +29,7 @@
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Mod/Part/Gui/ReferenceHighlighter.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureLoft.h>
 
 #include "ViewProviderLoft.h"
@@ -45,6 +46,9 @@ ViewProviderLoft::~ViewProviderLoft() = default;
 std::vector<App::DocumentObject*> ViewProviderLoft::claimChildren() const
 {
     std::vector<App::DocumentObject*> temp;
+    if (getObject<PartDesign::DesignLoft>()) {
+        return temp;
+    }
 
     PartDesign::Loft* pcLoft = getObject<PartDesign::Loft>();
 

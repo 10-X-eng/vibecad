@@ -55,6 +55,10 @@ class TaskDatumParameters: public PartGui::TaskAttacher
 public:
     explicit TaskDatumParameters(ViewProviderDatum* DatumView, QWidget* parent = nullptr);
     ~TaskDatumParameters() override;
+
+protected:
+    App::DocumentObject*
+    normalizeReference(App::DocumentObject* selected) const override;
 };
 
 /// simulation dialog for the TaskView

@@ -254,6 +254,15 @@ App::Property* PropertyTopoShapeList::Copy() const
     PropertyTopoShapeList* p = new PropertyTopoShapeList();
     std::vector<TopoShape> copiedShapes;
     for (auto& shape : _lValueList) {
+        // A shape list can intentionally contain empty entries when it is
+        // parallel to a presence/state array. BRepBuilderAPI_Copy rejects a
+        // null TopoDS_Shape, which previously made the first transactional
+        // edit of such a property fail before an undo snapshot could be
+        // recorded.
+        if (shape.isNull()) {
+            copiedShapes.emplace_back(shape);
+            continue;
+        }
         BRepBuilderAPI_Copy copy(shape.getShape());
         copiedShapes.emplace_back(copy.Shape());
     }

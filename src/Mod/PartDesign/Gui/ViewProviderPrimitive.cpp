@@ -95,6 +95,10 @@ QIcon ViewProviderPrimitive::getIcon() const
         case PartDesign::FeaturePrimitive::Wedge:
             str += QStringLiteral("Wedge");
             break;
+        case PartDesign::FeaturePrimitive::Tube:
+            return PartDesignGui::ViewProvider::mergeGreyableOverlayIcons(
+                Gui::BitmapFactory().pixmap("Part_Tube_Parametric")
+            );
     }
 
     str += QStringLiteral(".svg");

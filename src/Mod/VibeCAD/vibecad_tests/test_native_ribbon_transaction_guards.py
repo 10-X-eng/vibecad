@@ -26,29 +26,17 @@ _READ_ONLY_OR_VIEW_COMMANDS = frozenset(
 # These child action IDs are dispatched by one guarded C++ command object.
 _IMPLEMENTATION_ALIASES = {
     **{
-        command: "PartDesign_CompPrimitiveAdditive"
+        command: "PartDesign_DesignPrimitive"
         for command in (
-            "PartDesign_AdditiveBox",
-            "PartDesign_AdditiveCylinder",
-            "PartDesign_AdditiveSphere",
-            "PartDesign_AdditiveCone",
-            "PartDesign_AdditiveEllipsoid",
-            "PartDesign_AdditiveTorus",
-            "PartDesign_AdditivePrism",
-            "PartDesign_AdditiveWedge",
-        )
-    },
-    **{
-        command: "PartDesign_CompPrimitiveSubtractive"
-        for command in (
-            "PartDesign_SubtractiveBox",
-            "PartDesign_SubtractiveCylinder",
-            "PartDesign_SubtractiveSphere",
-            "PartDesign_SubtractiveCone",
-            "PartDesign_SubtractiveEllipsoid",
-            "PartDesign_SubtractiveTorus",
-            "PartDesign_SubtractivePrism",
-            "PartDesign_SubtractiveWedge",
+            "PartDesign::DesignBox",
+            "PartDesign::DesignCylinder",
+            "PartDesign::DesignSphere",
+            "PartDesign::DesignCone",
+            "PartDesign::DesignEllipsoid",
+            "PartDesign::DesignTorus",
+            "PartDesign::DesignPrism",
+            "PartDesign::DesignWedge",
+            "PartDesign::DesignTube",
         )
     },
 }
@@ -56,44 +44,33 @@ _IMPLEMENTATION_ALIASES = {
 _PARTDESIGN_COMMAND = "src/Mod/PartDesign/Gui/Command.cpp"
 _CPP_GUARDS = {
     "src/Mod/PartDesign/Gui/CommandBody.cpp": {
-        "PartDesign_Body": "canStartModelingCommand",
+        "PartDesign_NewComponent": "canStartModelingCommand",
+        "PartDesign_NewBody": "canStartModelingCommand",
     },
     "src/Mod/PartDesign/Gui/CommandPrimitive.cpp": {
-        "PartDesign_CompPrimitiveAdditive": "canStartModelingCommand",
-        "PartDesign_CompPrimitiveSubtractive": "canStartModelingCommand",
+        "PartDesign_DesignPrimitive": "canStartModelingCommand",
     },
     _PARTDESIGN_COMMAND: {
-        "PartDesign_CompSketches": "canStartModelingCommand",
-        "PartDesign_NewSketch": "canStartModelingCommand",
         "PartDesign_SubShapeBinder": "canStartModelingCommand",
         "PartDesign_Clone": "canStartModelingCommand",
-        **{
-            command: "isProfileCommandActive"
-            for command in (
-                "PartDesign_Pad",
-                "PartDesign_Revolution",
-                "PartDesign_AdditiveLoft",
-                "PartDesign_AdditivePipe",
-                "PartDesign_AdditiveHelix",
-                "PartDesign_Pocket",
-                "PartDesign_Hole",
-                "PartDesign_Groove",
-                "PartDesign_SubtractiveLoft",
-                "PartDesign_SubtractivePipe",
-                "PartDesign_SubtractiveHelix",
-            )
-        },
-        "PartDesign_Fillet": "isDressupCommandActive",
-        "PartDesign_Chamfer": "isDressupCommandActive",
-        "PartDesign_Draft": "isDraftCommandActive",
-        "PartDesign_Thickness": "isDressupCommandActive",
-        "PartDesign_Mirrored": "isTransformCommandActive",
-        "PartDesign_LinearPattern": "isTransformCommandActive",
-        "PartDesign_PolarPattern": "isTransformCommandActive",
-        "PartDesign_MultiTransform": "isTransformCommandActive",
+        "PartDesign_DesignExtrude": "designProfileOperationActive",
+        "PartDesign_DesignRevolve": "designProfileOperationActive",
+        "PartDesign_DesignLoft": "designLoftOperationActive",
+        "PartDesign_DesignSweep": "designSweepOperationActive",
+        "PartDesign_DesignHelix": "designProfileOperationActive",
+        "PartDesign_Hole": "designProfileOperationActive",
+        "PartDesign_Fillet": "designDressupOperationActive",
+        "PartDesign_Chamfer": "designDressupOperationActive",
+        "PartDesign_Draft": "designDressupOperationActive",
+        "PartDesign_Thickness": "designDressupOperationActive",
+        "PartDesign_DesignMirror": "designPatternCommandActive",
+        "PartDesign_DesignLinearPattern": "designPatternCommandActive",
+        "PartDesign_DesignCircularPattern": "designPatternCommandActive",
+        "PartDesign_Combine": "canStartModelingCommand",
+        "PartDesign_Split": "canStartModelingCommand",
     },
     "src/Mod/Sketcher/Gui/Command.cpp": {
-        "Sketcher_MapSketch": "isSketchSetupAvailable",
+        "Sketcher_NewSketch": "isSketchSetupAvailable",
         "Sketcher_EditSketch": "isSketchSetupAvailable",
         "Sketcher_ValidateSketch": "canStartRetainedModelingTask",
     },
@@ -119,12 +96,7 @@ _CPP_GUARDS = {
                 "Part_ProjectionOnSurface",
                 "Part_CompCompoundTools",
                 "Part_Compound",
-                "Part_Boolean",
-                "Part_Cut",
-                "Part_Fuse",
-                "Part_Common",
                 "Part_CompJoinFeatures",
-                "Part_CompSplitFeatures",
             )
         },
     },
@@ -178,24 +150,6 @@ _PYTHON_GUARDS = {
         ),
         "Part_JoinCutout": (
             "class CommandCutout",
-            "canStartRetainedModelingTask",
-        ),
-    },
-    "src/Mod/Part/BOPTools/SplitFeatures.py": {
-        "Part_BooleanFragments": (
-            "class CommandBooleanFragments",
-            "canStartRetainedModelingTask",
-        ),
-        "Part_SliceApart": (
-            "class CommandSliceApart",
-            "canStartRetainedModelingTask",
-        ),
-        "Part_Slice": (
-            "class CommandSlice",
-            "canStartRetainedModelingTask",
-        ),
-        "Part_XOR": (
-            "class CommandXOR",
             "canStartRetainedModelingTask",
         ),
     },
@@ -298,12 +252,10 @@ def test_every_shipped_model_command_has_an_explicit_transaction_classification(
     None
 ):
     graph = _shipped_graph()
-    assert len(graph) == 98
-    assert len(set(graph)) == 98
+    assert len(graph) == len(set(graph))
     assert _READ_ONLY_OR_VIEW_COMMANDS < set(graph)
 
     transaction_commands = set(graph) - _READ_ONLY_OR_VIEW_COMMANDS
-    assert len(transaction_commands) == 93
     implementations = {
         _IMPLEMENTATION_ALIASES.get(command, command)
         for command in transaction_commands

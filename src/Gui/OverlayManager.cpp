@@ -44,7 +44,6 @@
 
 #include <array>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "OverlayManager.h"
 
@@ -347,7 +346,6 @@ public:
     bool intercepting = false;
 
     std::unordered_map<QDockWidget*, OverlayInfo*> _overlayMap;
-    std::unordered_set<QDockWidget*> _persistentDocks;
     OverlayInfo _left;
     OverlayInfo _right;
     OverlayInfo _top;
@@ -963,23 +961,17 @@ public:
         return true;
     }
 
-    void setDockWidgetPersistent(QDockWidget* dock, bool persistent)
+    bool isDockRequestedVisible(QDockWidget* dock) const
     {
         if (!dock) {
-            return;
+            return false;
         }
-        if (!persistent) {
-            _persistentDocks.erase(dock);
-            return;
-        }
-        if (_persistentDocks.insert(dock).second) {
-            QObject::connect(dock, &QObject::destroyed, _host, [this, dock]() {
-                _persistentDocks.erase(dock);
-            });
-        }
+        auto* manager = DockWindowManager::instance();
+        return manager->managesDockWidget(dock) ? manager->isVisibilityRequested(dock)
+                                                : dock->toggleViewAction()->isChecked();
     }
 
-    void synchronizePersistentPresentation(OverlayTabWidget* tabWidget)
+    void applyRequestedPresentation(OverlayTabWidget* tabWidget)
     {
         if (!tabWidget) {
             return;
@@ -991,77 +983,82 @@ public:
             sizes.append(0);
         }
 
+        QList<int> requestedIndexes;
+        bool hasPresentedRequest = false;
         bool changed = false;
-        for (auto* dock : _persistentDocks) {
-            const auto overlay = _overlayMap.find(dock);
-            if (overlay == _overlayMap.end() || overlay->second->tabWidget != tabWidget) {
+        for (int index = 0; index < splitter->count(); ++index) {
+            auto* dock = tabWidget->dockWidget(index);
+            if (!dock) {
                 continue;
             }
 
-            const int index = tabWidget->dockWidgetIndex(dock);
-            if (index < 0 || index >= sizes.size()) {
-                continue;
-            }
-
-            const bool requested =
-                DockWindowManager::instance()->isVisibilityRequested(dock);
-            QSignalBlocker actionBlocker(dock->toggleViewAction());
-            dock->toggleViewAction()->setChecked(requested);
-
+            const bool requested = isDockRequestedVisible(dock);
             if (!requested) {
                 if (sizes[index] != 0) {
                     sizes[index] = 0;
                     changed = true;
                 }
-                dock->hide();
                 continue;
             }
 
-            dock->show();
+            requestedIndexes.append(index);
             if (sizes[index] > 0) {
-                continue;
+                tabWidget->_sizemap[dock] = sizes[index];
+                hasPresentedRequest = true;
             }
+        }
 
+        // Qt can transiently normalize every child to zero while an overlay
+        // is reparented, resized, or hidden for a task/workbench transition.
+        // A requested-visible overlay must always retain one concrete child;
+        // choose the current requested tab when possible and restore its last
+        // positive allocation. Splitter geometry is never interpreted as a
+        // visibility request.
+        if (!requestedIndexes.isEmpty() && !hasPresentedRequest) {
+            int restoreIndex = tabWidget->currentIndex();
+            if (!requestedIndexes.contains(restoreIndex)) {
+                restoreIndex = requestedIndexes.front();
+            }
+            auto* dock = tabWidget->dockWidget(restoreIndex);
             int restoredSize = 0;
-            const auto savedSize = tabWidget->_sizemap.find(dock);
-            if (savedSize != tabWidget->_sizemap.end()) {
-                restoredSize = savedSize->second;
+            if (const auto saved = tabWidget->_sizemap.find(dock);
+                saved != tabWidget->_sizemap.end()) {
+                restoredSize = saved->second;
             }
             if (restoredSize <= 0) {
                 const QRect overlayRect = tabWidget->getRect();
-                restoredSize = splitter->orientation() == Qt::Vertical
-                    ? overlayRect.height()
-                    : overlayRect.width();
+                restoredSize = splitter->orientation() == Qt::Vertical ? overlayRect.height()
+                                                                       : overlayRect.width();
             }
-            sizes[index] = std::max(
+            sizes[restoreIndex] = std::max(
                 restoredSize,
                 static_cast<int>(OverlayParams::getDockOverlayMinimumSize())
             );
-            tabWidget->_sizemap[dock] = sizes[index];
+            tabWidget->_sizemap[dock] = sizes[restoreIndex];
             changed = true;
         }
 
         if (changed) {
             splitter->setSizes(sizes);
         }
-    }
 
-    bool keepsOverlayVisible(const OverlayTabWidget* tabWidget) const
-    {
-        for (auto* dock : _persistentDocks) {
-            const auto overlay = _overlayMap.find(dock);
-            if (overlay == _overlayMap.end() || overlay->second->tabWidget != tabWidget
-                || !DockWindowManager::instance()->isVisibilityRequested(dock)) {
+        const QList<int> appliedSizes = splitter->sizes();
+        for (int index = 0; index < splitter->count(); ++index) {
+            auto* dock = tabWidget->dockWidget(index);
+            if (!dock) {
                 continue;
             }
-
-            const int index = tabWidget->dockWidgetIndex(dock);
-            const QList<int> sizes = tabWidget->getSplitter()->sizes();
-            if (index >= 0 && index < sizes.size() && sizes[index] > 0) {
-                return true;
-            }
+            const bool requested = isDockRequestedVisible(dock);
+            const bool presented = requested && appliedSizes.value(index, 0) > 0;
+            dock->setVisible(presented);
+            QSignalBlocker blocker(dock->toggleViewAction());
+            dock->toggleViewAction()->setChecked(requested);
         }
-        return false;
+
+        if (requestedIndexes.isEmpty()) {
+            tabWidget->getProxyWidget()->hide();
+            tabWidget->hide();
+        }
     }
 
     void onToggleDockWidget(QDockWidget* dock, int checked)
@@ -1827,11 +1824,6 @@ bool OverlayManager::setDockWidgetVisible(QDockWidget* dock, bool visible)
     return d->setDockWidgetVisible(dock, visible);
 }
 
-void OverlayManager::setDockWidgetPersistent(QDockWidget* dock, bool persistent)
-{
-    d->setDockWidgetPersistent(dock, persistent);
-}
-
 void OverlayManager::setupDockWidget(QDockWidget* dw, int dockArea)
 {
     (void)dockArea;
@@ -2383,14 +2375,14 @@ bool OverlayManager::isUnderOverlay() const
         && findTabWidget(qApp->widgetAt(QCursor::pos()), true);
 }
 
-bool OverlayManager::keepsOverlayVisible(const OverlayTabWidget* tabWidget) const
+bool OverlayManager::isDockRequestedVisible(QDockWidget* dock) const
 {
-    return d->keepsOverlayVisible(tabWidget);
+    return d->isDockRequestedVisible(dock);
 }
 
-void OverlayManager::synchronizePersistentPresentation(OverlayTabWidget* tabWidget)
+void OverlayManager::applyRequestedPresentation(OverlayTabWidget* tabWidget)
 {
-    d->synchronizePersistentPresentation(tabWidget);
+    d->applyRequestedPresentation(tabWidget);
 }
 
 void OverlayManager::save()

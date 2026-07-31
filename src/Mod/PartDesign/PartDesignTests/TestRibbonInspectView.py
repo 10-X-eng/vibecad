@@ -610,6 +610,11 @@ class TestRibbonInspectView(unittest.TestCase):
 
         main_window = Gui.getMainWindow()
         tree = main_window.findChild(QtGui.QDockWidget, "Std_TreeView")
+        tasks = main_window.findChild(QtGui.QDockWidget, "Std_TaskView")
+        browser_host = main_window.findChild(
+            QtGui.QWidget,
+            "VibeCADModelBrowserHost",
+        )
         assistant = main_window.findChild(
             QtGui.QDockWidget,
             "VibeCADAssistantPanel",
@@ -627,15 +632,21 @@ class TestRibbonInspectView(unittest.TestCase):
             "VibeCADDocumentTabs",
         )
         self.assertIsNotNone(tree)
+        self.assertIsNotNone(tasks)
+        self.assertIsNotNone(browser_host)
         self.assertIsNotNone(assistant)
         self.assertIsNotNone(timeline)
         self.assertIsNotNone(timeline_items)
         self.assertIsNotNone(document_tabs)
+        self.assertIs(tree.parentWidget(), browser_host)
+        self.assertIsNot(tasks.parentWidget(), browser_host)
 
         tree_action = tree.toggleViewAction()
         assistant_action = assistant.toggleViewAction()
-        original_tree_visible = bool(tree_action.isChecked())
         original_assistant_visible = bool(assistant_action.isChecked())
+        self.assertTrue(tree_action.isChecked())
+        self.assertFalse(tree_action.isEnabled())
+        self.assertFalse(tree_action.isVisible())
         grid_parameters = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Draft")
         original_grid_visible = grid_parameters.GetBool(
             "alwaysShowGrid",
@@ -675,7 +686,7 @@ class TestRibbonInspectView(unittest.TestCase):
                 for index in range(document_tabs.count())
             )
 
-        def assert_shell(visible_tree):
+        def assert_shell():
             current_tree = main_window.findChild(
                 QtGui.QDockWidget,
                 "Std_TreeView",
@@ -691,20 +702,17 @@ class TestRibbonInspectView(unittest.TestCase):
             self.assertIs(current_tree, tree)
             self.assertIs(current_assistant, assistant)
             self.assertIs(current_timeline, timeline)
-            self.assertEqual(
-                bool(tree_action.isChecked()),
-                visible_tree,
-            )
-            self.assertEqual(bool(tree.isHidden()), not visible_tree)
+            self.assertTrue(tree_action.isChecked())
+            self.assertFalse(tree_action.isEnabled())
+            self.assertFalse(tree_action.isVisible())
+            self.assertFalse(tree.isHidden())
             self.assertTrue(timeline.isVisible())
             self.assertTrue(document_tabs.isVisible())
             self.assertTrue(document_tabs_contain_active_document())
             self.assertTrue(VibeCADGrid.is_grid_visible())
-            if visible_tree:
-                self.assertTrue(tree_contains_active_document())
+            self.assertTrue(tree_contains_active_document())
 
         try:
-            set_dock_visible(tree, tree_action, True)
             set_dock_visible(assistant, assistant_action, True)
             VibeCADGrid.setup()
             VibeCADGrid.toggle_grid(True)
@@ -741,7 +749,7 @@ class TestRibbonInspectView(unittest.TestCase):
                 Gui.activateWorkbench(workbench)
                 self._process_events(150)
                 self.assertEqual(Gui.activeWorkbench().name(), workbench)
-                assert_shell(True)
+                assert_shell()
                 self.assertEqual(
                     self._selection_snapshot(),
                     expected_selection,
@@ -760,13 +768,15 @@ class TestRibbonInspectView(unittest.TestCase):
                     lambda: assistant_action.isChecked() and not assistant.isHidden()
                 )
             )
-            assert_shell(True)
+            assert_shell()
 
-            set_dock_visible(tree, tree_action, False)
+            # The Model browser is permanent chrome. Even direct QAction
+            # activation cannot hide it while ribbons and tasks transition.
+            tree_action.trigger()
             for _label, workbench in SHIPPED_RIBBON_DOMAINS:
                 Gui.activateWorkbench(workbench)
                 self._process_events(150)
-                assert_shell(False)
+                assert_shell()
                 self.assertEqual(
                     self._document_snapshot(),
                     expected_document,
@@ -779,13 +789,12 @@ class TestRibbonInspectView(unittest.TestCase):
                     lambda: assistant_action.isChecked() and not assistant.isHidden()
                 )
             )
-            self.assertFalse(tree_action.isChecked())
-            self.assertTrue(tree.isHidden())
+            self.assertTrue(tree_action.isChecked())
+            self.assertFalse(tree.isHidden())
 
-            set_dock_visible(tree, tree_action, True)
             Gui.activateWorkbench("PartDesignWorkbench")
             self._process_events(150)
-            assert_shell(True)
+            assert_shell()
 
             self.document.undo()
             self._process_events()
@@ -830,23 +839,13 @@ class TestRibbonInspectView(unittest.TestCase):
                 for _label, workbench in SHIPPED_RIBBON_DOMAINS:
                     Gui.activateWorkbench(workbench)
                     self._process_events(150)
-                    assert_shell(True)
+                    assert_shell()
                     self.assertFalse(self.body.Visibility)
         finally:
-            current_tree = main_window.findChild(
-                QtGui.QDockWidget,
-                "Std_TreeView",
-            )
             current_assistant = main_window.findChild(
                 QtGui.QDockWidget,
                 "VibeCADAssistantPanel",
             )
-            if current_tree is not None:
-                set_dock_visible(
-                    current_tree,
-                    current_tree.toggleViewAction(),
-                    original_tree_visible,
-                )
             if current_assistant is not None:
                 set_dock_visible(
                     current_assistant,

@@ -9,6 +9,7 @@ import unittest
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import PartDesign
 from PySide import QtCore, QtGui
 
 
@@ -367,7 +368,7 @@ class TestPythonFeatureTasks(unittest.TestCase):
             "Sprocket",
         )
 
-    def test_shaft_is_one_operation_with_one_owned_profile(self):
+    def test_shaft_is_one_global_operation_with_reusable_profile(self):
         original_objects = tuple(self.document.Objects)
         original_undo_count = int(self.document.UndoCount)
 
@@ -415,8 +416,15 @@ class TestPythonFeatureTasks(unittest.TestCase):
         transaction_id = int(self.document.getBookedTransactionID())
         operation = self.document.getObject("RevolutionShaft")
         profile = self.document.getObject("SketchShaft")
+        output_bodies = [
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Body"
+        ]
         self.assertIsNotNone(operation)
         self.assertIsNotNone(profile)
+        self.assertEqual(operation.TypeId, "PartDesign::DesignRevolve")
+        self.assertEqual(len(output_bodies), 1)
         self.assertEqual(
             int(self.document.getBookedTransactionID()),
             transaction_id,
@@ -425,51 +433,89 @@ class TestPythonFeatureTasks(unittest.TestCase):
 
         operation = self.document.getObject("RevolutionShaft")
         profile = self.document.getObject("SketchShaft")
+        body = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Body"
+        )
         self._assert_operation(operation)
-        self.assertEqual(profile.VibeCADTimelineRole, "resource")
-        self.assertIs(profile.VibeCADTimelineOwner, operation)
-        self.assertEqual(
-            profile.getTypeIdOfProperty("VibeCADTimelineOwner"),
-            "App::PropertyLinkHidden",
-        )
-        for property_name in (
-            "VibeCADTimelineRole",
-            "VibeCADTimelineOwner",
-        ):
-            self.assertTrue(
-                {"Hidden", "LockDynamic", "NoRecompute"}.issubset(
-                    profile.getPropertyStatus(property_name)
-                )
-            )
-        self.assertIn(
-            "Hidden",
-            profile.getEditorMode("VibeCADTimelineOwner"),
-        )
+        self._assert_operation(profile)
+        self.assertEqual(operation.TypeId, "PartDesign::DesignRevolve")
+        self.assertIsNone(operation.getParentGeoFeatureGroup())
+        self.assertIsNone(profile.getParentGeoFeatureGroup())
+        self.assertIn("VibeCADDefinitionId", profile.PropertiesList)
+        self.assertEqual(str(profile.DesignId), str(operation.DesignId))
         self.assertNotIn(
-            "VibeCADTimelineReplacedInputs",
+            "VibeCADTimelineOwner",
             profile.PropertiesList,
         )
         linked_profile, profile_subelements = operation.Profile
         self.assertIs(linked_profile, profile)
         self.assertEqual(tuple(profile_subelements), ())
         self.assertTrue(operation.isValid(), operation.getStatusString())
-        self.assertFalse(operation.Shape.isNull())
-        self.assertTrue(operation.Shape.isValid())
+        self.assertTrue(operation.Shape.isNull())
+        self.assertEqual(operation.ResultOperation, "New Body")
+        self.assertEqual(operation.InputStates, [])
+        self.assertEqual(operation.OutputPreviousInputIndices, [-1])
+        self.assertEqual(operation.OutputPresence, (True,))
+        self.assertEqual(operation.OutputBodyIds, [body.VibeCADBodyId])
+        self.assertIsNotNone(body.Tip)
+        self.assertIsNotNone(body.Tip.CurrentState)
+        self.assertIs(body.Tip.CurrentState.Operation, operation)
+        self.assertFalse(body.Shape.isNull())
+        self.assertTrue(body.Shape.isValid())
         self.assertEqual(
             int(self.document.UndoCount),
             original_undo_count + 1,
         )
-        timeline, _item = self._timeline_item(operation.Name)
+        self._timeline_item(operation.Name)
+        timeline, _item = self._timeline_item(profile.Name)
         visible_names = {
             timeline.item(row).data(QtCore.Qt.UserRole)
             for row in range(timeline.count())
         }
         self.assertIn(operation.Name, visible_names)
-        self.assertNotIn(profile.Name, visible_names)
-        self._save_reopen(operation, (profile,))
+        self.assertIn(profile.Name, visible_names)
 
         operation_name = operation.Name
         profile_name = profile.Name
+        body_name = body.Name
+        publication_name = body.Tip.Name
+        state_name = body.Tip.CurrentState.Name
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            saved = Path(temporary_directory) / "shaft.FCStd"
+            reopened = Path(temporary_directory) / "shaft_reopened.FCStd"
+            self.document.saveAs(str(saved))
+            shutil.copy2(saved, reopened)
+            restored_document = App.openDocument(str(reopened), True)
+            try:
+                restored_operation = restored_document.getObject(operation_name)
+                restored_profile = restored_document.getObject(profile_name)
+                restored_body = restored_document.getObject(body_name)
+                restored_publication = restored_document.getObject(
+                    publication_name
+                )
+                restored_state = restored_document.getObject(state_name)
+                self.assertIsNotNone(restored_operation)
+                self.assertIsNotNone(restored_profile)
+                self.assertIsNotNone(restored_body)
+                self.assertIsNotNone(restored_publication)
+                self.assertIsNotNone(restored_state)
+                self._assert_operation(restored_operation)
+                self._assert_operation(restored_profile)
+                self.assertIs(restored_body.Tip, restored_publication)
+                self.assertIs(
+                    restored_publication.CurrentState,
+                    restored_state,
+                )
+                self.assertIs(restored_state.Operation, restored_operation)
+                self.assertTrue(restored_body.Shape.isValid())
+                PartDesign.validateDesign(restored_operation)
+            finally:
+                App.closeDocument(restored_document.Name)
+                App.setActiveDocument(self.document.Name)
+                self._process_events()
+
         self.document.undo()
         self._process_events()
         self.assertIsNone(self.document.getObject(operation_name))
@@ -478,21 +524,63 @@ class TestPythonFeatureTasks(unittest.TestCase):
         self._process_events()
         operation = self.document.getObject(operation_name)
         profile = self.document.getObject(profile_name)
+        body = self.document.getObject(body_name)
         self.assertIsNotNone(operation)
         self.assertIsNotNone(profile)
-        self.assertIs(profile.VibeCADTimelineOwner, operation)
+        self.assertIsNotNone(body)
+        self._assert_operation(operation)
+        self._assert_operation(profile)
+        self.assertIs(body.Tip.CurrentState.Operation, operation)
+        PartDesign.validateDesign(operation)
 
+        constraint_names = [
+            obj.Name
+            for obj in self.document.Objects
+            if obj.Name.startswith("ShaftConstraint")
+        ]
+        self.assertEqual(len(constraint_names), 2)
         delete_undo_count = int(self.document.UndoCount)
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(operation)
         self._accept_next_message()
         Gui.runCommand("Std_Delete", 0)
         self._process_events()
-        self.assertIsNone(self.document.getObject(operation_name))
-        self.assertIsNone(self.document.getObject(profile_name))
+        self.assertIsNotNone(
+            self.document.getObject(operation_name),
+            "a Body-producing operation with live analysis consumers must "
+            "refuse destructive deletion",
+        )
+        self.assertIsNotNone(self.document.getObject(body_name))
+        self.assertEqual(int(self.document.UndoCount), delete_undo_count)
+
+        Gui.Selection.clearSelection()
+        for constraint_name in constraint_names:
+            Gui.Selection.addSelection(
+                self.document.getObject(constraint_name)
+            )
+        Gui.runCommand("Std_Delete", 0)
+        self._process_events()
+        for constraint_name in constraint_names:
+            self.assertIsNone(self.document.getObject(constraint_name))
         self.assertEqual(
             int(self.document.UndoCount),
             delete_undo_count + 1,
+        )
+
+        operation = self.document.getObject(operation_name)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(operation)
+        Gui.runCommand("Std_Delete", 0)
+        self._process_events()
+        self.assertIsNone(self.document.getObject(operation_name))
+        self.assertIsNotNone(
+            self.document.getObject(profile_name),
+            "deleting a consuming operation must retain its reusable sketch",
+        )
+        self.assertIsNone(self.document.getObject(body_name))
+        self.assertEqual(
+            int(self.document.UndoCount),
+            delete_undo_count + 2,
         )
         self.document.undo()
         self._process_events()
@@ -500,10 +588,21 @@ class TestPythonFeatureTasks(unittest.TestCase):
         restored_profile = self.document.getObject(profile_name)
         self.assertIsNotNone(restored_operation)
         self.assertIsNotNone(restored_profile)
+        restored_body = self.document.getObject(body_name)
+        self.assertIsNotNone(restored_body)
+        self._assert_operation(restored_operation)
+        self._assert_operation(restored_profile)
         self.assertIs(
-            restored_profile.VibeCADTimelineOwner,
+            restored_body.Tip.CurrentState.Operation,
             restored_operation,
         )
+        PartDesign.validateDesign(restored_operation)
+
+        self.document.undo()
+        self._process_events()
+        for constraint_name in constraint_names:
+            self.assertIsNotNone(self.document.getObject(constraint_name))
+        PartDesign.validateDesign(restored_operation)
 
     def test_python_feature_commands_refuse_caller_transactions(self):
         for command_name in (

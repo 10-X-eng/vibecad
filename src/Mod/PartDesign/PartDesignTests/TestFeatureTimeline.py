@@ -1633,6 +1633,217 @@ class TestFeatureTimeline(unittest.TestCase):
         self.assertIsNotNone(self.document.getObject(operation_name))
         self.assertFalse(source.Visibility)
 
+    def test_delete_design_operation_removes_its_body_graph_and_undoes_atomically(self):
+        self.document.openTransaction("Create global Design box")
+        operation = self.document.addObject(
+            "PartDesign::DesignBox",
+            "TimelineDesignBox",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Length = 12
+        operation.Width = 8
+        operation.Height = 5
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        bodies = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(len(bodies), 1)
+        body = bodies[0]
+        publication = body.Tip
+        state = publication.CurrentState
+        operation_name = operation.Name
+        body_name = body.Name
+        publication_name = publication.Name
+        state_name = state.Name
+        body_id = str(body.VibeCADBodyId)
+        operation_id = str(operation.OperationId)
+        self.assertAlmostEqual(body.Shape.Volume, 480.0)
+        PartDesign.validateDesign(operation)
+
+        undo_count = int(self.document.UndoCount)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(operation)
+        Gui.runCommand("Std_Delete", 0)
+        _event_step()
+
+        for name in (
+            operation_name,
+            body_name,
+            publication_name,
+            state_name,
+        ):
+            self.assertIsNone(self.document.getObject(name))
+        self.assertEqual(int(self.document.UndoCount), undo_count + 1)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+        self.document.undo()
+        _event_step()
+        restored_operation = self.document.getObject(operation_name)
+        restored_body = self.document.getObject(body_name)
+        restored_publication = self.document.getObject(publication_name)
+        restored_state = self.document.getObject(state_name)
+        self.assertIsNotNone(restored_operation)
+        self.assertIsNotNone(restored_body)
+        self.assertIsNotNone(restored_publication)
+        self.assertIsNotNone(restored_state)
+        self.assertEqual(str(restored_operation.OperationId), operation_id)
+        self.assertEqual(str(restored_body.VibeCADBodyId), body_id)
+        self.assertIs(restored_body.Tip, restored_publication)
+        self.assertIs(restored_publication.CurrentState, restored_state)
+        self.assertAlmostEqual(restored_body.Shape.Volume, 480.0)
+        PartDesign.validateDesign(restored_operation)
+
+        self.document.redo()
+        _event_step()
+        for name in (
+            operation_name,
+            body_name,
+            publication_name,
+            state_name,
+        ):
+            self.assertIsNone(self.document.getObject(name))
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_delete_design_body_resolves_to_its_creating_history_operation(self):
+        self.document.openTransaction("Create body-selected Design box")
+        operation = self.document.addObject(
+            "PartDesign::DesignBox",
+            "BodySelectedDesignBox",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Length = 12
+        operation.Width = 8
+        operation.Height = 5
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        body = PartDesign.finalizeDesignOperationEdit(edit)[0]
+        self.document.commitTransaction()
+
+        publication = body.Tip
+        state = publication.CurrentState
+        operation_name = operation.Name
+        body_name = body.Name
+        publication_name = publication.Name
+        state_name = state.Name
+        body_id = str(body.VibeCADBodyId)
+        operation_id = str(operation.OperationId)
+        self.assertAlmostEqual(body.Shape.Volume, 480.0)
+        PartDesign.validateDesign(operation)
+
+        undo_count = int(self.document.UndoCount)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(body)
+        Gui.runCommand("Std_Delete", 0)
+        _event_step()
+
+        for name in (
+            operation_name,
+            body_name,
+            publication_name,
+            state_name,
+        ):
+            self.assertIsNone(self.document.getObject(name))
+        self.assertEqual(int(self.document.UndoCount), undo_count + 1)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+        self.document.undo()
+        _event_step()
+        restored_operation = self.document.getObject(operation_name)
+        restored_body = self.document.getObject(body_name)
+        restored_publication = self.document.getObject(publication_name)
+        restored_state = self.document.getObject(state_name)
+        self.assertIsNotNone(restored_operation)
+        self.assertIsNotNone(restored_body)
+        self.assertIsNotNone(restored_publication)
+        self.assertIsNotNone(restored_state)
+        self.assertEqual(str(restored_operation.OperationId), operation_id)
+        self.assertEqual(str(restored_body.VibeCADBodyId), body_id)
+        self.assertIs(restored_body.Tip, restored_publication)
+        self.assertIs(restored_publication.CurrentState, restored_state)
+        self.assertAlmostEqual(restored_body.Shape.Volume, 480.0)
+        PartDesign.validateDesign(restored_operation)
+
+        self.document.redo()
+        _event_step()
+        for name in (
+            operation_name,
+            body_name,
+            publication_name,
+            state_name,
+        ):
+            self.assertIsNone(self.document.getObject(name))
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_design_body_keeps_one_publication_tip_across_history_navigation(self):
+        end = self.timeline_widget.findChild(
+            QtGui.QToolButton,
+            "VibeCADFeatureTimelineEnd",
+        )
+        previous = self.timeline_widget.findChild(
+            QtGui.QToolButton,
+            "VibeCADFeatureTimelinePrevious",
+        )
+        next_button = self.timeline_widget.findChild(
+            QtGui.QToolButton,
+            "VibeCADFeatureTimelineNext",
+        )
+        self.assertIsNotNone(end)
+        self.assertIsNotNone(previous)
+        self.assertIsNotNone(next_button)
+        end.click()
+        _event_step()
+
+        self.document.openTransaction("Create navigable Design box")
+        operation = self.document.addObject(
+            "PartDesign::DesignBox",
+            "NavigableDesignBox",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Length = 12
+        operation.Width = 8
+        operation.Height = 5
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        body = PartDesign.finalizeDesignOperationEdit(edit)[0]
+        self.document.commitTransaction()
+
+        publication = body.Tip
+        state = publication.CurrentState
+        controller = _document_timeline(self.document)
+        block_start = list(controller.Operations).index(state)
+        block_end = list(controller.Operations).index(operation) + 1
+        publication_id = publication.ID
+        publication_name = publication.Name
+        self.assertAlmostEqual(body.Shape.Volume, 480.0)
+        self.assertIs(body.Tip, publication)
+
+        end.click()
+        _event_step()
+        previous.click()
+        _event_step()
+        self.assertEqual(controller.Position, block_start)
+        self.assertIs(body.Tip, publication)
+        self.assertEqual(body.Tip.ID, publication_id)
+        self.assertEqual(body.Tip.Name, publication_name)
+        self.assertIs(publication.CurrentState, state)
+        self.assertTrue(body.Visibility)
+        self.assertTrue(publication.Visibility)
+        self.assertTrue(body.Shape.isNull())
+        self.assertTrue(publication.Shape.isNull())
+
+        next_button.click()
+        _event_step()
+        self.assertEqual(controller.Position, block_end)
+        self.assertIs(body.Tip, publication)
+        self.assertEqual(body.Tip.ID, publication_id)
+        self.assertIs(publication.CurrentState, state)
+        self.assertTrue(body.Visibility)
+        self.assertTrue(publication.Visibility)
+        self.assertAlmostEqual(body.Shape.Volume, 480.0)
+        self.assertAlmostEqual(publication.Shape.Volume, 480.0)
+        PartDesign.validateDesign(operation)
+
     def test_independent_part_container_deletion_keeps_legacy_questions(self):
         base = self.document.addObject(
             "Part::Box",

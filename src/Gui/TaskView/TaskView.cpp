@@ -61,6 +61,12 @@
 using namespace Gui::TaskView;
 namespace sp = std::placeholders;
 
+namespace
+{
+constexpr auto DiscardClosingDocumentPresentation =
+    "taskview_discard_closing_document_presentation";
+}
+
 
 //**************************************************************************
 //**************************************************************************
@@ -612,8 +618,18 @@ void TaskView::slotBeforeCloseDocument(const App::Document& doc)
     // Cancel. The application asks synchronous close observers to release
     // such ownership before it decides whether the document can be deleted.
     // Treat closing the task's document as Cancel while every referenced
-    // object and ViewProvider is still alive.
+    // object and ViewProvider is still alive. Roll back that document's exact
+    // model transaction, but do not replay its launch presentation over the
+    // live selection in another active document.
+    foundTaskInfo->ActiveDialog->setProperty(DiscardClosingDocumentPresentation, true);
     reject(const_cast<App::Document*>(&doc));
+    foundTaskInfo = std::ranges::find(taskInfos, &doc, &TaskInfo::Document);
+    if (foundTaskInfo != taskInfos.end()) {
+        foundTaskInfo->ActiveDialog->setProperty(
+            DiscardClosingDocumentPresentation,
+            QVariant()
+        );
+    }
 }
 
 void TaskView::slotDeletedDocument(const App::Document& doc)
@@ -1268,13 +1284,20 @@ void TaskView::reject(App::Document* doc)
     const bool removeRequested
         = foundTaskInfo->ActiveDialog->property("taskview_remove_dialog").isValid();
     std::optional<TaskDialog::InteractionState> interactionState;
+    const bool discardClosingDocumentPresentation =
+        foundTaskInfo->ActiveDialog
+            ->property(DiscardClosingDocumentPresentation)
+            .toBool();
     if (success || removeRequested) {
         interactionState = TaskDialog::takeCommandInteractionState(foundTaskInfo->ActiveDialog);
         removeDialog(doc);
         // Dialog widgets remove any selection gates in their destructors.
         // Restore only after that teardown and after the task-specific reject
         // has completed its transaction rollback/reset.
-        TaskDialog::restoreCommandInteractionState(interactionState);
+        TaskDialog::restoreCommandInteractionState(
+            interactionState,
+            !discardClosingDocumentPresentation
+        );
     }
     else {
         // A task is allowed to decline closure. Preserve the still-open

@@ -47,8 +47,10 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QShowEvent>
 #include <QSignalMapper>
 #include <QStatusBar>
 #include <QThread>
@@ -363,6 +365,67 @@ private:
 
 // -------------------------------------
 
+namespace
+{
+
+constexpr int modelBrowserWidth = 288;
+
+/**
+ * Central viewport layer used by VibeCAD's permanent model browser.
+ *
+ * The browser deliberately is not part of QMainWindow's dock layout and is
+ * not hosted by OverlayTabWidget. It therefore has no tab, splitter, docking,
+ * or saved visibility state that can be changed by workbench and task-panel
+ * transitions. The MDI area remains the full-size bottom layer; the narrow
+ * browser host is a transparent sibling anchored over its left edge.
+ */
+class ViewportCanvas final: public QWidget
+{
+public:
+    explicit ViewportCanvas(QMdiArea* mdiArea, QWidget* parent = nullptr)
+        : QWidget(parent)
+        , mdiArea(mdiArea)
+        , browserHost(new QWidget(this))
+    {
+        setObjectName(QStringLiteral("VibeCADViewportCanvas"));
+        setContentsMargins(0, 0, 0, 0);
+
+        mdiArea->setParent(this);
+
+        browserHost->setObjectName(QStringLiteral("VibeCADModelBrowserHost"));
+        browserHost->setAttribute(Qt::WA_NoSystemBackground);
+        browserHost->setAttribute(Qt::WA_TranslucentBackground);
+        browserHost->setAutoFillBackground(false);
+        auto* browserLayout = new QVBoxLayout(browserHost);
+        browserLayout->setContentsMargins(0, 0, 0, 0);
+        browserLayout->setSpacing(0);
+        browserHost->hide();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWidget::resizeEvent(event);
+        mdiArea->setGeometry(rect());
+        browserHost->setGeometry(0, 0, std::min(modelBrowserWidth, width()), height());
+        browserHost->raise();
+    }
+
+    void showEvent(QShowEvent* event) override
+    {
+        QWidget::showEvent(event);
+        browserHost->raise();
+    }
+
+private:
+    QMdiArea* mdiArea;
+    QWidget* browserHost;
+};
+
+}  // namespace
+
+// -------------------------------------
+
 /// One entry in the status-bar item registry owned by MainWindow.
 struct StatusBarItem
 {
@@ -502,7 +565,8 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
     auto* workspaceLayout = new QVBoxLayout(workspace);
     workspaceLayout->setContentsMargins(0, 0, 0, 0);
     workspaceLayout->setSpacing(0);
-    workspaceLayout->addWidget(d->mdiArea, 1);
+    auto* viewportCanvas = new ViewportCanvas(d->mdiArea, workspace);
+    workspaceLayout->addWidget(viewportCanvas, 1);
     d->featureTimeline = new FeatureTimeline(workspace);
     workspaceLayout->addWidget(d->featureTimeline);
     setCentralWidget(workspace);
@@ -870,14 +934,11 @@ bool MainWindow::setupPythonConsole()
 bool MainWindow::updateTreeView(bool show)
 {
     if (d->hiddenDockWindows.find("Std_TreeView") == std::string::npos) {
-        ParameterGrp::handle group = App::GetApplication()
-                                         .GetUserParameter()
-                                         .GetGroup("BaseApp")
-                                         ->GetGroup("Preferences")
-                                         ->GetGroup("DockWindows")
-                                         ->GetGroup("TreeView");
-        bool enabled = group->GetBool("Enabled", false);
-        _updateDockWidget("Std_TreeView", enabled, show, Qt::RightDockWidgetArea, [](QWidget* widget) {
+        // The model browser is permanent application chrome. Keep accepting
+        // the historical TreeView preference key for profile compatibility,
+        // but it no longer controls whether the browser exists.
+        constexpr bool enabled = true;
+        _updateDockWidget("Std_TreeView", enabled, show, Qt::LeftDockWidgetArea, [](QWidget* widget) {
             if (widget) {
                 return widget;
             }

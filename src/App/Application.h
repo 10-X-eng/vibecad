@@ -434,6 +434,17 @@ public:
     fastsignals::signal<void (const Document&)> signalStartRestoreDocument;
     /// Signal after the document has restored.
     fastsignals::signal<void (const Document&)> signalFinishRestoreDocument;
+    /**
+     * Signal after one complete object-import batch has restored all links.
+     *
+     * Cross-module persistent-identity systems use this two-pass boundary to
+     * remap defining identities and their string references coherently. The
+     * imported objects still carry ObjImporting while this signal runs.
+     */
+    fastsignals::signal<void(
+        Document&,
+        const std::vector<DocumentObject*>&
+    )> signalFinishImportObjects;
     /// Signal on pending reloading of a partial document.
     fastsignals::signal<void (const Document&)> signalPendingReloadDocument;
     /// Signal on starting to save a document.

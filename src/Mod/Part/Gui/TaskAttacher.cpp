@@ -586,6 +586,12 @@ void TaskAttacher::handleInitialSelection()
     addToReference(subAndObjNamePairs);
 }
 
+App::DocumentObject*
+TaskAttacher::normalizeReference(App::DocumentObject* selected) const
+{
+    return selected;
+}
+
 void TaskAttacher::onSelectionChanged(const Gui::SelectionChanges& msg)
 {
     if (!ViewProvider) {
@@ -617,6 +623,7 @@ void TaskAttacher::addToReference(const std::vector<SubAndObjName>& pairs)
         App::DocumentObject* selObj = obj->getDocument()->getObject(pair.objName.c_str());
         std::string subname = pair.subName;
         findCorrectObjAndSubInThisContext(selObj, subname);
+        selObj = normalizeReference(selObj);
         if (!selObj) {
             return;
         }
@@ -958,6 +965,11 @@ void TaskAttacher::onRefName(const QString& text, unsigned idx)
 
         line->setProperty("RefName", QByteArray(name.c_str()));
         subElement = name;
+    }
+
+    obj = normalizeReference(obj);
+    if (!obj) {
+        return;
     }
 
     Part::AttachExtension* pcAttach

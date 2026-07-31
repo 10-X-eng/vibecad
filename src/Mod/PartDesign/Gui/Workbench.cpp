@@ -23,16 +23,11 @@
  ***************************************************************************/
 
 
-#include <App/Document.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
-#include <Gui/MDIView.h>
 #include <Mod/Sketcher/Gui/Workbench.h>
-#include <Mod/PartDesign/App/Body.h>
-#include <Mod/PartDesign/App/FeatureMultiTransform.h>
 
-#include "Utils.h"
 #include "Workbench.h"
 #include "WorkflowManager.h"
 
@@ -95,65 +90,12 @@ Workbench::~Workbench()
 
 void Workbench::setupContextMenu(const char* recipient, Gui::MenuItem* item) const
 {
-    auto selection = Gui::Selection().getSelection();
-    // Add move Tip Command
-    if (!selection.empty()) {
-        App::DocumentObject* feature = selection.front().pObject;
-        PartDesign::Body* body = nullptr;
-
-        body = PartDesignGui::getBodyFor(feature, false, false, true);
-        // lote of assertion so feature should be marked as a tip
-        if (selection.size() == 1 && feature && body && body->hasObject(feature)
-            && PartDesign::Body::isResultFeature(feature)) {
-            *item << "PartDesign_MoveTip";
-        }
-
-        if (strcmp(recipient, "Tree") == 0) {
-            Gui::MDIView* activeView = Gui::Application::Instance->activeView();
-
-            if (activeView) {
-                if (feature && feature->isDerivedFrom<PartDesign::Body>()) {
-                    *item << "Std_ToggleFreeze";
-                }
-
-                if (activeView->getAppDocument()->countObjectsOfType<PartDesign::Body>() > 0) {
-                    bool addMoveFeature = true;
-                    bool addMoveFeatureInTree = (body != nullptr);
-                    for (auto sel : selection) {
-                        // if at least one selected feature cannot be moved to a body
-                        // disable the entry
-                        if (addMoveFeature && !PartDesign::Body::isAllowed(sel.pObject)) {
-                            addMoveFeature = false;
-                        }
-                        // if all at least one selected feature doesn't belong to the same body
-                        // disable the menu entry
-                        if (addMoveFeatureInTree && !body->hasObject(sel.pObject)) {
-                            addMoveFeatureInTree = false;
-                        }
-
-                        if (!addMoveFeatureInTree && !addMoveFeature) {
-                            break;
-                        }
-                    }
-                    if (addMoveFeature) {
-                        *item << "PartDesign_MoveFeature";
-                    }
-                    if (addMoveFeatureInTree) {
-                        *item << "PartDesign_MoveFeatureInTree";
-                    }
-                }
-            }
-            if (Gui::Selection().countObjectsOfType<PartDesign::Transformed>()
-                    - Gui::Selection().countObjectsOfType<PartDesign::MultiTransform>()
-                == 1) {
-                *item << "PartDesign_MultiTransform";
-            }
-        }
-    }
-
-    if (item->hasItems()) {
-        *item << "Separator";
-    }
+    // VibeCAD's Design graph has one global operation order.  Moving a
+    // feature between Body groups or changing a Body Tip rewrites the legacy
+    // ownership graph and can create dependencies which the Design graph
+    // cannot represent.  Keep the compatibility commands registered for old
+    // documents and macros, but never advertise those mutations from the
+    // shipped authoring surface.
     Gui::StdWorkbench::setupContextMenu(recipient, item);
 }
 
@@ -196,7 +138,7 @@ void Workbench::activated()
     ));
 
     const char* Face[] = {
-        "PartDesign_NewSketch",
+        "Sketcher_NewSketch",
         "PartDesign_Fillet",
         "PartDesign_Chamfer",
         "PartDesign_Draft",
@@ -214,7 +156,7 @@ void Workbench::activated()
         "PartDesign_CoordinateSystem"
     ));
 
-    const char* Body[] = {"PartDesign_NewSketch", nullptr};
+    const char* Body[] = {"Sketcher_NewSketch", nullptr};
     Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
         "SELECT PartDesign::Body COUNT 1",
         Body,
@@ -222,7 +164,7 @@ void Workbench::activated()
         "PartDesign_Body"
     ));
 
-    const char* Body2[] = {"Part_Boolean", nullptr};
+    const char* Body2[] = {"PartDesign_Scale", "PartDesign_Combine", nullptr};
     Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
         "SELECT PartDesign::Body COUNT 1..",
         Body2,
@@ -231,7 +173,7 @@ void Workbench::activated()
     ));
 
     const char* Plane1[] = {
-        "PartDesign_NewSketch",
+        "Sketcher_NewSketch",
         "PartDesign_Point",
         "PartDesign_Line",
         "PartDesign_Plane",
@@ -246,7 +188,7 @@ void Workbench::activated()
     ));
 
     const char* Plane2[] = {
-        "PartDesign_NewSketch",
+        "Sketcher_NewSketch",
         "PartDesign_Point",
         "PartDesign_Line",
         "PartDesign_Plane",
@@ -282,13 +224,10 @@ void Workbench::activated()
         "PartDesign_CoordinateSystem"
     ));
 
-    const char* NoSel[] = {"PartDesign_Body", nullptr};
+    const char* NoSel[]
+        = {"PartDesign_NewComponent", "PartDesign_NewBody", "Sketcher_NewSketch", nullptr};
     Watcher.push_back(
-        new Gui::TaskView::TaskWatcherCommandsEmptySelection(
-            NoSel,
-            "Start Part",
-            "PartDesign_AdditiveBox"
-        )
+        new Gui::TaskView::TaskWatcherCommandsEmptySelection(NoSel, "Start Design", "PartDesign_Body")
     );
 
     const char* Faces[] = {
@@ -306,18 +245,11 @@ void Workbench::activated()
     ));
 
     const char* Sketch[] = {
-        "PartDesign_NewSketch",
-        "PartDesign_Pad",
-        "PartDesign_Pocket",
+        "Sketcher_EditSketch",
+        "PartDesign_DesignExtrude",
         "PartDesign_Hole",
-        "PartDesign_Revolution",
-        "PartDesign_Groove",
-        "PartDesign_AdditiveLoft",
-        "PartDesign_SubtractiveLoft",
-        "PartDesign_AdditivePipe",
-        "PartDesign_SubtractivePipe",
-        "PartDesign_AdditiveHelix",
-        "PartDesign_SubtractiveHelix",
+        "PartDesign_DesignRevolve",
+        "PartDesign_DesignHelix",
         nullptr
     };
     Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
@@ -327,13 +259,7 @@ void Workbench::activated()
         "PartDesign_Body"
     ));
 
-    const char* Sketches[] = {
-        "PartDesign_AdditiveLoft",
-        "PartDesign_SubtractiveLoft",
-        "PartDesign_AdditivePipe",
-        "PartDesign_SubtractivePipe",
-        nullptr
-    };
+    const char* Sketches[] = {"PartDesign_DesignLoft", "PartDesign_DesignSweep", nullptr};
     Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
         "SELECT Sketcher::SketchObject COUNT 2..",
         Sketches,
@@ -341,54 +267,17 @@ void Workbench::activated()
         "PartDesign_Body"
     ));
 
-    const char* ShapeBinder[] = {
-        "PartDesign_Pad",
-        "PartDesign_Pocket",
-        "PartDesign_Revolution",
-        "PartDesign_Groove",
-        "PartDesign_AdditiveLoft",
-        "PartDesign_SubtractiveLoft",
-        "PartDesign_AdditivePipe",
-        "PartDesign_SubtractivePipe",
-        nullptr
-    };
-    Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
-        "SELECT PartDesign::ShapeBinder COUNT 1",
-        ShapeBinder,
-        "Modeling tools",
-        "PartDesign_Body"
-    ));
-
-    const char* SubShapeBinder[] = {
-        "PartDesign_Pad",
-        "PartDesign_Pocket",
-        "PartDesign_Revolution",
-        "PartDesign_Groove",
-        "PartDesign_AdditiveLoft",
-        "PartDesign_SubtractiveLoft",
-        "PartDesign_AdditivePipe",
-        "PartDesign_SubtractivePipe",
-        nullptr
-    };
-    Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
-        "SELECT PartDesign::SubShapeBinder COUNT 1",
-        SubShapeBinder,
-        "Modeling tools",
-        "PartDesign_Body"
-    ));
-
     const char* Transformed[] = {
-        "PartDesign_Mirrored",
-        "PartDesign_LinearPattern",
-        "PartDesign_PolarPattern",
-        "PartDesign_MultiTransform",
+        "PartDesign_DesignMirror",
+        "PartDesign_DesignLinearPattern",
+        "PartDesign_DesignCircularPattern",
         nullptr
     };
     Watcher.push_back(new Gui::TaskView::TaskWatcherCommands(
-        "SELECT PartDesign::SketchBased",
+        "SELECT PartDesign::Feature COUNT 1",
         Transformed,
-        "Transformation Tools",
-        "PartDesign_MultiTransform"
+        "Pattern Tools",
+        "PartDesign_LinearPattern"
     ));
 
     addTaskWatcher(Watcher);
@@ -421,12 +310,8 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     root->insertItem(item, sketch);
     sketch->setCommand("&Sketch");
 
-    *sketch << "PartDesign_NewSketch"
-            << "Sketcher_EditSketch"
-            << "Sketcher_MapSketch"
-            << "Sketcher_ReorientSketch"
-            << "Sketcher_ValidateSketch"
-            << "Sketcher_MergeSketches"
+    *sketch << "Sketcher_NewSketch" << "Sketcher_EditSketch" << "Sketcher_MapSketch"
+            << "Sketcher_ReorientSketch" << "Sketcher_ValidateSketch" << "Sketcher_MergeSketches"
             << "Sketcher_MirrorSketch";
 
     Gui::MenuItem* model = new Gui::MenuItem;
@@ -436,29 +321,19 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     Gui::MenuItem* additives = new Gui::MenuItem;
     additives->setCommand("Add Material");
 
-    *additives << "PartDesign_Pad"
-               << "PartDesign_Revolution"
-               << "PartDesign_AdditiveLoft"
-               << "PartDesign_AdditivePipe"
-               << "PartDesign_AdditiveHelix";
+    *additives << "PartDesign_DesignExtrude" << "PartDesign_DesignRevolve"
+               << "PartDesign_DesignLoft" << "PartDesign_DesignSweep" << "PartDesign_DesignHelix";
 
     Gui::MenuItem* subtractives = new Gui::MenuItem;
     subtractives->setCommand("Remove Material");
 
-    *subtractives << "PartDesign_Pocket"
-                  << "PartDesign_Hole"
-                  << "PartDesign_Groove"
-                  << "PartDesign_SubtractiveLoft"
-                  << "PartDesign_SubtractivePipe"
-                  << "PartDesign_SubtractiveHelix";
+    *subtractives << "PartDesign_Hole";
 
     Gui::MenuItem* transformations = new Gui::MenuItem;
     transformations->setCommand("Transform Features");
 
-    *transformations << "PartDesign_Mirrored"
-                     << "PartDesign_LinearPattern"
-                     << "PartDesign_PolarPattern"
-                     << "PartDesign_MultiTransform";
+    *transformations << "PartDesign_Scale" << "PartDesign_DesignMirror"
+                     << "PartDesign_DesignLinearPattern" << "PartDesign_DesignCircularPattern";
 
     Gui::MenuItem* dressups = new Gui::MenuItem;
     dressups->setCommand("Finish Shape");
@@ -488,24 +363,11 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     // split/join, and explicit BREP booleans.
     Gui::MenuItem* generalGeometry = new Gui::MenuItem;
     generalGeometry->setCommand("Standalone and Surface Geometry");
-    *generalGeometry << "Part_Tube"
-                     << "Part_Primitives"
-                     << "Part_Builder"
-                     << "Separator"
-                     << "Part_Extrude"
-                     << "Part_Revolve"
-                     << "Part_Mirror"
-                     << "Part_Scale"
-                     << "Part_MakeFace"
-                     << "Part_RuledSurface"
-                     << "Part_Loft"
-                     << "Part_Sweep"
-                     << "Part_Section"
-                     << "Part_CrossSections"
-                     << "Part_Offset"
-                     << "Part_Offset2D"
-                     << "Part_ProjectionOnSurface"
-                     << "Part_SectionCut";
+    *generalGeometry << "Part_Primitives" << "Part_Builder" << "Separator" << "Part_Extrude"
+                     << "Part_Revolve" << "Part_Mirror" << "Part_MakeFace"
+                     << "Part_RuledSurface" << "Part_Loft" << "Part_Sweep" << "Part_Section"
+                     << "Part_CrossSections" << "Part_Offset" << "Part_Offset2D"
+                     << "Part_ProjectionOnSurface" << "Std_ToggleClipPlane";
 
     Gui::MenuItem* conversions = new Gui::MenuItem;
     conversions->setCommand("Convert and Repair");
@@ -521,11 +383,8 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     *copies << "Part_SimpleCopy" << "Part_TransformedCopy" << "Part_ElementCopy";
 
     Gui::MenuItem* booleans = new Gui::MenuItem;
-    booleans->setCommand("Boolean");
-    *booleans << "Part_Boolean"
-              << "Part_Cut"
-              << "Part_Fuse"
-              << "Part_Common";
+    booleans->setCommand("Combine");
+    *booleans << "PartDesign_Combine";
 
     Gui::MenuItem* joins = new Gui::MenuItem;
     joins->setCommand("Join");
@@ -535,16 +394,11 @@ Gui::MenuItem* Workbench::setupMenuBar() const
 
     Gui::MenuItem* splits = new Gui::MenuItem;
     splits->setCommand("Split");
-    *splits << "Part_BooleanFragments"
-            << "Part_SliceApart"
-            << "Part_Slice"
-            << "Part_XOR";
+    *splits << "PartDesign_Split";
 
     Gui::MenuItem* compounds = new Gui::MenuItem;
     compounds->setCommand("Compound");
-    *compounds << "Part_Compound"
-               << "Part_ExplodeCompound"
-               << "Part_CompoundFilter"
+    *compounds << "Part_Compound" << "PartDesign_Separate" << "Part_CompoundFilter"
                << "Part_ToleranceSet";
 
     Gui::MenuItem* inspection = new Gui::MenuItem;
@@ -554,24 +408,13 @@ Gui::MenuItem* Workbench::setupMenuBar() const
                 << "Materials_InspectAppearance"
                 << "Materials_InspectMaterial";
 
-    *model << "PartDesign_Body"
-           << datums
-           << "PartDesign_ShapeBinder"
-           << "PartDesign_SubShapeBinder"
-           << "PartDesign_Clone"
-           << standardComponents
-           << "Separator" << additives << "PartDesign_CompPrimitiveAdditive"
-           << "Separator" << subtractives << "PartDesign_CompPrimitiveSubtractive"
-           << "Separator" << dressups << transformations
-           << "Separator" << booleans << joins << splits << compounds
-           << "Separator" << generalGeometry << conversions << copies
-           << "Separator"
-           << "Part_BoxSelection"
-           << "Part_EditAttachment"
-           << inspection
-           << "Separator"
-           << "PartDesign_InvoluteGear"
-           << "PartDesign_Sprocket";
+    *model << "PartDesign_NewComponent" << "PartDesign_NewBody" << "Sketcher_NewSketch" << datums
+           << "PartDesign_SubShapeBinder" << "PartDesign_Clone" << standardComponents << "Separator"
+           << additives << "PartDesign_DesignPrimitive" << "Separator" << subtractives
+           << "Separator" << dressups << transformations << "Separator" << booleans << joins
+           << splits << compounds << "Separator" << generalGeometry << conversions << copies
+           << "Separator" << "Part_BoxSelection" << "Part_EditAttachment" << inspection
+           << "Separator" << "PartDesign_InvoluteGear" << "PartDesign_Sprocket";
 
     if (Gui::Application::Instance->commandManager().getCommandByName("PartDesign_WizardShaft")) {
         *model << "Separator" << "PartDesign_WizardShaft";
@@ -600,30 +443,16 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     Gui::ToolBarItem* part = new Gui::ToolBarItem(root);
     part->setCommand("Part Design Helper Features");
 
-    *part << "PartDesign_Body"
-          << "PartDesign_CompSketches"
-          << "Sketcher_ValidateSketch"
-          << "Part_CheckGeometry"
-          << "PartDesign_SubShapeBinder"
-          << "PartDesign_Clone";
+    *part << "PartDesign_NewComponent" << "PartDesign_NewBody" << "Sketcher_NewSketch"
+          << "Sketcher_EditSketch" << "Sketcher_ValidateSketch" << "Part_CheckGeometry"
+          << "PartDesign_SubShapeBinder" << "PartDesign_Clone";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Create and Remove Material");
 
-    *part << "PartDesign_Pad"
-          << "PartDesign_Revolution"
-          << "PartDesign_AdditiveLoft"
-          << "PartDesign_AdditivePipe"
-          << "PartDesign_AdditiveHelix"
-          << "PartDesign_CompPrimitiveAdditive"
-          << "Separator"
-          << "PartDesign_Pocket"
-          << "PartDesign_Hole"
-          << "PartDesign_Groove"
-          << "PartDesign_SubtractiveLoft"
-          << "PartDesign_SubtractivePipe"
-          << "PartDesign_SubtractiveHelix"
-          << "PartDesign_CompPrimitiveSubtractive";
+    *part << "PartDesign_DesignExtrude" << "PartDesign_DesignRevolve" << "PartDesign_DesignLoft"
+          << "PartDesign_DesignSweep" << "PartDesign_DesignHelix" << "PartDesign_DesignPrimitive"
+          << "Separator" << "PartDesign_Hole";
 
     part = new Gui::ToolBarItem(root);
 
@@ -636,40 +465,20 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     part = new Gui::ToolBarItem(root);
     part->setCommand("Transform Features");
 
-    *part << "PartDesign_Mirrored"
-          << "PartDesign_LinearPattern"
-          << "PartDesign_PolarPattern"
-          << "PartDesign_MultiTransform";
+    *part << "PartDesign_Scale" << "PartDesign_DesignMirror"
+          << "PartDesign_DesignLinearPattern" << "PartDesign_DesignCircularPattern";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Standalone and Surface Geometry");
-    *part << "Part_Tube"
-          << "Part_Primitives"
-          << "Part_Builder"
-          << "Separator"
-          << "Part_Extrude"
-          << "Part_Revolve"
-          << "Part_Mirror"
-          << "Part_Scale"
-          << "Part_MakeFace"
-          << "Part_RuledSurface"
-          << "Part_Loft"
-          << "Part_Sweep"
-          << "Part_Section"
-          << "Part_CrossSections"
-          << "Part_CompOffset"
+    *part << "Part_Primitives" << "Part_Builder" << "Separator" << "Part_Extrude" << "Part_Revolve"
+          << "Part_Mirror" << "Part_MakeFace" << "Part_RuledSurface" << "Part_Loft"
+          << "Part_Sweep" << "Part_Section" << "Part_CrossSections" << "Part_CompOffset"
           << "Part_ProjectionOnSurface";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Boolean, Split, and Repair");
-    *part << "Part_CompCompoundTools"
-          << "Part_Boolean"
-          << "Part_Cut"
-          << "Part_Fuse"
-          << "Part_Common"
-          << "Part_CompJoinFeatures"
-          << "Part_CompSplitFeatures"
-          << "Part_Defeaturing";
+    *part << "Part_Compound" << "PartDesign_Separate" << "Part_CompoundFilter" << "PartDesign_Combine"
+          << "Part_CompJoinFeatures" << "PartDesign_Split" << "Part_Defeaturing";
 
     part = new Gui::ToolBarItem(root);
     part->setCommand("Standard Components");

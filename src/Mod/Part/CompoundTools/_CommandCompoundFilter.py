@@ -166,67 +166,66 @@ def cmdCreateCompoundFilter(name):
     sel = _selected_modeling_objects()
     presentations = _visible_presentations(sel)
     document.openTransaction("Create CompoundFilter")
-    FreeCADGui.addModule("CompoundTools.CompoundFilter")
-    result = FreeCADGui.runDocumentObjectCommand(
-        document,
-        f"CompoundTools.CompoundFilter.makeCompoundFilter(name={name!r})",
-        "Part::Feature",
-    )
-    result_expression = _object_expression(result)
-    FreeCADGui.doCommand(
-        f"{result_expression}.Base = {_object_expression(sel[0])}"
-    )
-    if len(sel) == 2:
-        FreeCADGui.doCommand(
-            f"{result_expression}.Stencil = {_object_expression(sel[1])}"
-        )
-        FreeCADGui.doCommand(
-            f"{result_expression}.FilterType = 'collision-pass'"
-        )
-    else:
-        FreeCADGui.doCommand(
-            f"{result_expression}.FilterType = 'window-volume'"
-        )
-
     try:
+        FreeCADGui.addModule("CompoundTools.CompoundFilter")
+        result = FreeCADGui.runDocumentObjectCommand(
+            document,
+            "CompoundTools.CompoundFilter."
+            f"makeCompoundFilter(name={name!r})",
+            "Part::Feature",
+        )
+        result_expression = _object_expression(result)
+        FreeCADGui.doCommand(
+            f"{result_expression}.Base = {_object_expression(sel[0])}"
+        )
+        if len(sel) == 2:
+            FreeCADGui.doCommand(
+                f"{result_expression}.Stencil = "
+                f"{_object_expression(sel[1])}"
+            )
+            FreeCADGui.doCommand(
+                f"{result_expression}.FilterType = 'collision-pass'"
+            )
+        else:
+            FreeCADGui.doCommand(
+                f"{result_expression}.FilterType = 'window-volume'"
+            )
+
         FreeCADGui.doCommand(
             f"{result_expression}.Proxy.execute({result_expression})"
         )
         FreeCADGui.doCommand(f"{result_expression}.purgeTouched()")
+        if result.Shape.isNull() or not result.Shape.isValid():
+            raise RuntimeError(
+                "Compound Filter did not produce valid geometry"
+            )
+
+        presentation_expression = ", ".join(
+            _object_expression(presentation)
+            for presentation in presentations
+        )
+        FreeCADGui.addModule(
+            "CompoundTools._CommandCompoundFilter"
+        )
+        FreeCADGui.doCommand(
+            "CompoundTools._CommandCompoundFilter."
+            "_replace_visible_presentations("
+            f"{result_expression}, [{presentation_expression}])"
+        )
+        FreeCADGui.addModule("PartGui")
+        FreeCADGui.doCommand(
+            "PartGui.publishDesignDefinitionBlock("
+            f"[{result_expression}])"
+        )
+        document.commitTransaction()
     except Exception as err:
-        mb = QtGui.QMessageBox()
-        mb.setIcon(mb.Icon.Warning)
-        error_text1 = translate("Part_CompoundFilter", "Computing the result failed with an error:")
-        error_text2 = translate(
-            "Part_CompoundFilter",
-            "Click 'Continue' to create the feature anyway, or 'Abort' to cancel.",
+        document.abortTransaction()
+        QtGui.QMessageBox.warning(
+            FreeCADGui.getMainWindow(),
+            translate(
+                "Part_CompoundFilter",
+                "Compound Filter failed",
+                None,
+            ),
+            str(err),
         )
-        mb.setText(error_text1 + "\n\n" + str(err) + "\n\n" + error_text2)
-        mb.setWindowTitle(translate("Part_CompoundFilter", "Bad Selection", None))
-        btnAbort = mb.addButton(QtGui.QMessageBox.StandardButton.Abort)
-        btnOK = mb.addButton(
-            translate("Part_SplitFeatures", "Continue", None),
-            QtGui.QMessageBox.ButtonRole.ActionRole,
-        )
-        mb.setDefaultButton(btnOK)
-
-        mb.exec_()
-
-        if mb.clickedButton() is btnAbort:
-            document.abortTransaction()
-            return
-
-    presentation_expression = ", ".join(
-        _object_expression(presentation)
-        for presentation in presentations
-    )
-    FreeCADGui.addModule(
-        "CompoundTools._CommandCompoundFilter"
-    )
-    FreeCADGui.doCommand(
-        "CompoundTools._CommandCompoundFilter."
-        "_replace_visible_presentations("
-        f"{result_expression}, [{presentation_expression}])"
-    )
-
-    document.commitTransaction()

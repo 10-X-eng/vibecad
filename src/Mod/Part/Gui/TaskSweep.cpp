@@ -707,8 +707,6 @@ bool SweepWidget::accept()
     if (std::ranges::find(operands, pathObject) == operands.end()) {
         operands.push_back(pathObject);
     }
-    const auto resultOwner =
-        PartGui::inferModelingOperandOwner(*appDocument, operands);
     std::vector<App::DocumentObject*> replacedPresentations;
     std::vector<App::DocumentObject*> objectsToHide;
     const auto appendVisible = [](std::vector<App::DocumentObject*>& objects,
@@ -723,14 +721,11 @@ bool SweepWidget::accept()
             objectsToHide,
             const_cast<App::DocumentObject*>(operand)
         );
-        if (resultOwner.ownership
-            == PartGui::ModelingResultOwnership::DocumentRoot) {
-            auto* presentation = const_cast<App::DocumentObject*>(
-                PartGui::resolveModelingPresentationObject(operand)
-            );
-            appendVisible(replacedPresentations, presentation);
-            appendVisible(objectsToHide, presentation);
-        }
+        auto* presentation = const_cast<App::DocumentObject*>(
+            PartGui::resolveModelingPresentationObject(operand)
+        );
+        appendVisible(replacedPresentations, presentation);
+        appendVisible(objectsToHide, presentation);
     }
 
     try {
@@ -741,13 +736,7 @@ bool SweepWidget::accept()
             throw Base::RuntimeError("Could not create the sweep feature");
         }
         attempt.trackCreatedObject(*sweep);
-        if (resultOwner.ownership
-            == PartGui::ModelingResultOwnership::Body) {
-            attempt.targetResultBody(*sweep, *resultOwner.body);
-        }
-        else {
-            attempt.keepResultAtDocumentRoot(*sweep);
-        }
+        attempt.markResultAsDesignDefinition(*sweep);
         if (!replacedPresentations.empty()) {
             attempt.trackReplacedInputs(
                 *sweep,
@@ -783,7 +772,7 @@ bool SweepWidget::accept()
             hasSubElement,
             pathObject,
             pathSubElements,
-            resultOwner.body
+            nullptr
         );
         for (auto* object : objectsToHide) {
             Gui::cmdAppObjectHide(object);

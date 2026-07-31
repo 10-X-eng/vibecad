@@ -236,6 +236,36 @@ class Document;
 class SelectionSingleton;
 class MDIView;
 
+/**
+ * One persisted document-History command which passed the shared command
+ * name, registration, action-capability, and active-state checks.
+ */
+struct GuiExport ApprovedDocumentTimelineCommand
+{
+    std::string name;
+    Command* command {};
+
+    explicit operator bool() const noexcept
+    {
+        return command != nullptr;
+    }
+};
+
+/**
+ * Resolve an operation-owned History command without trusting arbitrary
+ * document strings as executable GUI commands.
+ *
+ * The operation must be one live semantic History root. Its named property
+ * must contain a safe registered command name and that command's QAction must
+ * explicitly publish the requested boolean capability.
+ */
+GuiExport ApprovedDocumentTimelineCommand approvedDocumentTimelineCommand(
+    App::DocumentObject* operation,
+    const char* commandProperty,
+    const char* actionCapability,
+    bool requireActive
+);
+
 
 void CreateStdCommands();
 void CreateDocCommands();

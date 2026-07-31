@@ -1650,9 +1650,13 @@ def configure_fastener_hole_feature(
 ) -> dict[str, Any]:
     """Apply one resolved standard-component hole to a native Hole feature."""
 
-    if str(getattr(feature, "TypeId", "") or "") != "PartDesign::Hole":
+    try:
+        native_hole = bool(feature.isDerivedFrom("PartDesign::Hole"))
+    except (AttributeError, RuntimeError):
+        native_hole = False
+    if not native_hole:
         raise FastenerCatalogError(
-            "feature must be a native PartDesign::Hole."
+            "feature must be a native Part Design Hole operation."
         )
     resolution = resolve_fastener_hole(
         fastener,

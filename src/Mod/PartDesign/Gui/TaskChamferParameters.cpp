@@ -36,6 +36,7 @@
 #include <Gui/Inventor/Draggers/SoLinearDragger.h>
 #include <Gui/Inventor/Draggers/SoRotationDragger.h>
 #include <Gui/Utilities.h>
+#include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureChamfer.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Part/App/GizmoHelper.h>
@@ -75,10 +76,7 @@ TaskChamferParameters::TaskChamferParameters(ViewProviderDressUp* DressUpView, Q
     ui->listWidgetReferences->setEnabled(!useAllEdges);
     QMetaObject::invokeMethod(ui->chamferSize, "setFocus", Qt::QueuedConnection);
 
-    std::vector<std::string> strings = pcChamfer->Base.getSubValues();
-    for (const auto& string : strings) {
-        ui->listWidgetReferences->addItem(QString::fromStdString(string));
-    }
+    populateReferences(ui->listWidgetReferences);
 
     QMetaObject::connectSlotsByName(this);
 
@@ -117,7 +115,7 @@ TaskChamferParameters::TaskChamferParameters(ViewProviderDressUp* DressUpView, Q
 
     setupGizmos(DressUpView);
 
-    if (strings.size() == 0) {
+    if (ui->listWidgetReferences->count() == 0) {
         setSelectionMode(refSel);
     }
     else {
@@ -405,8 +403,44 @@ void TaskChamferParameters::setGizmoPositions()
         return;
     }
 
-    PartDesign::TopoShape baseShape = chamfer->getBaseTopoShape(true);
-    auto shapes = chamfer->getContinuousEdges(baseShape);
+    PartDesign::TopoShape baseShape;
+    std::vector<Part::TopoShape> shapes;
+    if (auto* design =
+            dynamic_cast<PartDesign::DesignSubelementOperationProperties*>(
+                chamfer
+            )) {
+        auto* operation =
+            dynamic_cast<PartDesign::DesignOperationProperties*>(chamfer);
+        if (!operation) {
+            gizmoContainer->visible = false;
+            return;
+        }
+        const auto inputs = operation->InputStates.getValues();
+        const auto groups = design->targetElementGroups();
+        auto* state = inputs.empty()
+            ? nullptr
+            : freecad_cast<Part::Feature*>(inputs.front());
+        if (!state || groups.empty()) {
+            gizmoContainer->visible = false;
+            return;
+        }
+        baseShape = state->Shape.getShape();
+        try {
+            shapes = PartDesign::resolveDesignTargetEdges(
+                baseShape,
+                groups.front(),
+                chamfer->UseAllEdges.getValue()
+            );
+        }
+        catch (const Base::Exception&) {
+            gizmoContainer->visible = false;
+            return;
+        }
+    }
+    else {
+        baseShape = chamfer->getBaseTopoShape(true);
+        shapes = chamfer->getContinuousEdges(baseShape);
+    }
 
     if (shapes.size() == 0) {
         gizmoContainer->visible = false;

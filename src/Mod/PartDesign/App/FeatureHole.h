@@ -153,6 +153,32 @@ protected:
     void onChanged(const App::Property* prop) override;
     void setupObject() override;
 
+    /**
+     * Return the cutter length used by the Through all depth mode.
+     *
+     * Legacy Body-owned holes retain ProfileBased's bounding-box calculation.
+     * Design-global holes override this to include every exact target state
+     * without assigning a temporary BaseFeature or active Body.
+     */
+    virtual double getHoleThroughAllLength() const;
+
+    /**
+     * Build the complete set of hole cutter solids from an already resolved
+     * profile in this feature's local coordinate frame.
+     *
+     * This is the shared geometry engine for legacy imported Hole objects and
+     * Design-global Hole operations. It preserves standard/thread/counter-cut
+     * behavior while leaving application to one or more base solids to the
+     * caller.
+     */
+    App::DocumentObjectExecReturn* buildHoleCutters(
+        const TopoShape& profileShape,
+        const gp_Vec& direction,
+        double length,
+        TopoShape& compound,
+        std::vector<TopoShape>& holes
+    );
+
     static const App::PropertyAngle::Constraints floatAngle;
 
 private:
