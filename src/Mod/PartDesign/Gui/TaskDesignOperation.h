@@ -24,15 +24,55 @@ class DocumentObject;
 class Part;
 }  // namespace App
 
+namespace Part
+{
+class Part2DObject;
+}
+
 namespace PartDesign
 {
 class Body;
 class DesignBodyState;
 class DesignOperationProperties;
+class ProfileBased;
 }  // namespace PartDesign
 
 namespace PartDesignGui
 {
+
+/** Select exact closed areas from one reusable sketch. */
+class TaskDesignProfileRegions: public Gui::TaskView::TaskBox
+{
+    Q_OBJECT
+
+public:
+    explicit TaskDesignProfileRegions(App::DocumentObject* operation, QWidget* parent = nullptr);
+    ~TaskDesignProfileRegions() override;
+
+    /** Apply any in-progress viewport selection before task acceptance. */
+    void finalize();
+
+private Q_SLOTS:
+    void toggleRegionSelection(bool selecting);
+    void useEntireSketch();
+
+private:
+    PartDesign::ProfileBased* profileOperation() const;
+    bool applyViewportSelection();
+    bool setProfile(Part::Part2DObject& sketch, const std::vector<std::string>& regions);
+    void populate();
+    void restoreSelectionSketchVisibility();
+    void setError(const QString& message);
+
+    App::DocumentObject* operation {};
+    QLabel* sketchName {};
+    QLabel* regionSummary {};
+    QLabel* instruction {};
+    QPushButton* selectRegions {};
+    QPushButton* entireSketch {};
+    std::string selectionSketchName;
+    bool selectionSketchWasVisible {false};
+};
 
 /**
  * Explicit result and Body-target selection shared by every Design-global

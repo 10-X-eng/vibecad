@@ -339,10 +339,18 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     }
     monkeypatch.setattr(
         session.vibescript_domains,
-        "editable_sources_snapshot",
+        "capture_editable_sources_snapshot",
         lambda _service, domain: {
-            **editable_sources,
+            "_vibecad_deferred_vibescript_program_index": True,
             "domain": domain,
+        },
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "complete_editable_sources_snapshot",
+        lambda snapshot: {
+            **editable_sources,
+            "domain": snapshot["domain"],
         },
     )
 
@@ -354,6 +362,67 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     visible = provider._model_visible_context(context)
     assert visible["editable_sources"] == editable_sources
     assert "vibescript_domain" not in visible
+
+
+def test_editable_source_manifests_complete_after_document_thread_capture(
+    monkeypatch,
+) -> None:
+    schemas = [
+        _context_schema("vibescript.read_source"),
+        _context_schema("vibescript.read_api"),
+        _context_schema("vibescript.part.create_program"),
+    ]
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb, **_kwargs: schemas,
+    )
+    service = _ProviderContextService("PartWorkbench", {})
+    state = {"on_document_thread": False}
+
+    def capture(_service, domain):
+        assert state["on_document_thread"] is True
+        return {
+            "_vibecad_deferred_vibescript_program_index": True,
+            "domain": domain,
+        }
+
+    def complete(snapshot):
+        assert state["on_document_thread"] is False
+        return {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": snapshot["domain"],
+            "source_count": 0,
+            "sources": [],
+        }
+
+    def dispatch(operation):
+        state["on_document_thread"] = True
+        try:
+            return operation()
+        finally:
+            state["on_document_thread"] = False
+
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "capture_editable_sources_snapshot",
+        capture,
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "complete_editable_sources_snapshot",
+        complete,
+    )
+
+    context = session._build_context_for_provider(
+        service,
+        None,
+        "build",
+        dispatch,
+    )
+
+    assert context["editable_sources"]["domain"] == "part"
+    assert context["editable_sources"]["source_count"] == 0
 
 
 def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(

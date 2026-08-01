@@ -616,6 +616,23 @@ def _build_widget():
     model_selector.setObjectName("VibeScriptedModelSelector")
     model_selector.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
     selector_layout.addWidget(model_selector, 1)
+    delete_model = QtWidgets.QToolButton(selector_row)
+    delete_model.setObjectName("VibeScriptedDelete")
+    delete_model.setAccessibleName("Delete VibeScript")
+    delete_model.setToolTip(
+        "Delete the selected VibeScript source and everything it owns"
+    )
+    delete_model.setAutoRaise(True)
+    delete_model.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+    delete_icon = QtGui.QIcon.fromTheme("edit-delete")
+    if delete_icon.isNull():
+        standard_pixmap = getattr(QtWidgets.QStyle, "SP_TrashIcon", None)
+        if standard_pixmap is None:
+            standard_pixmap = QtWidgets.QStyle.StandardPixmap.SP_TrashIcon
+        delete_icon = root.style().standardIcon(standard_pixmap)
+    delete_model.setIcon(delete_icon)
+    delete_model.setEnabled(False)
+    selector_layout.addWidget(delete_model)
     toolbar_layout.addWidget(selector_row)
 
     actions_layout = QtWidgets.QGridLayout()
@@ -887,6 +904,9 @@ class ScriptedEditorController:
     def button(self, name: str):
         return self.child(self.QtWidgets.QPushButton, name)
 
+    def tool_button(self, name: str):
+        return self.child(self.QtWidgets.QToolButton, name)
+
     def _connect(self):
         self.dock.visibilityChanged.connect(self._visibility_changed)
         self.dock.destroyed.connect(lambda _obj=None: self.jobs.close())
@@ -899,6 +919,7 @@ class ScriptedEditorController:
         self.button("VibeScriptedNew").clicked.connect(self.new_model)
         self.button("VibeScriptedSave").clicked.connect(self.save)
         self.button("VibeScriptedRender").clicked.connect(self.render)
+        self.tool_button("VibeScriptedDelete").clicked.connect(self.delete_model)
         self.button("VibeScriptedPointArtifactAdd").clicked.connect(self.add_point_artifact)
         self.button("VibeScriptedPointArtifactRemove").clicked.connect(self.remove_point_artifact)
         self.point_artifact_selector.currentIndexChanged.connect(
@@ -2102,6 +2123,55 @@ class ScriptedEditorController:
                 )
             self.refresh(model_id)
             return
+        if event_kind == "vibescript_program_deleted":
+            if (
+                not self.editor_active
+                or self.engine != "vibescript"
+                or event_engine != "vibescript"
+                or str(event.get("domain") or "") != self.domain
+                or int(event.get("generation") or 0) != self.generation
+            ):
+                return
+            self.busy = False
+            result = event.get("result")
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                self._show_failure(
+                    result
+                    if isinstance(result, dict)
+                    else {"error": "VibeScript deletion returned no structured result."}
+                )
+                return
+            requested_program_id = str(event.get("program_id") or "")
+            deleted_program_id = str(result.get("program_id") or "")
+            if not deleted_program_id or deleted_program_id != requested_program_id:
+                self._show_failure(
+                    {
+                        "error": (
+                            "VibeScript deletion did not confirm the selected program "
+                            "identity."
+                        )
+                    }
+                )
+                return
+            if deleted_program_id == self.model_id:
+                self._clear_model_fields()
+                self._clear_editors()
+            self.diagnostics.clear()
+            Gui.Selection.clearSelection()
+            save_error = ""
+            try:
+                doc = App.ActiveDocument
+                if doc is not None and str(getattr(doc, "FileName", "") or ""):
+                    doc.save()
+            except Exception as exc:
+                save_error = str(exc)
+            self.refresh()
+            if save_error:
+                self.status.setText(
+                    "VibeScript deleted, but the FreeCAD file could not be saved: "
+                    f"{save_error}"
+                )
+            return
         if event_kind in {
             "point_artifact_list",
             "point_artifact_approved",
@@ -2268,7 +2338,15 @@ class ScriptedEditorController:
 
         self.jobs.submit("VibeScript candidate apply", work)
 
-    def _start_vibescript_operation(self, tool_name: str, arguments: dict[str, Any]) -> None:
+    def _start_vibescript_operation(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        event_kind: str = "",
+        status_text: str = "Building VibeScript model in the isolated worker...",
+        program_id: str = "",
+    ) -> None:
         """Run VibeScript through the same non-blocking lifecycle as AI tools."""
 
         from VibeCADGui import (
@@ -2280,9 +2358,10 @@ class ScriptedEditorController:
         _ensure_document_thread_invoker()
         self.generation += 1
         generation = self.generation
-        self.status.setText("Building VibeScript model in the isolated worker...")
+        domain = self.domain
+        self.status.setText(status_text)
         self.busy = True
-        self.button("VibeScriptedRender").setEnabled(False)
+        self._update_actions()
 
         def work(cancelled):
             result = run_domain_vibescript_operation(
@@ -2294,14 +2373,82 @@ class ScriptedEditorController:
             )
             if cancelled():
                 return None
-            return {
+            event = {
                 "generation": generation,
                 "engine": "vibescript",
-                "direct_commit": True,
                 "result": result,
             }
+            if event_kind:
+                event.update(
+                    {
+                        "event_kind": event_kind,
+                        "domain": domain,
+                        "program_id": program_id,
+                    }
+                )
+            else:
+                event["direct_commit"] = True
+            return event
 
-        self.jobs.submit("VibeScript lifecycle operation", work)
+        self.jobs.submit(
+            "VibeScript deletion" if event_kind == "vibescript_program_deleted"
+            else "VibeScript lifecycle operation",
+            work,
+        )
+
+    def _start_vibescript_delete(
+        self,
+        program_id: str,
+        expected_revision: str,
+    ) -> None:
+        """Delete one exact program through the normal domain lifecycle."""
+
+        self._start_vibescript_operation(
+            f"vibescript.{self.domain}.delete_program",
+            {
+                "program_id": program_id,
+                "expected_revision": expected_revision,
+                "reason": "Deleted from Model Code Editor",
+            },
+            event_kind="vibescript_program_deleted",
+            status_text="Deleting VibeScript source and owned model objects...",
+            program_id=program_id,
+        )
+
+    def delete_model(self) -> None:
+        if self.busy or self.engine != "vibescript" or not self.editor_active:
+            return
+        program_id = str(self.model_id or "")
+        expected_revision = str(self.working_revision or "")
+        if not program_id or not expected_revision:
+            self.status.setText(
+                "Select a saved VibeScript with a current revision before deleting it."
+            )
+            self._update_actions()
+            return
+        label = str(self.model.get("label") or program_id)
+        message = (
+            f"Delete ‘{label}’?\n\n"
+            "This permanently removes its VibeScript source, retained build attempts, "
+            "and every model object it owns. Objects that depend on its outputs will "
+            "block deletion."
+        )
+        if self.dirty:
+            message += "\n\nYour unbuilt source and input changes will also be deleted."
+        confirmation = self.QtWidgets.QMessageBox(self.root)
+        confirmation.setIcon(self.QtWidgets.QMessageBox.Warning)
+        confirmation.setWindowTitle("Delete VibeScript")
+        confirmation.setTextFormat(self.QtCore.Qt.PlainText)
+        confirmation.setText(message)
+        confirmation.setStandardButtons(
+            self.QtWidgets.QMessageBox.Yes | self.QtWidgets.QMessageBox.Cancel
+        )
+        delete_button = confirmation.button(self.QtWidgets.QMessageBox.Yes)
+        delete_button.setText("Delete")
+        confirmation.setDefaultButton(self.QtWidgets.QMessageBox.Cancel)
+        if confirmation.exec() != self.QtWidgets.QMessageBox.Yes:
+            return
+        self._start_vibescript_delete(program_id, expected_revision)
 
     def new_model(self):
         name, accepted = self.QtWidgets.QInputDialog.getText(
@@ -2437,6 +2584,9 @@ class ScriptedEditorController:
             bool(ready and self.model_id)
         )
         self.button("VibeScriptedRender").setEnabled(bool(ready and self.model_id))
+        self.tool_button("VibeScriptedDelete").setEnabled(
+            bool(ready and self.model_id and self.working_revision)
+        )
         self.button("VibeScriptedPointArtifactAdd").setEnabled(
             bool(
                 points_active

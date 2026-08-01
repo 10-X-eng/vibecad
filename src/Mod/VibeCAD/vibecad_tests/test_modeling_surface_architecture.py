@@ -513,6 +513,116 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
     assert all("source" not in item for item in index["sources"])
 
 
+def test_editable_sources_include_failed_and_unpublished_persisted_programs(
+    tmp_path: Path,
+) -> None:
+    failed_id = "1" * 32
+    validated_id = "2" * 32
+    failed_revision = "a" * 64
+    validated_revision = "b" * 64
+    program_root = tmp_path / "vibescript" / "partdesign"
+
+    def write_program(program_id: str, manifest: dict[str, object]) -> None:
+        directory = program_root / program_id
+        directory.mkdir(parents=True)
+        (directory / "program.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+    common = {
+        "schema": domains.PROGRAM_SCHEMA,
+        "version": domains.PROGRAM_VERSION,
+        "domain": "partdesign",
+        "workbench": "PartDesignWorkbench",
+        "source": "result = {'Body': api.box(1, 2, 3)}",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "inputs": {},
+        "expected_outputs": [{"name": "Body", "type": "solid"}],
+        "accepted_revision": "",
+        "live_outputs": {},
+    }
+    write_program(
+        failed_id,
+        {
+            **common,
+            "program_id": failed_id,
+            "label": "Failed source",
+            "working_revision": failed_revision,
+            "latest_candidate": {
+                "status": "failed",
+                "revision": failed_revision,
+                "attempt_id": "failed-attempt",
+                "failure": {
+                    "failure_code": "RUN_FAILED",
+                    "failure_stage": "external_process",
+                    "error": "Candidate did not build.",
+                    "observed": {"stdout": "must not enter provider context"},
+                },
+            },
+        },
+    )
+    write_program(
+        validated_id,
+        {
+            **common,
+            "program_id": validated_id,
+            "label": "Validated source",
+            "working_revision": validated_revision,
+            "latest_candidate": {
+                "status": "validated",
+                "revision": validated_revision,
+                "attempt_id": "validated-attempt",
+            },
+        },
+    )
+
+    class Service:
+        def active_workbench_name(self):
+            return "PartDesignWorkbench"
+
+        def project_scope_snapshot(self):
+            return {"root": str(tmp_path)}
+
+        def _active_document(self):
+            return None
+
+    captured = domains.capture_editable_sources_snapshot(
+        Service(),
+        "partdesign",
+    )
+    assert captured["native_program_count"] == 0
+
+    index = domains.complete_editable_sources_snapshot(captured)
+
+    assert index["source_count"] == 2
+    by_id = {item["source_id"]: item for item in index["sources"]}
+    failed = by_id[failed_id]
+    validated = by_id[validated_id]
+    assert failed["status"] == "build_failed"
+    assert failed["current_revision"] == failed_revision
+    assert failed["affected_outputs"] == []
+    assert failed["latest_candidate"] == {
+        "status": "failed",
+        "revision": failed_revision,
+        "attempt_id": "failed-attempt",
+        "failure": {
+            "failure_code": "RUN_FAILED",
+            "failure_stage": "external_process",
+            "error": "Candidate did not build.",
+        },
+    }
+    assert validated["status"] == "validated_unpublished"
+    assert validated["current_revision"] == validated_revision
+    assert validated["affected_outputs"] == []
+    assert "result = {'Body'" not in json.dumps(index)
+    assert "observed" not in json.dumps(index)
+
+
 def test_component_catalog_finds_literal_substrings_in_saved_project_files(
     tmp_path: Path,
 ) -> None:

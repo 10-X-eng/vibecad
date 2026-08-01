@@ -540,7 +540,7 @@ def _minimal_runtime_state(service: VibeCADService) -> dict[str, Any]:
     }
 
 
-def _context_for_provider(
+def _capture_context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None = None,
     interaction_mode: str = "build",
@@ -581,9 +581,11 @@ def _context_for_provider(
         and resolution.available
         and resolution.domain
     ):
-        context["editable_sources"] = vibescript_domains.editable_sources_snapshot(
-            service,
-            resolution.domain,
+        context["editable_sources"] = (
+            vibescript_domains.capture_editable_sources_snapshot(
+                service,
+                resolution.domain,
+            )
         )
     context["_vibecad_debug"] = service.provider_debug_config()
     runtime_state = _minimal_runtime_state(service)
@@ -611,6 +613,55 @@ def _context_for_provider(
     if session_trigger:
         context["session_trigger"] = dict(session_trigger)
     return context
+
+
+def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Complete artifact-backed context after leaving the document thread."""
+
+    completed = dict(context)
+    editable_sources = completed.get("editable_sources")
+    if (
+        isinstance(editable_sources, Mapping)
+        and editable_sources.get("_vibecad_deferred_vibescript_program_index")
+        is True
+    ):
+        completed["editable_sources"] = (
+            vibescript_domains.complete_editable_sources_snapshot(editable_sources)
+        )
+    return completed
+
+
+def _context_for_provider(
+    service: VibeCADService,
+    session_trigger: dict[str, Any] | None = None,
+    interaction_mode: str = "build",
+) -> dict[str, Any]:
+    """Return completed provider context for synchronous compatibility callers."""
+
+    return _complete_context_for_provider(
+        _capture_context_for_provider(
+            service,
+            session_trigger,
+            interaction_mode,
+        )
+    )
+
+
+def _build_context_for_provider(
+    service: VibeCADService,
+    session_trigger: dict[str, Any] | None,
+    interaction_mode: str,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+) -> dict[str, Any]:
+    captured = _on_document_thread(
+        document_thread_dispatch,
+        lambda: _capture_context_for_provider(
+            service,
+            session_trigger,
+            interaction_mode,
+        ),
+    )
+    return _complete_context_for_provider(captured)
 
 
 def _consume_context_view_attachment(
@@ -1871,13 +1922,11 @@ def make_provider_tool_runner(
         if tool_name == "conversation.review_design":
             from VibeCADDesignReview import run_design_review
 
-            review_context = _on_document_thread(
+            review_context = _build_context_for_provider(
+                service,
+                session_trigger,
+                clean_interaction_mode,
                 document_thread_dispatch,
-                lambda: _context_for_provider(
-                    service,
-                    session_trigger,
-                    clean_interaction_mode,
-                ),
             )
             _emit(
                 progress_callback,
@@ -2064,13 +2113,11 @@ def make_provider_tool_runner(
         return finalize(payload)
 
     def provider_update() -> dict[str, Any]:
-        refreshed = _on_document_thread(
+        refreshed = _build_context_for_provider(
+            service,
+            session_trigger,
+            clean_interaction_mode,
             document_thread_dispatch,
-            lambda: _context_for_provider(
-                service,
-                session_trigger,
-                clean_interaction_mode,
-            ),
         )
         completed = refreshed
         _consume_context_view_attachment(
@@ -2202,13 +2249,11 @@ def _run_session_turn(
             if isinstance(item, dict)
         ]
     _emit(progress_callback, {"event": "context_build_started"})
-    context = _on_document_thread(
+    context = _build_context_for_provider(
+        active_service,
+        session_trigger,
+        clean_interaction_mode,
         document_thread_dispatch,
-        lambda: _context_for_provider(
-            active_service,
-            session_trigger,
-            clean_interaction_mode,
-        ),
     )
     _consume_context_view_attachment(
         active_service, context, document_thread_dispatch
@@ -2313,13 +2358,11 @@ def _run_session_turn(
                     "text": final_output,
                 },
             )
-        final_context = _on_document_thread(
+        final_context = _build_context_for_provider(
+            active_service,
+            session_trigger,
+            clean_interaction_mode,
             document_thread_dispatch,
-            lambda: _context_for_provider(
-                active_service,
-                session_trigger,
-                clean_interaction_mode,
-            ),
         )
         _emit(
             progress_callback,
@@ -2351,13 +2394,11 @@ def _run_session_turn(
                 "tool_count": len(tool_trace),
             },
         )
-        failed_context = _on_document_thread(
+        failed_context = _build_context_for_provider(
+            active_service,
+            session_trigger,
+            clean_interaction_mode,
             document_thread_dispatch,
-            lambda: _context_for_provider(
-                active_service,
-                session_trigger,
-                clean_interaction_mode,
-            ),
         )
         return VibeCADResponse(
             provider=provider_name,

@@ -591,6 +591,19 @@ DesignDefinitionReference DesignModel::resolveDefinitionSubelementReference(
             reference.subelements.emplace_back();
             continue;
         }
+        if (!changedObject && std::string_view(subelement).starts_with("Internal")) {
+            // Sketcher publishes selectable closed profiles through its
+            // separate InternalShape. They are exact subobjects of the same
+            // reusable sketch, but are intentionally absent from the
+            // edge-only Part::Feature::Shape used below for Body topology.
+            if (!reference.object->getSubObject(subelement.c_str())) {
+                throw Base::ValueError(
+                    "The reusable definition does not contain the selected internal subelement"
+                );
+            }
+            reference.subelements.push_back(subelement);
+            continue;
+        }
         if (!exactShape || exactShape->isNull()) {
             if (changedObject) {
                 throw Base::ValueError(

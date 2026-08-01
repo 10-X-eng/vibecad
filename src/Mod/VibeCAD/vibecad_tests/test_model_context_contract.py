@@ -511,8 +511,8 @@ def test_run_prompt_includes_active_thread_history_exactly_once(
     }
     monkeypatch.setattr(
         session,
-        "_context_for_provider",
-        lambda active_service, trigger, interaction_mode="build": dict(context),
+        "_build_context_for_provider",
+        lambda active_service, trigger, interaction_mode, dispatch: dict(context),
     )
     monkeypatch.setattr(
         session,

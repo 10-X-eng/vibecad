@@ -96,6 +96,33 @@ class TestDesignModeling(unittest.TestCase):
         self.document.commitTransaction()
         return sketch
 
+    def _master_circle_sketch(self, name):
+        self.document.openTransaction(f"Create {name}")
+        sketch = self.document.addObject("Sketcher::SketchObject", name)
+        first = sketch.addGeometry(
+            Part.Circle(
+                App.Vector(0, 5, 0),
+                App.Vector(0, 0, 1),
+                2,
+            ),
+            False,
+        )
+        second = sketch.addGeometry(
+            Part.Circle(
+                App.Vector(10, 5, 0),
+                App.Vector(0, 0, 1),
+                3,
+            ),
+            False,
+        )
+        first_radius = sketch.addConstraint(
+            Sketcher.Constraint("Radius", first, 2),
+        )
+        sketch.addConstraint(Sketcher.Constraint("Radius", second, 3))
+        self._finalize_sketch(sketch)
+        self.document.commitTransaction()
+        return sketch, first_radius
+
     def _component_body(self, name, x_offset):
         component = self.document.addObject(
             "PartDesign::Component",
@@ -202,6 +229,121 @@ class TestDesignModeling(unittest.TestCase):
         self.assertIsNone(self.document.getObject(operation_name))
         self.assertIsNone(self.document.getObject(generator_name))
         self.assertIsNone(self.document.getObject(body_name))
+
+    def test_one_master_sketch_drives_independent_closed_region_extrusions(self):
+        sketch, first_radius = self._master_circle_sketch("MasterSketch")
+        self.document.recompute()
+        self.assertEqual(len(sketch.InternalShape.Faces), 2)
+
+        first_operation, first_body = self._new_body_operation(
+            "PartDesign::DesignExtrude",
+            "FirstRegion",
+            lambda operation: (
+                setattr(operation, "Profile", (sketch, ["InternalFace1"])),
+                setattr(operation, "Length", 5),
+            ),
+        )
+        second_operation, second_body = self._new_body_operation(
+            "PartDesign::DesignExtrude",
+            "SecondRegion",
+            lambda operation: (
+                setattr(operation, "Profile", (sketch, ["InternalFace2"])),
+                setattr(operation, "Length", 5),
+            ),
+        )
+
+        resolved_sketch, resolved_regions = (
+            PartDesign.resolveDesignDefinitionSubelementReference(
+                first_operation,
+                sketch,
+                ["InternalFace1"],
+            )
+        )
+        self.assertIs(resolved_sketch, sketch)
+        self.assertEqual(list(resolved_regions), ["InternalFace1"])
+
+        self.assertEqual(list(first_operation.Profile[1]), ["InternalFace1"])
+        self.assertEqual(list(second_operation.Profile[1]), ["InternalFace2"])
+        self.assertAlmostEqual(first_body.Shape.Volume, 20 * 3.14159265, places=4)
+        self.assertAlmostEqual(second_body.Shape.Volume, 45 * 3.14159265, places=4)
+
+        sketch.setDatum(first_radius, App.Units.Quantity("4 mm"))
+        self.document.recompute()
+        self.assertEqual(list(first_operation.Profile[1]), ["InternalFace1"])
+        self.assertEqual(list(second_operation.Profile[1]), ["InternalFace2"])
+        self.assertAlmostEqual(first_body.Shape.Volume, 80 * 3.14159265, places=4)
+        self.assertAlmostEqual(second_body.Shape.Volume, 45 * 3.14159265, places=4)
+
+        saved = Path(self._temporary_directory.name) / "master-sketch-regions.FCStd"
+        first_operation_name = first_operation.Name
+        second_operation_name = second_operation.Name
+        first_body_name = first_body.Name
+        second_body_name = second_body.Name
+        sketch_name = sketch.Name
+        self.document.saveAs(str(saved))
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(saved))
+
+        reopened_sketch = self.document.getObject(sketch_name)
+        reopened_first = self.document.getObject(first_operation_name)
+        reopened_second = self.document.getObject(second_operation_name)
+        self.assertIs(reopened_first.Profile[0], reopened_sketch)
+        self.assertIs(reopened_second.Profile[0], reopened_sketch)
+        self.assertEqual(list(reopened_first.Profile[1]), ["InternalFace1"])
+        self.assertEqual(list(reopened_second.Profile[1]), ["InternalFace2"])
+        self.assertAlmostEqual(
+            self.document.getObject(first_body_name).Shape.Volume,
+            80 * 3.14159265,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            self.document.getObject(second_body_name).Shape.Volume,
+            45 * 3.14159265,
+            places=4,
+        )
+        self._assert_dependency_graph_acyclic(self.document)
+
+    def test_master_sketch_regions_cut_their_explicit_bodies_in_one_operation(self):
+        _, first_body, _ = self._component_body("FirstRegionTarget", -3)
+        _, second_body, _ = self._component_body("SecondRegionTarget", 7)
+        sketch, _ = self._master_circle_sketch("SharedCutMasterSketch")
+
+        self.document.openTransaction("Cut explicit Bodies from master sketch")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "SharedRegionCut",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = (
+            sketch,
+            ["InternalFace1", "InternalFace2"],
+        )
+        operation.Length = 10
+        PartDesign.setDesignOperationTargets(
+            edit,
+            "Cut",
+            [first_body, second_body],
+        )
+        self.document.recompute()
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+
+        self.assertEqual(
+            list(operation.Profile[1]),
+            ["InternalFace1", "InternalFace2"],
+        )
+        self.assertAlmostEqual(
+            first_body.Shape.Volume,
+            1000 - 40 * 3.14159265,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            second_body.Shape.Volume,
+            1000 - 90 * 3.14159265,
+            places=4,
+        )
+        PartDesign.validateDesign(operation)
+        self._assert_dependency_graph_acyclic(self.document)
 
     @staticmethod
     def _assert_dependency_graph_acyclic(document):

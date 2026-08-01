@@ -31,8 +31,9 @@ network access, GUI access, and unrestricted document mutation are rejected.
 The live document receives only validated native outputs. Publication uses
 stable program/output identities, revision guards, document-thread dispatch,
 transaction rollback, and explicit restoration when native rollback is
-incomplete. Failed candidates retain their editable source and diagnostics
-without replacing accepted geometry.
+incomplete. Failed and not-yet-published programs remain in the assistant's
+editable-source index even when they have no live outputs. Their source and
+diagnostics remain readable without replacing accepted geometry.
 
 Accepted source, input schema, inputs, expected outputs, and editor drafts are
 embedded in the FreeCAD document so source-backed models remain portable across

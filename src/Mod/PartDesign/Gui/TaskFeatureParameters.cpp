@@ -38,6 +38,7 @@
 #include <Gui/BitmapFactory.h>
 #include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/Feature.h>
+#include <Mod/PartDesign/App/FeatureSketchBased.h>
 
 #include "ui_TaskPreviewParameters.h"
 
@@ -195,6 +196,7 @@ void TaskFeatureParameters::recomputeFeature()
 TaskDlgFeatureParameters::TaskDlgFeatureParameters(PartDesignGui::ViewProvider* vp)
     : preview(nullptr)
     , vp(vp)
+    , designProfileRegions(nullptr)
     , designTargets(nullptr)
 {
     assert(vp);
@@ -220,6 +222,10 @@ TaskDlgFeatureParameters::TaskDlgFeatureParameters(PartDesignGui::ViewProvider* 
     if (dynamic_cast<PartDesign::DesignOperationProperties*>(
             vp->getObject()
         )) {
+        if (dynamic_cast<PartDesign::ProfileBased*>(vp->getObject())) {
+            designProfileRegions = new TaskDesignProfileRegions(vp->getObject());
+            Content.push_back(designProfileRegions);
+        }
         designTargets = new TaskDesignOperationTargets(vp->getObject());
         Content.push_back(designTargets);
     }
@@ -257,6 +263,9 @@ bool TaskDlgFeatureParameters::accept()
             throw Base::TypeError("Bad object processed in the feature dialog.");
         }
 
+        if (designProfileRegions) {
+            designProfileRegions->finalize();
+        }
         if (designTargets) {
             // The Design service first validates this controller alone,
             // atomically reconciles its complete Body-state graph, and only

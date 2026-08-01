@@ -183,7 +183,11 @@ def test_provider_update_keeps_the_turn_surface_frozen_after_workbench_change(
         "domain": "partdesign",
         "surface_id": next_context["provider_tool_surface"]["surface_id"],
     }
-    monkeypatch.setattr(session, "_context_for_provider", lambda *_args: next_context)
+    monkeypatch.setattr(
+        session,
+        "_build_context_for_provider",
+        lambda *_args: next_context,
+    )
 
     initial_surface = dict(initial["provider_tool_surface"])
     initial_schemas = list(initial["provider_tool_schemas"])

@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import VibeCADVibeScriptDomains as domains
+import VibeCADVibeScriptDomainRuntime as runtime
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -73,6 +75,10 @@ def test_editor_is_vibescript_only_with_three_human_actions() -> None:
     assert '"Save",' in source
     assert '"VibeScriptedSave"' in source
     assert '"Build", "VibeScriptedRender"' in source
+    assert 'QtWidgets.QToolButton(selector_row)' in source
+    assert 'setObjectName("VibeScriptedDelete")' in source
+    assert '"vibescript_program_deleted"' in source
+    assert 'f"vibescript.{self.domain}.delete_program"' in source
     assert "VibeScriptedAccept" not in source
     assert "VibeScriptedRevert" not in source
     assert "VibeScriptedImport" not in source
@@ -82,3 +88,80 @@ def test_editor_is_vibescript_only_with_three_human_actions() -> None:
     assert "self._start_vibescript_apply()" in source
     assert "self._adopt_failed_vibescript_revision(result)" in source
     assert 'captured["allow_unchanged_revision"] = True' in session
+
+
+def test_editor_delete_lifecycle_accepts_a_failed_source_only_program(
+    tmp_path: Path,
+) -> None:
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    program_id = "1" * 32
+    source = "result = {'Body': api.box(1, 2, 3)}"
+    input_schema = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    expected_outputs = [{"name": "Body", "type": "solid"}]
+    revision = domains.program_revision(
+        domain=pack.domain,
+        source=source,
+        input_schema=input_schema,
+        inputs={},
+        expected_outputs=expected_outputs,
+    )
+    directory = tmp_path / "vibescript" / pack.domain / program_id
+    directory.mkdir(parents=True)
+    (directory / "program.json").write_text(
+        json.dumps(
+            {
+                "schema": domains.PROGRAM_SCHEMA,
+                "version": domains.PROGRAM_VERSION,
+                "program_id": program_id,
+                "domain": pack.domain,
+                "workbench": pack.workbench,
+                "label": "Failed source only",
+                "source": source,
+                "input_schema": input_schema,
+                "inputs": {},
+                "expected_outputs": expected_outputs,
+                "working_revision": revision,
+                "accepted_revision": "",
+                "accepted_contract": None,
+                "live_outputs": {},
+                "latest_candidate": {
+                    "status": "failed",
+                    "revision": revision,
+                    "failure": {"error": "Candidate did not build."},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared = runtime.prepare_delete(
+        {
+            "pack": pack,
+            "operation": "delete_program",
+            "tool_name": "vibescript.partdesign.delete_program",
+            "arguments": {
+                "program_id": program_id,
+                "expected_revision": revision,
+                "reason": "Deleted from Model Code Editor",
+            },
+            "project_root": str(tmp_path),
+            "document_program": {},
+            "live_programs": [],
+        }
+    )
+    assert not directory.exists()
+    assert Path(prepared["trash_directory"]).is_dir()
+    deleted = runtime.finish_delete(prepared, {"deleted_objects": []})
+    assert deleted == {
+        "ok": True,
+        "program_id": program_id,
+        "domain": "partdesign",
+        "deleted_objects": [],
+        "reason": "Deleted from Model Code Editor",
+        "artifacts_deleted": True,
+    }
+    assert not Path(prepared["trash_directory"]).exists()

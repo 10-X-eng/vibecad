@@ -40,6 +40,7 @@ set(PartDesign_TestScripts
     PartDesignTests/TestDatum.py
     PartDesignTests/TestDesignHoleGui.py
     PartDesignTests/TestDesignModeling.py
+    PartDesignTests/TestDesignProfileRegionsGui.py
     PartDesignTests/TestShapeBinder.py
     PartDesignTests/TestPad.py
     PartDesignTests/TestPocket.py

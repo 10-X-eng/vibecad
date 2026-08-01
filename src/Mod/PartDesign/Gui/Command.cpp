@@ -1977,12 +1977,10 @@ void prepareProfileBased(Gui::Command* cmd, const std::string& which, double len
 namespace
 {
 
-struct DesignProfileSelection
+struct DesignProfileSelection: PartDesignGui::SketchProfileSelection
 {
-    Part::Part2DObject* profile {};
     App::Part* destinationComponent {};
     std::vector<PartDesign::Body*> bodies;
-    bool valid {true};
 };
 
 void addDesignTargetSelection(DesignProfileSelection& result, App::DocumentObject* object)
@@ -2028,10 +2026,7 @@ DesignProfileSelection selectedDesignProfile()
         }
 
         if (auto* profile = freecad_cast<Part::Part2DObject*>(object)) {
-            if (result.profile && result.profile != profile) {
-                result.valid = false;
-            }
-            result.profile = profile;
+            PartDesignGui::mergeSketchProfileSelection(result, *profile, selected.getSubNames());
             continue;
         }
         addDesignTargetSelection(result, object);
@@ -2049,16 +2044,18 @@ void startConfiguredDesignProfileOperation(
     Configure&& configure
 )
 {
-    if (!selected.valid || !selected.profile) {
+    if (!selected.valid || !selected.sketch) {
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Sketch required"),
-            QObject::tr("Select exactly one sketch. Bodies may also be selected to "
-                        "initialize the explicit target list.")
+            QObject::tr(
+                "Select one reusable sketch, or one or more filled areas from "
+                "that sketch. Bodies may also initialize the target list."
+            )
         );
         return;
     }
-    auto* document = selected.profile->getDocument();
+    auto* document = selected.sketch->getDocument();
     if (!document || Gui::Control().activeDialog(document)) {
         return;
     }
@@ -2078,7 +2075,18 @@ void startConfiguredDesignProfileOperation(
         }
 
         operation->Label.setValue(objectName);
-        operation->Profile.setValue(selected.profile);
+        if (selected.regions.empty()) {
+            // Keep existing whole-sketch behavior byte-for-byte compatible.
+            operation->Profile.setValue(selected.sketch);
+        }
+        else {
+            const auto exactProfile = PartDesign::DesignModel::resolveDefinitionSubelementReference(
+                *operation,
+                *selected.sketch,
+                selected.regions
+            );
+            operation->Profile.setValue(exactProfile.object, exactProfile.subelements);
+        }
 
         if constexpr (std::is_same_v<Operation, PartDesign::DesignHole>) {
             PartDesign::DesignModel::setOperationTargets(
@@ -2102,7 +2110,7 @@ void startConfiguredDesignProfileOperation(
             PartDesign::DesignModel::setOperationTargets(*operation, "Join", selected.bodies);
         }
 
-        std::forward<Configure>(configure)(*operation, *selected.profile);
+        std::forward<Configure>(configure)(*operation, *selected.sketch);
 
         operation->recomputeFeature();
         operation->recomputePreview();
@@ -2158,7 +2166,7 @@ void startDesignProfileOperation(
 struct DesignLoftSelection
 {
     DesignProfileSelection common;
-    std::vector<Part::Part2DObject*> sections;
+    std::vector<PartDesignGui::SketchProfileSelection> sections;
 };
 
 DesignLoftSelection selectedDesignLoft()
@@ -2180,18 +2188,31 @@ DesignLoftSelection selectedDesignLoft()
         }
 
         if (auto* profile = freecad_cast<Part::Part2DObject*>(object)) {
-            if (!result.common.profile) {
-                result.common.profile = profile;
+            if (!result.common.sketch || result.common.sketch == profile) {
+                PartDesignGui::mergeSketchProfileSelection(
+                    result.common,
+                    *profile,
+                    selected.getSubNames()
+                );
             }
-            else if (profile != result.common.profile
-                     && std::ranges::find(result.sections, profile) == result.sections.end()) {
-                result.sections.push_back(profile);
+            else {
+                auto section = std::ranges::find(
+                    result.sections,
+                    profile,
+                    &PartDesignGui::SketchProfileSelection::sketch
+                );
+                if (section == result.sections.end()) {
+                    result.sections.emplace_back();
+                    section = std::prev(result.sections.end());
+                }
+                PartDesignGui::mergeSketchProfileSelection(*section, *profile, selected.getSubNames());
+                result.common.valid = result.common.valid && section->valid;
             }
             continue;
         }
         addDesignTargetSelection(result.common, object);
     }
-    result.common.valid = result.common.valid && result.common.profile && !result.sections.empty();
+    result.common.valid = result.common.valid && result.common.sketch && !result.sections.empty();
     return result;
 }
 
@@ -2230,10 +2251,17 @@ DesignSweepSelection selectedDesignSweep()
             continue;
         }
 
-        if (!result.common.profile) {
-            result.common.profile = freecad_cast<Part::Part2DObject*>(object);
-            if (!result.common.profile) {
+        if (!result.common.sketch) {
+            auto* profile = freecad_cast<Part::Part2DObject*>(object);
+            if (!profile) {
                 result.common.valid = false;
+            }
+            else {
+                PartDesignGui::mergeSketchProfileSelection(
+                    result.common,
+                    *profile,
+                    selected.getSubNames()
+                );
             }
             continue;
         }
@@ -2252,14 +2280,14 @@ DesignSweepSelection selectedDesignSweep()
             }
         }
     }
-    result.common.valid = result.common.valid && result.common.profile && result.path;
+    result.common.valid = result.common.valid && result.common.sketch && result.path;
     return result;
 }
 
 bool designProfileOperationActive()
 {
     const auto selected = selectedDesignProfile();
-    return PartDesignGui::canStartModelingCommand() && selected.valid && selected.profile;
+    return PartDesignGui::canStartModelingCommand() && selected.valid && selected.sketch;
 }
 
 bool designLoftOperationActive()
@@ -2286,7 +2314,8 @@ CmdPartDesignDesignExtrude::CmdPartDesignDesignExtrude()
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Extrude");
     sToolTipText = QT_TR_NOOP(
-        "Extrudes one reusable sketch as a new Body or applies it to explicit Bodies"
+        "Extrudes a reusable sketch or its selected closed areas as a new Body, "
+        "or applies them to explicit Bodies"
     );
     sWhatsThis = "PartDesign_DesignExtrude";
     sStatusTip = sToolTipText;
@@ -2321,7 +2350,8 @@ CmdPartDesignDesignRevolve::CmdPartDesignDesignRevolve()
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Revolve");
     sToolTipText = QT_TR_NOOP(
-        "Revolves one reusable sketch as a new Body or applies it to explicit Bodies"
+        "Revolves a reusable sketch or its selected closed areas as a new Body, "
+        "or applies them to explicit Bodies"
     );
     sWhatsThis = "PartDesign_DesignRevolve";
     sStatusTip = sToolTipText;
@@ -2382,11 +2412,17 @@ void CmdPartDesignDesignLoft::activated(int iMsg)
         QT_TRANSLATE_NOOP("Command", "Create Loft"),
         selected.common,
         [&selected](PartDesign::DesignLoft& operation, Part::Part2DObject&) {
-            std::vector<App::DocumentObject*> sections(
-                selected.sections.begin(),
-                selected.sections.end()
-            );
-            operation.Sections.setValues(sections, std::vector<const char*>(sections.size(), ""));
+            std::vector<App::PropertyLinkSubList::SubSet> sections;
+            sections.reserve(selected.sections.size());
+            for (const auto& selectedSection : selected.sections) {
+                auto exactSection = PartDesign::DesignModel::resolveDefinitionSubelementReference(
+                    operation,
+                    *selectedSection.sketch,
+                    selectedSection.regions
+                );
+                sections.push_back({exactSection.object, std::move(exactSection.subelements)});
+            }
+            operation.Sections.setSubListValues(sections);
         }
     );
 }

@@ -151,10 +151,11 @@ vibescript.read_api
 vibescript.edit_source
 ```
 
-At turn start the model receives the active workbench's editable program list.
-Each entry includes the exact source ID, current revision, and read/edit tool
-names. `read_source` returns the complete source and complete editable
-contract for one program. `read_api` returns only the active workbench API.
+At turn start the model receives the active workbench's saved editable program
+list, including failed and not-yet-published programs with zero live outputs.
+Each entry includes the exact source ID, current revision, build state, and
+read/edit tool names. `read_source` returns the complete source and complete
+editable contract for one program. `read_api` returns only the active workbench API.
 `edit_source` replaces the complete source for one program under the exact
 current revision guard. A successful edit returns the next revision and the
 source ID to use for the next read or edit. A failed candidate retains its

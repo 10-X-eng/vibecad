@@ -32,15 +32,20 @@
 #include <App/PropertyLinks.h>
 #include <Base/Exception.h>
 #include <Base/Uuid.h>
+#include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
+#include <Gui/ViewProvider.h>
+#include <Mod/Part/App/Part2DObject.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/Gui/ModelingSelection.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/DesignModel.h>
+#include <Mod/PartDesign/App/FeatureSketchBased.h>
+#include <Mod/Sketcher/App/SketchObject.h>
 
 #include "ReferenceSelection.h"
 #include "Utils.h"
@@ -61,6 +66,250 @@ QString bodyDisplayName(const PartDesign::Body& body)
 }
 
 }  // namespace
+
+TaskDesignProfileRegions::TaskDesignProfileRegions(App::DocumentObject* operation, QWidget* parent)
+    : TaskBox(Gui::BitmapFactory().pixmap("Sketcher_Sketch"), tr("Profiles"), true, parent)
+    , operation(operation)
+    , sketchName(new QLabel(this))
+    , regionSummary(new QLabel(this))
+    , instruction(new QLabel(this))
+    , selectRegions(new QPushButton(tr("Select Areas"), this))
+    , entireSketch(new QPushButton(tr("Entire Sketch"), this))
+{
+    if (!operation || !operation->getDocument() || !profileOperation()) {
+        throw Base::TypeError("The profile selector requires one live profile operation");
+    }
+
+    sketchName->setObjectName(QStringLiteral("DesignProfileSketch"));
+    regionSummary->setObjectName(QStringLiteral("DesignProfileRegions"));
+    instruction->setObjectName(QStringLiteral("DesignProfileInstruction"));
+    instruction->setWordWrap(true);
+    selectRegions->setObjectName(QStringLiteral("DesignProfileSelectRegions"));
+    selectRegions->setCheckable(true);
+    entireSketch->setObjectName(QStringLiteral("DesignProfileEntireSketch"));
+
+    auto* proxy = new QWidget(this);
+    auto* layout = new QVBoxLayout(proxy);
+    auto* form = new QFormLayout();
+    form->addRow(tr("Sketch"), sketchName);
+    form->addRow(tr("Areas"), regionSummary);
+    layout->addLayout(form);
+
+    auto* buttons = new QHBoxLayout();
+    buttons->addWidget(selectRegions);
+    buttons->addWidget(entireSketch);
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
+    layout->addWidget(instruction);
+    groupLayout()->addWidget(proxy);
+
+    connect(selectRegions, &QPushButton::toggled, this, &TaskDesignProfileRegions::toggleRegionSelection);
+    connect(entireSketch, &QPushButton::clicked, this, &TaskDesignProfileRegions::useEntireSketch);
+    populate();
+}
+
+TaskDesignProfileRegions::~TaskDesignProfileRegions()
+{
+    restoreSelectionSketchVisibility();
+}
+
+PartDesign::ProfileBased* TaskDesignProfileRegions::profileOperation() const
+{
+    return freecad_cast<PartDesign::ProfileBased*>(operation);
+}
+
+void TaskDesignProfileRegions::populate()
+{
+    auto* profile = profileOperation();
+    auto* sketch = profile ? profile->Profile.getValue() : nullptr;
+    sketchName->setText(sketch ? QString::fromUtf8(sketch->Label.getValue()) : tr("No sketch"));
+    if (!profile || !sketch) {
+        regionSummary->setText(tr("None"));
+        selectRegions->setEnabled(false);
+        entireSketch->setEnabled(false);
+        return;
+    }
+
+    const auto regions = profile->Profile.getSubValues();
+    regionSummary->setText(
+        regions.empty() ? tr("Entire sketch")
+                        : tr("%n selected area(s)", nullptr, static_cast<int>(regions.size()))
+    );
+    selectRegions->setEnabled(true);
+    entireSketch->setEnabled(!selectRegions->isChecked() && !regions.empty());
+    if (!selectRegions->isChecked()) {
+        instruction->setText(
+            tr("Select bounded sketch areas when one sketch contains several profiles.")
+        );
+    }
+}
+
+void TaskDesignProfileRegions::setError(const QString& message)
+{
+    instruction->setText(message);
+}
+
+void TaskDesignProfileRegions::restoreSelectionSketchVisibility()
+{
+    if (selectionSketchName.empty() || !operation || !operation->getDocument()
+        || selectionSketchWasVisible || !Gui::Application::Instance) {
+        selectionSketchName.clear();
+        selectionSketchWasVisible = false;
+        return;
+    }
+    if (auto* sketch = operation->getDocument()->getObject(selectionSketchName.c_str())) {
+        if (auto* viewProvider = Gui::Application::Instance->getViewProvider(sketch)) {
+            viewProvider->hide();
+        }
+    }
+    selectionSketchName.clear();
+    selectionSketchWasVisible = false;
+}
+
+void TaskDesignProfileRegions::toggleRegionSelection(bool selecting)
+{
+    auto* profile = profileOperation();
+    auto* sketch = profile ? freecad_cast<Part::Part2DObject*>(profile->Profile.getValue()) : nullptr;
+    if (!profile || !sketch || !sketch->getDocument()) {
+        QSignalBlocker blocker(selectRegions);
+        selectRegions->setChecked(false);
+        setError(tr("Choose a reusable sketch before selecting areas."));
+        return;
+    }
+
+    if (selecting) {
+        restoreSelectionSketchVisibility();
+        selectionSketchName = sketch->getNameInDocument();
+        if (auto* sketchObject = freecad_cast<Sketcher::SketchObject*>(sketch);
+            sketchObject && !sketchObject->MakeInternals.getValue()) {
+            sketchObject->MakeInternals.setValue(true);
+            sketchObject->getDocument()->recompute();
+        }
+        if (Gui::Application::Instance) {
+            if (auto* viewProvider = Gui::Application::Instance->getViewProvider(sketch)) {
+                selectionSketchWasVisible = viewProvider->isVisible();
+                viewProvider->show();
+            }
+        }
+        Gui::Selection().clearSelection(sketch->getDocument()->getName());
+        selectRegions->setText(tr("Done"));
+        entireSketch->setEnabled(false);
+        setError(tr("Select one or more filled sketch areas in the 3D view, then click Done."));
+        return;
+    }
+
+    if (!applyViewportSelection()) {
+        QSignalBlocker blocker(selectRegions);
+        selectRegions->setChecked(true);
+        return;
+    }
+    selectRegions->setText(tr("Select Areas"));
+    restoreSelectionSketchVisibility();
+    Gui::Selection().clearSelection(sketch->getDocument()->getName());
+    populate();
+}
+
+bool TaskDesignProfileRegions::applyViewportSelection()
+{
+    if (!operation || !operation->getDocument()) {
+        setError(tr("The operation is no longer available."));
+        return false;
+    }
+
+    SketchProfileSelection selection;
+    for (auto& selected : Gui::Selection().getSelectionEx(operation->getDocument()->getName())) {
+        auto* sketch = freecad_cast<Part::Part2DObject*>(selected.getObject());
+        if (!sketch) {
+            selection.valid = false;
+            continue;
+        }
+        mergeSketchProfileSelection(selection, *sketch, selected.getSubNames());
+    }
+
+    if (!selection.valid || !selection.sketch || selection.regions.empty()) {
+        setError(tr("Select one or more filled areas from exactly one reusable sketch."));
+        return false;
+    }
+    return setProfile(*selection.sketch, selection.regions);
+}
+
+bool TaskDesignProfileRegions::setProfile(
+    Part::Part2DObject& sketch,
+    const std::vector<std::string>& regions
+)
+{
+    auto* profile = profileOperation();
+    auto* feature = freecad_cast<PartDesign::Feature*>(operation);
+    if (!profile || !feature) {
+        setError(tr("The profile operation is no longer available."));
+        return false;
+    }
+
+    auto* previousSketch = profile->Profile.getValue();
+    const auto previousRegions = profile->Profile.getSubValues();
+    try {
+        const auto exact = PartDesign::DesignModel::resolveDefinitionSubelementReference(
+            *operation,
+            sketch,
+            regions
+        );
+        auto* exactSketch = freecad_cast<Part::Part2DObject*>(exact.object);
+        if (!exactSketch) {
+            throw Base::TypeError("The selected profile did not resolve to a reusable sketch");
+        }
+        profile->Profile.setValue(exactSketch, exact.subelements);
+        feature->recomputeFeature();
+        feature->recomputePreview();
+        if (!feature->isValid()) {
+            const char* status = feature->getStatusString();
+            throw Base::RuntimeError(
+                status && *status ? status : "The selected sketch areas do not form a valid profile"
+            );
+        }
+    }
+    catch (const Base::Exception& error) {
+        try {
+            profile->Profile.setValue(previousSketch, previousRegions);
+            feature->recomputeFeature();
+            feature->recomputePreview();
+        }
+        catch (...) {
+        }
+        setError(QString::fromUtf8(error.what()));
+        return false;
+    }
+    return true;
+}
+
+void TaskDesignProfileRegions::useEntireSketch()
+{
+    auto* profile = profileOperation();
+    auto* sketch = profile ? freecad_cast<Part::Part2DObject*>(profile->Profile.getValue()) : nullptr;
+    if (!sketch) {
+        setError(tr("Choose a reusable sketch before using its complete profile."));
+        return;
+    }
+    if (setProfile(*sketch, {})) {
+        populate();
+    }
+}
+
+void TaskDesignProfileRegions::finalize()
+{
+    if (selectRegions->isChecked()) {
+        if (!applyViewportSelection()) {
+            throw Base::ValueError(instruction->text().toUtf8().constData());
+        }
+        QSignalBlocker blocker(selectRegions);
+        selectRegions->setChecked(false);
+        selectRegions->setText(tr("Select Areas"));
+        restoreSelectionSketchVisibility();
+    }
+    auto* profile = profileOperation();
+    if (!profile || !profile->Profile.getValue()) {
+        throw Base::ValueError("A profile operation requires one reusable sketch");
+    }
+}
 
 TaskDesignOperationTargets::TaskDesignOperationTargets(App::DocumentObject* operation, QWidget* parent)
     : TaskBox(Gui::BitmapFactory().pixmap("PartDesign_Body"), tr("Result"), true, parent)
@@ -122,6 +371,7 @@ TaskDesignOperationTargets::TaskDesignOperationTargets(App::DocumentObject* oper
     scaleXFactor->setObjectName(QStringLiteral("DesignScaleXFactor"));
     scaleYFactor->setObjectName(QStringLiteral("DesignScaleYFactor"));
     scaleZFactor->setObjectName(QStringLiteral("DesignScaleZFactor"));
+    resultMode->setObjectName(QStringLiteral("DesignResultOperation"));
     removeSplitDefinitions->setEnabled(false);
     patternOccurrences->setRange(2, 10000);
     patternPrimaryValue->setDecimals(6);

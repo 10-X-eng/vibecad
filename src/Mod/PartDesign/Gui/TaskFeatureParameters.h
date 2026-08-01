@@ -37,6 +37,7 @@ namespace PartDesignGui
 
 class Ui_TaskPreviewParameters;
 class TaskDesignOperationTargets;
+class TaskDesignProfileRegions;
 
 class TaskPreviewParameters: public Gui::TaskView::TaskBox
 {
@@ -192,6 +193,7 @@ protected:
 
 private:
     PartDesignGui::ViewProvider* vp;
+    TaskDesignProfileRegions* designProfileRegions;
     TaskDesignOperationTargets* designTargets;
 };
 

@@ -790,12 +790,12 @@ def capture_domain_programs(doc: Any, domain: str) -> list[dict[str, Any]]:
     return [programs[key] for key in sorted(programs)]
 
 
-def editable_sources_snapshot(service: Any, domain: str) -> dict[str, Any]:
-    """Return the active domain's compact source-to-live-output index.
+def capture_editable_sources_snapshot(service: Any, domain: str) -> dict[str, Any]:
+    """Capture identities for the provider's editable-source index.
 
-    Source text deliberately stays behind ``vibescript.read_source``.  This
-    turn-start index contains only stable document identities and the exact
-    target arguments needed to read or replace each owning source.
+    This half is safe to run on the owning document thread.  Persisted program
+    manifests are deliberately read later so failed and not-yet-published
+    programs can be discovered without performing artifact I/O on that thread.
     """
 
     clean_domain = str(domain or "").strip().lower()
@@ -804,65 +804,170 @@ def editable_sources_snapshot(service: Any, domain: str) -> dict[str, Any]:
         raise RuntimeError(
             f"The active workbench does not authorize VibeScript domain {clean_domain!r}."
         )
+    scope_getter = getattr(service, "project_scope_snapshot", None)
+    scope = scope_getter() if callable(scope_getter) else {}
+    if not isinstance(scope, Mapping):
+        scope = {}
     doc = service._active_document()
-    programs = capture_domain_programs(doc, clean_domain) if doc is not None else []
-    sources = []
-    for program in programs[:MAX_DOMAIN_CONTEXT_PROGRAMS]:
-        source_id = str(program.get("program_id") or "")
-        revision = str(program.get("working_revision") or "")
-        outputs = [
-            {
-                "name": str(output.get("name") or ""),
-                "object_name": str(output.get("object_name") or ""),
-                "label": str(output.get("label") or ""),
-                "type_id": str(output.get("type_id") or ""),
-                **(
-                    {"visible": bool(output["visible"])}
-                    if output.get("visible") is not None
-                    else {}
-                ),
-            }
-            for output in list(program.get("live_outputs") or [])
-            if isinstance(output, Mapping)
-            and str(output.get("name") or "")
-            and str(output.get("object_name") or "")
-        ]
-        if not source_id:
-            continue
-        status = (
-            "editor_draft"
-            if bool(program.get("editor_draft"))
-            else "portable_source"
-            if bool(program.get("portable_document_contract"))
-            else "live_outputs_only"
-            if outputs
-            else "source_metadata"
-        )
-        sources.append(
-            {
-                "source_id": source_id,
-                "source_kind": "vibescript_program",
-                "label": str(program.get("label") or ""),
-                "current_revision": revision,
-                "status": status,
-                "affected_outputs": outputs,
-                "read_tool": "vibescript.read_source",
-                "read_arguments": {"source_id": source_id},
-                "edit_tool": "vibescript.edit_source",
-                "edit_target_arguments": {
-                    "source_id": source_id,
-                    "expected_revision": revision,
-                },
-            }
-        )
+    native_programs = (
+        capture_domain_programs(doc, clean_domain) if doc is not None else []
+    )
     return {
-        "schema": "vibecad-editable-sources-v1",
+        "_vibecad_deferred_vibescript_program_index": True,
         "domain": clean_domain,
         "workbench": pack.workbench,
+        "surface_id": pack.surface_id,
+        "project_root": str(scope.get("root") or ""),
+        "document_name": str(getattr(doc, "Name", "") or "")
+        if doc is not None
+        else "",
+        "document_uid": str(getattr(doc, "Uid", "") or "")
+        if doc is not None
+        else "",
+        "native_program_count": len(native_programs),
+        "native_programs": native_programs[:MAX_DOMAIN_CONTEXT_PROGRAMS],
+    }
+
+
+def _editable_source_outputs(program: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_outputs = program.get("live_outputs")
+    if isinstance(raw_outputs, Mapping):
+        candidates = [
+            {"name": str(name), **dict(output)}
+            for name, output in sorted(
+                raw_outputs.items(),
+                key=lambda item: str(item[0]),
+            )
+            if isinstance(output, Mapping)
+        ]
+    else:
+        candidates = [
+            dict(output)
+            for output in list(raw_outputs or [])
+            if isinstance(output, Mapping)
+        ]
+    return [
+        {
+            "name": str(output.get("name") or "")[:120],
+            "object_name": str(output.get("object_name") or "")[:255],
+            "label": str(output.get("label") or "")[:240],
+            "type_id": str(output.get("type_id") or "")[:160],
+            **(
+                {"visible": bool(output["visible"])}
+                if output.get("visible") is not None
+                else {}
+            ),
+        }
+        for output in candidates
+        if str(output.get("name") or "")
+        and str(output.get("object_name") or "")
+    ]
+
+
+def _compact_editable_source_candidate(
+    program: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw_candidate = program.get("latest_candidate")
+    if not isinstance(raw_candidate, Mapping):
+        return None
+    candidate = {
+        key: str(raw_candidate.get(key) or "")[:limit]
+        for key, limit in (("status", 64), ("revision", 128), ("attempt_id", 160))
+        if raw_candidate.get(key) not in (None, "")
+    }
+    raw_failure = raw_candidate.get("failure")
+    if isinstance(raw_failure, Mapping):
+        failure = {
+            key: str(raw_failure.get(key) or "")[:2000]
+            for key in ("failure_code", "failure_stage", "error")
+            if raw_failure.get(key) not in (None, "")
+        }
+        if failure:
+            candidate["failure"] = failure
+    return candidate or None
+
+
+def _editable_source_status(program: Mapping[str, Any]) -> str:
+    if bool(program.get("editor_draft")):
+        return "editor_draft"
+    if str(program.get("state") or "") == "invalid_artifact":
+        return "invalid_artifact"
+    candidate = program.get("latest_candidate")
+    candidate_status = (
+        str(candidate.get("status") or "").strip().lower()
+        if isinstance(candidate, Mapping)
+        else ""
+    )
+    if candidate_status == "failed":
+        return "build_failed"
+    working_revision = str(program.get("working_revision") or "")
+    accepted_revision = str(program.get("accepted_revision") or "")
+    if candidate_status == "validated" and working_revision != accepted_revision:
+        return "validated_unpublished"
+    if accepted_revision and accepted_revision == working_revision:
+        return "accepted"
+    if working_revision:
+        return "working_candidate"
+    if bool(program.get("portable_document_contract")):
+        return "portable_source"
+    return "live_outputs_only" if program.get("live_outputs") else "source_metadata"
+
+
+def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Complete a compact index from document and persisted program identities."""
+
+    completed = complete_domain_program_index(snapshot)
+    domain = str(completed.get("domain") or "")
+    sources = []
+    for program in list(completed.get("programs") or []):
+        if not isinstance(program, Mapping):
+            continue
+        program_domain = str(program.get("domain") or "")
+        if program_domain and program_domain != domain:
+            continue
+        source_id = str(program.get("program_id") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id):
+            continue
+        revision = str(
+            program.get("working_revision")
+            or program.get("accepted_revision")
+            or ""
+        ).strip().lower()[:128]
+        source = {
+            "source_id": source_id,
+            "source_kind": "vibescript_program",
+            "label": str(program.get("label") or "")[:240],
+            "current_revision": revision,
+            "status": _editable_source_status(program),
+            "affected_outputs": _editable_source_outputs(program),
+            "read_tool": "vibescript.read_source",
+            "read_arguments": {"source_id": source_id},
+            "edit_tool": "vibescript.edit_source",
+        }
+        accepted_revision = str(program.get("accepted_revision") or "")[:128]
+        if accepted_revision:
+            source["accepted_revision"] = accepted_revision
+        if re.fullmatch(r"[0-9a-f]{64}", revision):
+            source["edit_target_arguments"] = {
+                "source_id": source_id,
+                "expected_revision": revision,
+            }
+        candidate = _compact_editable_source_candidate(program)
+        if candidate is not None:
+            source["latest_candidate"] = candidate
+        if source["status"] == "invalid_artifact" and program.get("error"):
+            source["error"] = str(program["error"])[:2000]
+        sources.append(source)
+    return {
+        "schema": "vibecad-editable-sources-v1",
+        "domain": domain,
+        "workbench": str(completed.get("workbench") or ""),
         "source_count": len(sources),
-        "source_limit": MAX_DOMAIN_CONTEXT_PROGRAMS,
-        "sources_truncated": len(programs) > MAX_DOMAIN_CONTEXT_PROGRAMS,
-        "sources_omitted": max(0, len(programs) - MAX_DOMAIN_CONTEXT_PROGRAMS),
+        "source_limit": int(
+            completed.get("program_limit") or MAX_DOMAIN_CONTEXT_PROGRAMS
+        ),
+        "sources_truncated": bool(completed.get("programs_truncated")),
+        "sources_omitted": int(completed.get("programs_omitted") or 0),
         "tools": {
             "read_source": "vibescript.read_source",
             "read_api": "vibescript.read_api",
@@ -879,6 +984,14 @@ def editable_sources_snapshot(service: Any, domain: str) -> dict[str, Any]:
         },
         "sources": sources,
     }
+
+
+def editable_sources_snapshot(service: Any, domain: str) -> dict[str, Any]:
+    """Return the completed editable-source index for compatibility callers."""
+
+    return complete_editable_sources_snapshot(
+        capture_editable_sources_snapshot(service, domain)
+    )
 
 
 def _assembly_context_metadata(obj: Any) -> dict[str, Any]:
@@ -3063,7 +3176,8 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     if snapshot.get("_vibecad_deferred_vibescript_domain_context") is not True:
         raise RuntimeError("Invalid deferred VibeScript domain context snapshot.")
     domain = str(snapshot.get("domain") or "")
-    root = _program_artifact_root(str(snapshot.get("project_root") or ""), domain)
+    project_root = str(snapshot.get("project_root") or "").strip()
+    root = _program_artifact_root(project_root, domain)
     raw_native_programs = [
         item
         for item in list(snapshot.get("native_programs") or [])
@@ -3075,11 +3189,11 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             for directory in root.iterdir()
             if directory.is_dir() and not directory.name.startswith(".")
         ]
-        if root.is_dir()
+        if project_root and root.is_dir()
         else []
     )
-    if domain == "partdesign":
-        v1_root = Path(str(snapshot.get("project_root") or "")) / "vibescript"
+    if project_root and domain == "partdesign":
+        v1_root = Path(project_root) / "vibescript"
         if v1_root.is_dir():
             artifact_directories.extend(
                 directory
@@ -3121,6 +3235,7 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                     "object_name",
                     "label",
                     "type_id",
+                    "visible",
                     "derived_state",
                     "stale_reason",
                     "source_revision",
@@ -3206,6 +3321,10 @@ def complete_domain_context(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                     }
                     for name in sorted(set(persisted_outputs) | set(live_outputs))
                 }
+            if live.get("editor_draft"):
+                compact["editor_draft"] = True
+            if live.get("portable_document_contract"):
+                compact["portable_document_contract"] = True
             compact["artifact_directory"] = str(directory)
             compact["state"] = (
                 "reconfiguration_required"
@@ -5228,10 +5347,10 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_source",
             "description": (
-                "Read the complete editable source that owns one or more live outputs "
-                "in the active workbench. Returns its source_id, current revision, "
-                "complete source text, inputs, declared outputs, and every affected "
-                "live output."
+                "Read one complete saved editable source in the active workbench, "
+                "including a failed or not-yet-built source with no live outputs. "
+                "Returns its source_id, current revision, complete source text, inputs, "
+                "declared outputs, build state, and every affected live output."
             ),
             "parameters": {
                 "type": "object",

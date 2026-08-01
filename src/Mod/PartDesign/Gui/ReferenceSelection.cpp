@@ -31,6 +31,9 @@
 #include <QDialog>
 #include <QMessageBox>
 
+#include <algorithm>
+#include <string_view>
+
 
 #include <App/Document.h>
 #include <App/Origin.h>
@@ -62,6 +65,42 @@ using namespace PartDesignGui;
 using namespace Gui;
 
 /* TRANSLATOR PartDesignGui::ReferenceSelection.cpp */
+
+void PartDesignGui::mergeSketchProfileSelection(
+    SketchProfileSelection& selection,
+    Part::Part2DObject& sketch,
+    const std::vector<std::string>& subelements
+)
+{
+    if (selection.sketch && selection.sketch != &sketch) {
+        selection.valid = false;
+        return;
+    }
+    selection.sketch = &sketch;
+
+    // A tree selection means the complete sketch. Viewport selections must
+    // be actual bounded areas; individual edges do not define extrusion
+    // intent when the sketch contains several possible profiles.
+    if (subelements.empty()) {
+        selection.wholeSketch = true;
+        selection.regions.clear();
+        return;
+    }
+    if (selection.wholeSketch) {
+        return;
+    }
+
+    for (const auto& subelement : subelements) {
+        if (!std::string_view(subelement).starts_with("InternalFace")
+            || !sketch.getSubObject(subelement.c_str(), nullptr, nullptr, true, 0)) {
+            selection.valid = false;
+            continue;
+        }
+        if (std::ranges::find(selection.regions, subelement) == selection.regions.end()) {
+            selection.regions.push_back(subelement);
+        }
+    }
+}
 
 bool ReferenceSelection::allow(App::Document* pDoc, App::DocumentObject* pObj, const char* sSubName)
 {

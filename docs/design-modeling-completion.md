@@ -2,7 +2,7 @@
 
 Status: In Progress
 Scope owner: VibeCAD native multi-body modeling
-Last updated: 2026-07-30
+Last updated: 2026-07-31
 
 This document defines the design-level modeling architecture and the exact gate
 for calling it complete. It is intentionally short and must remain under five
@@ -22,7 +22,8 @@ Design
 
 - A **Sketch** belongs to the Design, not to a Body or Component. Any number of
   operations and Bodies may reference it. Its support/frame is an explicit
-  dependency and does not determine ownership.
+  dependency and does not determine ownership. A profile operation may use the
+  complete sketch or persist exact selectable closed areas from that sketch.
 - A **Body** identifies one physical solid. It owns visibility, appearance,
   material, assembly identity, and one stable rendered publication, but it
   does not own sketches, Body states, or the user-visible operation history.
@@ -56,7 +57,8 @@ The Model ribbon must expose these primary actions together:
 3. **New Body** creates a stable solid identity, optionally assigned to a
    selected Component.
 4. Extrude, Revolve, and later profile-based commands accept one reusable
-   sketch plus an explicit target set:
+   sketch, either its complete profile or selected filled areas, plus an
+   explicit target set:
    - `New Body` creates a new Body, with an optional destination Component;
    - `Join`, `Cut`, and `Intersect` advance every selected target Body;
    - no target is inferred from tree order, label, visibility, active Body, or
@@ -161,7 +163,7 @@ Compatibility is confined to safe document migration:
 | Architecture | **Specified** | Design definitions/history, Body states, Component membership, occurrences, and presentation references are distinct and centrally enforced |
 | Persistent identity | **Open** | Design, Component, Sketch, Body, Operation, and Body-state UUIDs survive copy, undo/redo, and reopen with defined collision behavior |
 | Model ribbon | **Open** | New Component, New Sketch, and New Body are adjacent, correctly enabled, and do not create an implicit Body/Component dependency |
-| Shared sketches | **Open** | One Design sketch drives features in two or more Bodies without transfer, clone, or duplicate geometry |
+| Shared sketches | **Verified** | One Design sketch drives independent saved closed-area features in two or more Bodies; area identity survives parameter edits and reopen without transfer, clone, or duplicate geometry |
 | Multi-Body Extrude | **Open** | New Body/Join/Cut/Intersect use explicit targets and commit atomic per-Body outputs |
 | Multi-Body Revolve | **Open** | New Body/Join/Cut/Intersect satisfy the same contract with an explicit axis |
 | Remaining native tools | **Open** | Every Model command is classified as component operation, single-Body operation, in-place edit, or read-only and uses the central reference boundary |
@@ -178,6 +180,8 @@ plus on-screen acceptance proves all of the following:
   the Model ribbon;
 - reuse that sketch for more than one additive feature without changing sketch
   ownership;
+- select independent closed areas from that master sketch for different
+  features without copying or trimming the sketch;
 - use one sketch-driven Cut across all three Bodies and see one History entry;
 - edit the sketch and operation and update all three Bodies atomically;
 - cancel both initial creation and later editing with exact state restoration;
