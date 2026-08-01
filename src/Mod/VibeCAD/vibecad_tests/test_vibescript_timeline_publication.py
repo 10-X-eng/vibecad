@@ -42,17 +42,19 @@ def test_every_shipped_domain_has_one_explicit_history_strategy() -> None:
 
 
 def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
-    packs = tuple(
-        domain_publication.contracts.VIBESCRIPT_WORKBENCH_PACKS.values()
-    )
+    packs = tuple(domain_publication.contracts.VIBESCRIPT_WORKBENCH_PACKS.values())
     universal_writes = {
         str(spec["name"])
         for spec in domain_publication.contracts.universal_tool_specs()
         if str(spec["safety"]) == "SAFE_WRITE"
     }
     assert universal_writes == {
+        "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_program",
     }
 
     expected_operations = {
@@ -63,8 +65,12 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
     }
     registered_writes: set[str] = set(universal_writes)
     contracts: dict[str, str] = {
+        "vibescript.create_program": "delegated_domain_strategy",
         "vibescript.build_program": "exact_regeneration",
         "vibescript.edit_source": "exact_regeneration",
+        "vibescript.set_inputs": "exact_regeneration",
+        "vibescript.reconfigure_program": "exact_regeneration",
+        "vibescript.delete_program": "semantic_deletion",
     }
     for pack in packs:
         domain_specs = {
@@ -72,32 +78,27 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
             for spec in domain_publication.contracts.domain_tool_specs(pack)
             if str(spec["safety"]) == "SAFE_WRITE"
         }
-        assert {
-            name.rpartition(".")[2] for name in domain_specs
-        } == expected_operations
+        assert {name.rpartition(".")[2] for name in domain_specs} == expected_operations
         assert len(domain_specs) == len(expected_operations)
         registered_writes.update(domain_specs)
         strategy = domain_publication._TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN[
             pack.domain
         ]
         contracts[f"vibescript.{pack.domain}.create_program"] = strategy
-        contracts[f"vibescript.{pack.domain}.set_inputs"] = (
-            "exact_regeneration"
-        )
+        contracts[f"vibescript.{pack.domain}.set_inputs"] = "exact_regeneration"
         contracts[f"vibescript.{pack.domain}.reconfigure_program"] = (
             "exact_regeneration"
         )
-        contracts[f"vibescript.{pack.domain}.delete_program"] = (
-            "semantic_deletion"
-        )
+        contracts[f"vibescript.{pack.domain}.delete_program"] = "semantic_deletion"
 
-    # Two universal regenerations plus four domain-owned writes per shipped pack.
-    assert len(registered_writes) == 2 + 4 * len(packs) == 70
+    # Six canonical writes plus four callable compatibility aliases per shipped pack.
+    assert len(registered_writes) == 6 + 4 * len(packs) == 74
     assert set(contracts) == registered_writes
     assert set(contracts.values()) <= {
         *domain_publication._TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN.values(),
         "exact_regeneration",
         "semantic_deletion",
+        "delegated_domain_strategy",
     }
 
 
@@ -196,9 +197,7 @@ class _Timeline(_Object):
         self.Operations = list(operations)
         self.VisibilityAtEnd = list(visibility)
         self.SuppressionAtEnd = list(
-            suppression
-            if suppression is not None
-            else [False] * len(operations)
+            suppression if suppression is not None else [False] * len(operations)
         )
         self.Position = int(position)
 
@@ -214,9 +213,7 @@ class _Document:
         self,
         segments: list[list[_Object]],
     ) -> None:
-        self.staged_segments.append(
-            [list(segment) for segment in segments]
-        )
+        self.staged_segments.append([list(segment) for segment in segments])
 
     def finalizeProvisionalTimelineOperationSegmentReplacement(
         self,
@@ -230,9 +227,7 @@ class _Document:
         resources: list[_Object],
         owners: list[_Object],
     ) -> None:
-        self.published_blocks.append(
-            (operation, list(resources), list(owners))
-        )
+        self.published_blocks.append((operation, list(resources), list(owners)))
 
 
 def _tag_body(body: _Object, output_key: str = "Part") -> None:
@@ -359,9 +354,7 @@ def test_regeneration_stages_and_replaces_one_exact_segment(
         document,
         captured,
     )
-    native_history = _install_regenerated_body(
-        document, timeline, before, after
-    )
+    native_history = _install_regenerated_body(document, timeline, before, after)
 
     domain_publication._replace_partdesign_timeline_segments(
         document,
@@ -370,15 +363,15 @@ def test_regeneration_stages_and_replaces_one_exact_segment(
     )
 
     assert [
-        [obj.Name for obj in segment]
-        for segment in document.staged_segments[0]
+        [obj.Name for obj in segment] for segment in document.staged_segments[0]
     ] == [["OldBody", "OldSketch", "OldFeature"]]
     assert len(document.segment_replacements) == 1
     replacement = document.segment_replacements[0][0]
     assert replacement[0] == 0
-    assert [
-        [obj.Name for obj in block] for block in replacement[1]
-    ] == [["OldSketch"], ["OldFeature"]]
+    assert [[obj.Name for obj in block] for block in replacement[1]] == [
+        ["OldSketch"],
+        ["OldFeature"],
+    ]
     assert replacement[2] == [1, 2]
     assert replacement[3] == [-1, -1, -1]
     assert replacement[4] == expected_active_root_count
@@ -504,9 +497,7 @@ class _DeletionDocument:
         resources: list[_Object],
         owners: list[_Object],
     ) -> None:
-        self.published.append(
-            (operation, list(resources), list(owners))
-        )
+        self.published.append((operation, list(resources), list(owners)))
 
 
 def _tag_timeline_operation(operation: _Object) -> None:
@@ -562,21 +553,24 @@ def test_assembly_resource_keys_use_only_persisted_exact_identities() -> None:
     _tag_assembly_source_identity(child, "source-doc", 21, "Part")
     _tag_resource_key(helper, "Bolt.__fastener_source")
 
-    assert domain_publication._assembly_timeline_resource_key(
-        nested,
-        context="nested occurrence",
-    ) == '[["source-doc",20,"Subassembly"]]'
+    assert (
+        domain_publication._assembly_timeline_resource_key(
+            nested,
+            context="nested occurrence",
+        )
+        == '[["source-doc",20,"Subassembly"]]'
+    )
     assert domain_publication._assembly_timeline_resource_key(
         child,
         context="nested part",
-    ) == (
-        '[["source-doc",20,"Subassembly"],'
-        '["source-doc",21,"Part"]]'
+    ) == ('[["source-doc",20,"Subassembly"],["source-doc",21,"Part"]]')
+    assert (
+        domain_publication._assembly_timeline_resource_key(
+            helper,
+            context="fastener definition",
+        )
+        == "vibescript:Bolt.__fastener_source"
     )
-    assert domain_publication._assembly_timeline_resource_key(
-        helper,
-        context="fastener definition",
-    ) == "vibescript:Bolt.__fastener_source"
 
 
 def test_resource_reconciliation_uses_exact_authored_keys_and_nested_owners() -> None:
@@ -601,12 +595,10 @@ def test_resource_reconciliation_uses_exact_authored_keys_and_nested_owners() ->
         operation,
     ]
 
-    captured = (
-        domain_publication._capture_timeline_resource_reconciliation(
-            document,
-            operation,
-            context="CAM Job",
-        )
+    captured = domain_publication._capture_timeline_resource_reconciliation(
+        document,
+        operation,
+        context="CAM Job",
     )
     domain_publication._stage_timeline_resource_reconciliation(
         document,
@@ -629,9 +621,7 @@ def test_resource_reconciliation_uses_exact_authored_keys_and_nested_owners() ->
         context="CAM Job",
     )
 
-    assert document.resource_stages == [
-        (operation, [retained_parent, retired_sibling])
-    ]
+    assert document.resource_stages == [(operation, [retained_parent, retired_sibling])]
     assert document.resource_finalizations == [
         (
             operation,
@@ -660,9 +650,7 @@ def test_new_resource_block_is_published_in_canonical_nested_order() -> None:
     )
 
     assert published == [child.Name, parent.Name, operation.Name]
-    assert document.published == [
-        (operation, [child, parent], [parent, operation])
-    ]
+    assert document.published == [(operation, [child, parent], [parent, operation])]
 
 
 def test_vibescript_finalizes_new_resource_before_new_operation() -> None:
@@ -789,6 +777,44 @@ def test_vibescript_deletion_consumes_native_resource_and_reveal_plan(
     assert source.ViewObject.Visibility is True
 
 
+def test_vibescript_deletion_prefers_headless_app_planner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _Object("Generated", 2, "Part::Feature")
+    document = _DeletionDocument([owner])
+    calls: list[_Object] = []
+
+    def deletion_plan(obj):
+        calls.append(obj)
+        return {
+            "applicable": False,
+            "valid": True,
+            "replaced_inputs": [],
+            "objects_to_reveal": [],
+            "owned_resources": [],
+        }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "FreeCAD",
+        SimpleNamespace(timelineOperationDeletionPlan=deletion_plan),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "FreeCADGui",
+        SimpleNamespace(
+            timelineOperationDeletionPlan=lambda _obj: (_ for _ in ()).throw(
+                AssertionError("GUI planner must not be used when App exposes it")
+            )
+        ),
+    )
+
+    removed = domain_publication._remove_owned_objects(document, [owner])
+
+    assert removed == [owner.Name]
+    assert calls == [owner]
+
+
 def test_vibescript_deletion_blocks_malformed_native_history_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -857,8 +883,7 @@ def test_vibescript_deletion_refuses_resource_without_its_semantic_owner(
     with pytest.raises(
         RuntimeError,
         match=(
-            "belongs to the history operation 'Generated operation'.*"
-            "History instead"
+            "belongs to the history operation 'Generated operation'.*History instead"
         ),
     ):
         domain_publication._remove_owned_objects(document, [resource])

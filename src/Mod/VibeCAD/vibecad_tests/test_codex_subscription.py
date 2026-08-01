@@ -47,14 +47,14 @@ def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dic
 def _scripted_context() -> dict:
     return _surface_context(
         "vibescript.read_source",
-        "vibescript.partdesign.create_program",
+        "vibescript.create_program",
     )
 
 
 def _part_vibescript_context() -> dict:
     return _surface_context(
         "vibescript.read_source",
-        "vibescript.part.create_program",
+        "vibescript.create_program",
         workbench="PartWorkbench",
     )
 
@@ -76,7 +76,7 @@ def test_turn_start_surface_accepts_one_workbench_vibescript_domain() -> None:
     assert surface["workbench"] == "PartWorkbench"
     assert surface["tool_names"] == [
         "vibescript.read_source",
-        "vibescript.part.create_program",
+        "vibescript.create_program",
     ]
     assert surface["schema_count"] == 2
     assert surface["schema_sha256"] == provider.provider_tool_schema_digest(schemas)
@@ -121,24 +121,22 @@ def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_scripted_context())
     assert names == {
         ("vibescript", "read_source"): "vibescript.read_source",
-        (
-            "vibescript",
-            "partdesign_create_program",
-        ): "vibescript.partdesign.create_program",
+        ("vibescript", "create_program"): "vibescript.create_program",
     }
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
     read_tool = tools[0]["tools"][0]
     assert read_tool["name"] == "read_source"
-    assert read_tool["inputSchema"] == _scripted_context()["provider_tool_schemas"][0][
-        "parameters"
-    ]
+    assert (
+        read_tool["inputSchema"]
+        == _scripted_context()["provider_tool_schemas"][0]["parameters"]
+    )
 
 
-def test_codex_dynamic_tools_accept_one_domain_qualified_namespace() -> None:
+def test_codex_dynamic_tools_use_one_workbench_neutral_namespace() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_part_vibescript_context())
     assert names == {
         ("vibescript", "read_source"): "vibescript.read_source",
-        ("vibescript", "part_create_program"): "vibescript.part.create_program",
+        ("vibescript", "create_program"): "vibescript.create_program",
     }
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
 
@@ -701,9 +699,7 @@ def test_plan_surface_excludes_document_mutation_tools(
             to_schema=lambda **_kwargs: _tool_schema("partdesign.write"),
         ),
     }
-    service = SimpleNamespace(
-        registry=SimpleNamespace(get=lambda name: tools[name])
-    )
+    service = SimpleNamespace(registry=SimpleNamespace(get=lambda name: tools[name]))
     monkeypatch.setattr(session, "_surface_tool_names", lambda *_args: set(tools))
 
     schemas = session.provider_tool_schemas(
@@ -786,18 +782,13 @@ def test_openai_api_key_and_plan_mode_run_through_codex(
 
     client = _Client.instance
     assert client is not None
-    assert client.environment == {
-        codex.CODEX_OPENAI_API_KEY_ENV: "secret-test-key"
-    }
+    assert client.environment == {codex.CODEX_OPENAI_API_KEY_ENV: "secret-test-key"}
     assert [method for method, _params in client.requests].count("account/read") == 0
     thread_request = next(
         params for method, params in client.requests if method == "thread/start"
     )
     assert thread_request["modelProvider"] == codex.CODEX_OPENAI_PROVIDER_ID
-    assert (
-        thread_request["config"]["include_collaboration_mode_instructions"]
-        is True
-    )
+    assert thread_request["config"]["include_collaboration_mode_instructions"] is True
     turn_request = next(
         params for method, params in client.requests if method == "turn/start"
     )

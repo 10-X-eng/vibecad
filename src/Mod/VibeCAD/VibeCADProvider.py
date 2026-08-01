@@ -90,10 +90,18 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     pack = get_vibescript_pack(workbench)
     if pack is None or pack.domain != domain:
         return ""
+    component_instruction = (
+        " Use available_components references directly. Search the component catalog "
+        "only when the needed definition is not listed or more metadata is required. "
+        "If its inventory is truncated, enumerate compact references with limit=200 "
+        "and always follow next_offset until it is null; byte-safe pages may be smaller."
+        if domain == "assembly"
+        else ""
+    )
     return (
         f"VIBESCRIPT {pack.title.upper()} AUTHORING\n"
         f"Write CAD only through the active {pack.title} VibeScript API. "
-        f"{pack.instructions}\n\n"
+        f"{pack.instructions}{component_instruction}\n\n"
         "Each editable_sources item is one editable part or program, including failed "
         "and unbuilt code. Read its exact source_id with vibescript.read_source before "
         "editing; send the complete updated source and returned revision to "
@@ -102,8 +110,8 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         "Source receives immutable doc and api values plus validated inputs. Outputs "
         "keep stable names and must use these types: "
         + ", ".join(pack.output_types)
-        + ". Reuse existing source. Use set_inputs for values and reconfigure_program "
-        "only when schema or outputs change."
+        + ". Reuse existing source. Use vibescript.set_inputs for values and "
+        "vibescript.reconfigure_program only when schema or outputs change."
     )
 
 
@@ -300,7 +308,8 @@ def _codex_dynamic_tool_surface(
         or str(surface.get("unavailable_reason") or "") != resolution.unavailable_reason
     ):
         raise ProviderUnavailable(
-            "The modeling-engine/domain declaration does not match the frozen " "VibeCAD surface."
+            "The modeling-engine/domain declaration does not match the frozen "
+            "VibeCAD surface."
         )
     try:
         validate_surface_names(
@@ -487,9 +496,11 @@ class CodexProvider(BaseProvider):
         )
 
         live_context = dict(context)
-        interaction_mode = str(
-            live_context.get("_vibecad_interaction_mode") or "build"
-        ).strip().lower()
+        interaction_mode = (
+            str(live_context.get("_vibecad_interaction_mode") or "build")
+            .strip()
+            .lower()
+        )
         if interaction_mode not in {"build", "plan"}:
             raise ProviderUnavailable(
                 f"Unknown VibeCAD interaction mode {interaction_mode!r}."
@@ -498,8 +509,7 @@ class CodexProvider(BaseProvider):
         dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(live_context)
         if not dynamic_tools:
             raise ProviderUnavailable(
-                "Codex mode has no declared VibeCAD tools for the "
-                "current workbench."
+                "Codex mode has no declared VibeCAD tools for the current workbench."
             )
 
         state_lock = threading.RLock()
@@ -710,9 +720,7 @@ class CodexProvider(BaseProvider):
                 and result.get("captured")
                 and result.get("new_observation", True)
             ):
-                content_items.extend(
-                    _codex_tool_image_content_items(updated_context)
-                )
+                content_items.extend(_codex_tool_image_content_items(updated_context))
             inspected_image_context = _tool_result_image_context(result)
             if inspected_image_context is not None:
                 content_items.extend(
@@ -813,9 +821,7 @@ class CodexProvider(BaseProvider):
                     skills_enabled=self.skills_enabled,
                     collaboration_mode_enabled=plan_mode,
                     openai_base_url=(
-                        (self.base_url or "")
-                        if self.auth_mode == "api_key"
-                        else None
+                        (self.base_url or "") if self.auth_mode == "api_key" else None
                     ),
                 ),
                 "serviceName": "vibecad",
@@ -830,9 +836,7 @@ class CodexProvider(BaseProvider):
                 sdk_call="codex-app-server.thread/start",
                 turn=1,
                 request=thread_request,
-                base_url=(
-                    self.base_url if self.auth_mode == "api_key" else None
-                ),
+                base_url=(self.base_url if self.auth_mode == "api_key" else None),
             )
             thread_result = client.request("thread/start", thread_request, timeout=30.0)
             thread = (
@@ -881,9 +885,7 @@ class CodexProvider(BaseProvider):
                 sdk_call="codex-app-server.turn/start",
                 turn=1,
                 request=turn_request,
-                base_url=(
-                    self.base_url if self.auth_mode == "api_key" else None
-                ),
+                base_url=(self.base_url if self.auth_mode == "api_key" else None),
             )
             turn_result = client.request("turn/start", turn_request, timeout=30.0)
             turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
@@ -1519,6 +1521,7 @@ def _model_visible_context(
         "document",
         "selection",
         "editable_sources",
+        "available_components",
         "view_screenshot",
         "reference_images",
     )
@@ -2017,8 +2020,7 @@ def _provider_encoded_image_payload(
             if saved and payload:
                 metadata = {
                     "resized": (
-                        int(scaled.width()) != width
-                        or int(scaled.height()) != height
+                        int(scaled.width()) != width or int(scaled.height()) != height
                     ),
                     "transcoded": encode_format != original_format,
                     "encoded_format": encode_format.lower(),
@@ -2645,9 +2647,7 @@ def _anthropic_child_main(
             "model": model,
             "max_tokens": max_tokens,
             "system": system_blocks,
-            "tools": _anthropic_request_tools(
-                tool_definitions, web_search_enabled
-            ),
+            "tools": _anthropic_request_tools(tool_definitions, web_search_enabled),
         }
         if thinking is not None:
             request_kwargs["thinking"] = thinking
@@ -2744,8 +2744,7 @@ def _anthropic_child_main(
                         )
                     elif (
                         stream_event_type == "content_block_start"
-                        and summary.get("block_type")
-                        == "web_search_tool_result"
+                        and summary.get("block_type") == "web_search_tool_result"
                     ):
                         _send_child_progress(
                             conn,
@@ -2852,11 +2851,7 @@ def _anthropic_child_main(
                 )
                 return
             server_use_ids = {
-                str(
-                    getattr(block, "id", "")
-                    or _object_payload(block).get("id")
-                    or ""
-                )
+                str(getattr(block, "id", "") or _object_payload(block).get("id") or "")
                 for block in content_blocks
                 if _anthropic_block_type(block) == "server_tool_use"
             }

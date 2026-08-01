@@ -105,6 +105,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/TestDirectDomainTimeline.py
         vibecad_tests/TestDirectModelTimeline.py
         vibecad_tests/grid_gui_integration.py
+        vibecad_tests/partdesign_vibescript_api_integration.py
         vibecad_tests/qt_ribbon_theme_integration.py
     )
 endif()

@@ -3528,6 +3528,7 @@ def _resolve_connector(
     mode = str(selection.get("type") or "")
     semantic: dict[str, Any] | None = None
     standard_frame: Mapping[str, Any] | None = None
+    semantic_frame: Mapping[str, Any] | None = None
     if mode == "component_origin":
         if properties.get("anchor") is not None:
             raise AssemblyCandidateError(
@@ -3614,13 +3615,18 @@ def _resolve_connector(
             )
         element = str(subelements[0]) if subelements else ""
         anchor = element
+        interface_selection = dict(raw.get("selection") or {})
         if element:
             subshape, category = _subelement(
                 selection_component, element, context=context
             )
             inferred = _geometry_type(subshape, category)
         else:
-            inferred = "component_origin"
+            inferred = (
+                "component_frame"
+                if interface_selection.get("type") == "frame"
+                else "component_origin"
+            )
         geometry_type = str(
             (geometry[0] if geometry else {}).get("geometry_type") or inferred
         )
@@ -3631,6 +3637,13 @@ def _resolve_connector(
                     f"{context} published interface has a malformed standard frame."
                 )
             standard_frame = raw_standard_frame
+        raw_semantic_frame = raw.get("connector_frame")
+        if interface_selection.get("type") == "frame":
+            if not isinstance(raw_semantic_frame, Mapping):
+                raise AssemblyCandidateError(
+                    f"{context} published interface has no explicit connector frame."
+                )
+            semantic_frame = raw_semantic_frame
         semantic = {
             "type": "published_interface",
             "interface_name": interface_name,
@@ -3661,14 +3674,18 @@ def _resolve_connector(
         properties.get("offset"),
         context=f"{context}.offset",
     )
-    interface_frame = (
-        _native_placement(
+    if standard_frame is not None:
+        interface_frame = _native_placement(
             standard_frame,
             context=f"{context} published-interface frame",
         )
-        if standard_frame is not None
-        else None
-    )
+    elif semantic_frame is not None:
+        interface_frame = _native_placement_matrix(
+            semantic_frame.get("matrix"),
+            context=f"{context} semantic connector frame",
+        )
+    else:
+        interface_frame = None
     offset = (
         interface_frame.multiply(user_offset)
         if interface_frame is not None
@@ -3706,7 +3723,15 @@ def _resolve_connector(
 
 def _compatibility(kind: str, connectors: list[dict[str, Any]]) -> dict[str, Any]:
     geometry = [str(item.get("geometry_type") or "") for item in connectors]
-    axis_capable = {"line", "circle", "plane", "cylinder", "cone", "component_origin"}
+    axis_capable = {
+        "line",
+        "circle",
+        "plane",
+        "cylinder",
+        "cone",
+        "component_origin",
+        "component_frame",
+    }
     rotary = {"circle", "cylinder", "cone"}
     linear = {"line", "plane"}
     criteria = "any valid connector geometry"
@@ -3716,7 +3741,10 @@ def _compatibility(kind: str, connectors: list[dict[str, Any]]) -> dict[str, Any
         compatible = all(item in axis_capable for item in geometry)
     elif kind == "slider":
         criteria = "both connectors must define linear axes or plane normals"
-        compatible = all(item in linear | {"component_origin"} for item in geometry)
+        compatible = all(
+            item in linear | {"component_origin", "component_frame"}
+            for item in geometry
+        )
     elif kind == "rack_pinion":
         criteria = "one linear connector and one circular/cylindrical connector"
         compatible = any(item in linear for item in geometry) and any(

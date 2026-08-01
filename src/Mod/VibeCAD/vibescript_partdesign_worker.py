@@ -2017,7 +2017,125 @@ def _build_feature(
     return feature
 
 
-def _resolved_interfaces(shape: Any, raw: Any) -> dict[str, dict[str, Any]]:
+def _placement_matrix(placement: Any) -> list[float]:
+    matrix = placement.toMatrix()
+    return [
+        float(getattr(matrix, name))
+        for name in (
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A31",
+            "A32",
+            "A33",
+            "A34",
+            "A41",
+            "A42",
+            "A43",
+            "A44",
+        )
+    ]
+
+
+def _connector_frame_fact(placement: Any) -> dict[str, Any]:
+    matrix = _placement_matrix(placement)
+    return {
+        "schema": "vibecad-connector-frame-v1",
+        "origin_mm": [matrix[3], matrix[7], matrix[11]],
+        "x_direction": [matrix[0], matrix[4], matrix[8]],
+        "axis_direction": [matrix[2], matrix[6], matrix[10]],
+        "matrix": matrix,
+    }
+
+
+def _resolved_connector_frame(
+    document: Any,
+    shape: Any,
+    subelements: list[str],
+    selection: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return the exact local JCS that native Assembly will derive.
+
+    A multi-element interface is a stable selection set, not one connector.
+    Origin and single-element interfaces have one unambiguous native frame.
+    """
+
+    import FreeCAD as App
+
+    if str(selection.get("type") or "") == "frame":
+        origin = [float(value) for value in list(selection.get("origin") or [])]
+        axis = [
+            float(value) for value in list(selection.get("axis_direction") or [])
+        ]
+        x_direction = [
+            float(value) for value in list(selection.get("x_direction") or [])
+        ]
+        if not all(len(value) == 3 for value in (origin, axis, x_direction)):
+            raise PartDesignCandidateError(
+                "A semantic connector frame has malformed vectors."
+            )
+        y_direction = [
+            axis[1] * x_direction[2] - axis[2] * x_direction[1],
+            axis[2] * x_direction[0] - axis[0] * x_direction[2],
+            axis[0] * x_direction[1] - axis[1] * x_direction[0],
+        ]
+        matrix = App.Matrix()
+        for name, value in zip(
+            (
+                "A11",
+                "A21",
+                "A31",
+                "A12",
+                "A22",
+                "A32",
+                "A13",
+                "A23",
+                "A33",
+                "A14",
+                "A24",
+                "A34",
+            ),
+            (*x_direction, *y_direction, *axis, *origin),
+            strict=True,
+        ):
+            setattr(matrix, name, value)
+        return _connector_frame_fact(App.Placement(matrix))
+    if len(subelements) > 1:
+        return None
+    if not subelements:
+        return _connector_frame_fact(App.Placement())
+
+    # UtilsAssembly.findPlacement is the native Assembly workbench's JCS
+    # implementation.  Resolve against an isolated worker-only feature so the
+    # metadata and the eventual joint use exactly the same frame convention.
+    import UtilsAssembly
+
+    carrier = document.addObject("Part::Feature", "VibeCADInterfaceFrameSource")
+    if carrier is None:
+        raise PartDesignCandidateError(
+            "FreeCAD could not create the semantic-interface frame carrier."
+        )
+    carrier.Shape = shape
+    element = str(subelements[0])
+    try:
+        placement = UtilsAssembly.findPlacement(
+            [carrier, [element, element]],
+        )
+        return _connector_frame_fact(placement)
+    finally:
+        document.removeObject(carrier.Name)
+
+
+def _resolved_interfaces(
+    document: Any,
+    shape: Any,
+    raw: Any,
+) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, Mapping):
         raise PartDesignCandidateError("api.body interfaces must be an object.")
     result: dict[str, dict[str, Any]] = {}
@@ -2027,11 +2145,17 @@ def _resolved_interfaces(shape: Any, raw: Any) -> dict[str, dict[str, Any]]:
         selection = definition.get("selection")
         if not isinstance(selection, Mapping):
             raise PartDesignCandidateError(f"Interface {name!r} has no selection.")
-        if selection.get("type") == "origin":
+        if selection.get("type") in {"origin", "frame"}:
             subelements: list[str] = []
             geometry: list[dict[str, Any]] = []
         else:
             subelements, geometry = _query_subelements(shape, selection)
+        connector_frame = _resolved_connector_frame(
+            document,
+            shape,
+            subelements,
+            selection,
+        )
         result[str(name)] = {
             "selection": dict(selection),
             **(
@@ -2041,6 +2165,11 @@ def _resolved_interfaces(shape: Any, raw: Any) -> dict[str, dict[str, Any]]:
             ),
             "subelements": subelements,
             "geometry": geometry,
+            **(
+                {"connector_frame": connector_frame}
+                if connector_frame is not None
+                else {}
+            ),
         }
     return result
 
@@ -2541,7 +2670,11 @@ def validate_and_build_partdesign(
                 f"Could not export Part Design output {name!r}."
             )
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
-        interfaces = _resolved_interfaces(shape, properties.get("interfaces") or {})
+        interfaces = _resolved_interfaces(
+            document,
+            shape,
+            properties.get("interfaces") or {},
+        )
         presentation, _native_material = material_resolver.resolve(
             definition,
             output_name=name,

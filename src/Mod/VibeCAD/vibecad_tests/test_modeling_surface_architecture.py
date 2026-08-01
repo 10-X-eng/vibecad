@@ -79,12 +79,12 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             assert scripted.available is True
             assert scripted.unavailable_reason == ""
             assert scripted.cad_tool_names == (
-                *domain_pack.tool_names,
+                *domain_pack.provider_tool_names,
                 *focused_reads,
             )
-            assert len(scripted.cad_tool_names) == len(domain_pack.tool_names) + len(
-                focused_reads
-            )
+            assert len(scripted.cad_tool_names) == len(
+                domain_pack.provider_tool_names
+            ) + len(focused_reads)
             assert len(scripted.tool_names) <= 15
             assert "core.inspect" not in scripted.tool_names
             unrelated_human_commands = set(
@@ -96,13 +96,8 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
                 for name in scripted.cad_tool_names
                 if name.startswith("vibescript.") and name.count(".") == 2
             }
-            assert namespaces == {domain_pack.domain}
-            assert {
-                "vibescript.read_source",
-                "vibescript.read_api",
-                "vibescript.build_program",
-                "vibescript.edit_source",
-            } <= set(scripted.cad_tool_names)
+            assert namespaces == set()
+            assert set(domain_pack.provider_tool_names) <= set(scripted.cad_tool_names)
         else:
             assert scripted.available is False
             assert scripted.cad_tool_names == ()
@@ -170,14 +165,16 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
 
 
 def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() -> None:
-    universal = {
-        spec["name"]: spec for spec in domains.universal_tool_specs()
-    }
+    universal = {spec["name"]: spec for spec in domains.universal_tool_specs()}
     assert set(universal) == {
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_program",
     }
     build = universal["vibescript.build_program"]
     assert build["parameters"]["required"] == [
@@ -191,9 +188,17 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "source",
     ]
     assert "replacements" not in edit["parameters"]["properties"]
+    for write_name in (
+        "vibescript.create_program",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_program",
+    ):
+        assert universal[write_name]["safety"] == "SAFE_WRITE"
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
+        assert set(pack.provider_tool_names) == set(universal)
         specs = {
             spec["name"].rsplit(".", 1)[-1]: spec
             for spec in domains.domain_tool_specs(pack)
@@ -350,7 +355,9 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
     assert failed["program"]["latest_candidate"]["failure"]["error"] == "bad"
 
 
-def test_universal_read_source_returns_complete_code_and_every_affected_output() -> None:
+def test_universal_read_source_returns_complete_code_and_every_affected_output() -> (
+    None
+):
     import VibeCADSession as session
 
     source = "feature = api.box(10, 20, 30)\nresult = {'Body': feature}\n"
@@ -552,6 +559,91 @@ def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
     assert result["source_id"] == "a" * 32
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "operation", "arguments"),
+    (
+        (
+            "vibescript.create_program",
+            "create_program",
+            {
+                "program_name": "Assembly",
+                "source": "result = {'Assembly': api.assembly([], [])}",
+                "input_schema": {"type": "object"},
+                "inputs": {},
+                "expected_outputs": [{"name": "Assembly", "type": "assembly"}],
+            },
+        ),
+        (
+            "vibescript.set_inputs",
+            "set_inputs",
+            {
+                "source_id": "a" * 32,
+                "expected_revision": "b" * 64,
+                "patch": {"spacing_mm": 12.0},
+            },
+        ),
+        (
+            "vibescript.reconfigure_program",
+            "reconfigure_program",
+            {
+                "source_id": "a" * 32,
+                "expected_revision": "b" * 64,
+                "source": "result = {'Assembly': api.assembly([], [])}",
+                "input_schema": {"type": "object"},
+                "inputs": {},
+                "expected_outputs": [{"name": "Assembly", "type": "assembly"}],
+            },
+        ),
+        (
+            "vibescript.delete_program",
+            "delete_program",
+            {
+                "source_id": "a" * 32,
+                "expected_revision": "b" * 64,
+                "reason": "Remove obsolete mechanism",
+            },
+        ),
+    ),
+)
+def test_universal_lifecycle_maps_to_the_active_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    operation: str,
+    arguments: dict,
+) -> None:
+    import VibeCADSession as session
+
+    observed = {}
+
+    def run_internal(_service, qualified_name, domain_arguments, **_kwargs):
+        observed["tool_name"] = qualified_name
+        observed["arguments"] = domain_arguments
+        return {
+            "ok": True,
+            "tool": qualified_name,
+            "program_id": domain_arguments.get("program_id", "c" * 32),
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    result = session._run_universal_vibescript_tool(
+        object(),
+        "AssemblyWorkbench",
+        tool_name,
+        arguments,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed["tool_name"] == f"vibescript.assembly.{operation}"
+    expected_arguments = dict(arguments)
+    if "source_id" in expected_arguments:
+        expected_arguments["program_id"] = expected_arguments.pop("source_id")
+    assert observed["arguments"] == expected_arguments
+    assert result["tool"] == tool_name
+    assert result["source_id"] == result["program_id"]
+
+
 def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -> None:
     class View:
         Visibility = False
@@ -625,7 +717,11 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
 
     assert index["tools"]["read_source"] == "vibescript.read_source"
     assert index["tools"]["read_api"] == "vibescript.read_api"
+    assert index["tools"]["create_program"] == "vibescript.create_program"
     assert index["tools"]["edit_source"] == "vibescript.edit_source"
+    assert index["tools"]["set_inputs"] == "vibescript.set_inputs"
+    assert index["tools"]["reconfigure_program"] == ("vibescript.reconfigure_program")
+    assert index["tools"]["delete_program"] == "vibescript.delete_program"
     assert index["workbench"] == "PartDesignWorkbench"
     assert index["domain"] == "partdesign"
     assert [item["source_id"] for item in index["sources"]] == [
@@ -797,6 +893,9 @@ def test_component_catalog_finds_literal_substrings_in_saved_project_files(
       <Properties>
         <Property name="Label" type="App::PropertyString"><String value="M3 Motor Bracket"/></Property>
         <Property name="PartNumber" type="App::PropertyString"><String value="DRV-BRK-003"/></Property>
+        <Property name="VibeCADVibeScriptProgramId" type="App::PropertyString"><String value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></Property>
+        <Property name="VibeCADVibeScriptDomain" type="App::PropertyString"><String value="partdesign"/></Property>
+        <Property name="VibeCADVibeScriptOutputName" type="App::PropertyString"><String value="Bracket"/></Property>
       </Properties>
     </Object>
   </ObjectData>
@@ -821,6 +920,314 @@ def test_component_catalog_finds_literal_substrings_in_saved_project_files(
         "document_path": "components/drive-bracket.FCStd",
     }
     assert all(item["object_name"] != "Pad" for item in result["matches"])
+
+
+def test_saved_catalog_uses_publication_not_private_implementation(
+    tmp_path: Path,
+) -> None:
+    from html import escape
+
+    from VibeCADComponentCatalog import search_captured_component_catalog
+
+    owner = tmp_path / "assembly.FCStd"
+    owner.write_bytes(b"owner")
+    component = tmp_path / "gearbox.FCStd"
+    frame = {
+        "schema": "vibecad-connector-frame-v1",
+        "origin_mm": [0, 0, 0],
+        "x_direction": [1, 0, 0],
+        "axis_direction": [0, 0, 1],
+        "matrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    }
+    interface_table = escape(
+        json.dumps(
+            {
+                "RotationAxis": {
+                    "output": "PlanetMaster",
+                    "selection": {"type": "origin"},
+                    "resolved": {
+                        "object": "PublishedPlanet",
+                        "subelements": [],
+                        "geometry": [],
+                        "connector_frame": frame,
+                    },
+                }
+            },
+            separators=(",", ":"),
+        ),
+        quote=True,
+    )
+    document_xml = f"""<?xml version="1.0" encoding="utf-8"?>
+<Document>
+  <Properties>
+    <Property name="Label" type="App::PropertyString"><String value="Gearbox"/></Property>
+    <Property name="Uid" type="App::PropertyUUID"><Uuid value="gearbox-uid"/></Property>
+  </Properties>
+  <Objects>
+    <Object type="App::Part" name="ProgramRoot" id="1"/>
+    <Object type="PartDesign::Body" name="InternalPlanetBody" id="2"/>
+    <Object type="App::Link" name="PublishedPlanet" id="3"/>
+  </Objects>
+  <ObjectData>
+    <Object name="ProgramRoot"><Properties>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="model"/></Property>
+      <Property name="VibeCADPublishedInterfaces" type="App::PropertyString"><String value="{interface_table}"/></Property>
+    </Properties></Object>
+    <Object name="InternalPlanetBody"><Properties>
+      <Property name="Label" type="App::PropertyString"><String value="Planet Master Body"/></Property>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="implementation"/></Property>
+    </Properties></Object>
+    <Object name="PublishedPlanet"><Properties>
+      <Property name="Label" type="App::PropertyString"><String value="Planet Master"/></Property>
+      <Property name="VibeCADScriptedRole" type="App::PropertyString"><String value="publication"/></Property>
+      <Property name="VibeCADVibeScriptProgramId" type="App::PropertyString"><String value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></Property>
+      <Property name="VibeCADVibeScriptDomain" type="App::PropertyString"><String value="partdesign"/></Property>
+      <Property name="VibeCADVibeScriptOutputName" type="App::PropertyString"><String value="PlanetMaster"/></Property>
+      <Property name="VibeCADVibeScriptOutputType" type="App::PropertyString"><String value="solid"/></Property>
+    </Properties></Object>
+  </ObjectData>
+</Document>
+"""
+    with zipfile.ZipFile(component, "w") as archive:
+        archive.writestr("Document.xml", document_xml)
+    result = search_captured_component_catalog(
+        {
+            "project_directory": str(tmp_path),
+            "owner_file": str(owner),
+            "open_document_files": [str(owner)],
+            "open_candidates": [],
+        },
+        "planet master",
+    )
+    assert [item["object_name"] for item in result["matches"]] == [
+        "PublishedPlanet"
+    ]
+    match = result["matches"][0]
+    assert match["assembly_contract"]["vibescript_output_type"] == "solid"
+    assert match["published_interfaces"] == ["RotationAxis"]
+    assert match["interfaces"][0]["frame"] == frame
+
+
+def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
+    tmp_path: Path,
+) -> None:
+    from VibeCADComponentCatalog import (
+        component_inventory,
+        prepare_captured_component_catalog,
+        search_prepared_component_catalog,
+    )
+
+    candidate = {
+        "document_label": "Drive Module",
+        "object_name": "BracketBody",
+        "label": "Motor Bracket",
+        "type_id": "PartDesign::Body",
+        "source": "open_document",
+        "live_validated": True,
+        "portable": True,
+        "reference": {
+            "document_uid": "component-uid",
+            "object_name": "BracketBody",
+        },
+        "authoring_source": {
+            "source_id": "a" * 32,
+            "domain": "partdesign",
+            "output_name": "Bracket",
+        },
+        "published_interfaces": ["MountAxis", "MountFace"],
+    }
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": [candidate],
+        }
+    )
+    inventory = component_inventory(prepared)
+
+    assert inventory == {
+        "schema": "vibecad-available-components-v1",
+        "component_count": 1,
+        "components_included": 1,
+        "components_truncated": False,
+        "project_file_search_available": False,
+        "components": [candidate],
+        "usage": (
+            "Use a component's reference directly with api.component or api.instances. "
+            "Call component_catalog.search only when the needed component is not listed "
+            "or when additional catalog metadata is required. To enumerate a truncated "
+            "catalog, use detail='references', limit=200, offset=0, then repeat with "
+            "offset=next_offset until next_offset is null. A page may return fewer "
+            "than limit so its complete matches array remains provider-safe."
+        ),
+    }
+    assert search_prepared_component_catalog(prepared, "mount")["match_count"] == 1
+    assert search_prepared_component_catalog(prepared, "motor bracket")["matches"] == [
+        candidate
+    ]
+
+
+def test_component_catalog_states_exact_mechanism_boundaries() -> None:
+    from VibeCADComponentCatalog import _assembly_component_contract
+
+    rigid = _assembly_component_contract(
+        "Part::Feature",
+        solid_count=4,
+        output_type="compound",
+    )
+    assert rigid["default_behavior"] == "rigid_occurrence"
+    assert rigid["solid_count"] == 4
+    assert rigid["movable_unit_count"] == 1
+    assert rigid["child_solids_independently_movable"] is False
+    assert rigid["flexible_occurrence_supported"] is False
+    assert "api.instances" in rigid["authoring_correction"]
+
+    subassembly = _assembly_component_contract(
+        "Assembly::AssemblyObject",
+        solid_count=9,
+    )
+    assert subassembly["default_behavior"] == "rigid_occurrence"
+    assert subassembly["flexible_occurrence_supported"] is True
+    assert subassembly["internal_occurrences_independently_movable"] is True
+    assert "flexible=True" in subassembly["flexible_behavior"]
+
+
+def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> None:
+    import VibeCADSession as session
+
+    from VibeCADComponentCatalog import (
+        MAX_COMPONENT_SEARCH_RESULTS,
+        ComponentCatalogError,
+        prepare_captured_component_catalog,
+        search_prepared_component_catalog,
+    )
+    from tool_impl.service.component_catalog_search import TOOL_SPEC
+
+    candidates = [
+        {
+            "document_label": "Engine Parts",
+            "object_name": f"Body{index:03d}",
+            "label": f"Engine Component {index:03d}",
+            "type_id": "PartDesign::Body",
+            "source": "open_document",
+            "live_validated": True,
+            "portable": True,
+            "reference": {
+                "document_uid": "engine-parts-uid",
+                "object_name": f"Body{index:03d}",
+            },
+            "description": f"Full metadata for engine component {index:03d}",
+        }
+        for index in range(344)
+    ]
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": candidates,
+        }
+    )
+
+    first = search_prepared_component_catalog(
+        prepared,
+        "Body",
+        limit=200,
+        detail="references",
+    )
+    second = search_prepared_component_catalog(
+        prepared,
+        "Body",
+        limit=200,
+        offset=first["next_offset"],
+        detail="references",
+    )
+
+    assert MAX_COMPONENT_SEARCH_RESULTS == 200
+    assert first["match_count"] == 344
+    assert first["returned_count"] == 200
+    assert first["next_offset"] == 200
+    assert first["matches_truncated"] is True
+    assert set(first["matches"][0]) == {"label", "reference"}
+    assert second["offset"] == 200
+    assert second["returned_count"] == 144
+    assert second["next_offset"] is None
+    assert second["matches_truncated"] is False
+    assert [
+        item["reference"]["object_name"]
+        for item in [*first["matches"], *second["matches"]]
+    ] == [f"Body{index:03d}" for index in range(344)]
+
+    properties = TOOL_SPEC["parameters"]["properties"]
+    assert properties["limit"]["maximum"] == 200
+    assert properties["offset"]["minimum"] == 0
+    assert properties["detail"]["enum"] == ["references", "full"]
+    visible_properties = session._provider_schema_copy(TOOL_SPEC)["parameters"][
+        "properties"
+    ]
+    assert visible_properties["limit"]["maximum"] == 200
+    assert "1 to 200" in visible_properties["limit"]["description"]
+    assert "next_offset" in visible_properties["offset"]["description"]
+    tool_spec = ToolSpec.from_mapping(TOOL_SPEC)
+    tool_spec.validate_arguments(
+        {"query": "Body", "limit": 200, "offset": 0, "detail": "references"}
+    )
+    with pytest.raises(ComponentCatalogError, match="between 1 and 200"):
+        search_prepared_component_catalog(prepared, limit=201)
+
+
+def test_component_catalog_never_loses_matches_to_provider_byte_boundary() -> None:
+    import VibeCADProvider as provider
+
+    from VibeCADComponentCatalog import (
+        MAX_COMPONENT_SEARCH_RESPONSE_BYTES,
+        prepare_captured_component_catalog,
+        search_prepared_component_catalog,
+    )
+
+    candidates = [
+        {
+            "document_label": "Large Engine Catalog",
+            "object_name": f"EngineBody{index:03d}",
+            "label": f"Engine Component {index:03d}",
+            "type_id": "PartDesign::Body",
+            "source": "open_document",
+            "live_validated": True,
+            "portable": True,
+            "reference": {
+                "document_uid": "large-engine-catalog-uid",
+                "object_name": f"EngineBody{index:03d}",
+            },
+            "description": f"Component {index:03d} " + ("x" * 2000),
+        }
+        for index in range(200)
+    ]
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": candidates,
+        }
+    )
+
+    result = search_prepared_component_catalog(prepared, limit=200, detail="full")
+    visible = provider._provider_visible_tool_result({"ok": True, **result})
+
+    assert result["returned_count"] < 200
+    assert result["returned_count"] > 0
+    assert result["page_byte_limited"] is True
+    assert result["next_offset"] == result["returned_count"]
+    assert provider._provider_json_bytes({"ok": True, **result}) <= (
+        MAX_COMPONENT_SEARCH_RESPONSE_BYTES
+    )
+    assert isinstance(visible["matches"], list)
+    assert len(visible["matches"]) == result["returned_count"]
+    assert "vibecad_result_boundary" not in visible
 
 
 def test_partdesign_vibescript_schema_golden_fixture() -> None:
@@ -1035,9 +1442,7 @@ def test_part_api_is_explicit_documented_and_generated_from_the_runtime() -> Non
         "never cycle through guessed indexes"
         in description["model_verification_contract"]["selection_repair"]
     )
-    assert (
-        "active workbench determines" in description["workbench_handoffs"]["rule"]
-    )
+    assert "active workbench determines" in description["workbench_handoffs"]["rule"]
     assert (
         len(
             json.dumps(description, sort_keys=True, separators=(",", ":")).encode(
@@ -1682,9 +2087,7 @@ def test_nickel_alloy_718_card_is_packaged_for_hot_section_design() -> None:
     material_cmake = (module_root / "Material" / "CMakeLists.txt").read_text(
         encoding="utf-8"
     )
-    relative_card = (
-        "Resources/Materials/Standard/Metal/Alloys/Nickel-Alloy-718.FCMat"
-    )
+    relative_card = "Resources/Materials/Standard/Metal/Alloys/Nickel-Alloy-718.FCMat"
     assert relative_card in material_cmake
 
 
@@ -1734,6 +2137,35 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         "gears",
         "belt",
     }
+    joint_details = description["api_details"]["joint"]
+    assert joint_details["kinds"] == [
+        "fixed",
+        "revolute",
+        "cylindrical",
+        "slider",
+        "ball",
+        "distance",
+        "parallel",
+        "perpendicular",
+        "angle",
+        "rack_pinion",
+        "screw",
+        "gears",
+        "belt",
+    ]
+    assert joint_details["required_parameters"]["fixed"] == []
+    assert joint_details["required_parameters"]["distance"] == ["distance_mm"]
+    assert joint_details["required_parameters"]["gears"] == [
+        "radius1_mm",
+        "radius2_mm",
+    ]
+    assert joint_details["limit_parameters"]["angle_limits_degrees"] == [
+        "revolute",
+        "cylindrical",
+    ]
+    assert "one rigid mechanism body" in description["api_details"]["component"][
+        "definition_rule"
+    ]
     assert description["solver_codes"]["-6"] == "no_grounded_component"
     assert description["capability_inventory"]["joint_graph"]["status"] == "supported"
     assert any(
@@ -1764,9 +2196,9 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert description["operation_selection"]["repeated_source_occurrences"] == (
         "api.instances"
     )
-    assert "component_catalog.search" in description["input_reference_contract"][
-        "purpose"
-    ]
+    assert (
+        "component_catalog.search" in description["input_reference_contract"]["purpose"]
+    )
     assert (
         "document_path"
         in description["input_reference_contract"]["schema"]["properties"]
@@ -1943,10 +2375,7 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert verification.properties["requirements"][0]["first"] is base
     assert verification.properties["requirements"][0]["minimum_mm"] == 0.25
     assert allowed_contact.properties["contacts"][0]["policy"] == "allowed"
-    assert (
-        allowed_contact.properties["contacts"][0]["first_interface"]
-        == "MatingFace"
-    )
+    assert allowed_contact.properties["contacts"][0]["first_interface"] == "MatingFace"
     assert drive.arguments == (hinge,)
     assert drive.properties["motion_type"] == "angular"
     assert simulation.arguments == (model,)
@@ -2729,10 +3158,13 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     difference = api.difference(raw, transformed, label="Subtracted")
     intersection = api.intersection(raw, transformed, label="Shared")
     for boolean in (union, difference, intersection):
-        assert validate_mesh_definition(
-            boolean,
-            require_domain_value=True,
-        ) == boolean.to_payload()
+        assert (
+            validate_mesh_definition(
+                boolean,
+                require_domain_value=True,
+            )
+            == boolean.to_payload()
+        )
         assert len(boolean.arguments) == 2
     assert union.properties["linear_deflection"] == 0.05
     assert union.properties["angular_deflection_degrees"] == 20.0
@@ -2787,10 +3219,13 @@ def test_mesh_api_is_explicit_bounded_and_generated_from_runtime() -> None:
     )
     for conversion in (meshed, recovered):
         assert conversion.domain == "mesh"
-        assert validate_meshpart_definition(
-            conversion,
-            definition_domain="mesh",
-        ) == conversion.to_payload()
+        assert (
+            validate_meshpart_definition(
+                conversion,
+                definition_domain="mesh",
+            )
+            == conversion.to_payload()
+        )
     with pytest.raises(
         ValueError,
         match=r"api\.transform.*publish.*api\.from_object",
@@ -2860,15 +3295,18 @@ def test_mesh_api_rejects_malformed_or_unbounded_operations() -> None:
         api.transform(raw, rotation=[0, 0, 0, 0])
     for operation in ("union", "difference", "intersection"):
         identical = getattr(api, operation)(raw, raw)
-        assert validate_mesh_definition(
-            identical,
-            require_domain_value=True,
-        ) == identical.to_payload()
+        assert (
+            validate_mesh_definition(
+                identical,
+                require_domain_value=True,
+            )
+            == identical.to_payload()
+        )
     with pytest.raises(ValueError, match=r"linear_deflection.*greater than 0"):
-        api.difference(raw, api.transform(raw, translation=[1, 0, 0]), linear_deflection=0)
-    with pytest.raises(
-        ValueError, match=r"angular_deflection_degrees.*at most 180"
-    ):
+        api.difference(
+            raw, api.transform(raw, translation=[1, 0, 0]), linear_deflection=0
+        )
+    with pytest.raises(ValueError, match=r"angular_deflection_degrees.*at most 180"):
         api.intersection(
             raw,
             api.transform(raw, translation=[1, 0, 0]),
@@ -3499,13 +3937,9 @@ def test_generic_publication_accepts_non_assembly_and_cleans_failed_creations(
 
     monkeypatch.setattr(publication, "_surface_still_matches", lambda *_args: None)
     monkeypatch.setattr(publication, "_objects_by_output", lambda *_args: {})
-    monkeypatch.setattr(
-        publication, "_retired_program_objects", lambda *_args: []
-    )
+    monkeypatch.setattr(publication, "_retired_program_objects", lambda *_args: [])
     monkeypatch.setattr(publication, "_program_objects", lambda *_args: [])
-    monkeypatch.setattr(
-        publication, "_preflight_output_updates", lambda *_args: []
-    )
+    monkeypatch.setattr(publication, "_preflight_output_updates", lambda *_args: [])
     monkeypatch.setattr(
         publication, "_refresh_external_consumers", lambda *_args, **_kwargs: {}
     )
@@ -4776,7 +5210,9 @@ def test_dependency_invalidation_ignores_group_recompute_notification() -> None:
     class Source:
         @property
         def InList(self):
-            raise AssertionError("A derived group recompute must not inspect dependents")
+            raise AssertionError(
+                "A derived group recompute must not inspect dependents"
+            )
 
     assert publication.mark_programs_stale_from_source(Source(), "_GroupTouched") == []
 

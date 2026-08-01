@@ -286,6 +286,14 @@ def run(
         JointObject.ensureViewProviderJoint(joint_obj)
         joint_obj.Label = clean_label
         _apply_joint_parameters(joint_obj, kind, joint)
+        for index, parsed in enumerate(parsed_refs, start=1):
+            frame = parsed.get("interface_frame")
+            if frame is not None:
+                setattr(
+                    joint_obj,
+                    f"Offset{index}",
+                    reference_contracts.connector_frame_placement(frame),
+                )
         joint_obj.Proxy.setJointConnectors(joint_obj, refs)
         managed_references = [
             {
@@ -470,7 +478,11 @@ def _resolve_reference(
         geometry_type = (
             geometry_item.get("geometry_type")
             if geometry
-            else "component_origin"
+            else (
+                "component_frame"
+                if dict(interface.get("selection") or {}).get("type") == "frame"
+                else "component_origin"
+            )
         )
         return {
             "ok": True,
@@ -488,6 +500,12 @@ def _resolve_reference(
             ),
             "geometry_type": geometry_type,
             "geometry": geometry_item,
+            "interface_frame": (
+                dict(interface["connector_frame"])
+                if dict(interface.get("selection") or {}).get("type") == "frame"
+                and isinstance(interface.get("connector_frame"), dict)
+                else None
+            ),
         }
     if mode == "component_origin":
         return {
@@ -593,6 +611,19 @@ def rebind_scripted_reference(
         element = item["element"]
         refs.append([component, [element, element]])
     try:
+        import FreeCAD as App
+
+        for index, item in enumerate(resolved, start=1):
+            frame = item.get("interface_frame")
+            setattr(
+                joint_obj,
+                f"Offset{index}",
+                (
+                    reference_contracts.connector_frame_placement(frame)
+                    if frame is not None
+                    else App.Placement()
+                ),
+            )
         joint_obj.Proxy.setJointConnectors(joint_obj, refs)
         joint_obj.touch()
         assembly.touch()
@@ -625,7 +656,15 @@ def rebind_scripted_reference(
 
 def _joint_compatibility(kind: str, references: list[dict[str, Any]]) -> dict[str, Any]:
     geometry = [str(reference.get("geometry_type") or "") for reference in references]
-    axis_capable = {"line", "circle", "plane", "cylinder", "cone", "component_origin"}
+    axis_capable = {
+        "line",
+        "circle",
+        "plane",
+        "cylinder",
+        "cone",
+        "component_origin",
+        "component_frame",
+    }
     rotary = {"circle", "cylinder", "cone"}
     linear = {"line", "plane"}
     orientation_capable = axis_capable
@@ -636,7 +675,10 @@ def _joint_compatibility(kind: str, references: list[dict[str, Any]]) -> dict[st
         ok = all(value in axis_capable for value in geometry)
     elif kind == "slider":
         criteria = "both connectors must define linear axes or plane normals"
-        ok = all(value in linear | {"component_origin"} for value in geometry)
+        ok = all(
+            value in linear | {"component_origin", "component_frame"}
+            for value in geometry
+        )
     elif kind == "rack_pinion":
         criteria = "one linear connector and one circular/cylindrical connector"
         ok = any(value in linear for value in geometry) and any(value in rotary for value in geometry)

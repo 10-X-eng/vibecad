@@ -1875,9 +1875,18 @@ def _prepare_timeline_deletion(
             "reveal_identities": [],
         }
 
-    import FreeCADGui
+    try:
+        import FreeCAD as App
+    except ImportError:
+        App = None
 
-    planner = getattr(FreeCADGui, "timelineOperationDeletionPlan", None)
+    planner = getattr(App, "timelineOperationDeletionPlan", None)
+    if not callable(planner):
+        # Compatibility with builds that exposed the App-owned planner only
+        # through the GUI module.
+        import FreeCADGui
+
+        planner = getattr(FreeCADGui, "timelineOperationDeletionPlan", None)
     if not callable(planner):
         raise RuntimeError(
             "The native document-history deletion planner is unavailable."
@@ -4575,7 +4584,12 @@ def _set_simple_view_state(view: Any, state: Mapping[str, Any]) -> None:
     for name in _MATERIAL_SIMPLE_VIEW_PROPERTIES:
         if name not in state:
             continue
-        value = state[name]
+        desired = state[name]
+        if hasattr(view, name):
+            current = _material_json_view_value(getattr(view, name))
+            if _material_state_equal(current, desired):
+                continue
+        value = desired
         if name in {"LineColor", "PointColor"}:
             value = tuple(float(channel) for channel in list(value))
         setattr(view, name, value)
@@ -4617,12 +4631,52 @@ def _capture_complete_view_state(target: Any) -> dict[str, Any] | None:
     }
 
 
+def _view_state_values(
+    state: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    return {
+        "shape_appearance": state.get("shape_appearance"),
+        "simple": dict(state.get("simple") or {}),
+    }
+
+
+def _restore_view_state_values(
+    target: Any,
+    state: Mapping[str, Any] | None,
+) -> None:
+    if state is None:
+        return
+    view = getattr(target, "ViewObject", None)
+    if view is None:
+        raise RuntimeError(
+            f"Presentation target {getattr(target, 'Name', '')!r} has no view provider."
+        )
+    shape_appearance = state.get("shape_appearance")
+    if shape_appearance is not None and (
+        not hasattr(view, "ShapeAppearance")
+        or _shape_appearance_payload(view.ShapeAppearance)
+        != _shape_appearance_payload(shape_appearance)
+    ):
+        view.ShapeAppearance = list(shape_appearance)
+    _set_simple_view_state(view, dict(state.get("simple") or {}))
+
+
 def _restore_complete_view_state(state: Mapping[str, Any] | None) -> None:
     if state is None:
         return
     view = state["view"]
+    target = getattr(view, "Object", None)
+    if target is not None:
+        _restore_view_state_values(target, state)
+        return
     shape_appearance = state.get("shape_appearance")
-    if shape_appearance is not None:
+    if shape_appearance is not None and (
+        not hasattr(view, "ShapeAppearance")
+        or _shape_appearance_payload(view.ShapeAppearance)
+        != _shape_appearance_payload(shape_appearance)
+    ):
         view.ShapeAppearance = list(shape_appearance)
     _set_simple_view_state(view, dict(state.get("simple") or {}))
 
@@ -4769,23 +4823,53 @@ def _restore_material_baseline(
     _set_simple_view_state(view, dict(ownership.get("baseline_simple") or {}))
 
 
-def _material_target_snapshot(target: Any) -> dict[str, Any]:
+def _material_target_snapshot(
+    target: Any,
+    *,
+    required_after_abort: bool = True,
+) -> dict[str, Any]:
+    document = getattr(target, "Document", None)
+    if document is None:
+        raise RuntimeError(
+            f"Material target {getattr(target, 'Name', '')!r} has no owning document."
+        )
     return {
-        "target": target,
+        "document": document,
+        "identity": _deletion_object_identity(
+            target,
+            context="A material presentation target",
+        ),
+        "type_id": str(getattr(target, "TypeId", "") or ""),
+        "required_after_abort": bool(required_after_abort),
         "material": getattr(target, "ShapeMaterial", None),
-        "view": _capture_complete_view_state(target),
+        "view": _view_state_values(_capture_complete_view_state(target)),
     }
 
 
 def _restore_material_target_snapshots(states: list[dict[str, Any]]) -> None:
     failures: list[str] = []
+    resolved: list[tuple[dict[str, Any], Any]] = []
     for state in states:
-        target = state["target"]
+        identity = tuple(state["identity"])
+        target = _resolve_timeline_identity(state["document"], identity)
+        if target is None:
+            if state.get("required_after_abort", True):
+                failures.append(
+                    f"{identity[0]}: native object identity was not restored"
+                )
+            continue
+        resolved.append((state, target))
+    # Restore implementation objects before App::Links. Link view properties
+    # proxy their target and should normally become equal without being set.
+    resolved.sort(key=lambda item: item[0].get("type_id") == "App::Link")
+    for state, target in resolved:
         try:
             material = state.get("material")
             if material is not None and hasattr(target, "ShapeMaterial"):
-                target.ShapeMaterial = material
-            _restore_complete_view_state(state.get("view"))
+                current = getattr(target, "ShapeMaterial")
+                if current != material:
+                    target.ShapeMaterial = material
+            _restore_view_state_values(target, state.get("view"))
         except Exception as exc:
             failures.append(
                 f"{getattr(target, 'Name', '<target>')}: {type(exc).__name__}: {exc}"
@@ -12681,7 +12765,8 @@ def _partdesign_interface_table(
     validated: Mapping[str, Any],
     publications: Mapping[str, Any],
 ) -> dict[str, Any]:
-    table: dict[str, Any] = {}
+    outputs: dict[str, dict[str, Any]] = {}
+    declarations: dict[str, list[dict[str, Any]]] = {}
     for item in list(validated.get("outputs") or []):
         output_name = str(item["name"])
         published = publications[output_name]
@@ -12690,18 +12775,14 @@ def _partdesign_interface_table(
             raise RuntimeError(
                 f"Part Design output {output_name!r} has no interface evidence."
             )
+        output_interfaces: dict[str, Any] = {}
         for raw_name, raw in dict(data.get("interfaces") or {}).items():
             name = str(raw_name)
-            if name in table:
-                raise RuntimeError(
-                    f"Part Design semantic interface {name!r} is declared by more "
-                    "than one output."
-                )
             if not isinstance(raw, Mapping):
                 raise RuntimeError(
                     f"Part Design semantic interface {name!r} is malformed."
                 )
-            table[name] = {
+            definition = {
                 "output": output_name,
                 "selection": dict(raw.get("selection") or {}),
                 **(
@@ -12713,8 +12794,27 @@ def _partdesign_interface_table(
                     "object": str(published.Name),
                     "subelements": list(raw.get("subelements") or []),
                     "geometry": list(raw.get("geometry") or []),
+                    **(
+                        {"connector_frame": dict(raw["connector_frame"])}
+                        if isinstance(raw.get("connector_frame"), Mapping)
+                        else {}
+                    ),
                 },
             }
+            output_interfaces[name] = definition
+            declarations.setdefault(name, []).append(definition)
+        outputs[output_name] = output_interfaces
+    table: dict[str, Any] = {
+        reference_contracts.INTERFACE_TABLE_SCHEMA_KEY: (
+            reference_contracts.INTERFACE_TABLE_SCHEMA
+        ),
+        reference_contracts.INTERFACE_TABLE_OUTPUTS_KEY: outputs,
+    }
+    # Preserve the original flat lookup for names that remain program-unique.
+    # Output-local names that are reused intentionally live only in _outputs.
+    for name, definitions in declarations.items():
+        if len(definitions) == 1:
+            table[name] = definitions[0]
     return table
 
 
@@ -14087,7 +14187,7 @@ def _partdesign_implementation_bodies(
     doc: Any,
     program_id: str,
 ) -> dict[str, Any]:
-    bodies: dict[str, Any] = {}
+    claims: dict[str, list[Any]] = {}
     for obj in list(getattr(doc, "Objects", []) or []):
         if (
             str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body"
@@ -14110,12 +14210,69 @@ def _partdesign_implementation_bodies(
             raise RuntimeError(
                 f"Managed Part Design Body {obj.Name!r} has no output key."
             )
-        if key in bodies:
-            raise RuntimeError(
-                f"Multiple managed Part Design Bodies claim output {key!r}."
+        claims.setdefault(key, []).append(obj)
+    duplicates = {
+        key: values for key, values in claims.items() if len(values) > 1
+    }
+    if duplicates:
+        details = "; ".join(
+            f"{key!r}: {', '.join(repr(str(body.Name)) for body in bodies)}"
+            for key, bodies in sorted(duplicates.items())
+        )
+        raise RuntimeError(
+            "Legacy Part Design output ownership is ambiguous because no native "
+            f"Design History operation can choose the authoritative Body ({details})."
+        )
+    return {key: values[0] for key, values in claims.items()}
+
+
+def _repair_partdesign_implementation_body_claims(
+    doc: Any,
+    program_id: str,
+    authoritative: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Remove advisory ownership tags not backed by the native operation."""
+
+    repairs: list[dict[str, str]] = []
+    for obj in list(getattr(doc, "Objects", []) or []):
+        if (
+            str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body"
+            or scripted_publication.role_of(obj)
+            != scripted_publication.ROLE_IMPLEMENTATION
+            or str(
+                getattr(obj, scripted_publication.PROP_ENGINE, "") or ""
             )
-        bodies[key] = obj
-    return bodies
+            != "vibescript:partdesign"
+            or str(
+                getattr(obj, scripted_publication.PROP_MODEL_ID, "") or ""
+            )
+            != program_id
+        ):
+            continue
+        key = str(
+            getattr(obj, scripted_publication.PROP_OUTPUT_KEY, "") or ""
+        ).strip()
+        expected = authoritative.get(key)
+        if expected is obj:
+            continue
+        repairs.append(
+            {
+                "object_name": str(obj.Name),
+                "claimed_output": key,
+                "authoritative_object": (
+                    str(expected.Name) if expected is not None else ""
+                ),
+            }
+        )
+        scripted_publication.tag_object(
+            obj,
+            role="",
+            engine="",
+            model_id="",
+            output_key="",
+            revision="",
+        )
+    return repairs
 
 
 def _partdesign_body_output(item: Mapping[str, Any]) -> bool:
@@ -14152,7 +14309,11 @@ def _publish_partdesign_design_candidate(
         else {}
     )
     operation = _partdesign_design_program_operation(doc, program_id)
-    legacy_bodies = _partdesign_implementation_bodies(doc, program_id)
+    legacy_bodies = (
+        _partdesign_implementation_bodies(doc, program_id)
+        if operation is None
+        else {}
+    )
 
     previous_presentation = {
         name: _preflight_partdesign_presentation(obj)
@@ -14293,6 +14454,7 @@ def _publish_partdesign_design_candidate(
     removed: list[str] = []
     removed_implementation: list[str] = []
     created_bodies: list[str] = []
+    ownership_repairs: list[dict[str, str]] = []
     try:
         if hasattr(doc, "openTransaction"):
             doc.openTransaction(
@@ -14433,7 +14595,10 @@ def _publish_partdesign_design_candidate(
                         continue
                     rollback_targets[id(rollback_target)] = rollback_target
                     rollback_states.append(
-                        _material_target_snapshot(rollback_target)
+                        _material_target_snapshot(
+                            rollback_target,
+                            required_after_abort=False,
+                        )
                     )
             else:
                 _restore_partdesign_presentation_baseline(
@@ -14476,6 +14641,12 @@ def _publish_partdesign_design_candidate(
                 # operation but intentionally have no physical Body identity.
                 _set_view_visibility(published, True)
 
+        ownership_repairs = _repair_partdesign_implementation_body_claims(
+            doc,
+            program_id,
+            bodies_by_output,
+        )
+
         interface_table = _partdesign_interface_table(
             validated,
             publications,
@@ -14484,8 +14655,8 @@ def _publish_partdesign_design_candidate(
             doc,
             list(publications.values()),
             program_id,
-            set(previous_interfaces),
-            set(interface_table),
+            reference_contracts.interface_identities(previous_interfaces),
+            reference_contracts.interface_identities(interface_table),
             preflight=reference_preflight,
         )
         setattr(
@@ -14510,20 +14681,39 @@ def _publish_partdesign_design_candidate(
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
+        abort_error = None
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            try:
+                doc.abortTransaction()
+                transaction_open = False
+            except Exception as exc:
+                abort_error = exc
         rollback_error = None
         try:
             _restore_material_target_snapshots(rollback_states)
         except Exception as exc:
             rollback_error = exc
-        if transaction_open and hasattr(doc, "abortTransaction"):
-            try:
-                doc.abortTransaction()
-            except Exception:
-                pass
-        if rollback_error is not None:
+        if abort_error is not None or rollback_error is not None:
             raise RuntimeError(
                 f"{publication_error} Explicit Part Design presentation "
-                f"rollback failed: {rollback_error}"
+                "rollback failed: "
+                + "; ".join(
+                    message
+                    for message in (
+                        (
+                            f"transaction abort: {type(abort_error).__name__}: "
+                            f"{abort_error}"
+                            if abort_error is not None
+                            else ""
+                        ),
+                        (
+                            f"presentation restore: {rollback_error}"
+                            if rollback_error is not None
+                            else ""
+                        ),
+                    )
+                    if message
+                )
             ) from publication_error
         raise
 
@@ -14585,6 +14775,7 @@ def _publish_partdesign_design_candidate(
             "body_objects": body_objects,
             "created_objects": created_bodies,
             "retired_objects": removed_implementation,
+            "ownership_repairs": ownership_repairs,
             "artifact_sha256": "",
         },
         "downstream_references": downstream,
@@ -14796,7 +14987,10 @@ def _publish_partdesign_legacy_candidate(
                         continue
                     rollback_targets[id(rollback_target)] = rollback_target
                     rollback_states.append(
-                        _material_target_snapshot(rollback_target)
+                        _material_target_snapshot(
+                            rollback_target,
+                            required_after_abort=False,
+                        )
                     )
             else:
                 _restore_partdesign_presentation_baseline(
@@ -14853,8 +15047,8 @@ def _publish_partdesign_legacy_candidate(
             doc,
             list(publications.values()),
             program_id,
-            set(previous_interfaces),
-            set(interface_table),
+            reference_contracts.interface_identities(previous_interfaces),
+            reference_contracts.interface_identities(interface_table),
             preflight=reference_preflight,
         )
         setattr(
@@ -14884,20 +15078,39 @@ def _publish_partdesign_legacy_candidate(
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
+        abort_error = None
+        if transaction_open and hasattr(doc, "abortTransaction"):
+            try:
+                doc.abortTransaction()
+                transaction_open = False
+            except Exception as exc:
+                abort_error = exc
         rollback_error = None
         try:
             _restore_material_target_snapshots(rollback_states)
         except Exception as exc:
             rollback_error = exc
-        if transaction_open and hasattr(doc, "abortTransaction"):
-            try:
-                doc.abortTransaction()
-            except Exception:
-                pass
-        if rollback_error is not None:
+        if abort_error is not None or rollback_error is not None:
             raise RuntimeError(
                 f"{publication_error} Explicit Part Design presentation rollback "
-                f"failed: {rollback_error}"
+                "failed: "
+                + "; ".join(
+                    message
+                    for message in (
+                        (
+                            f"transaction abort: {type(abort_error).__name__}: "
+                            f"{abort_error}"
+                            if abort_error is not None
+                            else ""
+                        ),
+                        (
+                            f"presentation restore: {rollback_error}"
+                            if rollback_error is not None
+                            else ""
+                        ),
+                    )
+                    if message
+                )
             ) from publication_error
         raise
     live_outputs: dict[str, Any] = {}
@@ -15113,7 +15326,7 @@ def publish_candidate(
     removed: list[str] = []
     assembly_dependency_anchor: Any | None = None
     assembly_fastener_sources: dict[str, Any] = {}
-    assembly_replaced_fastener_sources: list[Any] = []
+    assembly_replaced_fastener_source_identities: list[tuple[str, int]] = []
     robot_trajectory_swaps: list[dict[str, Any]] = []
     retired_robot_trajectories: list[dict[str, Any]] = []
     pending_output_publications: dict[int, tuple[Any, str]] = {}
@@ -15270,8 +15483,15 @@ def publish_candidate(
                     ) = _prepare_assembly_fastener_sources(doc, prepared, [item])
                     assembly_fastener_sources.update(prepared_fastener_sources)
                     created.extend(fastener_sources_created)
-                    assembly_replaced_fastener_sources.extend(
-                        replaced_fastener_sources
+                    assembly_replaced_fastener_source_identities.extend(
+                        _deletion_object_identity(
+                            source,
+                            context=(
+                                f"Assembly occurrence {output_name!r} replaced "
+                                "fastener resource"
+                            ),
+                        )
+                        for source in replaced_fastener_sources
                     )
                 obj = ensure_output_object(item, assembly)
             else:
@@ -15670,20 +15890,18 @@ def publish_candidate(
                 prepared,
                 assembly_item,
             )
-        unreconciled_fastener_sources = [
-            source
-            for source in assembly_replaced_fastener_sources
-            if getattr(source, "Document", None) is doc
-            and bool(str(getattr(source, "Name", "") or ""))
-            and doc.getObject(str(source.Name)) is source
+        unreconciled_fastener_source_identities = [
+            identity
+            for identity in assembly_replaced_fastener_source_identities
+            if _resolve_timeline_identity(doc, identity) is not None
         ]
-        if unreconciled_fastener_sources:
+        if unreconciled_fastener_source_identities:
             raise RuntimeError(
                 "Replaced Assembly fastener definitions were not released by "
                 "their exact occurrence resource reconciliations: "
                 + ", ".join(
-                    str(source.Name)
-                    for source in unreconciled_fastener_sources
+                    identity[0]
+                    for identity in unreconciled_fastener_source_identities
                 )
             )
         downstream_refresh = _refresh_external_consumers(

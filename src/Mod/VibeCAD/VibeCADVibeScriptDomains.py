@@ -76,9 +76,7 @@ PROP_PROGRAM_EDITOR_DRAFT = "VibeCADVibeScriptEditorDraft"
 
 DOCUMENT_PROGRAM_SCHEMA = "vibecad-vibescript-document-program-v1"
 EDITOR_DRAFT_SCHEMA = "vibecad-vibescript-editor-draft-v1"
-MAX_DOCUMENT_PROGRAM_BYTES = (
-    MAX_SOURCE_BYTES + (2 * MAX_INPUT_BYTES) + (256 * 1024)
-)
+MAX_DOCUMENT_PROGRAM_BYTES = MAX_SOURCE_BYTES + (2 * MAX_INPUT_BYTES) + (256 * 1024)
 
 LIFECYCLE_OPERATIONS: tuple[str, ...] = (
     "describe_api",
@@ -93,8 +91,12 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
 UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_source",
     "read_api",
+    "create_program",
     "build_program",
     "edit_source",
+    "set_inputs",
+    "reconfigure_program",
+    "delete_program",
 )
 
 # These are discovery groups, not separate APIs.  They let an agent request the
@@ -111,28 +113,61 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
         (
             "sketches",
             (
-                "point", "line", "arc", "circle", "ellipse", "bspline",
-                "external_geometry", "constraint", "sketch",
+                "point",
+                "line",
+                "arc",
+                "circle",
+                "ellipse",
+                "bspline",
+                "external_geometry",
+                "constraint",
+                "sketch",
             ),
         ),
         (
             "spatial_geometry",
             (
-                "line_3d", "arc_3d", "circle_3d", "ellipse_3d", "bezier_3d",
-                "bspline_3d", "nurbs_curve", "helix_curve", "wire", "face",
-                "shell", "solid", "compound", "subshape",
+                "line_3d",
+                "arc_3d",
+                "circle_3d",
+                "ellipse_3d",
+                "bezier_3d",
+                "bspline_3d",
+                "nurbs_curve",
+                "helix_curve",
+                "wire",
+                "face",
+                "shell",
+                "solid",
+                "compound",
+                "subshape",
             ),
         ),
         (
             "features",
             (
-                "extrude", "revolve", "loft", "sweep", "helix", "boolean",
-                "section", "general_fuse", "slice", "ruled_surface", "filled_surface",
+                "extrude",
+                "revolve",
+                "loft",
+                "sweep",
+                "helix",
+                "boolean",
+                "section",
+                "general_fuse",
+                "slice",
+                "ruled_surface",
+                "filled_surface",
             ),
         ),
         (
             "patterns_and_transforms",
-            ("polar_pattern", "linear_pattern", "multi_transform", "mirror", "transform"),
+            (
+                "polar_pattern",
+                "linear_pattern",
+                "multi_transform",
+                "mirror",
+                "transform",
+            ),
         ),
         (
             "dressups_and_holes",
@@ -141,8 +176,15 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
         (
             "repair",
             (
-                "defeature", "to_nurbs", "reverse", "sew", "repair", "offset",
-                "offset2d", "project", "refine",
+                "defeature",
+                "to_nurbs",
+                "reverse",
+                "sew",
+                "repair",
+                "offset",
+                "offset2d",
+                "project",
+                "refine",
             ),
         ),
         ("verification", ("find_subelements", "measure")),
@@ -158,8 +200,16 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
         (
             "geometry",
             (
-                "point", "line", "arc", "circle", "ellipse", "elliptic_arc",
-                "hyperbolic_arc", "parabolic_arc", "bspline", "external_geometry",
+                "point",
+                "line",
+                "arc",
+                "circle",
+                "ellipse",
+                "elliptic_arc",
+                "hyperbolic_arc",
+                "parabolic_arc",
+                "bspline",
+                "external_geometry",
             ),
         ),
         ("constraints", ("constraint",)),
@@ -184,8 +234,18 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
         (
             "surfaces",
             (
-                "face", "surface", "boundary", "curve_constraint", "face_constraint",
-                "point_constraint", "fill", "blend", "extend", "loft", "thicken", "shell",
+                "face",
+                "surface",
+                "boundary",
+                "curve_constraint",
+                "face_constraint",
+                "point_constraint",
+                "fill",
+                "blend",
+                "extend",
+                "loft",
+                "thicken",
+                "shell",
             ),
         ),
     ),
@@ -204,7 +264,10 @@ _API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
         ("verification", ("simulate",)),
     ),
     "fem": (
-        ("setup", ("analysis", "solver", "material", "constraint", "load_case", "mesh")),
+        (
+            "setup",
+            ("analysis", "solver", "material", "constraint", "load_case", "mesh"),
+        ),
         ("solve", ("solve",)),
     ),
     "cam": (
@@ -241,6 +304,7 @@ def api_groups(pack: "VibeScriptWorkbenchPack") -> dict[str, list[str]]:
     if remaining:
         result["other"] = remaining
     return result
+
 
 PROVIDER_DOMAIN_OPERATIONS: tuple[str, ...] = (
     "create_program",
@@ -308,6 +372,14 @@ class VibeScriptWorkbenchPack:
         )
 
     @property
+    def provider_tool_names(self) -> tuple[str, ...]:
+        """Canonical workbench-neutral lifecycle exposed to the operating model."""
+
+        return tuple(
+            f"vibescript.{operation}" for operation in UNIVERSAL_SOURCE_OPERATIONS
+        )
+
+    @property
     def surface_id(self) -> str:
         return f"vibescript:{self.domain}:v2"
 
@@ -321,6 +393,7 @@ class VibeScriptWorkbenchPack:
             "output_types": list(self.output_types),
             "api_exports": list(self.api_exports),
             "tool_names": list(self.tool_names),
+            "provider_tool_names": list(self.provider_tool_names),
             "available": bool(available),
             "unavailable_reason": str(reason or ""),
             "production_ready": self.production_ready,
@@ -965,12 +1038,8 @@ def capture_editable_sources_snapshot(service: Any, domain: str) -> dict[str, An
         "workbench": pack.workbench,
         "surface_id": pack.surface_id,
         "project_root": str(scope.get("root") or ""),
-        "document_name": str(getattr(doc, "Name", "") or "")
-        if doc is not None
-        else "",
-        "document_uid": str(getattr(doc, "Uid", "") or "")
-        if doc is not None
-        else "",
+        "document_name": str(getattr(doc, "Name", "") or "") if doc is not None else "",
+        "document_uid": str(getattr(doc, "Uid", "") or "") if doc is not None else "",
         "native_program_count": len(native_programs),
         "native_programs": native_programs[:MAX_DOMAIN_CONTEXT_PROGRAMS],
     }
@@ -1006,8 +1075,7 @@ def _editable_source_outputs(program: Mapping[str, Any]) -> list[dict[str, Any]]
             ),
         }
         for output in candidates
-        if str(output.get("name") or "")
-        and str(output.get("object_name") or "")
+        if str(output.get("name") or "") and str(output.get("object_name") or "")
     ]
 
 
@@ -1084,11 +1152,15 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
         source_id = str(program.get("program_id") or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{32}", source_id):
             continue
-        revision = str(
-            program.get("working_revision")
-            or program.get("accepted_revision")
-            or ""
-        ).strip().lower()[:128]
+        revision = (
+            str(
+                program.get("working_revision")
+                or program.get("accepted_revision")
+                or ""
+            )
+            .strip()
+            .lower()[:128]
+        )
         source = {
             "source_id": source_id,
             "source_kind": "vibescript_program",
@@ -1138,8 +1210,12 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             },
             "read_api_group_arguments": {"groups": ["one_available_group"]},
             "available_api_groups": list(grouped_api),
+            "create_program": "vibescript.create_program",
             "build_program": "vibescript.build_program",
             "edit_source": "vibescript.edit_source",
+            "set_inputs": "vibescript.set_inputs",
+            "reconfigure_program": "vibescript.reconfigure_program",
+            "delete_program": "vibescript.delete_program",
             "edit_source_arguments": [
                 "source_id",
                 "expected_revision",
@@ -1217,13 +1293,11 @@ def _assembly_context_metadata(obj: Any) -> dict[str, Any]:
         }
     output_key = str(getattr(published, publication.PROP_OUTPUT_KEY, "") or "")
     interfaces = []
-    for name in sorted(table)[:64]:
-        definition = table.get(name)
-        if (
-            not isinstance(definition, dict)
-            or str(definition.get("output") or "") != output_key
-        ):
-            continue
+    definitions = reference_contracts.interface_definitions_for_output(
+        table,
+        output_key,
+    )
+    for name, definition in sorted(definitions.items())[:64]:
         resolved = definition.get("resolved")
         if not isinstance(resolved, dict):
             continue
@@ -1240,7 +1314,7 @@ def _assembly_context_metadata(obj: Any) -> dict[str, Any]:
             }
         )
     result["published_interfaces"] = interfaces
-    result["interfaces_truncated"] = len(table) > 64
+    result["interfaces_truncated"] = len(definitions) > 64
     return result
 
 
@@ -3139,7 +3213,6 @@ def domain_context_snapshot(service: Any, domain: str) -> dict[str, Any]:
     }
 
 
-
 def domain_program_index_snapshot(service: Any, domain: str) -> dict[str, Any]:
     """Capture only the identities needed by the human program editor.
 
@@ -3168,10 +3241,14 @@ def domain_program_index_snapshot(service: Any, domain: str) -> dict[str, Any]:
         or resolution.domain != clean_domain
         or not resolution.available
     ):
-        raise RuntimeError(f"The live modeling surface does not authorize domain {clean_domain!r}.")
+        raise RuntimeError(
+            f"The live modeling surface does not authorize domain {clean_domain!r}."
+        )
     scope = service.project_scope_snapshot()
     doc = service._active_document()
-    native_programs = capture_domain_programs(doc, clean_domain) if doc is not None else []
+    native_programs = (
+        capture_domain_programs(doc, clean_domain) if doc is not None else []
+    )
     return {
         "_vibecad_deferred_vibescript_program_index": True,
         "domain": clean_domain,
@@ -4724,8 +4801,7 @@ def _infer_input_value_schema(value: Any) -> dict[str, Any]:
         }
     if isinstance(value, dict):
         properties = {
-            str(name): _infer_input_value_schema(item)
-            for name, item in value.items()
+            str(name): _infer_input_value_schema(item) for name, item in value.items()
         }
         schema = {
             "type": "object",
@@ -4771,9 +4847,7 @@ def synchronize_input_schema(
                 and property_schema.get("x-vibecad-reference") is True
                 and "document_path" in value
             ):
-                reference_properties = dict(
-                    property_schema.get("properties") or {}
-                )
+                reference_properties = dict(property_schema.get("properties") or {})
                 reference_properties.setdefault(
                     "document_path",
                     {"type": "string"},
@@ -4873,7 +4947,8 @@ def _validate_input_schema_node(schema: Any, *, path: str, depth: int = 0) -> No
             if (
                 not isinstance(properties, dict)
                 or not {"document_uid", "object_name"} <= property_names
-                or property_names - {
+                or property_names
+                - {
                     "document_uid",
                     "object_name",
                     "document_path",
@@ -4896,9 +4971,7 @@ def _validate_input_schema_node(schema: Any, *, path: str, depth: int = 0) -> No
                 or properties[name].get("type") != "string"
                 for name in property_names
             ):
-                raise ValueError(
-                    f"{path} stable reference fields must be strings."
-                )
+                raise ValueError(f"{path} stable reference fields must be strings.")
         elif schema.get("x-vibecad-point-artifact") is True:
             properties = schema.get("properties")
             if not isinstance(properties, dict) or set(properties) != {"artifact_id"}:
@@ -5252,7 +5325,9 @@ def decode_document_program_contract(
     if value.get("schema") != DOCUMENT_PROGRAM_SCHEMA:
         raise ValueError("Unsupported portable VibeScript program schema.")
     if value.get("program_schema") != PROGRAM_SCHEMA:
-        raise ValueError("The portable program does not contain a VibeScript v2 contract.")
+        raise ValueError(
+            "The portable program does not contain a VibeScript v2 contract."
+        )
     program_id = str(value.get("program_id") or "").strip().lower()
     revision = str(value.get("revision") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{32}", program_id):
@@ -5266,7 +5341,9 @@ def decode_document_program_contract(
     if str(value.get("domain") or "") != pack.domain:
         raise ValueError("The portable VibeScript program belongs to another domain.")
     if str(value.get("workbench") or "") != pack.workbench:
-        raise ValueError("The portable VibeScript program belongs to another workbench.")
+        raise ValueError(
+            "The portable VibeScript program belongs to another workbench."
+        )
     label = str(value.get("label") or "").strip()
     if not label or len(label) > 120:
         raise ValueError("The portable VibeScript program label is invalid.")
@@ -5511,6 +5588,29 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         minLength=1,
         maxLength=MAX_SOURCE_BYTES,
     )
+    input_schema = _property_schema(
+        "Complete bounded JSON Schema for the program inputs.",
+        type="object",
+    )
+    inputs = _property_schema(
+        "Values satisfying input_schema.",
+        type="object",
+    )
+    outputs = _property_schema(
+        "Stable named outputs accepted by the active workbench.",
+        type="array",
+        minItems=1,
+        maxItems=MAX_OUTPUTS,
+        items={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "pattern": _IDENTIFIER.pattern},
+                "type": {"type": "string", "pattern": _IDENTIFIER.pattern},
+            },
+            "required": ["name", "type"],
+            "additionalProperties": False,
+        },
+    )
     return (
         {
             "name": "vibescript.read_source",
@@ -5589,6 +5689,40 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "edit_modes": ["none", "sketch"],
         },
         {
+            "name": "vibescript.create_program",
+            "description": (
+                "Create and publish one new VibeScript source in the active workbench. "
+                "Use only when no editable_sources entry owns the requested output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "program_name": _property_schema(
+                        "Human-readable stable program label.",
+                        type="string",
+                        minLength=1,
+                        maxLength=120,
+                    ),
+                    "source": source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": outputs,
+                },
+                "required": [
+                    "program_name",
+                    "source",
+                    "input_schema",
+                    "inputs",
+                    "expected_outputs",
+                ],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
             "name": "vibescript.build_program",
             "description": (
                 "Build and publish the saved source unchanged. Use after a failed, "
@@ -5624,6 +5758,87 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "source": source,
                 },
                 "required": ["source_id", "expected_revision", "source"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.set_inputs",
+            "description": (
+                "Change only input values for one saved source, then rebuild it. "
+                "Source and output declarations remain unchanged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_id": source_id,
+                    "expected_revision": revision,
+                    "patch": _property_schema(
+                        "RFC 7396 input merge patch; null removes an optional input.",
+                        type="object",
+                        minProperties=1,
+                    ),
+                },
+                "required": ["source_id", "expected_revision", "patch"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.reconfigure_program",
+            "description": (
+                "Replace one source, input schema, inputs, and output declarations "
+                "together when its contract must change."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_id": source_id,
+                    "expected_revision": revision,
+                    "source": source,
+                    "input_schema": input_schema,
+                    "inputs": inputs,
+                    "expected_outputs": outputs,
+                },
+                "required": [
+                    "source_id",
+                    "expected_revision",
+                    "source",
+                    "input_schema",
+                    "inputs",
+                    "expected_outputs",
+                ],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.delete_program",
+            "description": (
+                "Delete one guarded source, its live outputs, and persisted artifacts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_id": source_id,
+                    "expected_revision": revision,
+                    "reason": _property_schema(
+                        "Why the source and outputs should be removed.",
+                        type="string",
+                        minLength=1,
+                        maxLength=500,
+                    ),
+                },
+                "required": ["source_id", "expected_revision", "reason"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",

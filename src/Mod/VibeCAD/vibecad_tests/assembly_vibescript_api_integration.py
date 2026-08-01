@@ -835,6 +835,43 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
                             "output_key": "Arm",
                             "subelements": ["Face1"],
                             "geometry": [{"geometry_type": "plane"}],
+                        },
+                        "RotationAxis": {
+                            "model_id": "semantic-model",
+                            "publication_name": "Arm",
+                            "output_key": "Arm",
+                            "selection": {
+                                "type": "frame",
+                                "origin": [2.0, 3.0, 4.0],
+                                "axis_direction": [1.0, 0.0, 0.0],
+                                "x_direction": [0.0, 0.0, 1.0],
+                            },
+                            "subelements": [],
+                            "geometry": [],
+                            "connector_frame": {
+                                "schema": "vibecad-connector-frame-v1",
+                                "origin_mm": [2.0, 3.0, 4.0],
+                                "x_direction": [0.0, 0.0, 1.0],
+                                "axis_direction": [1.0, 0.0, 0.0],
+                                "matrix": [
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    2.0,
+                                    0.0,
+                                    -1.0,
+                                    0.0,
+                                    3.0,
+                                    1.0,
+                                    0.0,
+                                    0.0,
+                                    4.0,
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                ],
+                            },
                         }
                     },
                 }
@@ -886,7 +923,10 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
             except AssemblyCandidateError as exc:
                 assert exc.details["stage"] == "connector_selection"
                 assert exc.details["component_output"] == "Arm"
-                assert exc.details["available_interfaces"] == ["HingeMount"]
+                assert exc.details["available_interfaces"] == [
+                    "HingeMount",
+                    "RotationAxis",
+                ]
                 assert "published_interface" in str(exc)
             else:
                 raise AssertionError(
@@ -904,7 +944,10 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
             validate_and_solve_assembly(document, result, outputs)
         except AssemblyCandidateError as exc:
             assert exc.details["stage"] == "connector_selection"
-            assert exc.details["available_interfaces"] == ["HingeMount"]
+            assert exc.details["available_interfaces"] == [
+                "HingeMount",
+                "RotationAxis",
+            ]
             assert "does not exist" in str(exc)
         else:
             raise AssertionError("A missing semantic Assembly interface was accepted.")
@@ -929,9 +972,36 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
             "publication_name": "Arm",
             "output_key": "Arm",
         }
+        retained_interface = connector["semantic_selection"]
+    finally:
+        App.closeDocument(document.Name)
+
+    document = App.newDocument("AssemblySemanticFrameAccepted")
+    try:
+        result, outputs = graph(
+            {"type": "published_interface", "interface_name": "RotationAxis"}
+        )
+        validation = validate_and_solve_assembly(document, result, outputs)
+        assert validation["solver_code"] == 0, validation
+        joint = next(item for item in outputs if item["name"] == "Hinge")
+        connector = joint["assembly_data"]["connectors"][1]
+        assert connector["element"] == ""
+        assert connector["geometry_type"] == "component_frame"
+        frame = connector["interface_frame"]
+        assert frame["position_mm"] == [2.0, 3.0, 4.0]
+        assert all(
+            math.isclose(actual, expected, abs_tol=1.0e-12)
+            for actual, expected in zip(
+                [frame["matrix"][2], frame["matrix"][6], frame["matrix"][10]],
+                [1.0, 0.0, 0.0],
+                strict=True,
+            )
+        )
+        assert connector["semantic_selection"]["interface_name"] == "RotationAxis"
         return {
             "rejected_transient_selections": ["origin", "Face1"],
-            "retained_interface": connector["semantic_selection"],
+            "retained_interface": retained_interface,
+            "retained_frame_interface": connector["semantic_selection"],
         }
     finally:
         App.closeDocument(document.Name)

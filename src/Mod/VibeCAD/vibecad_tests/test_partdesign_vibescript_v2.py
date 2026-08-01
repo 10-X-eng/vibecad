@@ -67,9 +67,7 @@ def _write_v1_program(root: Path) -> Path:
             }
         },
     }
-    (directory / "manifest.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return directory
 
 
@@ -156,34 +154,44 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
         "involute_gear",
         "material",
         "appearance",
-    } <= set(
-        api.exported_names
-    )
+    } <= set(api.exported_names)
     assert {"pad", "pocket", "groove"}.isdisjoint(api.exported_names)
     assert {"pad", "pocket", "groove"}.isdisjoint(PartDesignDomainAPI.__dict__)
     assert all(not hasattr(api, name) for name in ("pad", "pocket", "groove"))
     assert {"pad", "pocket", "groove"}.isdisjoint(dir(api))
     signatures = {
-        name: str(inspect.signature(getattr(api, name)))
-        for name in api.exported_names
+        name: str(inspect.signature(getattr(api, name))) for name in api.exported_names
     }
     assert all("*args" not in signature for signature in signatures.values())
     assert all("**kwargs" not in signature for signature in signatures.values())
     assert all("**properties" not in signature for signature in signatures.values())
     description = domains.get_domain_adapter("partdesign").describe_api()
     assert {
-        item["name"]: item["signature"]
-        for item in description["runtime_exports"]
+        item["name"]: item["signature"] for item in description["runtime_exports"]
     } == signatures
     assert description["source_globals"] == ["doc", "inputs", "api"]
     assert description["accepted_output_types"] == list(OUTPUT_TYPES)
     assert "api.compound" in description["operation_selection"]["disconnected_geometry"]
-    assert "Part workbench is retired" in description["workbench_handoffs"][
-        "part_compatibility"
-    ]
+    assert (
+        "Part workbench is retired"
+        in description["workbench_handoffs"]["part_compatibility"]
+    )
     assert "api.material" in description["operation_selection"]["physical_material"]
     assert "0-255" in description["operation_selection"]["visible_appearance"]
+    assert "available_components" in description["workbench_handoffs"]["assembly"]
     assert "component_catalog.search" in description["workbench_handoffs"]["assembly"]
+    assert "one connected solid" in description["api_details"]["body"][
+        "assembly_boundary"
+    ].lower()
+    assert "cannot move independently" in description["api_details"]["publish"][
+        "assembly_boundary"
+    ]
+    assert "one rigid publication" in description["api_details"]["compound"][
+        "assembly_boundary"
+    ]
+    assert "axis_direction" in description["api_details"]["body"]["interfaces"][
+        "shape"
+    ]["StableName"]["selection"]
     gear_description = next(
         item["description"]
         for item in description["runtime_exports"]
@@ -203,23 +211,21 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "Groove" not in serialized_description
     assert "recommended_patterns" not in description
 
-    exports = {
-        item["name"]: item for item in description["runtime_exports"]
-    }
+    exports = {item["name"]: item for item in description["runtime_exports"]}
     for direct_name in ("line_3d", "arc_3d", "wire"):
-        assert "prefer api.sketch and native Body features" not in exports[direct_name][
-            "description"
-        ]
-    assert "Use api.sketch sections for planar profiles" in exports["loft"][
-        "description"
-    ]
+        assert (
+            "prefer api.sketch and native Body features"
+            not in exports[direct_name]["description"]
+        )
+    assert (
+        "Use api.sketch sections for planar profiles" in exports["loft"]["description"]
+    )
     assert "cross-section stays constant" in exports["extrude"]["description"]
-    assert "only when the intended cross-section genuinely changes" in exports[
-        "loft"
-    ]["description"]
-    assert "constant cross-section, use api.extrude" in exports["loft"][
-        "description"
-    ]
+    assert (
+        "only when the intended cross-section genuinely changes"
+        in exports["loft"]["description"]
+    )
+    assert "constant cross-section, use api.extrude" in exports["loft"]["description"]
     operation_selection = description["operation_selection"]["redundancy_contract"]
     assert "api.extrude for straight constant-cross-section" in operation_selection
     assert "api.loft only when the cross-section itself genuinely changes" in (
@@ -230,7 +236,51 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     assert "standalone solid is accepted only" in exports["body"]["description"]
 
 
-def test_partdesign_publication_material_and_appearance_are_explicit_and_immutable() -> None:
+def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:
+    from vibescript_domain_api import create_domain_api
+
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    published = api.publish(
+        api.box(2, 3, 4),
+        interfaces={
+            "ShaftAxis": {
+                "selection": {
+                    "type": "frame",
+                    "origin": [1, 2, 3],
+                    "axis_direction": [2, 0, 0],
+                    "x_direction": [0, 0, 4],
+                }
+            }
+        },
+    )
+    selection = published.properties["interfaces"]["ShaftAxis"]["selection"]
+    assert dict(selection) == {
+        "type": "frame",
+        "origin": (1.0, 2.0, 3.0),
+        "axis_direction": (1.0, 0.0, 0.0),
+        "x_direction": (0.0, 0.0, 1.0),
+    }
+    with pytest.raises(ValueError, match="must not be parallel"):
+        api.publish(
+            api.box(2, 3, 4),
+            interfaces={
+                "BadAxis": {
+                    "selection": {
+                        "type": "frame",
+                        "origin": [0, 0, 0],
+                        "axis_direction": [1, 0, 0],
+                        "x_direction": [2, 0, 0],
+                    }
+                }
+            },
+        )
+
+
+def test_partdesign_publication_material_and_appearance_are_explicit_and_immutable() -> (
+    None
+):
     api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
     card = api.material(
         "0051bddf-6f62-4406-b8c9-569322880564",
@@ -358,9 +408,7 @@ def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
 
     description = domains.get_domain_adapter("partdesign").describe_api()
     details = description["api_details"]
-    assert set(details["constraint"]["forms"]) == set(
-        details["constraint"]["kinds"]
-    )
+    assert set(details["constraint"]["forms"]) == set(details["constraint"]["kinds"])
     assert "arbitrary_placement" in details["sketch"]
     assert "minimum_distance_mm" in details["measure"]["pair_quantities"]
     assert details["material"]["catalog_tool"] == "material_catalog.search"
@@ -413,9 +461,7 @@ def test_unified_api_disambiguates_sketch_curves_and_standalone_3d_curves() -> N
     )
     assert (spatial_line.operation, spatial_line.output_type) == ("line", "edge")
     assert (primitive.operation, primitive.output_type) == ("box", "solid")
-    assert {sketch_line.domain, spatial_line.domain, primitive.domain} == {
-        "partdesign"
-    }
+    assert {sketch_line.domain, spatial_line.domain, primitive.domain} == {"partdesign"}
 
 
 def test_standalone_lofts_publish_as_solids_or_explicit_compounds() -> None:
@@ -458,7 +504,9 @@ def test_unified_api_rejects_impossible_topology_claims_and_zero_directions() ->
         api.polar_pattern(edge, 3, result="union")
 
 
-def test_topology_editing_accepts_stable_queries_and_keeps_index_compatibility() -> None:
+def test_topology_editing_accepts_stable_queries_and_keeps_index_compatibility() -> (
+    None
+):
     api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
     solid = api.box(4, 5, 6)
     top = api.find_subelements(
@@ -486,13 +534,16 @@ def test_body_and_standalone_options_are_never_silently_reinterpreted() -> None:
     )
 
     assert api.linear_pattern(feature, 2, 2).properties["result"] == "union"
-    assert api.multi_transform(
-        feature,
-        [
-            {"type": "translate", "vector": [2, 0, 0]},
-            {"type": "translate", "vector": [2, 0, 0]},
-        ],
-    ).properties["result"] == "union"
+    assert (
+        api.multi_transform(
+            feature,
+            [
+                {"type": "translate", "vector": [2, 0, 0]},
+                {"type": "translate", "vector": [2, 0, 0]},
+            ],
+        ).properties["result"]
+        == "union"
+    )
     with pytest.raises(ValueError, match="standalone-shape settings"):
         api.polar_pattern(feature, 3, center=[1, 0, 0])
     with pytest.raises(ValueError, match="standalone shapes"):
@@ -670,9 +721,7 @@ def test_legacy_material_names_remain_callable_but_are_not_exported() -> None:
         PartDesignDomainAPI.exported_names,
         OUTPUT_TYPES,
     )
-    assert all(
-        not hasattr(canonical, name) for name in ("pad", "pocket", "groove")
-    )
+    assert all(not hasattr(canonical, name) for name in ("pad", "pocket", "groove"))
     assert {"pad", "pocket", "groove"}.isdisjoint(dir(canonical))
 
     saved_source = create_domain_api(
@@ -837,9 +886,7 @@ def test_saved_loft_subtractive_keyword_is_detected_but_new_source_is_rejected(
         },
     )
     prepared = runtime.prepare_candidate(saved_capture)
-    assert prepared["worker_request"]["compatibility_methods"] == [
-        "loft_subtractive"
-    ]
+    assert prepared["worker_request"]["compatibility_methods"] == ["loft_subtractive"]
     runtime.abandon_prepared_candidate(prepared)
 
 
@@ -923,9 +970,7 @@ def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> N
     assert migrated["domain"] == "partdesign"
     assert migrated["artifact_directory"] == str(directory)
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == (
-        "vibescript.partdesign.reconfigure_program"
-    )
+    assert migrated["migration_action"] == ("vibescript.partdesign.reconfigure_program")
     assert migrated["accepted_revision"] == "saved-v1-revision"
     assert migrated["live_outputs"]["Part"]["object_name"] == "SavedPartResult"
 

@@ -82,6 +82,7 @@ public:
     static PyObject *sGetLinksTo             (PyObject *self,PyObject *args);
 
     static PyObject *sGetDependentObjects    (PyObject *self,PyObject *args);
+    static PyObject *sTimelineOperationDeletionPlan(PyObject *self, PyObject *args);
 
     static PyObject *sSetActiveTransaction   (PyObject *self,PyObject *args);
     static PyObject *sGetActiveTransaction   (PyObject *self,PyObject *args);

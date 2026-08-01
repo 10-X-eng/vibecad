@@ -30,6 +30,22 @@ model.
 - [x] Assembly linked instances, hierarchy, joints, motion, and Part Design
   interface handoff are obvious from the Model and Assembly API descriptions;
   no duplicate B-rep instancing API is added to Part Design.
+- [x] Assembly discovers stable public outputs rather than implementation Bodies,
+  states each reference's rigid-motion boundary, exposes exact connector frames,
+  and enumerates every accepted native joint kind and its required parameters.
+- [x] Part Design regeneration treats the native operation's output map as the
+  ownership authority, repairs stale Body ownership tags deterministically, and
+  reports every conflicting legacy Body by name instead of guessing.
+- [x] Semantic-interface names are local to each published output, so reusable
+  names such as `RotationAxis` work across parts while legacy unique-name reads
+  remain compatible.
+- [x] Failed publication aborts its transaction before restoring presentation;
+  presentation targets are reacquired by native object identity so Link view
+  properties cannot be restored through stale GUI wrappers.
+- [x] Every workbench exposes the same workbench-neutral VibeScript source
+  lifecycle. Assembly turns inject a compact copy-ready component inventory;
+  catalog search filters the retained turn snapshot only when needed and offers
+  explicit provider-byte-safe compact pagination for complete inventories.
 - [x] Focused tests, worker integration tests, and the release build pass.
 
 ## Implementation order
@@ -43,6 +59,8 @@ model.
 ## Deliberate compatibility
 
 - Existing tool names, call signatures, result keys, and accepted source remain.
+- Workbench-qualified lifecycle tools remain callable compatibility aliases;
+  the operating model sees only the canonical workbench-neutral names.
 - New read filters are optional; a full read remains available.
 - `z_offset_mm` and existing axis strings remain accepted while clearer forms are
   added.
@@ -50,7 +68,10 @@ model.
 
 ## Verification
 
-Verified on 2026-07-31 with the release build, 534 Python contract tests, the
-focused App and TechDraw C++ tests, and live GUI lifecycle gates for Part
-Design, Assembly, CAM, Drawing, FEM, Material, Inspection, Mesh, MeshPart,
-Points, Reverse Engineering, Robot, and the generic domain publisher.
+Verified on 2026-08-01 with the release build, 550 Python contract tests, full
+native Part Design and Assembly lifecycle gates, focused App and TechDraw C++
+tests, and live GUI lifecycle gates for Part Design, Assembly, CAM, Drawing,
+FEM, Material, Inspection, Mesh, MeshPart, Points, Reverse Engineering, Robot,
+and the generic domain publisher. Part Design additionally covers stale output
+ownership repair, repeated local interface names, and post-abort Link
+presentation restoration.

@@ -33,15 +33,9 @@ MATERIAL_CATALOG_TOOL = "material_catalog.search"
 SHARED_CONTEXT_TOOLS = frozenset(
     {FASTENER_CATALOG_TOOL, COMPONENT_CATALOG_TOOL, MATERIAL_CATALOG_TOOL}
 )
-FASTENER_WORKBENCHES = frozenset(
-    {"PartDesignWorkbench", "AssemblyWorkbench"}
-)
-COMPONENT_CATALOG_WORKBENCHES = frozenset(
-    {"AssemblyWorkbench"}
-)
-MATERIAL_CATALOG_WORKBENCHES = frozenset(
-    {"PartDesignWorkbench", "MaterialWorkbench"}
-)
+FASTENER_WORKBENCHES = frozenset({"PartDesignWorkbench", "AssemblyWorkbench"})
+COMPONENT_CATALOG_WORKBENCHES = frozenset({"AssemblyWorkbench"})
+MATERIAL_CATALOG_WORKBENCHES = frozenset({"PartDesignWorkbench", "MaterialWorkbench"})
 
 
 def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
@@ -53,6 +47,7 @@ def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
     if workbench in MATERIAL_CATALOG_WORKBENCHES:
         names.add(MATERIAL_CATALOG_TOOL)
     return tuple(sorted(names))
+
 
 # Each model-facing focused read belongs to one exact workbench. Universal
 # VibeScript source reads are resolved against the active workbench.
@@ -87,6 +82,7 @@ def _provider_cad_tool_names(
             result.append(name)
     return tuple(result)
 
+
 @dataclass(frozen=True)
 class ModelingSurface:
     workbench: str | None
@@ -116,7 +112,9 @@ class ModelingSurface:
         }
 
 
-def _surface_id(*, workbench: str | None, engine: str, domain: str | None, generation: str) -> str:
+def _surface_id(
+    *, workbench: str | None, engine: str, domain: str | None, generation: str
+) -> str:
     readable = "/".join(
         (
             "vibecad",
@@ -218,7 +216,7 @@ def resolve_modeling_surface(
             core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=_provider_cad_tool_names(
                 (
-                    *vibescript_pack.tool_names,
+                    *vibescript_pack.provider_tool_names,
                     *(
                         name
                         for name, owner in PROVIDER_READ_TOOL_OWNERS.items()
@@ -241,7 +239,9 @@ def engine_from_service(service: Any) -> str:
         raise RuntimeError("VibeCAD service has no modeling-engine accessor.")
     engine = str(getter() or "").strip().lower()
     if engine not in MODELING_ENGINES:
-        raise RuntimeError(f"VibeCAD service returned invalid modeling engine {engine!r}.")
+        raise RuntimeError(
+            f"VibeCAD service returned invalid modeling engine {engine!r}."
+        )
     return engine
 
 
@@ -258,8 +258,12 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
         if len(parts) == 2 and parts[1] in {
             "read_source",
             "read_api",
+            "create_program",
             "build_program",
             "edit_source",
+            "set_inputs",
+            "reconfigure_program",
+            "delete_program",
         }:
             continue
         if len(parts) == 3:
@@ -295,7 +299,9 @@ def validate_surface_names(
         )
     allowed = set(allowed_names) if allowed_names is not None else None
     expects_engine_tools = (
-        any(name.startswith(f"{engine}.") for name in allowed) if allowed is not None else True
+        any(name.startswith(f"{engine}.") for name in allowed)
+        if allowed is not None
+        else True
     )
     non_core_names = [
         name
@@ -311,9 +317,13 @@ def validate_surface_names(
     ]
     if engine == "vibescript":
         if scripted and scripted != {engine}:
-            raise ValueError(f"The {engine} surface declaration does not match its tool schemas.")
+            raise ValueError(
+                f"The {engine} surface declaration does not match its tool schemas."
+            )
         if expects_engine_tools and non_core_names and scripted != {engine}:
-            raise ValueError(f"The {engine} surface declaration does not match its tool schemas.")
+            raise ValueError(
+                f"The {engine} surface declaration does not match its tool schemas."
+            )
     if engine == "vibescript" and scripted:
         allowed_reads = {
             name
@@ -367,6 +377,7 @@ def infer_engine_from_names(names: Iterable[str]) -> str:
     ]
     if len(engines) > 1:
         raise ValueError(
-            "The provider surface contains multiple modeling engines: " + ", ".join(sorted(engines))
+            "The provider surface contains multiple modeling engines: "
+            + ", ".join(sorted(engines))
         )
     return engines[0] if engines else "vibescript"

@@ -462,48 +462,62 @@ def _nonzero_vector(operation: str, parameter: str, value: Any) -> list[float]:
     return result
 
 
-def _sketch_placement(value: Any) -> dict[str, list[float]] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping) or set(value) != {
-        "origin",
-        "normal",
-        "x_direction",
-    }:
+def _oriented_frame(
+    operation: str,
+    parameter: str,
+    value: Any,
+    *,
+    axis_name: str,
+) -> dict[str, list[float]]:
+    required = {"origin", axis_name, "x_direction"}
+    if not isinstance(value, Mapping) or set(value) != required:
         raise _error(
-            "sketch",
-            "placement",
-            "must contain exactly origin, normal, and x_direction",
+            operation,
+            parameter,
+            f"must contain exactly origin, {axis_name}, and x_direction",
             value,
         )
-    origin = _vector("sketch", "placement.origin", value["origin"])
-    normal = _nonzero_vector("sketch", "placement.normal", value["normal"])
+    origin = _vector(operation, f"{parameter}.origin", value["origin"])
+    axis = _nonzero_vector(operation, f"{parameter}.{axis_name}", value[axis_name])
     x_direction = _nonzero_vector(
-        "sketch", "placement.x_direction", value["x_direction"]
+        operation,
+        f"{parameter}.x_direction",
+        value["x_direction"],
     )
-    normal_length = math.sqrt(sum(component * component for component in normal))
-    unit_normal = [component / normal_length for component in normal]
+    axis_length = math.sqrt(sum(component * component for component in axis))
+    unit_axis = [component / axis_length for component in axis]
     dot = sum(
-        component * normal_component
-        for component, normal_component in zip(x_direction, unit_normal)
+        component * axis_component
+        for component, axis_component in zip(x_direction, unit_axis)
     )
     projected_x = [
-        component - dot * normal_component
-        for component, normal_component in zip(x_direction, unit_normal)
+        component - dot * axis_component
+        for component, axis_component in zip(x_direction, unit_axis)
     ]
     projected_length = math.sqrt(sum(component * component for component in projected_x))
     if projected_length <= 1.0e-12:
         raise _error(
-            "sketch",
-            "placement.x_direction",
-            "must not be parallel to placement.normal",
+            operation,
+            f"{parameter}.x_direction",
+            f"must not be parallel to {parameter}.{axis_name}",
             value["x_direction"],
         )
     return {
         "origin": origin,
-        "normal": unit_normal,
+        axis_name: unit_axis,
         "x_direction": [component / projected_length for component in projected_x],
     }
+
+
+def _sketch_placement(value: Any) -> dict[str, list[float]] | None:
+    if value is None:
+        return None
+    return _oriented_frame(
+        "sketch",
+        "placement",
+        value,
+        axis_name="normal",
+    )
 
 
 def _selection(
@@ -589,6 +603,8 @@ def _selection(
 
 
 def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
+    """Validate semantic names in the local namespace of one published output."""
+
     if value in (None, {}):
         return {}
     if not isinstance(value, Mapping) or len(value) > 64:
@@ -610,6 +626,14 @@ def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
             if set(selection) != {"type"}:
                 raise _error("body", f"interfaces[{name}].selection", "origin accepts only type")
             clean_selection = {"type": "origin"}
+        elif isinstance(selection, Mapping) and selection.get("type") == "frame":
+            frame = _oriented_frame(
+                "body",
+                f"interfaces[{name}].selection",
+                {key: value for key, value in selection.items() if key != "type"},
+                axis_name="axis_direction",
+            )
+            clean_selection = {"type": "frame", **frame}
         else:
             clean_selection = _selection("body", selection)
         description = str(raw.get("description") or "").strip()
@@ -2918,7 +2942,9 @@ class PartDesignDomainAPI:
 
         Pass the final feature; a standalone solid is accepted only when it can
         become one native feature. Source edits retain the Body identity. Attach checks,
-        material, appearance, and named interfaces here.
+        material, appearance, and named interfaces here. Interface names are local to
+        this output, so reusable parts may each publish the same clear name such as
+        RotationAxis or MountingFace.
         """
 
         return self._graph(
@@ -2956,6 +2982,7 @@ class PartDesignDomainAPI:
 
         Use api.body instead when the result is one solid with native Part Design
         history. Attach checks, material, appearance, and semantic interfaces here.
+        Interface names are local to this output and may be reused by other outputs.
         """
 
         clean_shape = _topology("publish", "shape", shape, allowed=_PUBLISHABLE_TYPES)

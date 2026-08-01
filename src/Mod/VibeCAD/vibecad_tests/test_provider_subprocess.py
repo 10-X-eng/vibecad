@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import VibeCADProvider as provider
 import VibeCADSession as session
 
@@ -118,7 +116,7 @@ def _vibescript_mode_context(
                 "description": "Create a VibeScript model.",
                 "parameters": {"type": "object"},
             }
-        ]
+        ],
     }
 
 
@@ -170,7 +168,9 @@ def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> No
     other_blocks = provider._anthropic_system_blocks(
         {"provider_tool_schemas": [{"name": "core.set_view"}]}
     )
-    assert [block["text"] for block in other_blocks] == [provider.VIBECAD_SYSTEM_INSTRUCTIONS]
+    assert [block["text"] for block in other_blocks] == [
+        provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    ]
 
 
 def test_both_wire_formats_do_not_inject_intent_memory() -> None:
@@ -214,9 +214,7 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
 
 
 def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> None:
-    partdesign = provider._vibescript_authoring_instruction(
-        _vibescript_mode_context()
-    )
+    partdesign = provider._vibescript_authoring_instruction(_vibescript_mode_context())
     assembly = provider._vibescript_authoring_instruction(
         _vibescript_mode_context("AssemblyWorkbench", "assembly")
     )
@@ -231,7 +229,9 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
         assert "after success" not in instruction
 
 
-def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit() -> None:
+def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit() -> (
+    None
+):
     source = "value = 1\n" * 5000
     visible = provider._provider_visible_tool_result(
         {
@@ -249,9 +249,7 @@ def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit(
 
 
 def test_partdesign_vibescript_guidance_defaults_to_native_editable_history() -> None:
-    partdesign = provider._vibescript_authoring_instruction(
-        _vibescript_mode_context()
-    )
+    partdesign = provider._vibescript_authoring_instruction(_vibescript_mode_context())
     assert "editable native Body history" in partdesign
     assert "api.sketch for planar feature profiles" in partdesign
     assert "line_3d, arc_3d, wire" in partdesign
@@ -315,7 +313,7 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     schemas = [
         _context_schema("vibescript.read_source"),
         _context_schema("vibescript.read_api"),
-        _context_schema("vibescript.part.create_program"),
+        _context_schema("vibescript.create_program"),
     ]
     monkeypatch.setattr(
         session,
@@ -370,7 +368,7 @@ def test_editable_source_manifests_complete_after_document_thread_capture(
     schemas = [
         _context_schema("vibescript.read_source"),
         _context_schema("vibescript.read_api"),
-        _context_schema("vibescript.part.create_program"),
+        _context_schema("vibescript.create_program"),
     ]
     monkeypatch.setattr(
         session,
@@ -425,6 +423,73 @@ def test_editable_source_manifests_complete_after_document_thread_capture(
     assert context["editable_sources"]["source_count"] == 0
 
 
+def test_assembly_turn_injects_copy_ready_available_components(
+    monkeypatch,
+) -> None:
+    import VibeCADComponentCatalog as component_catalog
+
+    schemas = [
+        _context_schema("vibescript.read_source"),
+        _context_schema("vibescript.create_program"),
+        _context_schema("component_catalog.search"),
+    ]
+    monkeypatch.setattr(
+        session,
+        "provider_tool_schemas",
+        lambda _service, _wb, **_kwargs: schemas,
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "capture_editable_sources_snapshot",
+        lambda _service, domain: {
+            "_vibecad_deferred_vibescript_program_index": True,
+            "domain": domain,
+        },
+    )
+    monkeypatch.setattr(
+        session.vibescript_domains,
+        "complete_editable_sources_snapshot",
+        lambda snapshot: {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": snapshot["domain"],
+            "sources": [],
+        },
+    )
+    reference = {"document_uid": "part-uid", "object_name": "Bracket"}
+    monkeypatch.setattr(
+        component_catalog,
+        "capture_component_catalog",
+        lambda _service: {
+            "owner_document_uid": "assembly-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": [
+                {
+                    "document_label": "Parts",
+                    "object_name": "Bracket",
+                    "label": "Motor Bracket",
+                    "type_id": "PartDesign::Body",
+                    "source": "open_document",
+                    "live_validated": True,
+                    "portable": True,
+                    "reference": reference,
+                }
+            ],
+        },
+    )
+    service = _ProviderContextService("AssemblyWorkbench", {})
+
+    context = session._context_for_provider(service)
+    visible = provider._model_visible_context(context)
+
+    assert visible["available_components"]["component_count"] == 1
+    assert visible["available_components"]["components"][0]["reference"] == reference
+    assert context["_vibecad_component_catalog"]["schema"] == (
+        "vibecad-component-catalog-snapshot-v1"
+    )
+
+
 def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(
     monkeypatch,
 ) -> None:
@@ -452,7 +517,7 @@ def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
         "provider_tool_schemas",
         lambda _service, _wb, **_kwargs: [
             _context_schema("vibescript.read_source"),
-            _context_schema("vibescript.partdesign.create_program"),
+            _context_schema("vibescript.create_program"),
         ],
     )
     service = _ProviderContextService(

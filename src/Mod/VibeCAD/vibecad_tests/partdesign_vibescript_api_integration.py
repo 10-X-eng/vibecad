@@ -18,12 +18,16 @@ if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
 from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
+from VibeCADComponentCatalog import open_component_candidates  # noqa: E402
 from VibeCADReferenceContracts import resolve_interface  # noqa: E402
 from VibeCADScriptedPublication import (  # noqa: E402
+    PROP_MODEL_ID as PROP_SCRIPTED_MODEL_ID,
+    PROP_OUTPUT_KEY as PROP_SCRIPTED_OUTPUT_KEY,
     PROP_REVISION as PROP_PUBLISHED_REVISION,
     ROLE_IMPLEMENTATION,
     ROLE_MODEL,
     role_of,
+    tag_object,
 )
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     _live_programs,
@@ -51,6 +55,8 @@ from VibeCADVibeScriptDomains import (  # noqa: E402
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     PROP_OUTPUT_TYPE,
     PROP_PARTDESIGN_MATERIAL_BASELINE,
+    _material_target_snapshot,
+    _restore_material_target_snapshots,
     _set_physical_material_preserving_view,
     publish_candidate,
 )
@@ -1464,6 +1470,9 @@ def _source(*, invalid_offset: bool = False, primary_label: str = "Base Extrusio
         "operation='remove_material', base=base, "
         "label='Bore')\n"
         "result = {'Part': api.body(finished, interfaces={"
+        "'AxisX': {'selection': {'type':'frame','origin':[0,0,0],"
+        "'axis_direction':[1,0,0],'x_direction':[0,0,1]},"
+        "'description':'Shaft rotation axis'},"
         "'Top': {'selection': {'type':'query','element_type':'face',"
         "'expected_count':1,'geometry_type':'plane','normal':[0,0,1],"
         "'normal_tolerance_degrees':0.1,'min_area':100},"
@@ -1715,14 +1724,63 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     assert publication["recompute_deferred"] is True
     assert publication["interfaces"]["Top"]["resolved"]["object"] == identity
     assert publication["interfaces"]["Top"]["resolved"]["subelements"]
+    published_frame = publication["interfaces"]["Top"]["resolved"][
+        "connector_frame"
+    ]
+    assert published_frame["schema"] == "vibecad-connector-frame-v1"
+    assert len(published_frame["matrix"]) == 16
+    assert math.isclose(published_frame["origin_mm"][2], 12.0, abs_tol=1.0e-7)
     top = resolve_interface(service, published, "Top")
     assert top["publication_name"] == identity
     assert top["interface_name"] == "Top"
+    assert top["connector_frame"] == published_frame
+    origin = resolve_interface(service, published, "Origin")["connector_frame"]
+    assert origin["origin_mm"] == [0.0, 0.0, 0.0]
+    assert origin["axis_direction"] == [0.0, 0.0, 1.0]
+    axis_x = resolve_interface(service, published, "AxisX")["connector_frame"]
+    assert all(
+        math.isclose(actual, expected, abs_tol=1.0e-12)
+        for actual, expected in zip(
+            axis_x["axis_direction"],
+            [1.0, 0.0, 0.0],
+            strict=True,
+        )
+    )
+    assert all(
+        math.isclose(actual, expected, abs_tol=1.0e-12)
+        for actual, expected in zip(
+            axis_x["x_direction"],
+            [0.0, 0.0, 1.0],
+            strict=True,
+        )
+    )
     created_state = _assert_partdesign_timeline_graph(
         document,
         program_id,
         identity,
     )
+    catalog = {
+        item["object_name"]: item
+        for item in open_component_candidates(document)
+        if dict(item.get("authoring_source") or {}).get("source_id") == program_id
+    }
+    assert identity in catalog
+    assert str(created_state["body"]) not in catalog
+    assert catalog[identity]["assembly_contract"]["solid_count"] == 1
+    assert catalog[identity]["published_interfaces"] == ["AxisX", "Origin", "Top"]
+    axis_descriptor = next(
+        item
+        for item in catalog[identity]["interfaces"]
+        if item["name"] == "AxisX"
+    )
+    assert axis_descriptor["connector_eligible"] is True
+    top_descriptor = next(
+        item
+        for item in catalog[identity]["interfaces"]
+        if item["name"] == "Top"
+    )
+    assert top_descriptor["connector_eligible"] is True
+    assert top_descriptor["frame"] == published_frame
     assert "label='Base Extrusion'" in str(created_state["source"])
     document.undo()
     assert document.getObject(identity) is None
@@ -2193,6 +2251,122 @@ def _exercise_topology_publication(root: Path, pack) -> dict:
     return {"outputs": identities, "types": expected, "regenerated_volume_mm3": 54.0}
 
 
+def _exercise_output_local_interfaces_and_ownership_repair(root: Path, pack) -> dict:
+    """Prove interfaces are local and stale advisory Body claims self-repair."""
+
+    import FreeCAD as App
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignLocalInterfaces")
+    try:
+        service = _Service(document, root)
+        base_capture = {
+            "pack": pack,
+            "project_root": str(root),
+            "document_name": str(document.Name),
+            "document_uid": str(document.Uid),
+            "document_revision": service.provider_document_revision(),
+            "document_objects": [],
+            "surface": resolve_modeling_surface(
+                "PartDesignWorkbench", "vibescript"
+            ).summary(),
+            "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+            "timeout_seconds": 60.0,
+            "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+        }
+        source = (
+            "size = inputs['size']\n"
+            "left = api.box(size, size, size, origin=[-2*size,0,0], label='Left')\n"
+            "right = api.box(size, size, size, origin=[size,0,0], label='Right')\n"
+            "axis = {'RotationAxis': {'selection': {'type': 'origin'}}}\n"
+            "result = {\n"
+            " 'Left': api.body(left, interfaces=axis, label='Left Body'),\n"
+            " 'Right': api.body(right, interfaces=axis, label='Right Body'),\n"
+            "}\n"
+        )
+        create = _capture(
+            base_capture,
+            operation="create_program",
+            arguments={
+                "program_name": "Output-local interface ownership",
+                "source": source,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "size": {"type": "number", "exclusiveMinimum": 0}
+                    },
+                    "required": ["size"],
+                    "additionalProperties": False,
+                },
+                "inputs": {"size": 4.0},
+                "expected_outputs": [
+                    {"name": "Left", "type": "solid"},
+                    {"name": "Right", "type": "solid"},
+                ],
+            },
+        )
+        prepared, publication, accepted = _run_candidate(create, service)
+        table = publication["interfaces"]
+        assert table["_schema"] == "vibecad-published-interfaces-v2"
+        assert "RotationAxis" not in table
+        assert set(table["_outputs"]) == {"Left", "Right"}
+        for output_name in ("Left", "Right"):
+            published = document.getObject(
+                accepted["live_outputs"][output_name]["object_name"]
+            )
+            resolved = resolve_interface(service, published, "RotationAxis")
+            assert resolved["output_key"] == output_name
+        catalog = {
+            item["object_name"]: item
+            for item in open_component_candidates(document)
+        }
+        for output_name in ("Left", "Right"):
+            published_name = accepted["live_outputs"][output_name]["object_name"]
+            assert catalog[published_name]["published_interfaces"] == [
+                "RotationAxis"
+            ]
+
+        stale = document.addObject("PartDesign::Body", "StaleScriptBody")
+        tag_object(
+            stale,
+            role=ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id=prepared["program_id"],
+            output_key="Left",
+            revision=accepted["working_revision"],
+        )
+        update = _capture(
+            base_capture,
+            operation="set_inputs",
+            arguments={
+                "program_id": prepared["program_id"],
+                "expected_revision": accepted["working_revision"],
+                "patch": {"size": 5.0},
+            },
+        )
+        _updated, updated_publication, _accepted = _run_candidate(update, service)
+        repairs = updated_publication["native_history"]["ownership_repairs"]
+        assert repairs == [
+            {
+                "object_name": stale.Name,
+                "claimed_output": "Left",
+                "authoritative_object": updated_publication["native_history"][
+                    "body_objects"
+                ]["Left"],
+            }
+        ]
+        assert role_of(stale) == ""
+        assert str(getattr(stale, PROP_SCRIPTED_MODEL_ID, "") or "") == ""
+        assert str(getattr(stale, PROP_SCRIPTED_OUTPUT_KEY, "") or "") == ""
+        return {
+            "outputs": ["Left", "Right"],
+            "shared_local_interface": "RotationAxis",
+            "repaired_body": str(stale.Name),
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
 def _exercise_physical_material_publication(root: Path, pack) -> dict:
     """Publish one shared-catalog ShapeMaterial and preserve it on regeneration."""
 
@@ -2592,6 +2766,49 @@ class PartDesignMaterialDriftIntegration(unittest.TestCase):
             shutil.rmtree(root)
         self.assertTrue(result["external_drift_reconciled"])
 
+    def test_link_presentation_rollback_resolves_objects_after_abort(self) -> None:
+        import FreeCAD as App
+        import Part
+
+        document = App.newDocument("PartDesignPresentationRollback")
+        try:
+            primary = document.addObject("PartDesign::Feature", "Primary")
+            primary.Shape = Part.makeBox(10, 8, 6)
+            alternate = document.addObject("PartDesign::Feature", "Alternate")
+            alternate.Shape = Part.makeCylinder(3, 9)
+            published = document.addObject("App::Link", "Published")
+            published.LinkedObject = primary
+            document.recompute()
+            primary.ViewObject.LineColor = (0.2, 0.3, 0.4)
+            published.ViewObject.LineColor = (0.2, 0.3, 0.4)
+            states = [
+                _material_target_snapshot(primary),
+                _material_target_snapshot(published),
+            ]
+
+            document.openTransaction("Failed publication relink")
+            published.LinkedObject = alternate
+            alternate.ViewObject.LineColor = (0.9, 0.1, 0.1)
+            published.ViewObject.LineColor = (0.9, 0.1, 0.1)
+            document.abortTransaction()
+
+            _restore_material_target_snapshots(states)
+            self.assertIs(published.LinkedObject, primary)
+            for actual, expected in zip(
+                tuple(primary.ViewObject.LineColor)[:3],
+                (0.2, 0.3, 0.4),
+                strict=True,
+            ):
+                self.assertAlmostEqual(actual, expected, places=6)
+            for actual, expected in zip(
+                tuple(published.ViewObject.LineColor)[:3],
+                (0.2, 0.3, 0.4),
+                strict=True,
+            ):
+                self.assertAlmostEqual(actual, expected, places=6)
+        finally:
+            App.closeDocument(document.Name)
+
 
 def main() -> int:
     dump_json = json.dumps
@@ -2621,6 +2838,10 @@ def main() -> int:
         attached_sketch_history = _exercise_attached_sketch_history(root, pack)
         native_sketch_history = _exercise_native_sketch_history(root, pack)
         topology_publication = _exercise_topology_publication(root, pack)
+        local_interfaces = _exercise_output_local_interfaces_and_ownership_repair(
+            root,
+            pack,
+        )
         physical_material = _exercise_physical_material_publication(root, pack)
         direct_solid_label = _exercise_direct_solid_adoption_label(root, pack)
         saved_source_compatibility = _exercise_saved_source_compatibility(
@@ -2640,6 +2861,7 @@ def main() -> int:
                     "attached_sketch_history": attached_sketch_history,
                     "native_sketch_history": native_sketch_history,
                     "topology_publication": topology_publication,
+                    "output_local_interfaces": local_interfaces,
                     "physical_material": physical_material,
                     "direct_solid_label": direct_solid_label,
                     "saved_source_compatibility": saved_source_compatibility,

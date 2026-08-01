@@ -5,12 +5,16 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import VibeCADScriptedPublication as publication
 
 
 CONTRACT_SCHEMA = "vibecad-reference-contract-v1"
+INTERFACE_TABLE_SCHEMA = "vibecad-published-interfaces-v2"
+INTERFACE_TABLE_SCHEMA_KEY = "_schema"
+INTERFACE_TABLE_OUTPUTS_KEY = "_outputs"
 PROP_CONTRACT = "VibeCADReferenceContract"
 PROP_DERIVED_STATE = "VibeCADDerivedState"
 PROP_STALE_REASON = "VibeCADStaleReason"
@@ -21,6 +25,205 @@ class ReferenceContractError(RuntimeError):
     def __init__(self, message: str, *, details: dict[str, Any] | None = None):
         self.details = dict(details or {})
         super().__init__(message)
+
+
+def interface_definitions_for_output(
+    interfaces: Any,
+    output_key: str,
+) -> dict[str, dict[str, Any]]:
+    """Return one output's local interface namespace from either table format."""
+
+    if not isinstance(interfaces, dict):
+        return {}
+    if interfaces.get(INTERFACE_TABLE_SCHEMA_KEY) == INTERFACE_TABLE_SCHEMA:
+        outputs = interfaces.get(INTERFACE_TABLE_OUTPUTS_KEY)
+        if not isinstance(outputs, dict):
+            return {}
+        definitions = outputs.get(str(output_key or ""))
+        if not isinstance(definitions, dict):
+            return {}
+        return {
+            str(name): dict(definition)
+            for name, definition in definitions.items()
+            if isinstance(definition, dict)
+        }
+    return {
+        str(name): dict(definition)
+        for name, definition in interfaces.items()
+        if isinstance(definition, dict)
+        and str(definition.get("output") or "") == str(output_key or "")
+    }
+
+
+def interface_identities(interfaces: Any) -> set[tuple[str, str]]:
+    """Return stable ``(output key, local interface name)`` identities."""
+
+    if not isinstance(interfaces, dict):
+        return set()
+    if interfaces.get(INTERFACE_TABLE_SCHEMA_KEY) == INTERFACE_TABLE_SCHEMA:
+        outputs = interfaces.get(INTERFACE_TABLE_OUTPUTS_KEY)
+        if not isinstance(outputs, dict):
+            return set()
+        return {
+            (str(output_key), str(name))
+            for output_key, definitions in outputs.items()
+            if isinstance(definitions, dict)
+            for name, definition in definitions.items()
+            if isinstance(definition, dict)
+        }
+    return {
+        (str(definition.get("output") or ""), str(name))
+        for name, definition in interfaces.items()
+        if isinstance(definition, dict)
+        and str(definition.get("output") or "")
+    }
+
+
+def _placement_frame(placement: Any) -> dict[str, Any]:
+    matrix = placement.toMatrix()
+    values = [
+        float(getattr(matrix, name))
+        for name in (
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A31",
+            "A32",
+            "A33",
+            "A34",
+            "A41",
+            "A42",
+            "A43",
+            "A44",
+        )
+    ]
+    return {
+        "schema": "vibecad-connector-frame-v1",
+        "origin_mm": [values[3], values[7], values[11]],
+        "x_direction": [values[0], values[4], values[8]],
+        "axis_direction": [values[2], values[6], values[10]],
+        "matrix": values,
+    }
+
+
+def _native_connector_frame(published: Any, subelements: list[str]) -> dict[str, Any] | None:
+    """Derive a missing legacy frame with native Assembly JCS semantics."""
+
+    if len(subelements) > 1:
+        return None
+    if not subelements:
+        import FreeCAD as App
+
+        return _placement_frame(App.Placement())
+    import UtilsAssembly
+
+    element = str(subelements[0])
+    return _placement_frame(
+        UtilsAssembly.findPlacement([published, [element, element]])
+    )
+
+
+def connector_frame_placement(value: Any) -> Any:
+    """Reconstruct one validated local connector placement from its matrix."""
+
+    if not isinstance(value, dict) or value.get("schema") != "vibecad-connector-frame-v1":
+        raise ReferenceContractError(
+            "A semantic connector frame has an unsupported contract.",
+            details={"connector_frame": value},
+        )
+    values = value.get("matrix")
+    if (
+        not isinstance(values, list)
+        or len(values) != 16
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+            for item in values
+        )
+    ):
+        raise ReferenceContractError(
+            "A semantic connector frame has an invalid matrix.",
+            details={"connector_frame": value},
+        )
+    import FreeCAD as App
+
+    matrix = App.Matrix()
+    for name, number in zip(
+        (
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A31",
+            "A32",
+            "A33",
+            "A34",
+            "A41",
+            "A42",
+            "A43",
+            "A44",
+        ),
+        values,
+        strict=True,
+    ):
+        setattr(matrix, name, float(number))
+    return App.Placement(matrix)
+
+
+def published_interface_descriptors(
+    interfaces: Any,
+    output_key: str,
+) -> list[dict[str, Any]]:
+    """Return compact, assembly-ready interface metadata for one output."""
+
+    descriptors: list[dict[str, Any]] = []
+    definitions = interface_definitions_for_output(interfaces, output_key)
+    for raw_name, raw_definition in sorted(definitions.items()):
+        selection = raw_definition.get("selection")
+        resolved = raw_definition.get("resolved")
+        if not isinstance(selection, dict) or not isinstance(resolved, dict):
+            continue
+        subelements = [str(value) for value in list(resolved.get("subelements") or [])]
+        geometry = [
+            dict(value)
+            for value in list(resolved.get("geometry") or [])
+            if isinstance(value, dict)
+        ]
+        frame = resolved.get("connector_frame")
+        selection_type = str(selection.get("type") or "")
+        descriptor = {
+            "name": str(raw_name),
+            "selection_type": selection_type,
+            "subelements": subelements,
+            "connector_eligible": (
+                (selection_type in {"origin", "frame"} and not subelements)
+                or len(subelements) == 1
+            ),
+        }
+        if raw_definition.get("description"):
+            descriptor["description"] = str(raw_definition["description"])
+        if len(geometry) == 1 and geometry[0].get("geometry_type"):
+            descriptor["geometry_type"] = str(geometry[0]["geometry_type"])
+        elif not subelements:
+            descriptor["geometry_type"] = (
+                "component_frame"
+                if selection_type == "frame"
+                else "component_origin"
+            )
+        if isinstance(frame, dict):
+            descriptor["frame"] = dict(frame)
+        descriptors.append(descriptor)
+    return descriptors
 
 
 def interface_selection_schema() -> dict[str, Any]:
@@ -124,21 +327,16 @@ def resolve_interface(
             "The scripted model's published interface table is invalid.",
             details={"model_root": root.Name, "native_error": str(exc)},
         ) from exc
-    definition = interfaces.get(str(interface_name or ""))
+    definitions = interface_definitions_for_output(interfaces, output_key)
+    definition = definitions.get(str(interface_name or ""))
     if not isinstance(definition, dict):
         raise ReferenceContractError(
-            f"Published interface {interface_name!r} does not exist on this model.",
+            f"Published interface {interface_name!r} does not exist on output "
+            f"{output_key!r}.",
             details={
                 "model_root": root.Name,
-                "available_interfaces": sorted(interfaces),
-            },
-        )
-    if str(definition.get("output") or "") != output_key:
-        raise ReferenceContractError(
-            f"Published interface {interface_name!r} belongs to a different output.",
-            details={
-                "requested_output": output_key,
-                "interface_output": definition.get("output"),
+                "output_key": output_key,
+                "available_interfaces": sorted(definitions),
             },
         )
     selection = dict(definition.get("selection") or {})
@@ -157,9 +355,13 @@ def resolve_interface(
     subelements = list(resolved.get("subelements") or [])
     geometry = list(resolved.get("geometry") or [])
     mode = str(selection.get("type") or "")
-    expected = 0 if mode == "origin" else int(selection.get("expected_count") or 0)
+    expected = (
+        0
+        if mode in {"origin", "frame"}
+        else int(selection.get("expected_count") or 0)
+    )
     if (
-        mode not in {"origin", "query"}
+        mode not in {"origin", "frame", "query"}
         or str(resolved.get("object") or "") != published.Name
         or len(subelements) != expected
         or len(geometry) != expected
@@ -175,6 +377,27 @@ def resolve_interface(
                 "expected_count": expected,
             },
         )
+    connector_frame = resolved.get("connector_frame")
+    if connector_frame is not None and not isinstance(connector_frame, dict):
+        raise ReferenceContractError(
+            f"Published interface {interface_name!r} has a malformed connector frame.",
+            details={"connector_frame": connector_frame},
+        )
+    if mode == "frame" and connector_frame is None:
+        raise ReferenceContractError(
+            f"Published interface {interface_name!r} has no explicit connector frame.",
+            details={"selection": selection},
+        )
+    if connector_frame is None:
+        try:
+            connector_frame = _native_connector_frame(published, subelements)
+        except Exception as exc:
+            raise ReferenceContractError(
+                f"Published interface {interface_name!r} has no resolvable native "
+                "connector frame.",
+                details={"subelements": subelements, "native_error": str(exc)},
+            ) from exc
+    connector_frame_placement(connector_frame)
     return {
         "ok": True,
         "model_id": model_id,
@@ -186,6 +409,7 @@ def resolve_interface(
         "selection": selection,
         "subelements": subelements,
         "geometry": geometry,
+        "connector_frame": connector_frame,
     }
 
 
@@ -199,6 +423,35 @@ def referenced_interface_names(contract: dict[str, Any]) -> list[tuple[str, str]
                 name = str(value.get("interface_name") or "")
                 if model_id and name:
                     found.append((model_id, name))
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(contract)
+    return found
+
+
+def referenced_interfaces(
+    contract: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Return managed ``(model, output, interface)`` references.
+
+    Older contracts did not persist the output key.  They remain readable with
+    an empty output identity and are handled conservatively during removal.
+    """
+
+    found: list[tuple[str, str, str]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "published_interface":
+                model_id = str(value.get("model_id") or "")
+                output_key = str(value.get("output_key") or "")
+                name = str(value.get("interface_name") or "")
+                if model_id and name:
+                    found.append((model_id, output_key, name))
             for child in value.values():
                 walk(child)
         elif isinstance(value, list):
@@ -265,12 +518,21 @@ def validate_removed_interfaces(
     doc: Any,
     publications: list[Any],
     model_id: str,
-    previous_names: set[str],
-    current_names: set[str],
+    previous_names: set[Any],
+    current_names: set[Any],
     *,
     preflight: dict[str, Any] | None = None,
 ) -> None:
-    removed = previous_names - current_names
+    def normalize(values: set[Any]) -> set[tuple[str, str]]:
+        result: set[tuple[str, str]] = set()
+        for value in values:
+            if isinstance(value, tuple) and len(value) == 2:
+                result.add((str(value[0]), str(value[1])))
+            else:
+                result.add(("", str(value)))
+        return result
+
+    removed = normalize(previous_names) - normalize(current_names)
     if not removed:
         return
     consumers: list[dict[str, Any]] = []
@@ -283,18 +545,35 @@ def validate_removed_interfaces(
         contract = read_contract(obj)
         if contract is None:
             continue
-        used = sorted(
-            name
-            for referenced_model, name in referenced_interface_names(contract)
-            if referenced_model == model_id and name in removed
+        used_identities = sorted(
+            (removed_output, name)
+            for referenced_model, output_key, name in referenced_interfaces(contract)
+            for removed_output, removed_name in removed
+            if referenced_model == model_id
+            and name == removed_name
+            and (
+                not output_key
+                or not removed_output
+                or output_key == removed_output
+            )
         )
+        used = [
+            {"output": output, "name": name}
+            for output, name in dict.fromkeys(used_identities)
+        ]
         if used:
             consumers.append({"object": obj.Name, "interfaces": used})
     if consumers:
         raise ReferenceContractError(
             "The VibeScript update removes published interfaces that are still "
             "used by downstream CAD objects.",
-            details={"removed_interfaces": sorted(removed), "consumers": consumers},
+            details={
+                "removed_interfaces": [
+                    {"output": output, "name": name}
+                    for output, name in sorted(removed)
+                ],
+                "consumers": consumers,
+            },
         )
 
 

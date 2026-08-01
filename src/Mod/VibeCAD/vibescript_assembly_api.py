@@ -36,7 +36,7 @@ _PUBLISHABLE_TYPES = frozenset(
         "bom",
     }
 )
-_JOINT_TYPES = (
+JOINT_TYPES = (
     "fixed",
     "revolute",
     "cylindrical",
@@ -51,6 +51,28 @@ _JOINT_TYPES = (
     "gears",
     "belt",
 )
+# Keep the established private name for existing internal callers while making
+# the provider-facing vocabulary available to API description code.
+_JOINT_TYPES = JOINT_TYPES
+JOINT_REQUIRED_PARAMETERS = {
+    "fixed": (),
+    "revolute": (),
+    "cylindrical": (),
+    "slider": (),
+    "ball": (),
+    "distance": ("distance_mm",),
+    "parallel": (),
+    "perpendicular": (),
+    "angle": ("angle_degrees",),
+    "rack_pinion": ("pitch_radius_mm",),
+    "screw": ("thread_pitch_mm",),
+    "gears": ("radius1_mm", "radius2_mm"),
+    "belt": ("radius1_mm", "radius2_mm"),
+}
+JOINT_LIMIT_PARAMETERS = {
+    "length_limits_mm": ("slider", "cylindrical"),
+    "angle_limits_degrees": ("revolute", "cylindrical"),
+}
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _STATIC_REQUIREMENT_TYPES = frozenset({"collision_free", "minimum_clearance"})
@@ -1316,7 +1338,11 @@ class AssemblyDomainAPI:
         suppressed: bool = False,
         label: str = "",
     ) -> DomainValue:
-        """Connect two JCS values with one of FreeCAD's 13 native joint types.
+        """Connect two JCS values with one native joint.
+
+        ``kind`` is exactly one of: ``fixed``, ``revolute``, ``cylindrical``,
+        ``slider``, ``ball``, ``distance``, ``parallel``, ``perpendicular``,
+        ``angle``, ``rack_pinion``, ``screw``, ``gears``, or ``belt``.
 
         Type-specific values are required only for ``distance``, ``angle``,
         ``rack_pinion``, ``screw``, ``gears``, and ``belt``. Translation limits
@@ -1364,15 +1390,7 @@ class AssemblyDomainAPI:
             "radius1_mm": radius1_mm,
             "radius2_mm": radius2_mm,
         }
-        required_by_kind = {
-            "distance": ("distance_mm",),
-            "angle": ("angle_degrees",),
-            "rack_pinion": ("pitch_radius_mm",),
-            "screw": ("thread_pitch_mm",),
-            "gears": ("radius1_mm", "radius2_mm"),
-            "belt": ("radius1_mm", "radius2_mm"),
-        }
-        required = set(required_by_kind.get(clean_kind, ()))
+        required = set(JOINT_REQUIRED_PARAMETERS[clean_kind])
         missing = [name for name in required if supplied[name] is None]
         if missing:
             raise _error(

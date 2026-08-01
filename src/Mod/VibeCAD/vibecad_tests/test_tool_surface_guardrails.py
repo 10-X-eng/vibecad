@@ -152,7 +152,9 @@ def test_no_orphan_tools(
     specs, packs, core_tools, engine_tools, compatibility_tools
 ) -> None:
     """1. Every registered tool must belong to a live or compatibility surface."""
-    recognized = _surfaced_names(core_tools, packs, engine_tools) | set(compatibility_tools)
+    recognized = _surfaced_names(core_tools, packs, engine_tools) | set(
+        compatibility_tools
+    )
     orphans = sorted(set(specs) - recognized)
     assert not orphans, (
         "Tools registered but not surfaced by CORE_PROVIDER_TOOLS, any "
@@ -392,7 +394,7 @@ def test_provider_schema_build_captures_runtime_state_once(
     schemas = session.provider_tool_schemas(service, "PartWorkbench")
 
     assert calls == ["runtime"]
-    assert any(schema["name"] == "vibescript.part.create_program" for schema in schemas)
+    assert any(schema["name"] == "vibescript.create_program" for schema in schemas)
     assert not any(schema["name"].startswith("part.") for schema in schemas)
 
 
@@ -515,11 +517,15 @@ def test_selected_vibescript_excludes_human_mutation_commands(
     assert allowed_reads <= names
     assert domain_pack.production_ready is production_ready
     if production_ready:
-        assert set(domain_pack.tool_names) <= names
+        assert set(domain_pack.provider_tool_names) <= names
+        assert set(domain_pack.tool_names) - set(domain_pack.provider_tool_names)
+        assert (
+            set(domain_pack.tool_names) - set(domain_pack.provider_tool_names)
+        ).isdisjoint(names)
         assert "core.inspect" not in names
-        assert len(
-            [name for name in names if name.startswith("vibescript.")]
-        ) == len(domain_pack.tool_names)
+        assert len([name for name in names if name.startswith("vibescript.")]) == len(
+            domain_pack.provider_tool_names
+        )
     else:
         assert not any(name.startswith("vibescript.") for name in names)
 
@@ -558,12 +564,12 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "material_catalog.search",
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
-        "vibescript.partdesign.create_program",
-        "vibescript.partdesign.set_inputs",
-        "vibescript.partdesign.reconfigure_program",
-        "vibescript.partdesign.delete_program",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_program",
     )
     surface = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
     names = session._surface_tool_names(
@@ -576,7 +582,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         for name in names
         if name.startswith("vibescript.") and name.count(".") == 2
     }
-    assert qualified_domains == {"partdesign"}
+    assert qualified_domains == set()
 
 
 def test_retired_surface_and_publication_shims_are_absent() -> None:
@@ -650,12 +656,20 @@ def test_real_vibescript_workbench_schemas_form_valid_codex_snapshots(specs) -> 
         }, workbench
 
 
-def test_vibescript_uses_universal_source_tools_and_qualified_domain_writes(specs) -> None:
+def test_vibescript_uses_one_universal_lifecycle_and_retains_qualified_aliases(
+    specs,
+) -> None:
+    import VibeCADVibeScriptDomains as domains
+
     assert {
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
+        "vibescript.set_inputs",
+        "vibescript.reconfigure_program",
+        "vibescript.delete_program",
     } <= set(specs)
     removed_suffixes = {
         "describe_api",
@@ -668,16 +682,14 @@ def test_vibescript_uses_universal_source_tools_and_qualified_domain_writes(spec
         "reconfigure_program",
         "delete_program",
     }
+    universal_names = {
+        f"vibescript.{operation}" for operation in domains.UNIVERSAL_SOURCE_OPERATIONS
+    }
     domain_names = {name for name in specs if name.startswith("vibescript.")}
     assert domain_names
     for name in domain_names:
         if name.count(".") == 1:
-            assert name in {
-                "vibescript.read_source",
-                "vibescript.read_api",
-                "vibescript.build_program",
-                "vibescript.edit_source",
-            }
+            assert name in universal_names
             continue
         namespace, domain, operation = name.split(".")
         assert namespace == "vibescript"
@@ -750,7 +762,9 @@ def test_each_domain_describe_api_matches_its_runtime_and_is_json_safe() -> None
         )
 
 
-def test_universal_source_tools_are_the_only_model_facing_vibescript_reads(specs) -> None:
+def test_universal_source_tools_are_the_only_model_facing_vibescript_reads(
+    specs,
+) -> None:
     import VibeCADSession as session
 
     assert "core.inspect" not in session.VIBESCRIPT_PROVIDER_TOOLS
