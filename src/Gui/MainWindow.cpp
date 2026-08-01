@@ -3459,9 +3459,11 @@ void MainWindow::setWindowTitle(const QString& string)
 StatusBarObserver::StatusBarObserver()
     : WindowParameter("OutputWindow")
 {
-    msg = QStringLiteral("#statusBar{color: #000000}");  // black
-    wrn = QStringLiteral("#statusBar{color: #ffaa00}");  // orange
-    err = QStringLiteral("#statusBar{color: #ff0000}");  // red
+    // Let normal messages inherit the active theme's foreground color.
+    msg = QString();
+    // These mid-tone defaults remain distinguishable against both light and dark status bars.
+    wrn = QStringLiteral("#statusBar{color: #e8590c}");
+    err = QStringLiteral("#statusBar{color: #e03131}");
     Base::Console().attachObserver(this);
     getWindowParameter()->Attach(this);
     getWindowParameter()->NotifyAll();

@@ -18,3 +18,17 @@ Gui--SplitButton QToolButton::menu-indicator {
     image: none;
     border-image: none;
 }
+
+/* Gui::UrlLabel and semantic feedback labels -------------------------------- */
+
+Gui--UrlLabel {
+    background-color: transparent;
+    text-decoration: underline;
+}
+
+QLabel[vibeStatus="error"],
+QLabel[vibeStatus="warning"],
+QLabel[vibeStatus="success"],
+QLabel[vibeStatus="info"] {
+    background-color: transparent;
+}

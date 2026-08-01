@@ -26,6 +26,7 @@
 
 #include <sstream>
 #include <QApplication>
+#include <QStyle>
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
@@ -73,6 +74,17 @@ using namespace PartGui;
 using namespace Gui;
 using namespace Attacher;
 namespace sp = std::placeholders;
+
+namespace
+{
+void applyVibeStatus(QWidget* widget, const QString& status)
+{
+    widget->setProperty("vibeStatus", status);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+    widget->update();
+}
+}
 
 /* TRANSLATOR PartDesignGui::TaskAttacher */
 
@@ -417,12 +429,12 @@ bool TaskAttacher::updatePreview()
     }
     if (errMessage.length() > 0) {
         ui->message->setText(tr("Attachment mode failed: %1").arg(errMessage));
-        ui->message->setStyleSheet(QStringLiteral("QLabel{color: red;}"));
+        applyVibeStatus(ui->message, QStringLiteral("error"));
     }
     else {
         if (!attached) {
             ui->message->setText(tr("Not attached"));
-            ui->message->setStyleSheet(QString());
+            applyVibeStatus(ui->message, QString());
         }
         else {
             std::vector<QString> strs = AttacherGui::getUIStrings(
@@ -430,7 +442,7 @@ bool TaskAttacher::updatePreview()
                 eMapMode(pcAttach->MapMode.getValue())
             );
             ui->message->setText(tr("Attached with mode %1").arg(strs[0]));
-            ui->message->setStyleSheet(QStringLiteral("QLabel{color: green;}"));
+            applyVibeStatus(ui->message, QStringLiteral("success"));
         }
     }
     QString splmLabelText = attached ? tr("Attachment Offset (in its local coordinate system):")
@@ -700,7 +712,7 @@ void TaskAttacher::addToReference(const std::vector<SubAndObjName>& pairs)
     }
     catch (Base::Exception& e) {
         ui->message->setText(QCoreApplication::translate("Exception", e.what()));
-        ui->message->setStyleSheet(QStringLiteral("QLabel{color: red;}"));
+        applyVibeStatus(ui->message, QStringLiteral("error"));
     }
 
     updateReferencesUI();

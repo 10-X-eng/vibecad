@@ -82,6 +82,73 @@ QLabel {
     color: #5c6874; }
 
 /*--------------------------------------------------------------------------------------------------
+Start page
+--------------------------------------------------------------------------------------------------*/
+#StartView {
+  background-color: #171c23;
+  color: #e8edf2; }
+
+#StartView QScrollArea {
+  background-color: transparent;
+  border: none; }
+
+QWidget#CreateNewRow {
+  background-color: transparent;
+  padding: 2px; }
+
+QPushButton#newFileButton {
+  min-width: 180px;
+  max-width: 180px;
+  min-height: 76px;
+  color: #e8edf2;
+  background-color: #1d242d;
+  border: 1px solid #29313c;
+  border-radius: 8px; }
+  QPushButton#newFileButton:hover {
+    background-color: #232b35;
+    border-color: #39434f; }
+  QPushButton#newFileButton:pressed {
+    color: #ffffff;
+    background-color: #283140;
+    border-color: #4dabf7; }
+  QPushButton#newFileButton:focus {
+    border-color: #4dabf7; }
+  QPushButton#newFileButton QLabel {
+    color: #e8edf2;
+    background-color: transparent; }
+
+StartGui--FirstStartWidget,
+StartGui--ThemeSelectorWidget,
+StartGui--GeneralSettingsWidget {
+  background-color: #1d242d;
+  border: 1px solid #29313c;
+  border-radius: 10px; }
+
+StartGui--FirstStartWidget::title {
+  subcontrol-origin: margin;
+  left: 12px;
+  padding: 0px 4px;
+  color: #e8edf2;
+  background-color: #1d242d; }
+
+/*--------------------------------------------------------------------------------------------------
+Semantic feedback
+--------------------------------------------------------------------------------------------------*/
+Gui--UrlLabel {
+  color: #74c0fc; }
+  Gui--UrlLabel:hover {
+    color: #ffffff; }
+
+QLabel[vibeStatus="error"] {
+  color: #ff6b6b; }
+QLabel[vibeStatus="warning"] {
+  color: #ffa94d; }
+QLabel[vibeStatus="success"] {
+  color: #51cf66; }
+QLabel[vibeStatus="info"] {
+  color: #74c0fc; }
+
+/*--------------------------------------------------------------------------------------------------
 Menu bar & menus
 --------------------------------------------------------------------------------------------------*/
 QMenuBar {
