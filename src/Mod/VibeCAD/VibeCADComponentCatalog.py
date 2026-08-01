@@ -52,6 +52,24 @@ _VIBESCRIPT_PROPERTY_NAMES = frozenset(
         "VibeCADVibeScriptOutputName",
         "VibeCADVibeScriptOutputType",
         "VibeCADVibeScriptProgramId",
+        "VibeCADVibeScriptRevision",
+    }
+)
+_NATIVE_INTERFACE_PROPERTY_NAMES = frozenset(
+    {
+        reference_contracts.PROP_NATIVE_INTERFACE,
+        reference_contracts.PROP_NATIVE_INTERFACE_NAME,
+        reference_contracts.PROP_NATIVE_INTERFACE_KIND,
+        reference_contracts.PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
+        reference_contracts.PROP_NATIVE_INTERFACE_COMPATIBILITY,
+        "Placement",
+    }
+)
+_SAVED_NATIVE_LCS_TYPES = frozenset(
+    {
+        "App::LocalCoordinateSystem",
+        "PartDesign::CoordinateSystem",
+        "Part::LocalCoordinateSystem",
     }
 )
 
@@ -126,6 +144,47 @@ def _inside_partdesign_body(obj: Any) -> bool:
     )
 
 
+def _native_lcs_candidates(owner_document: Any, component: Any) -> list[dict[str, Any]]:
+    """Return exact direct LCS identities without assigning semantic meaning."""
+
+    result: list[dict[str, Any]] = []
+    for candidate in list(getattr(component, "Group", []) or []):
+        if not reference_contracts.is_native_coordinate_system(candidate):
+            continue
+        try:
+            reference = reference_for_target(owner_document, candidate)
+        except DocumentReferenceError:
+            continue
+        item = {
+            "object_name": str(getattr(candidate, "Name", "") or ""),
+            "label": str(getattr(candidate, "Label", "") or ""),
+            "reference": reference,
+        }
+        properties = set(getattr(candidate, "PropertiesList", []) or [])
+        if (
+            reference_contracts.PROP_NATIVE_INTERFACE in properties
+            and bool(
+                getattr(
+                    candidate,
+                    reference_contracts.PROP_NATIVE_INTERFACE,
+                    False,
+                )
+            )
+        ):
+            item["published_interface"] = str(
+                getattr(
+                    candidate,
+                    reference_contracts.PROP_NATIVE_INTERFACE_NAME,
+                    "",
+                )
+                or ""
+            )
+        result.append(item)
+        if len(result) >= 64:
+            break
+    return result
+
+
 def _live_component_candidate(
     owner_document: Any,
     source_document: Any,
@@ -195,13 +254,39 @@ def _live_component_candidate(
     }
     program_id = str(getattr(obj, "VibeCADVibeScriptProgramId", "") or "").strip()
     if program_id:
+        domain = str(getattr(obj, "VibeCADVibeScriptDomain", "") or "").strip()
+        try:
+            from VibeCADVibeScriptDomains import get_vibescript_pack_for_domain
+
+            source_pack = get_vibescript_pack_for_domain(domain)
+        except Exception:
+            source_pack = None
         candidate["authoring_source"] = {
             "source_id": program_id,
-            "domain": str(getattr(obj, "VibeCADVibeScriptDomain", "") or "").strip(),
+            "domain": domain,
             "output_name": str(
                 getattr(obj, "VibeCADVibeScriptOutputName", "") or ""
             ).strip(),
+            "document_uid": str(reference.get("document_uid") or ""),
+            "document_name": str(getattr(source_document, "Name", "") or ""),
+            "document_path": str(
+                reference.get("document_path")
+                or getattr(source_document, "FileName", "")
+                or ""
+            ),
+            "current_revision": str(
+                getattr(obj, "VibeCADVibeScriptRevision", "") or ""
+            ).strip(),
+            "document_open": True,
+            **(
+                {"workbench": str(source_pack.workbench)}
+                if source_pack is not None
+                else {}
+            ),
         }
+    local_coordinate_systems = _native_lcs_candidates(owner_document, obj)
+    if local_coordinate_systems:
+        candidate["local_coordinate_systems"] = local_coordinate_systems
     try:
         import VibeCADReferenceContracts as reference_contracts
         import VibeCADScriptedPublication as publication
@@ -239,6 +324,26 @@ def _live_component_candidate(
         # Catalog discovery must remain useful when optional publication metadata
         # is malformed; exact publication validation still rejects bad references.
         pass
+    if not candidate.get("interfaces"):
+        native_definitions = reference_contracts.native_interface_definitions(obj)
+        if native_definitions:
+            native_table = {
+                reference_contracts.INTERFACE_TABLE_SCHEMA_KEY: (
+                    reference_contracts.INTERFACE_TABLE_SCHEMA
+                ),
+                reference_contracts.INTERFACE_TABLE_OUTPUTS_KEY: {
+                    str(getattr(obj, "Name", "") or ""): native_definitions
+                },
+            }
+            descriptors = reference_contracts.published_interface_descriptors(
+                native_table,
+                str(getattr(obj, "Name", "") or ""),
+            )
+            candidate["published_interfaces"] = [
+                str(item["name"]) for item in descriptors[:64]
+            ]
+            candidate["interfaces"] = descriptors[:64]
+            candidate["interfaces_truncated"] = len(descriptors) > 64
     return candidate
 
 
@@ -320,6 +425,125 @@ def _property_text(property_node: ET.Element | None) -> str:
     return ""
 
 
+def _property_bool(property_node: ET.Element | None) -> bool | None:
+    if property_node is None:
+        return None
+    child = property_node.find("Bool")
+    if child is None:
+        return None
+    raw = str(child.attrib.get("value") or "").strip().casefold()
+    return raw == "true" if raw in {"true", "false"} else None
+
+
+def _property_links(property_node: ET.Element | None) -> list[str]:
+    if property_node is None:
+        return []
+    link_list = property_node.find("LinkList")
+    if link_list is None:
+        return []
+    return [
+        str(link.attrib.get("value") or "").strip()
+        for link in link_list.findall("Link")
+        if str(link.attrib.get("value") or "").strip()
+    ]
+
+
+def _property_placement_frame(property_node: ET.Element | None) -> dict[str, Any] | None:
+    """Read one saved placement into the exact connector-frame wire format."""
+
+    if property_node is None:
+        return None
+    placement = property_node.find("PropertyPlacement")
+    if placement is None:
+        return None
+    try:
+        px, py, pz = (
+            float(placement.attrib[name]) for name in ("Px", "Py", "Pz")
+        )
+        qx, qy, qz, qw = (
+            float(placement.attrib[name]) for name in ("Q0", "Q1", "Q2", "Q3")
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    norm = (qx * qx + qy * qy + qz * qz + qw * qw) ** 0.5
+    if norm <= 0.0:
+        return None
+    qx, qy, qz, qw = (value / norm for value in (qx, qy, qz, qw))
+    matrix = [
+        1.0 - 2.0 * (qy * qy + qz * qz),
+        2.0 * (qx * qy - qz * qw),
+        2.0 * (qx * qz + qy * qw),
+        px,
+        2.0 * (qx * qy + qz * qw),
+        1.0 - 2.0 * (qx * qx + qz * qz),
+        2.0 * (qy * qz - qx * qw),
+        py,
+        2.0 * (qx * qz - qy * qw),
+        2.0 * (qy * qz + qx * qw),
+        1.0 - 2.0 * (qx * qx + qy * qy),
+        pz,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    return {
+        "schema": "vibecad-connector-frame-v1",
+        "origin_mm": [matrix[3], matrix[7], matrix[11]],
+        "x_direction": [matrix[0], matrix[4], matrix[8]],
+        "axis_direction": [matrix[2], matrix[6], matrix[10]],
+        "matrix": matrix,
+    }
+
+
+def _saved_native_interface_definition(
+    object_name: str,
+    values: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    if values.get(reference_contracts.PROP_NATIVE_INTERFACE) is not True:
+        return None
+    name = str(values.get(reference_contracts.PROP_NATIVE_INTERFACE_NAME) or "").strip()
+    kind = str(values.get(reference_contracts.PROP_NATIVE_INTERFACE_KIND) or "").strip()
+    frame = values.get("Placement")
+    if (
+        not name
+        or kind not in reference_contracts.NATIVE_INTERFACE_KINDS
+        or not isinstance(frame, Mapping)
+    ):
+        return None
+    try:
+        allowed = json.loads(
+            str(
+                values.get(reference_contracts.PROP_NATIVE_INTERFACE_ALLOWED_JOINTS)
+                or "[]"
+            )
+        )
+    except ValueError:
+        return None
+    if not isinstance(allowed, list) or any(
+        not isinstance(value, str) for value in allowed
+    ):
+        return None
+    compatibility = str(
+        values.get(reference_contracts.PROP_NATIVE_INTERFACE_COMPATIBILITY) or ""
+    ).strip()
+    connector = {
+        "kind": kind,
+        **({"allowed_joints": list(allowed)} if allowed else {}),
+        **({"compatibility": compatibility} if compatibility else {}),
+    }
+    return name, {
+        "selection": {"type": "frame", "native_lcs": object_name},
+        "connector": connector,
+        "resolved": {
+            "object": "",
+            "subelements": [],
+            "geometry": [],
+            "connector_frame": dict(frame),
+        },
+    }
+
+
 def _document_property(root: ET.Element, name: str) -> str:
     properties = root.find("Properties")
     if properties is None:
@@ -372,6 +596,8 @@ def _saved_document_candidates(
         for node in declarations.findall("Object")
     }
     metadata: dict[str, dict[str, str]] = {}
+    component_groups: dict[str, list[str]] = {}
+    native_metadata: dict[str, dict[str, Any]] = {}
     object_data = root.find("ObjectData")
     if object_data is not None:
         for object_node in object_data.findall("Object"):
@@ -380,13 +606,29 @@ def _saved_document_candidates(
             if not object_name or properties is None:
                 continue
             values: dict[str, str] = {}
+            native_values: dict[str, Any] = {}
             for property_node in properties.findall("Property"):
                 property_name = str(property_node.attrib.get("name") or "")
                 if property_name in _SEARCH_PROPERTY_NAMES | _VIBESCRIPT_PROPERTY_NAMES:
                     text = _property_text(property_node).strip()
                     if text:
                         values[property_name] = text
+                if property_name == "Group":
+                    component_groups[object_name] = _property_links(property_node)
+                if property_name in _NATIVE_INTERFACE_PROPERTY_NAMES:
+                    if property_name == reference_contracts.PROP_NATIVE_INTERFACE:
+                        native_values[property_name] = _property_bool(property_node)
+                    elif property_name == "Placement":
+                        native_values[property_name] = _property_placement_frame(
+                            property_node
+                        )
+                    else:
+                        native_values[property_name] = _property_text(
+                            property_node
+                        ).strip()
             metadata[object_name] = values
+            if native_values:
+                native_metadata[object_name] = native_values
     relative = path.relative_to(project_root)
     document_path = relative.as_posix()
     candidates = []
@@ -421,10 +663,27 @@ def _saved_document_candidates(
         if values.get("StockCode"):
             item["stock_code"] = values["StockCode"]
         if values.get("VibeCADVibeScriptProgramId"):
+            domain = values.get("VibeCADVibeScriptDomain", "")
+            try:
+                from VibeCADVibeScriptDomains import get_vibescript_pack_for_domain
+
+                source_pack = get_vibescript_pack_for_domain(domain)
+            except Exception:
+                source_pack = None
             item["authoring_source"] = {
                 "source_id": values["VibeCADVibeScriptProgramId"],
-                "domain": values.get("VibeCADVibeScriptDomain", ""),
+                "domain": domain,
                 "output_name": values.get("VibeCADVibeScriptOutputName", ""),
+                "document_uid": document_uid,
+                "document_name": document_label,
+                "document_path": document_path,
+                "current_revision": values.get("VibeCADVibeScriptRevision", ""),
+                "document_open": False,
+                **(
+                    {"workbench": str(source_pack.workbench)}
+                    if source_pack is not None
+                    else {}
+                ),
             }
         output_type = values.get("VibeCADVibeScriptOutputType", "")
         item["assembly_contract"] = _assembly_component_contract(
@@ -452,6 +711,53 @@ def _saved_document_candidates(
                     item["interfaces"] = descriptors[:64]
                     item["interfaces_truncated"] = len(descriptors) > 64
                     break
+        native_definitions: dict[str, dict[str, Any]] = {}
+        local_coordinate_systems: list[dict[str, Any]] = []
+        for child_name in component_groups.get(object_name, []):
+            if types.get(child_name) not in _SAVED_NATIVE_LCS_TYPES:
+                continue
+            parsed = _saved_native_interface_definition(
+                child_name,
+                native_metadata.get(child_name, {}),
+            )
+            child_item = {
+                "object_name": child_name,
+                "label": metadata.get(child_name, {}).get("Label") or child_name,
+                "reference": {
+                    "document_uid": document_uid,
+                    "object_name": child_name,
+                    "document_path": document_path,
+                },
+            }
+            if parsed is not None:
+                interface_name, definition = parsed
+                definition["resolved"]["object"] = object_name
+                if interface_name not in native_definitions:
+                    native_definitions[interface_name] = definition
+                    child_item["published_interface"] = interface_name
+            local_coordinate_systems.append(child_item)
+            if len(local_coordinate_systems) >= 64:
+                break
+        if local_coordinate_systems:
+            item["local_coordinate_systems"] = local_coordinate_systems
+        if native_definitions and not item.get("interfaces"):
+            native_table = {
+                reference_contracts.INTERFACE_TABLE_SCHEMA_KEY: (
+                    reference_contracts.INTERFACE_TABLE_SCHEMA
+                ),
+                reference_contracts.INTERFACE_TABLE_OUTPUTS_KEY: {
+                    object_name: native_definitions
+                },
+            }
+            descriptors = reference_contracts.published_interface_descriptors(
+                native_table,
+                object_name,
+            )
+            item["published_interfaces"] = [
+                str(descriptor["name"]) for descriptor in descriptors[:64]
+            ]
+            item["interfaces"] = descriptors[:64]
+            item["interfaces_truncated"] = len(descriptors) > 64
         candidates.append(item)
     return candidates
 
@@ -736,7 +1042,9 @@ def component_inventory(
         "authoring_source",
         "assembly_contract",
         "published_interfaces",
+        "interfaces",
         "interfaces_truncated",
+        "local_coordinate_systems",
     )
     components = [
         {

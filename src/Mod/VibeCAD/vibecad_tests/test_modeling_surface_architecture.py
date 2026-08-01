@@ -9,12 +9,15 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import sys
 import zipfile
 
 import pytest
 
 from VibeCADModelingSurface import (
+    ASSEMBLY_PLAYBACK_TOOL,
     COMPONENT_CATALOG_TOOL,
+    COMPONENT_INTERFACE_TOOL,
     CORE_CONVERSATION_VIEW_TOOLS,
     FASTENER_CATALOG_TOOL,
     MATERIAL_CATALOG_TOOL,
@@ -66,6 +69,9 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             expected_core.add(FASTENER_CATALOG_TOOL)
         if workbench == "AssemblyWorkbench":
             expected_core.add(COMPONENT_CATALOG_TOOL)
+            expected_core.add(ASSEMBLY_PLAYBACK_TOOL)
+        if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
+            expected_core.add(COMPONENT_INTERFACE_TOOL)
         if workbench in {"PartDesignWorkbench", "MaterialWorkbench"}:
             expected_core.add(MATERIAL_CATALOG_TOOL)
         assert set(scripted.core_tool_names) == expected_core
@@ -85,7 +91,11 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             assert len(scripted.cad_tool_names) == len(
                 domain_pack.provider_tool_names
             ) + len(focused_reads)
-            assert len(scripted.tool_names) <= 15
+            # Assembly adds exact cross-workbench source/interface playback controls;
+            # every other focused surface retains the original tighter ceiling.
+            assert len(scripted.tool_names) <= (
+                17 if workbench == "AssemblyWorkbench" else 15
+            )
             assert "core.inspect" not in scripted.tool_names
             unrelated_human_commands = set(
                 WORKBENCH_TOOL_PACKS[workbench].tool_names
@@ -497,11 +507,27 @@ def test_universal_build_program_replays_exact_saved_source(
         return {"ok": True, "tool": tool_name, "program_id": source_id}
 
     monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
     result = session._run_universal_vibescript_tool(
-        object(),
+        service,
         "PartDesignWorkbench",
         "vibescript.build_program",
         {"source_id": source_id, "expected_revision": revision},
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "current_revision": revision,
+                    "affected_outputs": [],
+                }
+            ]
+        },
         document_thread_dispatch=None,
         cancellation_check=None,
         progress_callback=None,
@@ -534,14 +560,30 @@ def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
         return {"ok": True, "program_id": arguments["program_id"]}
 
     monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
     result = session._run_universal_vibescript_tool(
-        object(),
+        service,
         "PartDesignWorkbench",
         "vibescript.edit_source",
         {
             "source_id": "a" * 32,
             "expected_revision": "b" * 64,
             "source": "result = {'Body': api.box(1, 2, 3)}",
+        },
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": "a" * 32,
+                    "domain": "partdesign",
+                    "current_revision": "b" * 64,
+                    "affected_outputs": [],
+                }
+            ]
         },
         document_thread_dispatch=None,
         cancellation_check=None,
@@ -625,11 +667,31 @@ def test_universal_lifecycle_maps_to_the_active_domain(
         }
 
     monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
     result = session._run_universal_vibescript_tool(
-        object(),
+        service,
         "AssemblyWorkbench",
         tool_name,
         arguments,
+        editable_sources=(
+            {
+                "sources": [
+                    {
+                        "source_id": "a" * 32,
+                        "domain": "assembly",
+                        "current_revision": "b" * 64,
+                        "affected_outputs": [],
+                    }
+                ]
+            }
+            if "source_id" in arguments
+            else None
+        ),
         document_thread_dispatch=None,
         cancellation_check=None,
         progress_callback=None,
@@ -642,6 +704,333 @@ def test_universal_lifecycle_maps_to_the_active_domain(
     assert observed["arguments"] == expected_arguments
     assert result["tool"] == tool_name
     assert result["source_id"] == result["program_id"]
+
+
+def test_universal_source_tools_route_to_the_exact_open_authoring_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "9" * 32
+    revision = "8" * 64
+
+    class SourceOutput:
+        VibeCADVibeScriptProgramId = source_id
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptRevision = revision
+        VibeCADVibeScriptOutputName = "Gear"
+
+    assembly_document = type(
+        "Document",
+        (),
+        {
+            "Uid": "assembly-document",
+            "Name": "Assembly",
+            "FileName": "/project/assembly.FCStd",
+            "Objects": [],
+        },
+    )()
+    source_document = type(
+        "Document",
+        (),
+        {
+            "Uid": "source-document",
+            "Name": "GearSource",
+            "FileName": "/project/gear.FCStd",
+            "Objects": [SourceOutput()],
+        },
+    )()
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {
+            "listDocuments": staticmethod(
+                lambda: {"Assembly": assembly_document, "GearSource": source_document}
+            )
+        },
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+    service = type(
+        "Service",
+        (),
+        {"_active_document": lambda self: assembly_document},
+    )()
+    catalog = {
+        "candidates": [
+            {
+                "reference": {
+                    "document_uid": "source-document",
+                    "object_name": "PublishedGear",
+                    "document_path": "gear.FCStd",
+                },
+                "authoring_source": {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "output_name": "Gear",
+                },
+            }
+        ]
+    }
+
+    result = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"source_id": source_id, "names": ["body"]},
+        component_catalog=catalog,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["ok"] is True
+    assert result["domain"] == "partdesign"
+    assert result["source_target"] == {
+        "source_id": source_id,
+        "domain": "partdesign",
+        "workbench": "PartDesignWorkbench",
+        "document_uid": "source-document",
+        "document_name": "GearSource",
+        "document_path": "/project/gear.FCStd",
+        "current_revision": revision,
+        "affected_outputs": ["Gear"],
+    }
+    assert service._active_document() is assembly_document
+
+
+def test_universal_source_write_binds_the_authoring_document_without_switching_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "5" * 32
+    revision = "4" * 64
+
+    class SourceOutput:
+        VibeCADVibeScriptProgramId = source_id
+        VibeCADVibeScriptDomain = "partdesign"
+        VibeCADVibeScriptRevision = revision
+        VibeCADVibeScriptOutputName = "Shaft"
+
+    class Document:
+        def __init__(self, uid, name, path, objects):
+            self.Uid = uid
+            self.Name = name
+            self.FileName = path
+            self.Objects = objects
+            self.recompute_count = 0
+
+        def recompute(self):
+            self.recompute_count += 1
+
+    assembly_document = Document(
+        "assembly-document",
+        "Assembly",
+        "/project/assembly.FCStd",
+        [],
+    )
+    source_document = Document(
+        "source-document",
+        "ShaftSource",
+        "/project/shaft.FCStd",
+        [SourceOutput()],
+    )
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {
+            "listDocuments": staticmethod(
+                lambda: {"Assembly": assembly_document, "ShaftSource": source_document}
+            )
+        },
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+
+    class Service:
+        def _active_document(self):
+            return assembly_document
+
+        @staticmethod
+        def provider_document_revision_for(document, **_kwargs):
+            return f"revision:{document.Uid}"
+
+    observed = {}
+
+    def run_internal(bound_service, tool_name, arguments, **_kwargs):
+        observed.update(
+            document=bound_service._active_document(),
+            workbench=bound_service.active_workbench_name(),
+            revision=bound_service.provider_document_revision(),
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        return {
+            "ok": True,
+            "program_id": source_id,
+            "working_revision": "3" * 64,
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    result = session._run_universal_vibescript_tool(
+        Service(),
+        "AssemblyWorkbench",
+        "vibescript.edit_source",
+        {
+            "source_id": source_id,
+            "expected_revision": revision,
+            "source": "result = {'Shaft': api.body(api.box(1, 2, 3))}",
+        },
+        component_catalog={
+            "candidates": [
+                {
+                    "reference": {
+                        "document_uid": "source-document",
+                        "object_name": "PublishedShaft",
+                        "document_path": "shaft.FCStd",
+                    },
+                    "authoring_source": {
+                        "source_id": source_id,
+                        "domain": "partdesign",
+                        "output_name": "Shaft",
+                    },
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "document": source_document,
+        "workbench": "PartDesignWorkbench",
+        "revision": "revision:source-document",
+        "tool_name": "vibescript.partdesign.edit_source",
+        "arguments": {
+            "program_id": source_id,
+            "expected_revision": revision,
+            "source": "result = {'Shaft': api.body(api.box(1, 2, 3))}",
+        },
+    }
+    assert result["source_target"]["document_uid"] == "source-document"
+    assert result["source_target"]["current_revision"] == "3" * 64
+    assert result["referencing_document_refreshed"] is True
+    assert assembly_document.recompute_count == 1
+    assert source_document.recompute_count == 0
+
+
+def test_universal_source_routing_rejects_closed_and_unknown_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "7" * 32
+    assembly_document = type(
+        "Document",
+        (),
+        {
+            "Uid": "assembly-document",
+            "Name": "Assembly",
+            "FileName": "/project/assembly.FCStd",
+            "Objects": [],
+        },
+    )()
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {"listDocuments": staticmethod(lambda: {"Assembly": assembly_document})},
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+    service = type(
+        "Service",
+        (),
+        {"_active_document": lambda self: assembly_document},
+    )()
+    catalog = {
+        "candidates": [
+            {
+                "reference": {
+                    "document_uid": "closed-source",
+                    "object_name": "PublishedGear",
+                    "document_path": "gear.FCStd",
+                },
+                "authoring_source": {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "output_name": "Gear",
+                },
+            }
+        ]
+    }
+
+    closed = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"source_id": source_id},
+        component_catalog=catalog,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+    unknown = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"source_id": "6" * 32},
+        component_catalog=catalog,
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert closed["failure_code"] == "SOURCE_DOCUMENT_NOT_OPEN"
+    assert closed["observed"]["documents"][0]["document_uid"] == "closed-source"
+    assert unknown["failure_code"] == "SOURCE_NOT_FOUND"
+
+
+def test_assembly_connector_compatibility_uses_only_explicit_contracts() -> None:
+    from vibescript_assembly_api import explicit_connector_compatibility
+
+    legacy = explicit_connector_compatibility("revolute", [None, None])
+    assert legacy == {
+        "ok": True,
+        "joint_type": "revolute",
+        "validation": "native_joint_connector_validation",
+        "contracts": [None, None],
+    }
+    allowed = explicit_connector_compatibility(
+        "revolute",
+        [
+            {
+                "kind": "axis",
+                "allowed_joints": ["revolute"],
+                "compatibility": "shaft-v1",
+            },
+            {
+                "kind": "axis",
+                "allowed_joints": ["revolute", "fixed"],
+                "compatibility": "shaft-v1",
+            },
+        ],
+    )
+    assert allowed["ok"] is True
+    assert allowed["validation"] == "explicit_connector_contract"
+    disallowed = explicit_connector_compatibility(
+        "fixed",
+        [{"kind": "axis", "allowed_joints": ["revolute"]}, None],
+    )
+    assert disallowed["ok"] is False
+    assert "explicitly disallows" in disallowed["reason"]
+    mismatch = explicit_connector_compatibility(
+        "revolute",
+        [
+            {"kind": "axis", "compatibility": "shaft-v1"},
+            {"kind": "axis", "compatibility": "shaft-v2"},
+        ],
+    )
+    assert mismatch["ok"] is False
+    assert mismatch["compatibility"] == ["shaft-v1", "shaft-v2"]
 
 
 def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -> None:

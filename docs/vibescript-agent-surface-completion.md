@@ -46,6 +46,21 @@ model.
   lifecycle. Assembly turns inject a compact copy-ready component inventory;
   catalog search filters the retained turn snapshot only when needed and offers
   explicit provider-byte-safe compact pagination for complete inventories.
+- [x] Assembly component records expose their exact authoring `source_id`, domain,
+  revision, output, and document. Universal source/API tools bind directly to
+  that owning open document without changing the visible document or ribbon;
+  closed, conflicting, stale, and unknown ownership fail explicitly.
+- [x] Part Design publications carry output-local connector contracts with an
+  exact frame, kind, allowed joint kinds, and optional exact mating token.
+  Assembly validates this authored contract and then delegates to the native
+  joint solver; geometry type is never used to guess compatibility.
+- [x] Human-authored Bodies and Components can publish an existing native
+  coordinate system through one Model/Assembly ribbon command or the matching
+  agent tool. The catalog exposes copy-ready coordinate-system references and
+  preserves the connector contract through save/reopen.
+- [x] Retained VibeScript simulations use FreeCAD's native Assembly player.
+  Agent playback opens and starts that player, while source-owned motions and
+  timing remain read-only and unchanged when the task closes.
 - [x] Focused tests, worker integration tests, and the release build pass.
 
 ## Implementation order
@@ -68,10 +83,8 @@ model.
 
 ## Verification
 
-Verified on 2026-08-01 with the release build, 550 Python contract tests, full
-native Part Design and Assembly lifecycle gates, focused App and TechDraw C++
-tests, and live GUI lifecycle gates for Part Design, Assembly, CAM, Drawing,
-FEM, Material, Inspection, Mesh, MeshPart, Points, Reverse Engineering, Robot,
-and the generic domain publisher. Part Design additionally covers stale output
-ownership repair, repeated local interface names, and post-abort Link
-presentation restoration.
+Verification is refreshed whenever this ledger changes. The current gate covers
+focused Python contracts, full native Part Design and Assembly lifecycles,
+explicit native coordinate-system publication and save/reopen, source routing,
+connector-contract parity between worker and host, native simulation playback,
+and the release build.

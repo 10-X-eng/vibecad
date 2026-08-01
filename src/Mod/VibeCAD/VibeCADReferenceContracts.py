@@ -19,12 +19,166 @@ PROP_CONTRACT = "VibeCADReferenceContract"
 PROP_DERIVED_STATE = "VibeCADDerivedState"
 PROP_STALE_REASON = "VibeCADStaleReason"
 PROP_SOURCE_REVISION = "VibeCADSourceRevision"
+PROP_NATIVE_INTERFACE = "VibeCADComponentInterface"
+PROP_NATIVE_INTERFACE_NAME = "VibeCADInterfaceName"
+PROP_NATIVE_INTERFACE_KIND = "VibeCADInterfaceKind"
+PROP_NATIVE_INTERFACE_ALLOWED_JOINTS = "VibeCADInterfaceAllowedJoints"
+PROP_NATIVE_INTERFACE_COMPATIBILITY = "VibeCADInterfaceCompatibility"
+NATIVE_INTERFACE_KINDS = frozenset({"axis", "plane", "point", "frame"})
 
 
 class ReferenceContractError(RuntimeError):
     def __init__(self, message: str, *, details: dict[str, Any] | None = None):
         self.details = dict(details or {})
         super().__init__(message)
+
+
+def is_native_coordinate_system(obj: Any) -> bool:
+    """Return whether *obj* is one shipped native coordinate-system type."""
+
+    try:
+        return bool(obj.isDerivedFrom("App::LocalCoordinateSystem")) or str(
+            getattr(obj, "TypeId", "") or ""
+        ) in {
+            "PartDesign::CoordinateSystem",
+            "Part::LocalCoordinateSystem",
+        }
+    except Exception:
+        return False
+
+
+def _direct_component_resources(component: Any) -> list[Any]:
+    resources: list[Any] = []
+    for candidate in list(getattr(component, "Group", []) or []):
+        if candidate is not None and candidate not in resources:
+            resources.append(candidate)
+    return resources
+
+
+def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
+    """Read explicitly tagged native LCS children; never inspect shape geometry."""
+
+    definitions: dict[str, dict[str, Any]] = {}
+    for lcs in _direct_component_resources(component):
+        properties = set(getattr(lcs, "PropertiesList", []) or [])
+        if (
+            not is_native_coordinate_system(lcs)
+            or PROP_NATIVE_INTERFACE not in properties
+            or not bool(getattr(lcs, PROP_NATIVE_INTERFACE, False))
+        ):
+            continue
+        name = str(getattr(lcs, PROP_NATIVE_INTERFACE_NAME, "") or "").strip()
+        kind = str(getattr(lcs, PROP_NATIVE_INTERFACE_KIND, "") or "").strip()
+        if not name or kind not in NATIVE_INTERFACE_KINDS or name in definitions:
+            continue
+        try:
+            allowed = json.loads(
+                str(getattr(lcs, PROP_NATIVE_INTERFACE_ALLOWED_JOINTS, "[]") or "[]")
+            )
+        except ValueError:
+            continue
+        if not isinstance(allowed, list) or any(
+            not isinstance(value, str) for value in allowed
+        ):
+            continue
+        compatibility = str(
+            getattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, "") or ""
+        ).strip()
+        connector = {
+            "kind": kind,
+            **({"allowed_joints": list(allowed)} if allowed else {}),
+            **({"compatibility": compatibility} if compatibility else {}),
+        }
+        definitions[name] = {
+            "selection": {
+                "type": "frame",
+                "native_lcs": str(getattr(lcs, "Name", "") or ""),
+            },
+            "connector": connector,
+            "resolved": {
+                "object": str(getattr(component, "Name", "") or ""),
+                "subelements": [],
+                "geometry": [],
+                "connector_frame": _placement_frame(lcs.Placement),
+            },
+        }
+    return definitions
+
+
+def publish_native_interface(
+    component: Any,
+    lcs: Any,
+    *,
+    name: str,
+    kind: str,
+    allowed_joints: list[str] | tuple[str, ...] = (),
+    compatibility: str = "",
+) -> dict[str, Any]:
+    """Publish one exact existing LCS as a reusable component connector."""
+
+    import re
+    from vibescript_assembly_api import JOINT_TYPES
+
+    clean_name = str(name or "").strip()
+    clean_kind = str(kind or "").strip().lower()
+    clean_joints = [str(value or "").strip().lower() for value in allowed_joints]
+    clean_compatibility = str(compatibility or "").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", clean_name):
+        raise ReferenceContractError("Interface name is not a stable identifier.")
+    if clean_kind not in NATIVE_INTERFACE_KINDS:
+        raise ReferenceContractError(
+            f"Interface kind must be one of {sorted(NATIVE_INTERFACE_KINDS)}."
+        )
+    if len(clean_joints) != len(set(clean_joints)) or any(
+        value not in JOINT_TYPES for value in clean_joints
+    ):
+        raise ReferenceContractError(
+            f"Allowed joints must be unique values from {list(JOINT_TYPES)}."
+        )
+    if clean_compatibility and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", clean_compatibility
+    ):
+        raise ReferenceContractError("Interface compatibility is not a stable token.")
+    if getattr(component, "Document", None) is not getattr(lcs, "Document", None):
+        raise ReferenceContractError("The component and LCS belong to different documents.")
+    if not is_native_coordinate_system(lcs):
+        raise ReferenceContractError("The selected interface is not a native LCS.")
+    if lcs not in _direct_component_resources(component):
+        raise ReferenceContractError(
+            "The selected LCS is not a direct resource of the selected component."
+        )
+    for existing_name, definition in native_interface_definitions(component).items():
+        native_name = str(
+            dict(definition.get("selection") or {}).get("native_lcs") or ""
+        )
+        if existing_name == clean_name and native_name != str(lcs.Name):
+            raise ReferenceContractError(
+                f"Component {component.Name!r} already publishes interface {clean_name!r}."
+            )
+    for property_type, property_name, description in (
+        ("App::PropertyBool", PROP_NATIVE_INTERFACE, "Marks this LCS as a component interface."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_NAME, "Stable component-local interface name."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_KIND, "Explicit connector kind."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_ALLOWED_JOINTS, "JSON list of allowed Assembly joint kinds."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_COMPATIBILITY, "Exact connector compatibility token."),
+    ):
+        if property_name not in set(getattr(lcs, "PropertiesList", []) or []):
+            lcs.addProperty(
+                property_type,
+                property_name,
+                "VibeCAD Interface",
+                description,
+            )
+    setattr(lcs, PROP_NATIVE_INTERFACE, True)
+    setattr(lcs, PROP_NATIVE_INTERFACE_NAME, clean_name)
+    setattr(lcs, PROP_NATIVE_INTERFACE_KIND, clean_kind)
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
+        json.dumps(clean_joints, ensure_ascii=True, separators=(",", ":")),
+    )
+    setattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, clean_compatibility)
+    return native_interface_definitions(component)[clean_name]
 
 
 def interface_definitions_for_output(
@@ -212,6 +366,9 @@ def published_interface_descriptors(
         }
         if raw_definition.get("description"):
             descriptor["description"] = str(raw_definition["description"])
+        connector = raw_definition.get("connector")
+        if isinstance(connector, dict):
+            descriptor["connector"] = dict(connector)
         if len(geometry) == 1 and geometry[0].get("geometry_type"):
             descriptor["geometry_type"] = str(geometry[0]["geometry_type"])
         elif not subelements:
@@ -398,6 +555,12 @@ def resolve_interface(
                 details={"subelements": subelements, "native_error": str(exc)},
             ) from exc
     connector_frame_placement(connector_frame)
+    connector = definition.get("connector")
+    if connector is not None and not isinstance(connector, dict):
+        raise ReferenceContractError(
+            f"Published interface {interface_name!r} has a malformed connector contract.",
+            details={"connector": connector},
+        )
     return {
         "ok": True,
         "model_id": model_id,
@@ -410,6 +573,7 @@ def resolve_interface(
         "subelements": subelements,
         "geometry": geometry,
         "connector_frame": connector_frame,
+        **({"connector": dict(connector)} if isinstance(connector, dict) else {}),
     }
 
 

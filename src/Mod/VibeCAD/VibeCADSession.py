@@ -102,7 +102,10 @@ MAX_RECENT_CONVERSATION_TURNS = 16
 MAX_RECENT_CONVERSATION_JSON_BYTES = 48 * 1024
 MAX_RECENT_CONVERSATION_TURN_CHARACTERS = 6000
 MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES = 128 * 1024
-MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 16 * 1024
+# Assembly exposes two explicit cross-workbench controls (native-interface
+# publication and simulation playback).  Keep the exact schemas intact rather
+# than hiding constraints from the model behind an undersized tactical cap.
+MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 20 * 1024
 
 
 @dataclass(frozen=True)
@@ -637,7 +640,51 @@ def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]
             else prepare_captured_component_catalog(component_catalog)
         )
         completed["_vibecad_component_catalog"] = prepared
-        completed["available_components"] = component_inventory(prepared)
+        inventory = component_inventory(prepared)
+        completed["available_components"] = inventory
+        editable = completed.get("editable_sources")
+        if isinstance(editable, Mapping):
+            component_sources: dict[tuple[str, str], dict[str, Any]] = {}
+            for component in list(inventory.get("components") or []):
+                if not isinstance(component, Mapping):
+                    continue
+                authoring = component.get("authoring_source")
+                if not isinstance(authoring, Mapping):
+                    continue
+                source_id = str(authoring.get("source_id") or "")
+                output_name = str(authoring.get("output_name") or "")
+                if not source_id:
+                    continue
+                item = dict(authoring)
+                item["read_source"] = {
+                    "tool": "vibescript.read_source",
+                    "arguments": {"source_id": source_id, "include_logs": False},
+                }
+                item["read_api"] = {
+                    "tool": "vibescript.read_api",
+                    "arguments": {"source_id": source_id},
+                }
+                item["edit_source"] = {
+                    "tool": "vibescript.edit_source",
+                    "target_arguments": {
+                        "source_id": source_id,
+                        **(
+                            {"expected_revision": str(authoring["current_revision"])}
+                            if authoring.get("current_revision")
+                            else {}
+                        ),
+                    },
+                }
+                component_sources[(source_id, output_name)] = item
+            updated_editable = dict(editable)
+            updated_editable["component_sources"] = list(component_sources.values())
+            updated_editable["component_source_count"] = len(component_sources)
+            updated_editable["component_source_rule"] = (
+                "Read and edit a component through its exact source_id. The source's "
+                "owning workbench and open document are selected automatically; the "
+                "visible Assembly workbench does not change."
+            )
+            completed["editable_sources"] = updated_editable
     return completed
 
 
@@ -1620,18 +1667,328 @@ def _filtered_api_payload(
     return focused
 
 
+@dataclass(frozen=True)
+class _VibeScriptSourceTarget:
+    """Exact open document and domain that own one editable source."""
+
+    source_id: str
+    pack: Any
+    document: Any
+    document_uid: str
+    document_name: str
+    document_path: str
+    current_revision: str
+    output_names: tuple[str, ...]
+
+
+class _SourceTargetError(RuntimeError):
+    def __init__(self, code: str, message: str, *, observed: Mapping[str, Any]):
+        self.code = str(code)
+        self.observed = dict(observed)
+        super().__init__(message)
+
+
+class _SourceBoundService:
+    """Present one source's document/domain to the existing domain lifecycle.
+
+    The underlying service remains the live GUI service.  Only the three inputs
+    that define a VibeScript lifecycle target are rebound, so publication uses
+    the existing validated transaction and rollback implementation without
+    changing the user's active document or ribbon.
+    """
+
+    def __init__(self, service: VibeCADService, target: _VibeScriptSourceTarget):
+        self._service = service
+        self._target = target
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
+
+    def _active_document(self) -> Any:
+        return self._target.document
+
+    def active_workbench_name(self) -> str:
+        return str(self._target.pack.workbench)
+
+    def provider_document_revision(
+        self,
+        native_diagnostics: dict[str, Any] | None = None,
+        *,
+        object_count: int | None = None,
+    ) -> str:
+        exact = getattr(self._service, "provider_document_revision_for", None)
+        if callable(exact):
+            return str(
+                exact(
+                    self._target.document,
+                    native_diagnostics=native_diagnostics,
+                    object_count=object_count,
+                )
+            )
+        if self._target.document is self._service._active_document():
+            try:
+                return str(
+                    self._service.provider_document_revision(
+                        native_diagnostics,
+                        object_count=object_count,
+                    )
+                )
+            except TypeError:
+                return str(self._service.provider_document_revision())
+        raise RuntimeError(
+            "The VibeCAD service cannot calculate a revision for the referenced "
+            "source document."
+        )
+
+
+def _catalog_source_records(
+    component_catalog: Mapping[str, Any] | None,
+    source_id: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(component_catalog, Mapping):
+        return []
+    records: list[dict[str, Any]] = []
+    for candidate in list(component_catalog.get("candidates") or []):
+        if not isinstance(candidate, Mapping):
+            continue
+        authoring = candidate.get("authoring_source")
+        if not isinstance(authoring, Mapping):
+            continue
+        if str(authoring.get("source_id") or "").strip().lower() != source_id:
+            continue
+        records.append(
+            {
+                "source": str(candidate.get("source") or ""),
+                "reference": dict(candidate.get("reference") or {}),
+                "authoring_source": dict(authoring),
+                "label": str(candidate.get("label") or ""),
+            }
+        )
+    return records
+
+
+def _editable_source_record(
+    editable_sources: Mapping[str, Any] | None,
+    source_id: str,
+) -> dict[str, Any] | None:
+    if not isinstance(editable_sources, Mapping):
+        return None
+    matches = [
+        dict(candidate)
+        for candidate in list(editable_sources.get("sources") or [])
+        if isinstance(candidate, Mapping)
+        and str(candidate.get("source_id") or "").strip().lower() == source_id
+    ]
+    if len(matches) > 1:
+        raise _SourceTargetError(
+            "SOURCE_OWNERSHIP_CONFLICT",
+            f"Source {source_id} appears more than once in the active source index.",
+            observed={"source_id": source_id, "source_count": len(matches)},
+        )
+    return matches[0] if matches else None
+
+
+def _resolve_vibescript_source_target(
+    service: VibeCADService,
+    active_pack: Any,
+    source_id: str,
+    component_catalog: Mapping[str, Any] | None,
+    editable_sources: Mapping[str, Any] | None = None,
+) -> _VibeScriptSourceTarget:
+    """Resolve a source only from the active document or the frozen catalog."""
+
+    clean_source_id = str(source_id or "").strip().lower()
+    records = _catalog_source_records(component_catalog, clean_source_id)
+    editable_record = _editable_source_record(editable_sources, clean_source_id)
+    active_document = service._active_document()
+    active_uid = str(getattr(active_document, "Uid", "") or "")
+    authorized_uids = {active_uid} if active_uid else set()
+    expected_domains: dict[str, set[str]] = {}
+    for record in records:
+        uid = str(record["reference"].get("document_uid") or "")
+        if uid:
+            authorized_uids.add(uid)
+            domain = str(record["authoring_source"].get("domain") or "").strip().lower()
+            if domain:
+                expected_domains.setdefault(uid, set()).add(domain)
+
+    try:
+        import FreeCAD as App
+
+        open_documents = list(App.listDocuments().values())
+    except Exception:
+        open_documents = [active_document] if active_document is not None else []
+
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    for document in open_documents:
+        if document is None:
+            continue
+        document_uid = str(getattr(document, "Uid", "") or "")
+        if document_uid not in authorized_uids:
+            continue
+        for obj in list(getattr(document, "Objects", []) or []):
+            if str(
+                getattr(obj, vibescript_domains.PROP_PROGRAM_ID, "") or ""
+            ).strip().lower() != clean_source_id:
+                continue
+            domain = str(
+                getattr(obj, vibescript_domains.PROP_PROGRAM_DOMAIN, "") or ""
+            ).strip().lower()
+            if (
+                expected_domains.get(document_uid)
+                and domain not in expected_domains[document_uid]
+            ):
+                raise _SourceTargetError(
+                    "SOURCE_DOMAIN_MISMATCH",
+                    f"Source {clean_source_id} does not match its catalog domain.",
+                    observed={
+                        "source_id": clean_source_id,
+                        "document_uid": document_uid,
+                        "catalog_domains": sorted(expected_domains[document_uid]),
+                        "live_domain": domain,
+                    },
+                )
+            pack = vibescript_domains.get_vibescript_pack_for_domain(domain)
+            if pack is None:
+                raise _SourceTargetError(
+                    "SOURCE_DOMAIN_MISMATCH",
+                    f"Source {clean_source_id} declares unsupported domain {domain!r}.",
+                    observed={"source_id": clean_source_id, "domain": domain},
+                )
+            key = (document_uid, domain)
+            candidate = candidates.setdefault(
+                key,
+                {
+                    "document": document,
+                    "pack": pack,
+                    "revisions": set(),
+                    "outputs": set(),
+                },
+            )
+            revision = str(
+                getattr(obj, vibescript_domains.PROP_PROGRAM_REVISION, "") or ""
+            ).strip().lower()
+            output_name = str(
+                getattr(obj, vibescript_domains.PROP_PROGRAM_OUTPUT, "") or ""
+            ).strip()
+            if revision:
+                candidate["revisions"].add(revision)
+            if output_name:
+                candidate["outputs"].add(output_name)
+
+    if len(candidates) > 1:
+        raise _SourceTargetError(
+            "SOURCE_OWNERSHIP_CONFLICT",
+            f"Source {clean_source_id} is claimed by multiple open documents or domains.",
+            observed={
+                "source_id": clean_source_id,
+                "owners": [
+                    {"document_uid": uid, "domain": domain}
+                    for uid, domain in sorted(candidates)
+                ],
+            },
+        )
+    if candidates:
+        (document_uid, _domain), candidate = next(iter(candidates.items()))
+        revisions = sorted(candidate["revisions"])
+        if len(revisions) > 1:
+            raise _SourceTargetError(
+                "SOURCE_REVISION_CONFLICT",
+                f"Source {clean_source_id} has conflicting live output revisions.",
+                observed={"source_id": clean_source_id, "revisions": revisions},
+            )
+        document = candidate["document"]
+        return _VibeScriptSourceTarget(
+            source_id=clean_source_id,
+            pack=candidate["pack"],
+            document=document,
+            document_uid=document_uid,
+            document_name=str(getattr(document, "Name", "") or ""),
+            document_path=str(getattr(document, "FileName", "") or ""),
+            current_revision=revisions[0] if revisions else "",
+            output_names=tuple(sorted(candidate["outputs"])),
+        )
+
+    if editable_record is not None:
+        indexed_domain = str(editable_record.get("domain") or "").strip().lower()
+        pack = vibescript_domains.get_vibescript_pack_for_domain(indexed_domain)
+        if pack is None or pack.domain != active_pack.domain:
+            raise _SourceTargetError(
+                "SOURCE_DOMAIN_MISMATCH",
+                f"Source {clean_source_id} does not belong to the active source domain.",
+                observed={
+                    "source_id": clean_source_id,
+                    "active_domain": str(active_pack.domain),
+                    "indexed_domain": indexed_domain,
+                },
+            )
+        if active_document is None:
+            raise _SourceTargetError(
+                "SOURCE_DOCUMENT_NOT_OPEN",
+                "The source's owning document is not open.",
+                observed={"source_id": clean_source_id},
+            )
+        return _VibeScriptSourceTarget(
+            source_id=clean_source_id,
+            pack=pack,
+            document=active_document,
+            document_uid=active_uid,
+            document_name=str(getattr(active_document, "Name", "") or ""),
+            document_path=str(getattr(active_document, "FileName", "") or ""),
+            current_revision=str(
+                editable_record.get("current_revision") or ""
+            ).strip(),
+            output_names=tuple(
+                sorted(
+                    str(item.get("name") or "")
+                    for item in list(editable_record.get("affected_outputs") or [])
+                    if isinstance(item, Mapping) and str(item.get("name") or "")
+                )
+            ),
+        )
+
+    if records:
+        references = [dict(record["reference"]) for record in records]
+        raise _SourceTargetError(
+            "SOURCE_DOCUMENT_NOT_OPEN",
+            "The component's authoring document is not open. Open it, then retry "
+            "the same source operation.",
+            observed={"source_id": clean_source_id, "documents": references},
+        )
+    raise _SourceTargetError(
+        "SOURCE_NOT_FOUND",
+        f"Source {clean_source_id} is not available in an authorized open document.",
+        observed={"source_id": clean_source_id},
+    )
+
+
+def _source_target_payload(target: _VibeScriptSourceTarget) -> dict[str, Any]:
+    return {
+        "source_id": target.source_id,
+        "domain": str(target.pack.domain),
+        "workbench": str(target.pack.workbench),
+        "document_uid": target.document_uid,
+        "document_name": target.document_name,
+        "document_path": target.document_path,
+        "current_revision": target.current_revision,
+        "affected_outputs": list(target.output_names),
+    }
+
+
 def _run_universal_vibescript_tool(
     service: VibeCADService,
     active_workbench: str | None,
     tool_name: str,
     args: dict[str, Any],
     *,
+    component_catalog: Mapping[str, Any] | None = None,
+    editable_sources: Mapping[str, Any] | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None,
     cancellation_check: CancellationCheck | None,
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
-    pack = vibescript_domains.get_vibescript_pack(active_workbench)
-    if pack is None:
+    active_pack = vibescript_domains.get_vibescript_pack(active_workbench)
+    if active_pack is None:
         return tool_failure(
             tool_name,
             "DOMAIN_UNAVAILABLE",
@@ -1639,15 +1996,72 @@ def _run_universal_vibescript_tool(
             "The active workbench has no VibeScript source domain.",
             requested=args,
         )
+    target: _VibeScriptSourceTarget | None = None
+    pack = active_pack
+    source_id = str(args.get("source_id") or "").strip().lower()
+    if source_id:
+        try:
+            target = _on_document_thread(
+                document_thread_dispatch,
+                lambda: _resolve_vibescript_source_target(
+                    service,
+                    active_pack,
+                    source_id,
+                    component_catalog,
+                    editable_sources,
+                ),
+            )
+        except _SourceTargetError as exc:
+            return tool_failure(
+                tool_name,
+                exc.code,
+                "precondition",
+                str(exc),
+                requested=args,
+                observed=exc.observed,
+            )
+        pack = target.pack
+    domain_service: Any = (
+        _SourceBoundService(service, target) if target is not None else service
+    )
+
+    def finish_source_write(result: dict[str, Any]) -> dict[str, Any]:
+        if target is None:
+            return result
+        target_payload = _source_target_payload(target)
+        if result.get("working_revision"):
+            target_payload["current_revision"] = str(result["working_revision"])
+        result["source_target"] = target_payload
+        active_document = service._active_document()
+        if result.get("ok") is True and active_document is not target.document:
+            try:
+                _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: active_document.recompute()
+                    if active_document is not None
+                    else None,
+                )
+                result["referencing_document_refreshed"] = True
+            except Exception as exc:
+                result.setdefault("warnings", []).append(
+                    {
+                        "code": "REFERENCING_DOCUMENT_REFRESH_FAILED",
+                        "error": str(exc),
+                    }
+                )
+        return result
     if tool_name == "vibescript.read_api":
         from VibeCADVibeScriptDomainRuntime import describe_api
 
-        return _filtered_api_payload(
+        payload = _filtered_api_payload(
             tool_name,
             describe_api(pack),
             names=[str(value) for value in list(args.get("names") or [])],
             groups=[str(value) for value in list(args.get("groups") or [])],
         )
+        if target is not None:
+            payload["source_target"] = _source_target_payload(target)
+        return payload
     if tool_name == "vibescript.read_source":
         from VibeCADVibeScriptDomainRuntime import (
             DomainRuntimeFailure,
@@ -1660,18 +2074,21 @@ def _run_universal_vibescript_tool(
             captured = _on_document_thread(
                 document_thread_dispatch,
                 lambda: capture_inspection_state(
-                    service,
+                    domain_service,
                     f"vibescript.{pack.domain}.inspect_program",
                     source_id,
                 ),
             )
-            return _read_source_payload(
+            payload = _read_source_payload(
                 complete_inspection(captured),
                 line_start=args.get("line_start"),
                 line_end=args.get("line_end"),
                 include_logs=bool(args.get("include_logs", True)),
                 log_tail_lines=args.get("log_tail_lines"),
             )
+            if target is not None:
+                payload["source_target"] = _source_target_payload(target)
+            return payload
         except DomainRuntimeFailure as exc:
             return exc.payload
         except Exception as exc:
@@ -1696,7 +2113,7 @@ def _run_universal_vibescript_tool(
             domain_args["program_id"] = str(domain_args.pop("source_id"))
         qualified_name = f"vibescript.{pack.domain}.{operation}"
         result = _run_domain_vibescript_tool(
-            service,
+            domain_service,
             qualified_name,
             domain_args,
             document_thread_dispatch=document_thread_dispatch,
@@ -1707,7 +2124,7 @@ def _run_universal_vibescript_tool(
             result["tool"] = tool_name
         if result.get("program_id"):
             result["source_id"] = str(result["program_id"])
-        return result
+        return finish_source_write(result)
     if tool_name == "vibescript.build_program":
         from VibeCADVibeScriptDomainRuntime import (
             DomainRuntimeFailure,
@@ -1721,7 +2138,7 @@ def _run_universal_vibescript_tool(
             captured = _on_document_thread(
                 document_thread_dispatch,
                 lambda: capture_inspection_state(
-                    service,
+                    domain_service,
                     f"vibescript.{pack.domain}.inspect_program",
                     source_id,
                 ),
@@ -1756,7 +2173,7 @@ def _run_universal_vibescript_tool(
                     ],
                 )
             result = _run_domain_vibescript_tool(
-                service,
+                domain_service,
                 f"vibescript.{pack.domain}.edit_source",
                 {
                     "program_id": source_id,
@@ -1773,7 +2190,7 @@ def _run_universal_vibescript_tool(
             if result.get("program_id"):
                 result["source_id"] = str(result["program_id"])
             result["requested_action"] = "build_program"
-            return result
+            return finish_source_write(result)
         except DomainRuntimeFailure as exc:
             return exc.payload
         except Exception as exc:
@@ -1787,7 +2204,7 @@ def _run_universal_vibescript_tool(
             )
     if tool_name == "vibescript.edit_source":
         result = _run_domain_vibescript_tool(
-            service,
+            domain_service,
             f"vibescript.{pack.domain}.edit_source",
             {
                 "program_id": str(args["source_id"]),
@@ -1800,7 +2217,7 @@ def _run_universal_vibescript_tool(
         )
         if result.get("program_id"):
             result["source_id"] = str(result["program_id"])
-        return result
+        return finish_source_write(result)
     return tool_failure(
         tool_name,
         "UNKNOWN_VIBESCRIPT_SOURCE_TOOL",
@@ -2071,6 +2488,7 @@ def make_provider_tool_runner(
     turn_schemas: list[dict[str, Any]] | None = None,
     turn_modeling_surface: dict[str, Any] | None = None,
     turn_component_catalog: Mapping[str, Any] | None = None,
+    turn_editable_sources: Mapping[str, Any] | None = None,
     interaction_mode: str = "build",
 ):
     clean_interaction_mode = normalize_interaction_mode(interaction_mode)
@@ -2411,6 +2829,18 @@ def make_provider_tool_runner(
                     active_workbench,
                     tool_name,
                     args,
+                    component_catalog=(
+                        component_catalog_state.get("prepared")
+                        if isinstance(
+                            component_catalog_state.get("prepared"), Mapping
+                        )
+                        else None
+                    ),
+                    editable_sources=(
+                        turn_editable_sources
+                        if isinstance(turn_editable_sources, Mapping)
+                        else None
+                    ),
                     document_thread_dispatch=document_thread_dispatch,
                     cancellation_check=cancellation_check,
                     progress_callback=progress_callback,
@@ -2702,6 +3132,11 @@ def _run_session_turn(
         turn_component_catalog=(
             dict(context["_vibecad_component_catalog"])
             if isinstance(context.get("_vibecad_component_catalog"), Mapping)
+            else None
+        ),
+        turn_editable_sources=(
+            dict(context["editable_sources"])
+            if isinstance(context.get("editable_sources"), Mapping)
             else None
         ),
         interaction_mode=clean_interaction_mode,

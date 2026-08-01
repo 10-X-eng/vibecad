@@ -556,6 +556,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
     from VibeCADModelingSurface import resolve_modeling_surface
 
     expected = (
+        "component.publish_interface",
         "conversation.ask_user",
         "conversation.review_design",
         "core.capture_view_screenshot",

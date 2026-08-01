@@ -251,16 +251,27 @@ def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:
                     "origin": [1, 2, 3],
                     "axis_direction": [2, 0, 0],
                     "x_direction": [0, 0, 4],
-                }
+                },
+                "connector": {
+                    "kind": "axis",
+                    "allowed_joints": ["revolute", "fixed"],
+                    "compatibility": "shaft-family-v1",
+                },
             }
         },
     )
-    selection = published.properties["interfaces"]["ShaftAxis"]["selection"]
+    interface = published.properties["interfaces"]["ShaftAxis"]
+    selection = interface["selection"]
     assert dict(selection) == {
         "type": "frame",
         "origin": (1.0, 2.0, 3.0),
         "axis_direction": (1.0, 0.0, 0.0),
         "x_direction": (0.0, 0.0, 1.0),
+    }
+    assert dict(interface["connector"]) == {
+        "kind": "axis",
+        "allowed_joints": ("revolute", "fixed"),
+        "compatibility": "shaft-family-v1",
     }
     with pytest.raises(ValueError, match="must not be parallel"):
         api.publish(
@@ -273,6 +284,24 @@ def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:
                         "axis_direction": [1, 0, 0],
                         "x_direction": [2, 0, 0],
                     }
+                }
+            },
+        )
+    with pytest.raises(ValueError, match="unique values"):
+        api.publish(
+            api.box(2, 3, 4),
+            interfaces={
+                "DuplicateJoint": {
+                    "selection": {
+                        "type": "frame",
+                        "origin": [0, 0, 0],
+                        "axis_direction": [0, 0, 1],
+                        "x_direction": [1, 0, 0],
+                    },
+                    "connector": {
+                        "kind": "axis",
+                        "allowed_joints": ["revolute", "revolute"],
+                    },
                 }
             },
         )

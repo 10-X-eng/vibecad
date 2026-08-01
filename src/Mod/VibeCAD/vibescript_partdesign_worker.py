@@ -2163,6 +2163,11 @@ def _resolved_interfaces(
                 if definition.get("description")
                 else {}
             ),
+            **(
+                {"connector": dict(definition["connector"])}
+                if isinstance(definition.get("connector"), Mapping)
+                else {}
+            ),
             "subelements": subelements,
             "geometry": geometry,
             **(

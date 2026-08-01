@@ -29,12 +29,23 @@ CORE_CONVERSATION_VIEW_TOOLS = frozenset(
 )
 FASTENER_CATALOG_TOOL = "fastener_catalog.search"
 COMPONENT_CATALOG_TOOL = "component_catalog.search"
+COMPONENT_INTERFACE_TOOL = "component.publish_interface"
+ASSEMBLY_PLAYBACK_TOOL = "assembly.play_simulation"
 MATERIAL_CATALOG_TOOL = "material_catalog.search"
 SHARED_CONTEXT_TOOLS = frozenset(
-    {FASTENER_CATALOG_TOOL, COMPONENT_CATALOG_TOOL, MATERIAL_CATALOG_TOOL}
+    {
+        FASTENER_CATALOG_TOOL,
+        COMPONENT_CATALOG_TOOL,
+        COMPONENT_INTERFACE_TOOL,
+        ASSEMBLY_PLAYBACK_TOOL,
+        MATERIAL_CATALOG_TOOL,
+    }
 )
 FASTENER_WORKBENCHES = frozenset({"PartDesignWorkbench", "AssemblyWorkbench"})
 COMPONENT_CATALOG_WORKBENCHES = frozenset({"AssemblyWorkbench"})
+COMPONENT_INTERFACE_WORKBENCHES = frozenset(
+    {"PartDesignWorkbench", "AssemblyWorkbench"}
+)
 MATERIAL_CATALOG_WORKBENCHES = frozenset({"PartDesignWorkbench", "MaterialWorkbench"})
 
 
@@ -44,6 +55,10 @@ def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
         names.add(FASTENER_CATALOG_TOOL)
     if workbench in COMPONENT_CATALOG_WORKBENCHES:
         names.add(COMPONENT_CATALOG_TOOL)
+    if workbench in COMPONENT_INTERFACE_WORKBENCHES:
+        names.add(COMPONENT_INTERFACE_TOOL)
+    if workbench == "AssemblyWorkbench":
+        names.add(ASSEMBLY_PLAYBACK_TOOL)
     if workbench in MATERIAL_CATALOG_WORKBENCHES:
         names.add(MATERIAL_CATALOG_TOOL)
     return tuple(sorted(names))
@@ -312,6 +327,8 @@ def validate_surface_names(
             "core",
             "fastener_catalog",
             "component_catalog",
+            "component",
+            "assembly",
             "material_catalog",
         }
     ]
@@ -339,6 +356,8 @@ def validate_surface_names(
                 "core",
                 "fastener_catalog",
                 "component_catalog",
+                "component",
+                "assembly",
                 "material_catalog",
                 "vibescript",
             }

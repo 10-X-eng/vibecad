@@ -512,7 +512,28 @@ class VibeCADService:
     ) -> str:
         """Return a topology-free turn token from bounded document metadata."""
 
-        doc = self._active_document()
+        return self.provider_document_revision_for(
+            self._active_document(),
+            native_diagnostics=native_diagnostics,
+            object_count=object_count,
+        )
+
+    def provider_document_revision_for(
+        self,
+        doc: Any,
+        native_diagnostics: dict[str, Any] | None = None,
+        *,
+        object_count: int | None = None,
+    ) -> str:
+        """Return the provider revision token for one exact open document.
+
+        Universal VibeScript source tools can operate on a referenced component's
+        owning document while the Assembly document remains active.  Keeping the
+        document argument explicit prevents those operations from accidentally
+        validating or publishing against whichever GUI document happens to be
+        active.
+        """
+
         if doc is None:
             return hashlib.sha256(b"no-document").hexdigest()
         booked_transaction = getattr(doc, "getBookedTransactionID", None)

@@ -653,7 +653,10 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "Define native assembly links, grounding, connector references, joints, "
         "solved placements, structured solver diagnostics, and worker-generated "
         "kinematic simulations, exploded views, flexible source hierarchies, and "
-        "authenticated native bills of materials.",
+        "authenticated native bills of materials. Component geometry remains in its "
+        "authoring source; read or edit that exact source_id instead of rebuilding it "
+        "inside Assembly. Use assembly.play_simulation on a published simulation when "
+        "GUI playback is requested.",
         (
             "assembly",
             "component",
@@ -854,6 +857,18 @@ def register_domain_adapter(domain: str, adapter: VibeScriptDomainAdapter) -> No
 
 def get_vibescript_pack(workbench: str | None) -> VibeScriptWorkbenchPack | None:
     return VIBESCRIPT_WORKBENCH_PACKS.get(str(workbench or ""))
+
+
+def get_vibescript_pack_for_domain(
+    domain: str | None,
+) -> VibeScriptWorkbenchPack | None:
+    """Return the single registered pack that owns an exact source domain."""
+
+    clean = str(domain or "").strip().lower()
+    matches = [
+        pack for pack in VIBESCRIPT_WORKBENCH_PACKS.values() if pack.domain == clean
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_domain_adapter(domain: str) -> VibeScriptDomainAdapter | None:
@@ -1311,6 +1326,16 @@ def _assembly_context_metadata(obj: Any) -> dict[str, Any]:
                     for item in geometry
                     if isinstance(item, dict)
                 ],
+                **(
+                    {"connector": dict(definition["connector"])}
+                    if isinstance(definition.get("connector"), Mapping)
+                    else {}
+                ),
+                **(
+                    {"frame": dict(resolved["connector_frame"])}
+                    if isinstance(resolved.get("connector_frame"), Mapping)
+                    else {}
+                ),
             }
         )
     result["published_interfaces"] = interfaces
@@ -5658,13 +5683,14 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_api",
             "description": (
-                "Read the VibeScript API for the active workbench. Pass exact callable "
-                "names or discoverable group names for a focused response with signatures, "
-                "behavior, and detailed contracts; omit both filters for the complete API."
+                "Read the VibeScript API that owns an exact editable source. Pass source_id "
+                "when inspecting component code from another workbench; omit it to read the "
+                "active workbench API. Pass exact callable or group names for a focused response."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "source_id": source_id,
                     "names": _property_schema(
                         "Exact api callable names to read, such as sketch, constraint, or extrude.",
                         type="array",

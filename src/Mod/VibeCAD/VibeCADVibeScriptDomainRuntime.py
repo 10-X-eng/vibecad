@@ -1141,12 +1141,11 @@ def _assembly_reference_contract(service: Any, obj: Any) -> dict[str, Any]:
         output_key = str(
             getattr(published, scripted_publication.PROP_OUTPUT_KEY, "") or ""
         )
-        names = [
-            str(name)
-            for name, definition in raw_interfaces.items()
-            if isinstance(definition, dict)
-            and str(definition.get("output") or "") == output_key
-        ]
+        definitions = reference_contracts.interface_definitions_for_output(
+            raw_interfaces,
+            output_key,
+        )
+        names = list(definitions)
         if len(names) > 64:
             raise RuntimeError(
                 f"Scripted component {getattr(obj, 'Name', '')!r} exposes more than "
@@ -1168,8 +1167,31 @@ def _assembly_reference_contract(service: Any, obj: Any) -> dict[str, Any]:
                 "subelements": list(resolved.get("subelements") or []),
                 "geometry": list(resolved.get("geometry") or []),
                 "connector_frame": dict(resolved.get("connector_frame") or {}),
+                **(
+                    {"connector": dict(resolved["connector"])}
+                    if isinstance(resolved.get("connector"), Mapping)
+                    else {}
+                ),
             }
-    elif program_id:
+    else:
+        native_definitions = reference_contracts.native_interface_definitions(obj)
+        semantic_only = bool(native_definitions)
+        for name, definition in sorted(native_definitions.items()):
+            resolved = dict(definition.get("resolved") or {})
+            interfaces[str(name)] = {
+                "model_id": "",
+                "publication_name": str(getattr(obj, "Name", "") or ""),
+                "output_key": str(getattr(obj, "Name", "") or ""),
+                "selection": dict(definition.get("selection") or {}),
+                "subelements": list(resolved.get("subelements") or []),
+                "geometry": list(resolved.get("geometry") or []),
+                "connector_frame": dict(resolved.get("connector_frame") or {}),
+                "connector": dict(definition.get("connector") or {}),
+                "native_lcs": str(
+                    dict(definition.get("selection") or {}).get("native_lcs") or ""
+                ),
+            }
+    if published is None and program_id:
         source_revision = str(getattr(obj, contracts.PROP_PROGRAM_REVISION, "") or "")
     return {
         "source_kind": source_kind,
@@ -6363,45 +6385,11 @@ def _assembly_validate_placement_fact(
 
 
 def _assembly_compatibility(
-    kind: str, connectors: Sequence[Mapping[str, Any]]
+    kind: str, connector_contracts: Sequence[Mapping[str, Any] | None]
 ) -> dict[str, Any]:
-    geometry = [str(item.get("geometry_type") or "") for item in connectors]
-    axis_capable = {
-        "line",
-        "circle",
-        "plane",
-        "cylinder",
-        "cone",
-        "component_origin",
-        "component_frame",
-    }
-    rotary = {"circle", "cylinder", "cone"}
-    linear = {"line", "plane"}
-    criteria = "any valid connector geometry"
-    compatible = all(geometry)
-    if kind in {"revolute", "cylindrical", "screw", "gears", "belt"}:
-        criteria = "both connectors must define axes"
-        compatible = all(item in axis_capable for item in geometry)
-    elif kind == "slider":
-        criteria = "both connectors must define linear axes or plane normals"
-        compatible = all(
-            item in linear | {"component_origin", "component_frame"}
-            for item in geometry
-        )
-    elif kind == "rack_pinion":
-        criteria = "one linear connector and one circular/cylindrical connector"
-        compatible = any(item in linear for item in geometry) and any(
-            item in rotary for item in geometry
-        )
-    elif kind in {"parallel", "perpendicular", "angle"}:
-        criteria = "both connectors must define orientations"
-        compatible = all(item in axis_capable for item in geometry)
-    return {
-        "ok": compatible,
-        "joint_type": kind,
-        "criteria": criteria,
-        "resolved_geometry_types": geometry,
-    }
+    from vibescript_assembly_api import explicit_connector_compatibility
+
+    return explicit_connector_compatibility(kind, connector_contracts)
 
 
 def _assembly_frame_z_axis(frame: Mapping[str, Any]) -> tuple[float, float, float]:
@@ -8662,6 +8650,7 @@ def _validate_assembly_execution(
             raise ValueError(
                 f"Joint output {name!r} definition must contain two connectors."
             )
+        connector_contracts: list[dict[str, Any] | None] = []
         for index, connector in enumerate(connectors, start=1):
             if not isinstance(connector, dict):
                 raise ValueError(
@@ -8736,6 +8725,7 @@ def _validate_assembly_execution(
                 )
             expected_standard_frame: Mapping[str, Any] | None = None
             expected_semantic_frame: Mapping[str, Any] | None = None
+            expected_connector_contract: dict[str, Any] | None = None
             if mode == "component_origin":
                 if selection != {"type": "component_origin"}:
                     raise ValueError(
@@ -8827,6 +8817,14 @@ def _validate_assembly_execution(
                             "authenticated semantic frame."
                         )
                     expected_semantic_frame = raw_semantic_frame
+                raw_connector_contract = interface.get("connector")
+                if raw_connector_contract is not None:
+                    if not isinstance(raw_connector_contract, Mapping):
+                        raise ValueError(
+                            f"Joint output {name!r} connector {index} has a malformed "
+                            "explicit connector contract."
+                        )
+                    expected_connector_contract = dict(raw_connector_contract)
                 expected_semantic = {
                     "type": "published_interface",
                     "interface_name": interface_name,
@@ -8957,8 +8955,9 @@ def _validate_assembly_execution(
                     f"Joint output {name!r} connector {index} reports the wrong "
                     "geometry type."
                 )
+            connector_contracts.append(expected_connector_contract)
 
-        expected_compatibility = _assembly_compatibility(kind, connectors)
+        expected_compatibility = _assembly_compatibility(kind, connector_contracts)
         if compatibility != expected_compatibility:
             raise ValueError(
                 f"Joint output {name!r} compatibility metadata was altered."
@@ -16994,6 +16993,8 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
     production_ready: bool = True
 
     def describe_api(self) -> dict[str, Any]:
+        from vibescript_assembly_api import JOINT_TYPES
+
         description = super().describe_api()
         description.update(
             {
@@ -17319,6 +17320,11 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "find_subelements query"
                     ),
                     "description": "optional human meaning, at most 500 characters",
+                    "connector": {
+                        "kind": "axis|plane|point|frame",
+                        "allowed_joints": list(JOINT_TYPES),
+                        "compatibility": "optional exact mating token",
+                    },
                 }
             },
             "frame": (
@@ -17368,9 +17374,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 ),
             },
             "assembly_rule": (
-                "An Assembly connector interface must resolve to origin or exactly one "
-                "subelement. Multi-subelement interfaces such as bolt circles are for "
-                "consumers that explicitly accept sets."
+                "Explicit metadata; native solver; no geometry inference."
             ),
         }
         description["api_details"] = {
@@ -23243,11 +23247,17 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
             },
             "connector": {
                 "partdesign_handoff": (
-                    "Prefer a named Part Design semantic interface. It must resolve to origin "
-                    "or exactly one face/edge/vertex. Copy the interface name exactly from the "
-                    "component candidate; do not guess FaceN/EdgeN on regenerating geometry."
+                    "Use the exact named interface listed on the component. VibeScript parts "
+                    "declare it in api.body(..., interfaces=...); native parts publish an "
+                    "existing LCS with component.publish_interface. Do not guess FaceN/EdgeN "
+                    "or derive a connector from nearby geometry."
                 ),
                 "axis_rule": "Connector local +Z is the joint axis.",
+                "contract_rule": (
+                    "allowed_joints and compatibility are explicit authored contracts. "
+                    "Compatibility tokens must match exactly; otherwise the native joint "
+                    "solver is authoritative. Geometry classes are never used to guess intent."
+                ),
             },
             "joint": {
                 "kinds": list(JOINT_TYPES),

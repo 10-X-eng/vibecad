@@ -53,6 +53,8 @@ _COMPATIBILITY_METHODS = frozenset({"pad", "pocket", "groove"})
 _COMPATIBILITY_FEATURES = frozenset(
     {*_COMPATIBILITY_METHODS, "loft_subtractive"}
 )
+_CONNECTOR_KINDS = frozenset({"axis", "plane", "point", "frame"})
+_CONNECTOR_COMPATIBILITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _BASIC_MEASURE_QUANTITIES = frozenset(
     {
         "length_mm",
@@ -614,11 +616,15 @@ def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
         name = str(raw_name or "").strip()
         if not _NAME.fullmatch(name):
             raise _error("body", f"interfaces[{raw_name!r}]", "has an invalid stable name")
-        if not isinstance(raw, Mapping) or not set(raw) <= {"selection", "description"}:
+        if not isinstance(raw, Mapping) or not set(raw) <= {
+            "selection",
+            "description",
+            "connector",
+        }:
             raise _error(
                 "body",
                 f"interfaces[{name}]",
-                "must contain selection and optional description",
+                "must contain selection with optional description and connector contract",
                 raw,
             )
         selection = raw.get("selection")
@@ -639,9 +645,69 @@ def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
         description = str(raw.get("description") or "").strip()
         if len(description) > 500:
             raise _error("body", f"interfaces[{name}].description", "is too long")
+        connector = raw.get("connector")
+        clean_connector: dict[str, Any] | None = None
+        if connector is not None:
+            if not isinstance(connector, Mapping) or not set(connector) <= {
+                "kind",
+                "allowed_joints",
+                "compatibility",
+            }:
+                raise _error(
+                    "body",
+                    f"interfaces[{name}].connector",
+                    "must contain kind with optional allowed_joints and compatibility",
+                    connector,
+                )
+            kind = str(connector.get("kind") or "").strip().lower()
+            if kind not in _CONNECTOR_KINDS:
+                raise _error(
+                    "body",
+                    f"interfaces[{name}].connector.kind",
+                    f"must be one of {sorted(_CONNECTOR_KINDS)}",
+                    kind,
+                )
+            clean_connector = {"kind": kind}
+            if "allowed_joints" in connector:
+                from vibescript_assembly_api import JOINT_TYPES
+
+                raw_joints = connector.get("allowed_joints")
+                if (
+                    not isinstance(raw_joints, (list, tuple))
+                    or not raw_joints
+                    or len(raw_joints) > len(JOINT_TYPES)
+                ):
+                    raise _error(
+                        "body",
+                        f"interfaces[{name}].connector.allowed_joints",
+                        "must be a non-empty list of Assembly joint kinds",
+                        raw_joints,
+                    )
+                joints = [str(value or "").strip().lower() for value in raw_joints]
+                if len(joints) != len(set(joints)) or any(
+                    value not in JOINT_TYPES for value in joints
+                ):
+                    raise _error(
+                        "body",
+                        f"interfaces[{name}].connector.allowed_joints",
+                        f"must contain unique values from {list(JOINT_TYPES)}",
+                        raw_joints,
+                    )
+                clean_connector["allowed_joints"] = joints
+            if "compatibility" in connector:
+                compatibility = str(connector.get("compatibility") or "").strip()
+                if not _CONNECTOR_COMPATIBILITY.fullmatch(compatibility):
+                    raise _error(
+                        "body",
+                        f"interfaces[{name}].connector.compatibility",
+                        "must be a stable token using letters, digits, '.', '_', ':', or '-'",
+                        compatibility,
+                    )
+                clean_connector["compatibility"] = compatibility
         result[name] = {
             "selection": clean_selection,
             **({"description": description} if description else {}),
+            **({"connector": clean_connector} if clean_connector is not None else {}),
         }
     return result
 
@@ -2944,7 +3010,8 @@ class PartDesignDomainAPI:
         become one native feature. Source edits retain the Body identity. Attach checks,
         material, appearance, and named interfaces here. Interface names are local to
         this output, so reusable parts may each publish the same clear name such as
-        RotationAxis or MountingFace.
+        RotationAxis or MountingFace. Assembly connectors require explicit metadata;
+        never infer compatibility from shape.
         """
 
         return self._graph(

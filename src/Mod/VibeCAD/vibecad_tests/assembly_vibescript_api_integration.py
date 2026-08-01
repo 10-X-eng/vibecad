@@ -872,6 +872,10 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
                                     1.0,
                                 ],
                             },
+                            "connector": {
+                                "kind": "axis",
+                                "allowed_joints": ["fixed"],
+                            },
                         }
                     },
                 }
@@ -963,6 +967,9 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
         assert validation["solver_code"] == 0, validation
         joint = next(item for item in outputs if item["name"] == "Hinge")
         connector = joint["assembly_data"]["connectors"][1]
+        assert joint["assembly_data"]["compatibility"]["validation"] == (
+            "native_joint_connector_validation"
+        )
         assert connector["element"] == "Face1"
         assert connector["geometry_type"] == "plane"
         assert connector["semantic_selection"] == {
@@ -985,6 +992,13 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
         assert validation["solver_code"] == 0, validation
         joint = next(item for item in outputs if item["name"] == "Hinge")
         connector = joint["assembly_data"]["connectors"][1]
+        assert joint["assembly_data"]["compatibility"]["validation"] == (
+            "explicit_connector_contract"
+        )
+        assert joint["assembly_data"]["compatibility"]["contracts"] == [
+            None,
+            {"kind": "axis", "allowed_joints": ["fixed"]},
+        ]
         assert connector["element"] == ""
         assert connector["geometry_type"] == "component_frame"
         frame = connector["interface_frame"]

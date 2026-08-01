@@ -73,6 +73,64 @@ JOINT_LIMIT_PARAMETERS = {
     "length_limits_mm": ("slider", "cylindrical"),
     "angle_limits_degrees": ("revolute", "cylindrical"),
 }
+
+
+def explicit_connector_compatibility(
+    kind: str,
+    contracts: Sequence[Mapping[str, Any] | None],
+) -> dict[str, Any]:
+    """Validate authored connector contracts without classifying geometry."""
+
+    retained = [dict(value) if isinstance(value, Mapping) else value for value in contracts]
+    explicit = [value for value in retained if isinstance(value, Mapping)]
+    for index, contract in enumerate(retained, start=1):
+        if contract is None:
+            continue
+        if not isinstance(contract, Mapping):
+            return {
+                "ok": False,
+                "joint_type": kind,
+                "reason": f"connector {index} has a malformed explicit contract",
+                "contracts": retained,
+            }
+        allowed = contract.get("allowed_joints")
+        if allowed is not None and (
+            not isinstance(allowed, (list, tuple)) or kind not in allowed
+        ):
+            return {
+                "ok": False,
+                "joint_type": kind,
+                "reason": f"connector {index} explicitly disallows joint type {kind!r}",
+                "contracts": retained,
+            }
+    compatibility = [
+        str(contract.get("compatibility") or "")
+        if isinstance(contract, Mapping)
+        else ""
+        for contract in retained
+    ]
+    if any(compatibility) and (
+        not all(compatibility) or len(set(compatibility)) != 1
+    ):
+        return {
+            "ok": False,
+            "joint_type": kind,
+            "reason": "explicit connector compatibility tokens do not match",
+            "compatibility": compatibility,
+            "contracts": retained,
+        }
+    return {
+        "ok": True,
+        "joint_type": kind,
+        "validation": (
+            "explicit_connector_contract"
+            if explicit
+            else "native_joint_connector_validation"
+        ),
+        "contracts": retained,
+    }
+
+
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)[1-9][0-9]*$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _STATIC_REQUIREMENT_TYPES = frozenset({"collision_free", "minimum_clearance"})

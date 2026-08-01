@@ -3943,6 +3943,112 @@ class ExplainSelectionCommand(_BaseCommand):
         _show_panel(f"Selection context:\n{selection}")
 
 
+class PublishComponentInterfaceCommand(_BaseCommand):
+    menu_text = "Publish Interface"
+    tooltip = "Publish a selected native local coordinate system for Assembly"
+    pixmap = "PartDesign_CoordinateSystem"
+
+    @staticmethod
+    def _selection() -> tuple[Any, Any] | None:
+        from VibeCADReferenceContracts import is_native_coordinate_system
+
+        selected = list(Gui.Selection.getSelection() or [])
+        if len(selected) != 2:
+            return None
+        lcs = next(
+            (
+                obj
+                for obj in selected
+                if is_native_coordinate_system(obj)
+            ),
+            None,
+        )
+        if lcs is None:
+            return None
+        component = next((obj for obj in selected if obj is not lcs), None)
+        return (component, lcs) if component is not None else None
+
+    def IsActive(self) -> bool:
+        return (
+            App.ActiveDocument is not None
+            and Gui.Control.activeDialog() is None
+            and self._selection() is not None
+        )
+
+    def Activated(self) -> None:
+        selected = self._selection()
+        if selected is None:
+            return
+        component, lcs = selected
+        if str(getattr(component, "VibeCADVibeScriptProgramId", "") or ""):
+            from PySide import QtWidgets
+
+            QtWidgets.QMessageBox.information(
+                Gui.getMainWindow(),
+                "Publish Interface",
+                "This component is VibeScript-owned. Declare the interface in its "
+                "api.body(..., interfaces=...) source so regeneration preserves it.",
+            )
+            return
+        from PySide import QtCore, QtWidgets
+        from vibescript_assembly_api import JOINT_TYPES
+
+        dialog = QtWidgets.QDialog(Gui.getMainWindow())
+        dialog.setWindowTitle("Publish Interface")
+        layout = QtWidgets.QFormLayout(dialog)
+        name_edit = QtWidgets.QLineEdit(dialog)
+        name_edit.setPlaceholderText("RotationAxis")
+        kind_combo = QtWidgets.QComboBox(dialog)
+        kind_combo.addItems(["axis", "plane", "point", "frame"])
+        joints = QtWidgets.QListWidget(dialog)
+        joints.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
+        joints.setMaximumHeight(150)
+        for joint in JOINT_TYPES:
+            joints.addItem(str(joint))
+        compatibility_edit = QtWidgets.QLineEdit(dialog)
+        compatibility_edit.setPlaceholderText("Optional exact mating token")
+        layout.addRow("Name", name_edit)
+        layout.addRow("Kind", kind_combo)
+        layout.addRow("Allowed joints", joints)
+        layout.addRow("Compatibility", compatibility_edit)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        name_edit.setFocus(QtCore.Qt.OtherFocusReason)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        document = component.Document
+        transaction_open = False
+        try:
+            from VibeCADReferenceContracts import publish_native_interface
+
+            document.openTransaction("Publish component interface")
+            transaction_open = True
+            publish_native_interface(
+                component,
+                lcs,
+                name=name_edit.text(),
+                kind=kind_combo.currentText(),
+                allowed_joints=[item.text() for item in joints.selectedItems()],
+                compatibility=compatibility_edit.text(),
+            )
+            document.recompute()
+            document.commitTransaction()
+            transaction_open = False
+        except Exception as exc:
+            if transaction_open:
+                document.abortTransaction()
+            QtWidgets.QMessageBox.warning(
+                Gui.getMainWindow(),
+                "Publish Interface",
+                str(exc),
+            )
+
+
 class OpenAssistantCommand(_BaseCommand):
     menu_text = "VibeCAD Assistant"
     tooltip = "Open the VibeCAD assistant panel for the active workbench"
@@ -4135,6 +4241,10 @@ def ensure_commands_registered() -> None:
         return
     Gui.addCommand("VibeCAD_AskAI", AskAICommand())
     Gui.addCommand("VibeCAD_ExplainSelection", ExplainSelectionCommand())
+    Gui.addCommand(
+        "VibeCAD_PublishInterface",
+        PublishComponentInterfaceCommand(),
+    )
     Gui.addCommand("VibeCAD_OpenAssistant", OpenAssistantCommand())
     Gui.addCommand("VibeCAD_OpenPreferences", OpenPreferencesCommand())
     Gui.addCommand("VibeCAD_OpenScriptedModel", OpenScriptedModelCommand())

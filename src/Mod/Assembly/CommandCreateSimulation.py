@@ -310,6 +310,12 @@ class ViewProviderSimulation:
             operation,
             document_name=assembly.Document.Name,
             existing_transaction_id=assembly.Document.getBookedTransactionID(),
+            playback_only=bool(
+                str(
+                    getattr(operation, "VibeCADVibeScriptProgramId", "")
+                    or ""
+                )
+            ),
         )
         dialog = Gui.Control.showDialog(panel, panel.gui_doc)
         if dialog is not None:
@@ -958,8 +964,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         document_name=None,
         existing_transaction_id=0,
         assembly_name=None,
+        playback_only=False,
     ):
         super().__init__()
+        self.playback_only = bool(playback_only)
 
         if simFeaturePy is not None:
             operation_document = getattr(simFeaturePy, "Document", None)
@@ -1077,12 +1085,26 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.SaveAnimationButton.clicked.connect(self.saveAnimation)
         self.form.SaveAnimationButton.hide()
 
+        if self.playback_only:
+            for widget in (
+                self.form.TimeStartSpinBox,
+                self.form.TimeEndSpinBox,
+                self.form.TimeStepOutputSpinBox,
+                self.form.GlobalErrorToleranceSpinBox,
+                self.form.FramesPerSecondSpinBox,
+                self.form.AddButton,
+                self.form.RemoveButton,
+            ):
+                widget.setEnabled(False)
+
         self.creating_timeline_operation = simFeaturePy is None
         if simFeaturePy:
             self.simFeaturePy = simFeaturePy
             self.timeline_resource_edit = (
-                UtilsAssembly.stageTimelineResourceGroupEdit(
-                    self.simFeaturePy
+                None
+                if self.playback_only
+                else UtilsAssembly.stageTimelineResourceGroupEdit(
+                    self.simFeaturePy,
                 )
             )
             self.onMotionsChanged()
@@ -1178,7 +1200,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
                     self.simFeaturePy,
                     [*self.simFeaturePy.Group, self.simFeaturePy],
                 )
-            else:
+            elif not self.playback_only:
                 UtilsAssembly.finalizeTimelineResourceGroupEdit(
                     self.simFeaturePy,
                     self.timeline_resource_edit,
@@ -1218,29 +1240,29 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             exact_simulation.Proxy.setMotionsChangedCallback(None)
 
     def onTimeStartChanged(self, quantity):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         self.simFeaturePy.aTimeStart = self.form.TimeStartSpinBox.property("rawValue")
 
     def onTimeEndChanged(self, quantity):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         self.simFeaturePy.bTimeEnd = self.form.TimeEndSpinBox.property("rawValue")
 
     def onTimeStepOutputChanged(self, quantity):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         self.simFeaturePy.cTimeStepOutput = self.form.TimeStepOutputSpinBox.property("rawValue")
 
     def onGlobalErrorToleranceChanged(self, quantity):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         self.simFeaturePy.fGlobalErrorTolerance = self.form.GlobalErrorToleranceSpinBox.property(
             "rawValue"
         )
 
     def onItemDoubleClicked(self, item):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         identity = item.data(QtCore.Qt.UserRole)
         if (
@@ -1326,7 +1348,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.FrameTimeLabel.setText(f"{time:.2f} s")
 
     def onFramesPerSecondChanged(self):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         self.simFeaturePy.jFramesPerSecond = self.form.FramesPerSecondSpinBox.value()
 
@@ -1359,7 +1381,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.animationTimer.start()
 
     def playAnimation(self):
-        if not self._ownsLiveTaskContext():
+        # QTimer timeouts already queued by Qt can arrive after the task panel
+        # has been destroyed.  The transaction may still be live during that
+        # event-loop turn, so ownership alone is not a sufficient UI guard.
+        if self.form is None or not self._ownsLiveTaskContext():
             self.animationTimer.stop()
             return
         range_ = self.endFrm - self.startFrm
@@ -1395,6 +1420,9 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.setFrameValue(nextFrm)
 
     def setFrameValue(self, val):
+        if self.form is None:
+            self.animationTimer.stop()
+            return
         if val < 1:
             val = 1
         if val > self.form.frameSlider.maximum():
@@ -1406,7 +1434,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.animationTimer.stop()
 
     def addMotionClicked(self):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         dialog = MotionEditDialog(self.assembly)
         if dialog.exec_():
@@ -1429,7 +1457,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         return super().eventFilter(watched, event)
 
     def deleteSelectedMotions(self):
-        if not self._ownsLiveTaskContext():
+        if self.playback_only or not self._ownsLiveTaskContext():
             return
         selected_indexes = self.form.motionList.selectedIndexes()
         sorted_indexes = sorted(selected_indexes, key=lambda x: x.row(), reverse=True)
@@ -1605,6 +1633,56 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
 
         video_writer.release()
         return True
+
+
+def openSimulation(simulation, *, autoplay=False):
+    """Open one exact saved simulation in the native task player.
+
+    This is the programmatic counterpart of double-clicking the History item.
+    It never closes another active task and returns the live panel so callers can
+    start playback without duplicating the native kinematics implementation.
+    """
+
+    if not App.GuiUp:
+        raise RuntimeError("Assembly simulation playback requires the GUI")
+    if Gui.Control.activeTaskDialog() is not None:
+        raise RuntimeError("Close the active task before playing a simulation")
+    if simulation is None or not simulation.isDerivedFrom("App::FeaturePython"):
+        raise RuntimeError("The requested object is not an Assembly simulation")
+    proxy = getattr(simulation, "Proxy", None)
+    getter = getattr(proxy, "getAssembly", None)
+    if not callable(getter):
+        raise RuntimeError("The simulation has no native Assembly owner contract")
+    assembly = getter(simulation)
+    if assembly is None or not UtilsAssembly.isTimelineOperationActive(assembly):
+        raise RuntimeError("The simulation's owning Assembly is not active in History")
+    if UtilsAssembly.activeAssembly() != assembly:
+        gui_document = Gui.getDocument(assembly.Document.Name)
+        if gui_document is None:
+            raise RuntimeError("The simulation document has no GUI document")
+        gui_document.setEdit(assembly)
+        if UtilsAssembly.activeAssembly() is not assembly:
+            raise RuntimeError("The owning Assembly could not be activated")
+    panel = TaskAssemblyCreateSimulation(
+        simulation,
+        document_name=assembly.Document.Name,
+        existing_transaction_id=assembly.Document.getBookedTransactionID(),
+        playback_only=True,
+    )
+    dialog = Gui.Control.showDialog(panel, panel.gui_doc)
+    if dialog is not None:
+        dialog.setAutoCloseOnDeletedDocument(True)
+        dialog.setDocumentName(assembly.Document.Name)
+    if autoplay:
+        try:
+            panel.runKinematics()
+            if assembly.numberOfFrames() < 2:
+                raise RuntimeError("The simulation generated fewer than two frames")
+            panel.animationTimerStartForward()
+        except Exception:
+            Gui.Control.closeDialog()
+            raise
+    return panel
 
 
 if App.GuiUp:

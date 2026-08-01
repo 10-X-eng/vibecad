@@ -28,6 +28,7 @@ from VibeCADMechanismEngine import (
     normalize_mechanism_scenario,
 )
 from VibeCADMechanismGeometry import measure_static_mechanism_pairs
+from vibescript_assembly_api import explicit_connector_compatibility
 from vibescript_domain_api import DomainValue
 from vibescript_part_worker import (
     configure_part_references,
@@ -3529,6 +3530,7 @@ def _resolve_connector(
     semantic: dict[str, Any] | None = None
     standard_frame: Mapping[str, Any] | None = None
     semantic_frame: Mapping[str, Any] | None = None
+    connector_contract: dict[str, Any] | None = None
     if mode == "component_origin":
         if properties.get("anchor") is not None:
             raise AssemblyCandidateError(
@@ -3644,6 +3646,13 @@ def _resolve_connector(
                     f"{context} published interface has no explicit connector frame."
                 )
             semantic_frame = raw_semantic_frame
+        raw_connector_contract = raw.get("connector")
+        if raw_connector_contract is not None:
+            if not isinstance(raw_connector_contract, Mapping):
+                raise AssemblyCandidateError(
+                    f"{context} published interface has a malformed connector contract."
+                )
+            connector_contract = dict(raw_connector_contract)
         semantic = {
             "type": "published_interface",
             "interface_name": interface_name,
@@ -3701,6 +3710,7 @@ def _resolve_connector(
         "native_element": native_element,
         "native_anchor": native_anchor,
         "geometry_type": geometry_type,
+        "connector_contract": connector_contract,
         "occurrence_path": occurrence_path or None,
         "native_target_mode": (
             str(hierarchy_reference["target_mode"])
@@ -3721,44 +3731,13 @@ def _resolve_connector(
     }
 
 
-def _compatibility(kind: str, connectors: list[dict[str, Any]]) -> dict[str, Any]:
-    geometry = [str(item.get("geometry_type") or "") for item in connectors]
-    axis_capable = {
-        "line",
-        "circle",
-        "plane",
-        "cylinder",
-        "cone",
-        "component_origin",
-        "component_frame",
-    }
-    rotary = {"circle", "cylinder", "cone"}
-    linear = {"line", "plane"}
-    criteria = "any valid connector geometry"
-    compatible = all(geometry)
-    if kind in {"revolute", "cylindrical", "screw", "gears", "belt"}:
-        criteria = "both connectors must define axes"
-        compatible = all(item in axis_capable for item in geometry)
-    elif kind == "slider":
-        criteria = "both connectors must define linear axes or plane normals"
-        compatible = all(
-            item in linear | {"component_origin", "component_frame"}
-            for item in geometry
-        )
-    elif kind == "rack_pinion":
-        criteria = "one linear connector and one circular/cylindrical connector"
-        compatible = any(item in linear for item in geometry) and any(
-            item in rotary for item in geometry
-        )
-    elif kind in {"parallel", "perpendicular", "angle"}:
-        criteria = "both connectors must define orientations"
-        compatible = all(item in axis_capable for item in geometry)
-    return {
-        "ok": compatible,
-        "joint_type": kind,
-        "criteria": criteria,
-        "resolved_geometry_types": geometry,
-    }
+def _explicit_connector_compatibility(
+    kind: str, connectors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return explicit_connector_compatibility(
+        kind,
+        [item.get("connector_contract") for item in connectors],
+    )
 
 
 def _apply_joint_properties(joint: Any, properties: Mapping[str, Any]) -> None:
@@ -4321,11 +4300,11 @@ def validate_and_solve_assembly(
             raise AssemblyCandidateError(
                 f"Joint output {output_name!r} connects a component to itself."
             )
-        compatibility = _compatibility(kind, connectors)
+        compatibility = _explicit_connector_compatibility(kind, connectors)
         if not compatibility["ok"]:
             raise AssemblyCandidateError(
-                f"Joint output {output_name!r} has connector geometry incompatible "
-                f"with a {kind} joint: {compatibility['criteria']}.",
+                f"Joint output {output_name!r} violates an explicit connector "
+                f"contract: {compatibility['reason']}.",
                 details={
                     "stage": "joint_compatibility",
                     "joint_output": output_name,

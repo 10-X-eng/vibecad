@@ -756,6 +756,14 @@ const std::vector<QString>& sharedInspectionCommands()
     return commands;
 }
 
+const std::vector<GroupDefinition>& componentInterfaceGroups()
+{
+    static const std::vector<GroupDefinition> groups = {
+        {QObject::tr("Connect"), {"VibeCAD_PublishInterface"}},
+    };
+    return groups;
+}
+
 bool isSharedInspectionCommand(const QString& command)
 {
     const std::vector<QString>& commands = sharedInspectionCommands();
@@ -1021,6 +1029,7 @@ struct Gui::VibeCADRibbon::Private
 
         if (activeWorkbench == "PartDesignWorkbench") {
             appendComposed("SurfaceWorkbench", surfaceGroups());
+            mergeGroups(groups, componentInterfaceGroups());
         }
         else if (activeWorkbench == "MeshWorkbench") {
             appendComposed("PointsWorkbench", pointsGroups());
@@ -1028,6 +1037,7 @@ struct Gui::VibeCADRibbon::Private
         }
         else if (activeWorkbench == "AssemblyWorkbench") {
             appendComposed("RobotWorkbench", robotAssemblyGroups());
+            mergeGroups(groups, componentInterfaceGroups());
         }
         else if (activeWorkbench == "CAMWorkbench") {
             appendComposed("RobotWorkbench", robotManufactureGroups());

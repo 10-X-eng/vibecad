@@ -60,6 +60,10 @@ EXPECTATIONS = {
         {"resource_graph", "replacement"},
         "Job owns its generated graph and replaces only exact initially visible models.",
     ),
+    "component.publish_interface": (
+        {"in_place_edit"},
+        "Interface publication annotates one existing component-owned coordinate system.",
+    ),
     "draft.create_array": (
         {"operation"},
         "The linked array is a source-preserving step.",
@@ -403,7 +407,7 @@ def _safe_write_sketcher_inventory() -> dict[str, Path]:
 def test_every_retained_safe_write_service_has_one_exact_history_contract() -> None:
     inventory = _safe_write_inventory()
 
-    assert len(inventory) == 81
+    assert len(inventory) == 82
     assert set(EXPECTATIONS) == set(inventory)
     for contracts, semantics in EXPECTATIONS.values():
         assert contracts

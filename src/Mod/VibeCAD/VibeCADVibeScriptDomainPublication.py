@@ -635,6 +635,19 @@ class AssemblyMotionProxy:
     def onDocumentRestored(self, obj: Any) -> None:  # noqa: N802
         _ensure_assembly_motion_properties(obj)
 
+    def getSimulation(self, obj: Any) -> Any:  # noqa: N802
+        for owner in list(getattr(obj, "InList", []) or []):
+            proxy = getattr(owner, "Proxy", None)
+            if callable(getattr(proxy, "setMotionsChangedCallback", None)):
+                return owner
+        return None
+
+    def getAssembly(self, obj: Any) -> Any:  # noqa: N802
+        simulation = self.getSimulation(obj)
+        proxy = getattr(simulation, "Proxy", None)
+        getter = getattr(proxy, "getAssembly", None)
+        return getter(simulation) if callable(getter) else None
+
     def execute(self, _obj: Any) -> None:
         return None
 
@@ -649,12 +662,43 @@ class AssemblySimulationProxy:
     """Persistent proxy for precomputed native Assembly simulation settings."""
 
     def __init__(self, obj: Any | None = None) -> None:
+        self.motionsChangedCallback = None
         if obj is not None:
             obj.Proxy = self
             _ensure_assembly_simulation_properties(obj)
+            self._mark_native_contract(obj)
+            _ensure_native_simulation_view_provider(obj)
 
     def onDocumentRestored(self, obj: Any) -> None:  # noqa: N802
+        self.motionsChangedCallback = None
         _ensure_assembly_simulation_properties(obj)
+        self._mark_native_contract(obj)
+        _ensure_native_simulation_view_provider(obj)
+
+    @staticmethod
+    def _mark_native_contract(obj: Any) -> None:
+        import UtilsAssembly
+
+        UtilsAssembly.markTimelineOperationEditor(
+            obj,
+            "Assembly_EditHistoryOperation",
+        )
+
+    def onChanged(self, obj: Any, prop: str) -> None:  # noqa: N802
+        if prop != "Group":
+            return
+        self._mark_native_contract(obj)
+        callback = getattr(self, "motionsChangedCallback", None)
+        if callable(callback):
+            callback()
+
+    def setMotionsChangedCallback(self, callback: Any) -> None:  # noqa: N802
+        self.motionsChangedCallback = callback
+
+    def getAssembly(self, obj: Any) -> Any:  # noqa: N802
+        import UtilsAssembly
+
+        return UtilsAssembly.findOwningAssembly(obj)
 
     def execute(self, _obj: Any) -> None:
         return None
@@ -664,6 +708,25 @@ class AssemblySimulationProxy:
 
     def loads(self, _state: Any) -> None:
         return None
+
+
+def _ensure_native_simulation_view_provider(obj: Any) -> None:
+    """Attach FreeCAD's real Simulation view provider when a GUI is present."""
+
+    try:
+        import FreeCAD as App
+
+        if not bool(App.GuiUp):
+            return
+        view = getattr(obj, "ViewObject", None)
+        if view is None:
+            return
+        from CommandCreateSimulation import ViewProviderSimulation
+
+        if not isinstance(getattr(view, "Proxy", None), ViewProviderSimulation):
+            ViewProviderSimulation(view)
+    except ImportError:
+        return
 
 
 def _ensure_assembly_bom_restore_properties(obj: Any) -> None:
@@ -3751,6 +3814,8 @@ def _configure_assembly_simulation(
         AssemblySimulationProxy(obj)
     else:
         _ensure_assembly_simulation_properties(obj)
+        obj.Proxy._mark_native_contract(obj)
+        _ensure_native_simulation_view_provider(obj)
     parameters = data.get("parameters")
     if not isinstance(parameters, Mapping):
         raise RuntimeError("An Assembly simulation has no validated parameters.")
@@ -12788,6 +12853,11 @@ def _partdesign_interface_table(
                 **(
                     {"description": str(raw.get("description") or "")}
                     if raw.get("description")
+                    else {}
+                ),
+                **(
+                    {"connector": dict(raw["connector"])}
+                    if isinstance(raw.get("connector"), Mapping)
                     else {}
                 ),
                 "resolved": {
