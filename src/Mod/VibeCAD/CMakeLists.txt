@@ -45,6 +45,7 @@ set(VibeCAD_Scripts
     VibeCADAssemblyBOM.py
     vibescript_domain_api.py
     vibescript_domain_worker.py
+    vibescript_worker_progress.py
     vibescript_draft_api.py
     vibescript_draft_worker.py
     vibescript_part_api.py

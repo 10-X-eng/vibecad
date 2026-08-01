@@ -29,6 +29,8 @@
 #include <Inventor/nodes/SoPickStyle.h>
 #include <BRep_Builder.hxx>
 
+#include <string_view>
+
 #include <Base/Exception.h>
 #include <Base/ServiceProvider.h>
 #include <App/Document.h>
@@ -58,6 +60,51 @@
 
 using namespace PartDesignGui;
 
+namespace
+{
+
+void updateOperationPreviewColor(PartDesignGui::ViewProvider& viewProvider)
+{
+    auto* object = viewProvider.getObject();
+    auto* styleParameterManager =
+        Base::provideService<Gui::StyleParameters::ParameterManager>();
+
+    if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(object)) {
+        const std::string_view resultOperation = operation->ResultOperation.getValueAsString();
+        if (resultOperation == "Cut") {
+            viewProvider.PreviewColor.setValue(
+                styleParameterManager->resolve(StyleParameters::PreviewSubtractiveColor)
+            );
+            return;
+        }
+        if (resultOperation == "Intersect") {
+            viewProvider.PreviewColor.setValue(
+                styleParameterManager->resolve(StyleParameters::PreviewCommonColor)
+            );
+            return;
+        }
+        if (resultOperation == "Join" || resultOperation == "New Body"
+            || resultOperation == "New Bodies") {
+            viewProvider.PreviewColor.setValue(
+                styleParameterManager->resolve(StyleParameters::PreviewAdditiveColor)
+            );
+            return;
+        }
+    }
+
+    if (auto* addSubFeature = freecad_cast<PartDesign::FeatureAddSub*>(object)) {
+        const bool isAdditive =
+            addSubFeature->getAddSubType() == PartDesign::FeatureAddSub::Additive;
+        viewProvider.PreviewColor.setValue(
+            isAdditive
+                ? styleParameterManager->resolve(StyleParameters::PreviewAdditiveColor)
+                : styleParameterManager->resolve(StyleParameters::PreviewSubtractiveColor)
+        );
+    }
+}
+
+}  // namespace
+
 PROPERTY_SOURCE_WITH_EXTENSIONS(PartDesignGui::ViewProvider, PartGui::ViewProviderPart)
 
 ViewProvider::ViewProvider()
@@ -77,17 +124,7 @@ void ViewProvider::beforeDelete()
 void ViewProvider::attach(App::DocumentObject* pcObject)
 {
     ViewProviderPart::attach(pcObject);
-
-    auto* styleParameterManager = Base::provideService<Gui::StyleParameters::ParameterManager>();
-
-    if (auto addSubFeature = getObject<PartDesign::FeatureAddSub>()) {
-        bool isAdditive = addSubFeature->getAddSubType() == PartDesign::FeatureAddSub::Additive;
-
-        PreviewColor.setValue(
-            isAdditive ? styleParameterManager->resolve(StyleParameters::PreviewAdditiveColor)
-                       : styleParameterManager->resolve(StyleParameters::PreviewSubtractiveColor)
-        );
-    }
+    updateOperationPreviewColor(*this);
 }
 
 bool ViewProvider::doubleClicked()
@@ -237,6 +274,10 @@ void ViewProvider::unsetEdit(int ModNum)
 
 void ViewProvider::updateData(const App::Property* prop)
 {
+    if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(getObject());
+        operation && prop == &operation->ResultOperation) {
+        updateOperationPreviewColor(*this);
+    }
     if (strcmp(prop->getName(), "PreviewShape") == 0) {
         updatePreview();
     }

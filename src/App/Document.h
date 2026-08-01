@@ -1682,6 +1682,7 @@ protected:
 
 private:
     void setBookedTransaction(int transactionId) const;
+    bool isBreakingDependency() const noexcept;
     void changePropertyOfObject(
         TransactionalObject* obj,
         const Property* prop,

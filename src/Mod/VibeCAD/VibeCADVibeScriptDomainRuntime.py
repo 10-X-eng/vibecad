@@ -332,6 +332,7 @@ def _stage_worker_bundle(
         )
     filenames = (
         "vibescript_domain_api.py",
+        "vibescript_worker_progress.py",
         *domain_files,
     )
     if len(filenames) != len(set(filenames)):
@@ -1287,6 +1288,7 @@ def capture_reference_inputs(
                     "unsaved source document."
                 )
         if domain in {
+            "partdesign",
             "assembly",
             "draft",
             "surface",
@@ -2441,6 +2443,17 @@ def _worker_environment(prepared: Mapping[str, Any]) -> dict[str, str]:
     return environment
 
 
+def _worker_progress(prepared: Mapping[str, Any]) -> dict[str, Any] | None:
+    path = Path(str(prepared["staging"])) / "progress.json"
+    if not path.is_file():
+        return None
+    try:
+        value = _read_json(path, "domain worker progress")
+    except ValueError as exc:
+        return {"unavailable": True, "error": str(exc)}
+    return value
+
+
 def execute_candidate(
     prepared: Mapping[str, Any],
     *,
@@ -2461,6 +2474,9 @@ def execute_candidate(
         timeout_seconds=float(prepared["timeout_seconds"]),
         memory_limit_bytes=int(prepared["memory_limit_bytes"]),
     )
+    progress = _worker_progress(prepared)
+    if progress is not None:
+        process["worker_progress"] = progress
     if not process.get("started"):
         return _failure(
             str(prepared["tool_name"]),
@@ -2475,7 +2491,13 @@ def execute_candidate(
             "RUN_CANCELLED",
             "external_process",
             "VibeScript domain execution was cancelled.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
             cancelled=True,
         )
     if process.get("timed_out"):
@@ -2484,7 +2506,13 @@ def execute_candidate(
             "DOMAIN_EXECUTION_TIMEOUT",
             "external_process",
             f"VibeScript domain execution exceeded {prepared['timeout_seconds']:g} seconds.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
         )
     if process.get("memory_exceeded"):
         return _failure(
@@ -2492,7 +2520,13 @@ def execute_candidate(
             "DOMAIN_MEMORY_LIMIT_EXCEEDED",
             "external_process",
             "VibeScript domain execution exceeded its memory limit.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
         )
     result_path = Path(str(prepared["staging"])) / "result.json"
     if not result_path.is_file():
@@ -2501,7 +2535,13 @@ def execute_candidate(
             "DOMAIN_WORKER_NO_RESULT",
             "external_process",
             "The isolated domain worker exited without a result.",
-            observed=process,
+            observed={
+                **process,
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
+            },
         )
     try:
         report = _read_json(result_path, "domain worker result")
@@ -2533,6 +2573,13 @@ def execute_candidate(
                 "stdout": report.get("stdout") or process.get("stdout"),
                 "stderr": process.get("stderr"),
                 "elapsed_seconds": process.get("elapsed_seconds"),
+                "worker_progress": progress,
+                "termination_reason": process.get("termination_reason"),
+                "limit_reached": process.get("limit_reached"),
+                "accepted_live_outputs_preserved": bool(
+                    prepared.get("live_outputs_before")
+                ),
+                "partial_candidate_outputs_published": False,
             },
             **(
                 {"domain_failure_stage": domain_failure_stage}
@@ -11997,6 +12044,11 @@ def _validate_definition_value(
     depth: int = 0,
 ) -> None:
     extra_depth = {
+        # Complex mechanical definitions remain bounded by the 256 KiB source
+        # and input limits, graph validation, and worker resource limits. A
+        # twelve-level Part Design ceiling rejected ordinary nested feature
+        # graphs long before those real safety boundaries were approached.
+        "partdesign": 56,
         "assembly": 12,
         "surface": 64,
         "mesh": 32,
@@ -15158,6 +15210,7 @@ def _validated_partdesign_history_reference(
     value: Any,
     *,
     object_names: set[str],
+    external_references: Mapping[tuple[str, str], Mapping[str, Any]],
     path: str,
 ) -> dict[str, Any] | None:
     if value is None:
@@ -15186,6 +15239,49 @@ def _validated_partdesign_history_reference(
         if name not in object_names:
             raise ValueError(f"{path} refers to unknown history object {name!r}.")
         return {"scope": scope, "name": name}
+    if scope == "external_reference":
+        if set(value) != {
+            "scope",
+            "document_uid",
+            "object_name",
+            "selection",
+        }:
+            raise ValueError(f"{path} has malformed external-reference fields.")
+        document_uid = str(value.get("document_uid") or "")
+        object_name = str(value.get("object_name") or "")
+        reference = external_references.get((document_uid, object_name))
+        if reference is None:
+            raise ValueError(
+                f"{path} was not authenticated as a prepared input reference."
+            )
+        selection = value.get("selection")
+        if not isinstance(selection, Mapping):
+            raise ValueError(f"{path}.selection must be an object.")
+        selection_type = str(selection.get("type") or "")
+        if selection_type == "subelements":
+            if set(selection) != {"type", "subelements"} or bool(
+                reference.get("transient_topology")
+            ):
+                raise ValueError(f"{path}.selection is not a stable subelement contract.")
+            subelements = selection.get("subelements")
+            if not isinstance(subelements, list) or not 1 <= len(subelements) <= 4:
+                raise ValueError(f"{path}.selection.subelements is invalid.")
+        elif selection_type == "published_interface":
+            if set(selection) != {"type", "interface_name"}:
+                raise ValueError(f"{path}.selection has malformed interface fields.")
+            interfaces = reference.get("published_interfaces")
+            if not isinstance(interfaces, Mapping) or str(
+                selection.get("interface_name") or ""
+            ) not in interfaces:
+                raise ValueError(f"{path}.selection names an unavailable interface.")
+        else:
+            raise ValueError(f"{path}.selection has unsupported type {selection_type!r}.")
+        return {
+            "scope": scope,
+            "document_uid": document_uid,
+            "object_name": object_name,
+            "selection": dict(selection),
+        }
     raise ValueError(f"{path} has unsupported reference scope {scope!r}.")
 
 
@@ -15193,6 +15289,7 @@ def _validated_partdesign_history_subelements(
     value: Any,
     *,
     object_names: set[str],
+    external_references: Mapping[tuple[str, str], Mapping[str, Any]],
     path: str,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {
@@ -15210,6 +15307,7 @@ def _validated_partdesign_history_subelements(
         "target": _validated_partdesign_history_reference(
             value.get("target"),
             object_names=object_names,
+            external_references=external_references,
             path=f"{path}.target",
         ),
         "subelements": subelements,
@@ -15220,6 +15318,7 @@ def _validated_partdesign_history_links(
     value: Any,
     *,
     object_names: set[str],
+    external_references: Mapping[tuple[str, str], Mapping[str, Any]],
     path: str,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping) or len(value) > 512:
@@ -15243,6 +15342,7 @@ def _validated_partdesign_history_links(
             clean = _validated_partdesign_history_reference(
                 raw,
                 object_names=object_names,
+                external_references=external_references,
                 path=f"{path}.{name}.value",
             )
         elif kind == "link_list":
@@ -15252,6 +15352,7 @@ def _validated_partdesign_history_links(
                 _validated_partdesign_history_reference(
                     item,
                     object_names=object_names,
+                    external_references=external_references,
                     path=f"{path}.{name}.value[{index}]",
                 )
                 for index, item in enumerate(raw)
@@ -15263,6 +15364,7 @@ def _validated_partdesign_history_links(
                 else _validated_partdesign_history_subelements(
                     raw,
                     object_names=object_names,
+                    external_references=external_references,
                     path=f"{path}.{name}.value",
                 )
             )
@@ -15273,6 +15375,7 @@ def _validated_partdesign_history_links(
                 _validated_partdesign_history_subelements(
                     item,
                     object_names=object_names,
+                    external_references=external_references,
                     path=f"{path}.{name}.value[{index}]",
                 )
                 for index, item in enumerate(raw)
@@ -15359,6 +15462,14 @@ def _validate_partdesign_native_history(
         raise ValueError("Part Design native-history payload changed output order.")
 
     clean_histories: list[dict[str, Any]] = []
+    external_references = {
+        (
+            str(item.get("document_uid") or ""),
+            str(item.get("object_name") or ""),
+        ): item
+        for item in list(prepared.get("resolved_references") or [])
+        if isinstance(item, Mapping)
+    }
     body_names: set[str] = set()
     document_object_names: set[str] = set()
     total_objects = 0
@@ -15461,6 +15572,7 @@ def _validate_partdesign_native_history(
                     "links": _validated_partdesign_history_links(
                         item.get("links"),
                         object_names=object_names,
+                        external_references=external_references,
                         path=f"{object_path}.links",
                     ),
                     "visible": bool(item["visible"]),
@@ -16306,8 +16418,56 @@ class DeclarativeDomainAdapter:
             "workbench": self.pack.workbench,
             "program_schema": contracts.PROGRAM_SCHEMA,
             "runtime_exports": exports,
+            "api_groups": contracts.api_groups(self.pack),
             "accepted_output_types": list(self.pack.output_types),
             "source_globals": ["doc", "inputs", "api"],
+            "source_global_contracts": {
+                "inputs": (
+                    "Immutable values validated against this program's input_schema. "
+                    "Stable document-reference inputs contain only authenticated identity."
+                ),
+                "api": (
+                    "Immutable workbench API selected by the active ribbon. Read exact "
+                    "callables with vibescript.read_api(names=[...])."
+                ),
+                "doc": {
+                    "purpose": (
+                        "Read-only names and labels in the isolated candidate document. "
+                        "It does not expose Shapes, mutation, FreeCAD, or the live GUI document."
+                    ),
+                    "members": [
+                        "doc.Name",
+                        "doc.Objects",
+                        "doc.getObject(exact_name)",
+                        "object.Name",
+                        "object.Label",
+                        "object.TypeId",
+                    ],
+                },
+            },
+            "source_value_contract": {
+                "type": "DomainValue",
+                "purpose": (
+                    "Every api call returns an immutable declarative graph value; it is not "
+                    "live FreeCAD geometry and is evaluated only when reachable from result."
+                ),
+                "readable_fields": [
+                    "domain",
+                    "operation",
+                    "output_type",
+                    "arguments",
+                    "properties",
+                ],
+                "output_type_rule": (
+                    "Use output_type to distinguish profiles, Body features, standalone "
+                    "topology, checks, materials, occurrences, and other domain values. "
+                    "Pass only the exact types named by a callable signature or error."
+                ),
+                "identity_rule": (
+                    "Bind a returned value once and reuse that exact variable downstream. "
+                    "Recreating equivalent calls creates a different graph node."
+                ),
+            },
             "result_contract": (
                 "Assign result to a dict whose keys exactly match expected_outputs "
                 "in declared order and whose values come from this domain api."
@@ -16892,25 +17052,28 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 ),
                 "authoring_priority": {
                     "default": (
-                        "Use api.sketch plus feature operations for solids defined "
+                        "Use api.sketch plus native feature operations for solids defined "
                         "by planar profiles. The source code is the editable "
                         "parametric definition."
                     ),
                     "planar_profile_rule": (
-                        "Every planar feature profile is an api.sketch with plane and "
-                        "z_offset_mm; it is not a *_3d curve or api.wire."
+                        "Every planar feature profile is an api.sketch on a principal plane, "
+                        "an arbitrary placement, or a stable attached support; it is not a "
+                        "*_3d curve or api.wire."
                     ),
                     "direct_topology_exception": (
                         "Use direct OCC topology only for nonplanar, imported, repair, "
                         "standalone, or otherwise unrepresentable geometry."
                     ),
                     "do_not_regress": (
-                        "Do not replace clear sketch-and-feature intent with direct "
-                        "topology merely to shorten source or bypass a failing feature."
+                        "Do not replace valid native history or clear sketch-and-feature "
+                        "intent with direct topology merely to shorten source or bypass a "
+                        "failing feature."
                     ),
                     "verification": (
                         "A sketch-driven Body must report its sketches and feature "
-                        "types in accepted validation evidence."
+                        "types in accepted validation evidence; an empty sketch list means "
+                        "the intended native profile history was not built."
                     ),
                 },
                 "profile_contract": {
@@ -16941,6 +17104,7 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                     ],
                     "new_geometry": [
                         "fastener",
+                        "involute_gear",
                         "extrude(operation='new_solid')",
                         "extrude(operation='new_surface')",
                         "revolve(operation='new_solid')",
@@ -17044,8 +17208,8 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "domain_context": {
                     "material_catalog": (
-                        "Part Design context includes the material catalog index. Select an exact "
-                        "UUID from it; never invent one."
+                        "Call material_catalog.search with the required properties and pass one "
+                        "returned api.material constructor unchanged; never invent a UUID."
                     ),
                 },
                 "workbench_handoffs": {
@@ -17058,8 +17222,11 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                         "here for standalone topology and repair."
                     ),
                     "assembly": (
-                        "Use Assembly for component instances, joints, and solved motion; Part "
-                        "Design publishes component geometry and interfaces."
+                        "Part Design authors one reusable component definition and publishes "
+                        "stable interfaces. Assembly consumes that publication through "
+                        "component_catalog.search, creates lightweight linked occurrences with "
+                        "api.component/api.instances, and owns joints, collision/clearance checks, "
+                        "solved motion, exploded views, and bills of materials."
                     ),
                     "material": (
                         "Use api.material and api.appearance here; no Material workbench switch "
@@ -17088,6 +17255,316 @@ class PartDesignDomainAdapter(DeclarativeDomainAdapter):
                 },
             }
         )
+        from vibescript_sketcher_api import _CONSTRAINT_KINDS
+
+        constraint_forms = {
+            "coincident": "[point, point]",
+            "horizontal": "[whole line]",
+            "vertical": "[whole line]",
+            "parallel": "[whole line, whole line]",
+            "perpendicular": (
+                "[whole line, whole line], [point on first, whole line], or two points"
+            ),
+            "tangent": (
+                "[whole curve, whole curve], [point on first, whole curve], or two points"
+            ),
+            "distance": (
+                "[whole line] for length, or [point, point]; value is required"
+            ),
+            "distance_x": "[point] from origin or [point, point]; value is required",
+            "distance_y": "[point] from origin or [point, point]; value is required",
+            "angle": (
+                "[whole line/arc], [whole curve, whole curve], or [point, point]; "
+                "value is required in degrees"
+            ),
+            "angle_via_point": (
+                "[whole curve, whole curve, point]; value is required in degrees"
+            ),
+            "radius": "[whole arc/circle]; positive value is required",
+            "diameter": "[whole arc/circle]; positive value is required",
+            "equal": "[whole geometry, whole geometry]",
+            "point_on_object": "[point, whole geometry or axis]",
+            "symmetric": "[point, point, symmetry point or axis]",
+            "block": "[whole geometry]",
+            "weight": (
+                "[whole construction circle used as a B-spline handle]; positive value required"
+            ),
+            "snells_law": (
+                "[point, point, whole interface line]; positive ratio value required"
+            ),
+            "internal_alignment": (
+                "two entities in the alignment-specific order; set alignment and, for "
+                "B-splines, zero-based internal_index"
+            ),
+            "group": "[whole construction group line, then ordered member entities]",
+            "text": (
+                "[whole construction group line, then ordered member entities]; set text/font"
+            ),
+        }
+        axis_contract = {
+            "body_feature": (
+                "H and X mean the sketch's local horizontal axis; V and Y mean its "
+                "local vertical axis; N and Z mean its local normal. These follow the "
+                "sketch placement and are not unconditional global axes."
+            ),
+            "standalone": (
+                "Use explicit origin plus non-zero direction: axis_origin/axis_direction "
+                "for revolve, center/axis_direction for polar_pattern, and "
+                "plane_origin/plane_normal for mirror."
+            ),
+            "vector_format": "[x, y, z] in global model coordinates",
+        }
+        first_feature = {
+            "native_body": (
+                "For the first native Body feature, use operation='add_material' with "
+                "base omitted. For every later addition or removal, pass the exact prior "
+                "feature as base."
+            ),
+            "standalone": (
+                "operation='new_solid' creates standalone topology. api.publish keeps it "
+                "standalone; api.body adopts it and promotes supported sketch extrusions, "
+                "revolutions, and lofts to native initial Body history."
+            ),
+        }
+        selector_schema = {
+            "type": "query",
+            "element_type": "face or edge",
+            "expected_count": "positive exact cardinality",
+            "optional_filters": {
+                "geometry_type": (
+                    "case-insensitive native analytic type. Edge values include Line, "
+                    "Circle, Ellipse, BezierCurve, and BSplineCurve; face values include "
+                    "Plane, Cylinder, Cone, Sphere, and Toroid"
+                ),
+                "normal": "face normal [x,y,z] plus normal_tolerance_degrees",
+                "direction": "edge tangent [x,y,z] plus direction_tolerance_degrees",
+                "radius": "analytic radius plus radius_tolerance",
+                "area": "min_area and/or max_area in mm^2",
+                "length": "min_length and/or max_length in mm",
+                "location": "near_point [x,y,z] plus max_distance in mm",
+            },
+            "return": (
+                "A plain selector object consumed by topology operations, checks, and "
+                "semantic interfaces. It is not geometry and expected_count is rechecked "
+                "on every build."
+            ),
+        }
+        interface_schema = {
+            "shape": {
+                "StableName": {
+                    "selection": "{'type':'origin'} or one find_subelements query",
+                    "description": "optional human meaning, at most 500 characters",
+                }
+            },
+            "examples": {
+                "mounting_plane_or_shaft_end": {
+                    "EndFace": {
+                        "selection": {
+                            "type": "query",
+                            "element_type": "face",
+                            "expected_count": 1,
+                            "geometry_type": "Plane",
+                            "normal": [1, 0, 0],
+                        },
+                        "description": "Axial mounting face",
+                    }
+                },
+                "bearing_seat_or_axis": {
+                    "BearingSeat": {
+                        "selection": {
+                            "type": "query",
+                            "element_type": "face",
+                            "expected_count": 1,
+                            "geometry_type": "Cylinder",
+                            "radius": 10.0,
+                        },
+                        "description": "Bearing seat and connector axis",
+                    }
+                },
+                "bolt_circle": {
+                    "BoltCircleHoles": {
+                        "selection": {
+                            "type": "query",
+                            "element_type": "face",
+                            "expected_count": 6,
+                            "geometry_type": "Cylinder",
+                            "radius": 2.5,
+                        },
+                        "description": "Six mounting-hole bores",
+                    }
+                },
+                "spline_or_flow_boundary": (
+                    "Use an exact BSplineCurve edge query for a spline edge, or an exact "
+                    "face query for each named inlet/outlet boundary."
+                ),
+            },
+            "assembly_rule": (
+                "An Assembly connector interface must resolve to origin or exactly one "
+                "subelement. Multi-subelement interfaces such as bolt circles are for "
+                "consumers that explicitly accept sets."
+            ),
+        }
+        description["api_details"] = {
+            "constraint": {
+                "kinds": sorted(_CONSTRAINT_KINDS),
+                "entity_selectors": {
+                    "whole_geometry": "pass the exact geometry variable",
+                    "point": (
+                        "{'geometry': value, 'point': 'point|start|end|center'}; valid "
+                        "point names depend on geometry type"
+                    ),
+                    "external": ["x_axis", "y_axis", "origin"],
+                },
+                "forms": constraint_forms,
+                "state": {
+                    "name": "stable constraint identifier used by expressions and diagnostics",
+                    "expression": "driving dimensional expression",
+                    "driving": "false makes a dimensional reference constraint",
+                    "active": "false keeps the native constraint inactive",
+                    "virtual": "true places it in virtual space",
+                },
+                "source_example": (
+                    "end = {'geometry': edge, 'point': 'end'}\n"
+                    "lock = api.constraint('coincident', [end, 'origin'], name='Anchor')"
+                ),
+            },
+            "sketch": {
+                "principal_planes": ["XY", "XZ", "YZ"],
+                "parallel_offset": (
+                    "plane_offset_mm moves along the selected plane's local normal. "
+                    "z_offset_mm is the compatibility alias with identical behavior."
+                ),
+                "arbitrary_placement": {
+                    "schema": {
+                        "origin": [0, 0, 0],
+                        "normal": [0, 0, 1],
+                        "x_direction": [1, 0, 0],
+                    },
+                    "rule": (
+                        "Vectors are normalized; x_direction is projected into the plane "
+                        "and must not be parallel to normal. Do not combine with support."
+                    ),
+                },
+                "attached_support": {
+                    "schema": {
+                        "reference": {
+                            "document_uid": "from an x-vibecad-reference input",
+                            "object_name": "from that same input",
+                        },
+                        "selection": {
+                            "type": "published_interface",
+                            "interface_name": "MountingFace",
+                        },
+                    },
+                    "native_selection": (
+                        "A non-transient native source may instead use type='subelements' "
+                        "with one to four FaceN/EdgeN/VertexN names."
+                    ),
+                    "map_mode": (
+                        "Required with support. Use the exact native mode for that support; "
+                        "FlatFace is valid for a planar face."
+                    ),
+                    "attachment_offset": (
+                        "{'position':[x,y,z], 'rotation':[x,y,z,w]}; quaternion is normalized"
+                    ),
+                },
+                "constraint_policy": (
+                    "Calculated source coordinates remain parametric inputs, but they do not "
+                    "remove native Sketcher degrees of freedom. Set require_fully_constrained "
+                    "only when downstream design intent requires a natively locked sketch."
+                ),
+            },
+            "find_subelements": selector_schema,
+            "measure": {
+                "single_shape_quantities": [
+                    "length_mm", "area_mm2", "volume_mm3", "solid_count",
+                    "face_count", "edge_count", "bounds_min_x_mm", "bounds_min_y_mm",
+                    "bounds_min_z_mm", "bounds_max_x_mm", "bounds_max_y_mm",
+                    "bounds_max_z_mm", "bounds_size_x_mm", "bounds_size_y_mm",
+                    "bounds_size_z_mm", "center_of_mass_x_mm",
+                    "center_of_mass_y_mm", "center_of_mass_z_mm",
+                ],
+                "pair_quantities": {
+                    "minimum_distance_mm": "requires other=shape",
+                    "interference_volume_mm3": "requires other=shape",
+                },
+                "selected_quantities": {
+                    "radius_mm": "requires one exact edge or face selector",
+                    "diameter_mm": "requires one exact edge or face selector",
+                    "minimum_wall_thickness_mm": (
+                        "requires selection and other_selection, each matching one "
+                        "non-touching opposing face on the same shape"
+                    ),
+                },
+                "material_quantities": {
+                    "names": [
+                        "mass_kg", "inertia_xx_kg_mm2", "inertia_xy_kg_mm2",
+                        "inertia_xz_kg_mm2", "inertia_yy_kg_mm2",
+                        "inertia_yz_kg_mm2", "inertia_zz_kg_mm2",
+                    ],
+                    "requirement": (
+                        "The measured shape must contain exactly one solid. Pass "
+                        "material=api.material(..., "
+                        "require_physical_properties=['Density'])."
+                    ),
+                },
+                "evidence_rule": (
+                    "All values come from regenerated BREP topology. A helper line, face, "
+                    "or arithmetic value cannot certify another shape."
+                ),
+            },
+            "body": {
+                "interfaces": interface_schema,
+                "first_feature": "See api_details.extrude.first_feature.",
+            },
+            "publish": {
+                "interfaces": interface_schema,
+                "first_feature": "See api_details.extrude.first_feature.",
+            },
+            "extrude": {"first_feature": first_feature},
+            "revolve": {
+                "first_feature": "See api_details.extrude.first_feature.",
+                "axis": axis_contract,
+            },
+            "loft": {"first_feature": "See api_details.extrude.first_feature."},
+            "sweep": {"first_feature": "See api_details.extrude.first_feature."},
+            "helix": {"first_feature": "See api_details.extrude.first_feature."},
+            "polar_pattern": {"axis": "See api_details.revolve.axis."},
+            "mirror": {"axis": "See api_details.revolve.axis."},
+            "draft": {
+                "axis": (
+                    "neutral_plane is global XY, XZ, or YZ; pull_direction is global "
+                    "X, Y, or Z. The selected faces are count-guarded geometric queries."
+                )
+            },
+            "fastener": {
+                "catalog_tool": "fastener_catalog.search",
+                "options": (
+                    "Use only option keys and exact defaults/allowed values returned for the "
+                    "selected standard and nominal_thread. The catalog response is the option schema."
+                ),
+                "threads": "model_thread is a boolean; true builds real helical thread geometry.",
+            },
+            "appearance": {
+                "display_mode": {
+                    "common_partdesign_values": [
+                        "Flat Lines", "Shaded", "Wireframe", "Points"
+                    ],
+                    "validation": (
+                        "The selected publication's native view provider is authoritative; an "
+                        "unsupported value fails with its exact available modes."
+                    ),
+                },
+                "color": "RGB channels are integer 0-255; transparency_percent is 0-100.",
+            },
+            "material": {
+                "catalog_tool": "material_catalog.search",
+                "rule": (
+                    "Search by name, alloy, UUID, or required properties, then pass one "
+                    "returned constructor unchanged. Never invent a UUID."
+                ),
+            },
+        }
         return description
 
 
@@ -22722,6 +23199,52 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
             }
         )
+        description["api_details"] = {
+            "component": {
+                "definition_rule": (
+                    "The input reference identifies one authored reusable definition. "
+                    "The result is one lightweight native linked occurrence, not copied BREP."
+                ),
+                "discovery": (
+                    "Use component_catalog.search and copy one returned reference into an "
+                    "x-vibecad-reference input."
+                ),
+            },
+            "instances": {
+                "definition_rule": (
+                    "Creates several lightweight native links to one authored definition. "
+                    "It does not duplicate or recompute that definition's BREP."
+                ),
+                "identity_rule": (
+                    "Bind/index each returned occurrence once, use those exact values in "
+                    "connectors and api.assembly, and return each under its own stable output key."
+                ),
+            },
+            "connector": {
+                "partdesign_handoff": (
+                    "Prefer a named Part Design semantic interface. It must resolve to origin "
+                    "or exactly one face/edge/vertex. Copy the interface name exactly from the "
+                    "component candidate; do not guess FaceN/EdgeN on regenerating geometry."
+                ),
+                "axis_rule": "Connector local +Z is the joint axis.",
+            },
+            "assembly": {
+                "ownership": (
+                    "Part Design owns reusable component geometry. Assembly owns occurrence "
+                    "placement, hierarchy, joints, static fit checks, and solved mechanism state."
+                ),
+                "reuse_rule": (
+                    "Edit the source Part Design program once; every linked Assembly occurrence "
+                    "then references that same definition."
+                ),
+            },
+            "mechanism_check": {
+                "scope": (
+                    "Exact solved-state BREP collision, contact, and minimum-clearance checks. "
+                    "Use api.simulation when behavior across motion states is required."
+                )
+            },
+        }
         return description
 
 

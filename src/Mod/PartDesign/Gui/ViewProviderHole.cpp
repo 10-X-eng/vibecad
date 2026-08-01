@@ -107,6 +107,10 @@ struct HolePresentationState
     fastsignals::scoped_connection stableConnection;
     fastsignals::scoped_connection restoredConnection;
     fastsignals::scoped_connection changedConnection;
+    // A hole ViewProvider can outlive its body's ViewProvider while a GUI
+    // document is being destroyed. Retain the exact scene root used for each
+    // overlay so cleanup never has to rediscover an already-destroyed body.
+    std::map<const PartDesign::Hole*, SoGroup*> threadRoots;
     std::map<std::string, DesignThreadOverlay> designOverlays;
     // signalFinishRestoreDocument is emitted immediately before the
     // document's Restoring status bit is cleared. The overlay refresh
@@ -317,23 +321,32 @@ bool ViewProviderHole::onDelete(const std::vector<std::string>& arg)
 
 void ViewProviderHole::clearThreadTextures()
 {
-    auto* bodyVp = getBodyViewProvider();
-    SoGroup* root = bodyVp ? bodyVp->getRoot() : nullptr;
+    auto stateIt = holePresentationStates().find(this);
 
     for (auto const& [hole, sw] : m_threadOverlays) {
+        SoGroup* root = nullptr;
+        if (stateIt != holePresentationStates().end()) {
+            auto rootIt = stateIt->second.threadRoots.find(hole);
+            if (rootIt != stateIt->second.threadRoots.end()) {
+                root = rootIt->second;
+            }
+        }
         if (root && root->findChild(sw) >= 0) {
             root->removeChild(sw);
         }
         sw->unref();
+        if (root) {
+            root->unref();
+        }
     }
     m_threadOverlays.clear();
     m_endThreadClipper = nullptr;
     m_textureTransform = nullptr;
 
-    auto stateIt = holePresentationStates().find(this);
     if (stateIt == holePresentationStates().end()) {
         return;
     }
+    stateIt->second.threadRoots.clear();
     for (auto& [bodyId, overlay] :
          stateIt->second.designOverlays) {
         Q_UNUSED(bodyId);
@@ -1272,15 +1285,25 @@ void ViewProviderHole::updateOverlay()
 
     bool isThreadVisible = isHoleThreadVisible();
     auto* bodyVp = getBodyViewProvider();
+    auto& state = holePresentationStates()[this];
     // Cleanup
     auto it = m_threadOverlays.find(hole);
     if (it != m_threadOverlays.end()) {
         SoSwitch* existingSwitch = it->second;
-        if (bodyVp
-            && bodyVp->getRoot()->findChild(existingSwitch) >= 0) {
-            bodyVp->getRoot()->removeChild(existingSwitch);
+        auto rootIt = state.threadRoots.find(hole);
+        SoGroup* root = rootIt != state.threadRoots.end()
+            ? rootIt->second
+            : nullptr;
+        if (root && root->findChild(existingSwitch) >= 0) {
+            root->removeChild(existingSwitch);
         }
         existingSwitch->unref();
+        if (root) {
+            root->unref();
+        }
+        if (rootIt != state.threadRoots.end()) {
+            state.threadRoots.erase(rootIt);
+        }
         m_threadOverlays.erase(it);
     }
     // Add the thread
@@ -1289,9 +1312,12 @@ void ViewProviderHole::updateOverlay()
             auto* threadSwitch = new SoSwitch();
             threadSwitch->ref();
             threadSwitch->addChild(newSep);
-            bodyVp->getRoot()->addChild(threadSwitch);
+            SoGroup* root = bodyVp->getRoot();
+            root->ref();
+            root->addChild(threadSwitch);
             threadSwitch->whichChild = SO_SWITCH_ALL;
             m_threadOverlays[hole] = threadSwitch;
+            state.threadRoots[hole] = root;
         }
     }
 }

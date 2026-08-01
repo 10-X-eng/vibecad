@@ -517,7 +517,9 @@ def test_selected_vibescript_excludes_human_mutation_commands(
     if production_ready:
         assert set(domain_pack.tool_names) <= names
         assert "core.inspect" not in names
-        assert len([name for name in names if name.startswith("vibescript.")]) == 7
+        assert len(
+            [name for name in names if name.startswith("vibescript.")]
+        ) == len(domain_pack.tool_names)
     else:
         assert not any(name.startswith("vibescript.") for name in names)
 
@@ -553,8 +555,10 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "core.capture_view_screenshot",
         "core.set_view",
         "fastener_catalog.search",
+        "material_catalog.search",
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.build_program",
         "vibescript.edit_source",
         "vibescript.partdesign.create_program",
         "vibescript.partdesign.set_inputs",
@@ -650,6 +654,7 @@ def test_vibescript_uses_universal_source_tools_and_qualified_domain_writes(spec
     assert {
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.build_program",
         "vibescript.edit_source",
     } <= set(specs)
     removed_suffixes = {
@@ -670,6 +675,7 @@ def test_vibescript_uses_universal_source_tools_and_qualified_domain_writes(spec
             assert name in {
                 "vibescript.read_source",
                 "vibescript.read_api",
+                "vibescript.build_program",
                 "vibescript.edit_source",
             }
             continue

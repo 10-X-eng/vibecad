@@ -575,15 +575,16 @@ def _exercise_lifecycle() -> dict[str, object]:
         assert pack is not None and pack.production_ready
         surface = resolve_modeling_surface("InspectionWorkbench", "vibescript")
         assert surface.available is True, surface.unavailable_reason
-        assert surface.cad_tool_names == tuple(
-            f"vibescript.inspection.{name}"
-            for name in (
-                "create_program",
-                "edit_source",
-                "set_inputs",
-                "reconfigure_program",
-                "delete_program",
-            )
+        assert surface.cad_tool_names == (
+            "vibescript.read_source",
+            "vibescript.read_api",
+            "vibescript.build_program",
+            "vibescript.edit_source",
+            "vibescript.inspection.create_program",
+            "vibescript.inspection.set_inputs",
+            "vibescript.inspection.reconfigure_program",
+            "vibescript.inspection.delete_program",
+            "inspection.list_features",
         )
 
         nominal = document.addObject("Part::Feature", "Nominal")
@@ -868,8 +869,13 @@ def _exercise_lifecycle() -> dict[str, object]:
                 App.Vector(7, 7, 0.05),
             ]
         )
-        marked = mark_programs_stale_from_source(actual, "Points")
-        assert set(marked) == set(stable_names.values())
+        observer_marked = {
+            str(obj.Name)
+            for obj in outputs.values()
+            if str(obj.VibeCADDerivedState) == "stale"
+        }
+        explicitly_marked = set(mark_programs_stale_from_source(actual, "Points"))
+        assert observer_marked | explicitly_marked == set(stable_names.values())
         assert all(str(obj.VibeCADDerivedState) == "stale" for obj in outputs.values())
         stale_distances = [float(value) for value in list(feature.Distances)]
         reopened.recompute()
@@ -931,15 +937,14 @@ def _exercise_lifecycle() -> dict[str, object]:
             },
         )
         prepared_delete = prepare_delete(delete_capture)
-        original_remove = publication_module._remove_owned_objects
+        original_remove = publication_module._remove_timeline_deletion
 
-        def fail_after_committed_removal(active_document, managed_objects):
-            for managed in list(managed_objects):
-                active_document.removeObject(managed.Name)
+        def fail_after_committed_removal(active_document, deletion):
+            original_remove(active_document, deletion)
             active_document.commitTransaction()
             raise RuntimeError("injected Inspection deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_committed_removal
+        publication_module._remove_timeline_deletion = fail_after_committed_removal
         try:
             try:
                 delete_live_program(service, prepared_delete)
@@ -950,7 +955,7 @@ def _exercise_lifecycle() -> dict[str, object]:
                 raise AssertionError("Expected injected Inspection deletion failure.")
             restore_prepared_delete(prepared_delete)
         finally:
-            publication_module._remove_owned_objects = original_remove
+            publication_module._remove_timeline_deletion = original_remove
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()

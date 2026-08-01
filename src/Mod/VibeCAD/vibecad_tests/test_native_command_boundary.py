@@ -216,17 +216,22 @@ def test_model_and_sketch_commands_use_the_shared_history_selection_gate() -> No
         part_design,
         "unsigned validateSketches(",
     )
-    assert "PartGui::isModelingObjectActive(object)" in _function(
+    assert "PartGui::isModelingObjectActive(" in _function(
         part_design,
         "bool isTransformCommandActive(",
     )
-    assert "PartGui::isModelingObjectActive(selected.pObject)" in _function(
-        part_design,
+    binder_definition = part_design[
+        part_design.rindex("bool hasSubShapeBinderSourceSelection(") :
+    ]
+    assert "PartGui::isModelingObjectActive(" in _function(
+        binder_definition,
         "bool hasSubShapeBinderSourceSelection(",
     )
+    sketch_setup = _function(sketcher, "bool isSketchSetupAvailable(")
+    assert "selectionBelongsToExactSketchDocument(" in sketch_setup
     assert "PartGui::isModelingObjectActive(" in _function(
         sketcher,
-        "bool isSketchSetupAvailable(",
+        "bool selectionBelongsToExactSketchDocument(",
     )
     assert "isSketchSetupAvailable(document)" in _function(
         sketcher,

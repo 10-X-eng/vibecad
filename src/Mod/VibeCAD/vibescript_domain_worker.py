@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Any
 
 from vibescript_domain_api import DomainValue, create_domain_api
+import vibescript_worker_progress as worker_progress
 
 REQUEST_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_REQUEST"
 RESULT_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_RESULT"
@@ -864,6 +865,8 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             f"Unsupported domain worker schema: {request.get('schema')!r}."
         )
     domain = str(request.get("domain") or "")
+    worker_progress.configure(root / "progress.json", domain)
+    worker_progress.set_phase("reference_setup")
     source = str(request.get("source") or "")
     inputs = request.get("inputs")
     expected_outputs = request.get("expected_outputs")
@@ -986,6 +989,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             output_types,
             compatibility_methods=compatibility_methods,
         )
+        worker_progress.set_phase("source_execution")
         result, stdout, budget = _execute_source(
             source=source,
             document_name=str(request.get("document_name") or "VibeScriptDocument"),
@@ -1023,6 +1027,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         techdraw_validation = None
         partdesign_validation = None
         partdesign_native_history = None
+        worker_progress.set_phase("native_build")
         if domain == "partdesign":
             from vibescript_partdesign_worker import (
                 export_partdesign_native_history,
@@ -1240,6 +1245,10 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             response["cam_validation"] = cam_validation
         elif domain == "techdraw":
             response["techdraw_validation"] = techdraw_validation
+        worker_progress.finish()
+        response["worker_progress"] = json.loads(
+            (root / "progress.json").read_text(encoding="utf-8")
+        )
         return response
     finally:
         App.closeDocument(document.Name)
@@ -1256,6 +1265,7 @@ def main() -> int:
         _resource_limits(request)
         payload = _run(request, root)
     except BaseException as exc:
+        worker_progress.failed(exc)
         payload = {
             "ok": False,
             "exception_type": exc.__class__.__name__,

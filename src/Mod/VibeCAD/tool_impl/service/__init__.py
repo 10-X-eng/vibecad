@@ -16,6 +16,7 @@ TOOL_MODULE_NAMES = (
     "conversation_review_design",
     "fastener_catalog_search",
     "component_catalog_search",
+    "material_catalog_search",
     "core_capture_view_screenshot",
     "core_set_view",
     "model_find_subelements",

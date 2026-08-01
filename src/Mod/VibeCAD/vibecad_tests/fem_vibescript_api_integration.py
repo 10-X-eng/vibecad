@@ -460,6 +460,7 @@ def _prepare_execute_validate(
         "vibescript_domain_api.py",
         "vibescript_fem_api.py",
         "vibescript_fem_worker.py",
+        "vibescript_worker_progress.py",
     }, sorted(staged_names)
     execution = execute_candidate(prepared, cancellation_check=None)
     validated = validate_candidate(prepared, execution) if execution.get("ok") else None
@@ -709,7 +710,7 @@ def _run_integration() -> int:
     with tempfile.TemporaryDirectory(prefix="vibecad-fem-integration-") as directory:
         root = Path(directory)
         document = App.newDocument("VibeCADFEMIntegration")
-        document.setUndoMode(1)
+        document.UndoMode = 1
         source = document.addObject("Part::Feature", "SourceSolid")
         source.Label = "Human two-solid source"
         source.Shape = Part.makeCompound(
@@ -802,10 +803,10 @@ def _run_integration() -> int:
             stable_names.values()
         )
         created_state = _assert_fem_timeline_graph(document, outputs, source)
-        assert document.undo()
+        document.undo()
         assert not _managed_names(document, prepared["program_id"])
         assert document.getObject(source.Name) is source
-        assert document.redo()
+        document.redo()
         outputs = {
             name: document.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -891,7 +892,7 @@ def _run_integration() -> int:
         )
         for name, obj in outputs.items():
             assert obj.HumanFEMNote == f"preserve {name}"
-        assert document.undo()
+        document.undo()
         outputs = {
             name: document.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -907,7 +908,7 @@ def _run_integration() -> int:
             document.getObject(source.Name),
         )
         assert consumer.Sources == list(outputs.values())
-        assert document.redo()
+        document.redo()
         outputs = {
             name: document.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -1012,7 +1013,7 @@ def _run_integration() -> int:
         reopened = App.openDocument(str(save_path))
         assert reopened is not None
         App.setActiveDocument(reopened.Name)
-        reopened.setUndoMode(1)
+        reopened.UndoMode = 1
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -1066,14 +1067,14 @@ def _run_integration() -> int:
             },
         )
         prepared_delete = prepare_delete(delete_capture)
-        original_remove = publication_module._remove_owned_objects
+        original_remove = publication_module._remove_timeline_deletion
 
-        def fail_after_committed_removal(active_document, managed_objects):
-            original_remove(active_document, managed_objects)
+        def fail_after_committed_removal(active_document, deletion):
+            original_remove(active_document, deletion)
             active_document.commitTransaction()
             raise RuntimeError("injected FEM deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_committed_removal
+        publication_module._remove_timeline_deletion = fail_after_committed_removal
         try:
             try:
                 delete_live_program(service, prepared_delete)
@@ -1084,7 +1085,7 @@ def _run_integration() -> int:
                 raise AssertionError("Expected injected FEM deletion failure.")
             restore_prepared_delete(prepared_delete)
         finally:
-            publication_module._remove_owned_objects = original_remove
+            publication_module._remove_timeline_deletion = original_remove
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -1111,7 +1112,7 @@ def _run_integration() -> int:
         assert finished["ok"] is True
         assert not _managed_names(reopened, reconfigured["program_id"])
         assert reopened.getObject(source_name) is not None
-        assert reopened.undo()
+        reopened.undo()
         outputs = {
             name: reopened.getObject(object_name)
             for name, object_name in stable_names.items()
@@ -1122,7 +1123,7 @@ def _run_integration() -> int:
             outputs,
             reopened.getObject(source_name),
         )
-        assert reopened.redo()
+        reopened.redo()
         assert not _managed_names(reopened, reconfigured["program_id"])
         assert reopened.getObject(source_name) is not None
         App.closeDocument(reopened.Name)

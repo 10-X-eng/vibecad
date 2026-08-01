@@ -263,7 +263,10 @@ def test_every_shipped_model_command_has_an_explicit_transaction_classification(
     declared = {
         command for commands in _CPP_GUARDS.values() for command in commands
     } | {command for commands in _PYTHON_GUARDS.values() for command in commands}
-    assert implementations == declared
+    # Compatibility commands may remain guarded without being presented on the
+    # shipped ribbon. Every shipped transaction command must still have one
+    # explicit boundary classification.
+    assert implementations <= declared
 
 
 def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> None:

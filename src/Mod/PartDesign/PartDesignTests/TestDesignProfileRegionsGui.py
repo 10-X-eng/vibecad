@@ -257,6 +257,34 @@ class TestDesignProfileRegionsGui(unittest.TestCase):
         self._close_task(QtGui.QDialogButtonBox.Cancel)
         self.assertIsNone(self.document.getObject(operation_name))
 
+    def test_global_operation_preview_color_follows_result_semantics(self):
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "PreviewSemantics",
+        )
+        self._process_events()
+
+        def preview_rgb():
+            return tuple(float(value) for value in operation.ViewObject.PreviewColor)[:3]
+
+        def assert_preview_rgb(expected):
+            for actual, wanted in zip(preview_rgb(), expected):
+                self.assertAlmostEqual(actual, wanted, places=6)
+
+        assert_preview_rgb((0.0, 1.0, 0.6))
+
+        operation.ResultOperation = "Cut"
+        self._process_events()
+        assert_preview_rgb((1.0, 0.0, 0.0))
+
+        operation.ResultOperation = "Intersect"
+        self._process_events()
+        assert_preview_rgb((1.0, 1.0, 0.0))
+
+        operation.ResultOperation = "Join"
+        self._process_events()
+        assert_preview_rgb((0.0, 1.0, 0.6))
+
 
 if __name__ == "__main__":
     unittest.main()

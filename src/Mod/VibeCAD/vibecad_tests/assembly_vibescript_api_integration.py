@@ -1131,7 +1131,7 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "initialValue + pi/2*time",
                 "initialValue + pi*time",
             ),
@@ -1156,7 +1156,7 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
             "source": (
-                base_capture["arguments"]["source"]
+                create_capture["arguments"]["source"]
                 .replace(
                     "initialValue + pi/2*time",
                     "initialValue + pi*time",
@@ -1199,7 +1199,7 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "initialValue + pi/2*time",
                 "initialValue + pi*time",
             ),
@@ -1452,7 +1452,7 @@ def _exercise_exploded_view_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "[0,0,20]",
                 "[0,0,25]",
             ),
@@ -1478,7 +1478,7 @@ def _exercise_exploded_view_lifecycle(root: Path, pack) -> dict:
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
             "source": (
-                base_capture["arguments"]["source"]
+                create_capture["arguments"]["source"]
                 .replace("[0,0,20]", "[0,0,25]")
                 .replace("[base,arm]", "[center]")
             ),
@@ -1515,7 +1515,7 @@ def _exercise_exploded_view_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "[0,0,20]",
                 "[0,0,25]",
             ),
@@ -1967,7 +1967,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "base = api.component(inputs['base'], grounded=True, label='Base')",
                 "base = api.component(inputs['base'], label='Base')",
             ),
@@ -1992,7 +1992,7 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "Production Assembly",
                 "Recovered Assembly",
             ),
@@ -2066,8 +2066,21 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         if item["object_name"] == "SourceArm"
     )
     source_arm.Shape = Part.makeCylinder(4, 30)
+    automatically_marked = {
+        object_name
+        for object_name in identities.values()
+        if str(
+            getattr(
+                document.getObject(object_name),
+                "VibeCADDerivedState",
+                "",
+            )
+            or ""
+        )
+        == "stale"
+    }
     marked = mark_programs_stale_from_source(source_arm, "Shape")
-    assert identities["Model"] in marked
+    assert identities["Model"] in automatically_marked | set(marked)
     for object_name in identities.values():
         assert document.getObject(object_name).VibeCADDerivedState == "stale"
     stale_capture = _candidate_capture(
@@ -2145,6 +2158,10 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
         service,
     )
 
+    module_resource_names_before_save = [
+        str(resource.Name)
+        for resource in UtilsAssembly._assemblyOccurrenceResources(module)
+    ]
     path = root / "assembly-production.FCStd"
     document.saveAs(str(path))
     App.closeDocument(document.Name)
@@ -2174,9 +2191,9 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     reopened_module_resources = UtilsAssembly._assemblyOccurrenceResources(
         reopened_module
     )
-    assert [resource.Name for resource in reopened_module_resources] == [
-        resource.Name for resource in module_resources
-    ]
+    assert [
+        resource.Name for resource in reopened_module_resources
+    ] == module_resource_names_before_save
     _assert_timeline_resource_sequence(
         reopened_timeline,
         reopened_module_resources,
@@ -2555,7 +2572,7 @@ def _exercise_flexible_subassembly_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": edited["working_revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": capture["arguments"]["source"].replace(
                 "CoreOccurrence/GearOccurrence",
                 "CoreOccurrence/MissingOccurrence",
             ),
@@ -2589,7 +2606,7 @@ def _exercise_flexible_subassembly_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "source": base_capture["arguments"]["source"],
+            "source": capture["arguments"]["source"],
         },
     )
     _recovered, _recovered_execution, recovered_publication, recovered = (
@@ -2999,7 +3016,7 @@ def _exercise_bom_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "Drive gear",
                 "Primary drive gear",
             ),
@@ -3025,7 +3042,7 @@ def _exercise_bom_lifecycle(root: Path, pack) -> dict:
             "program_id": prepared["program_id"],
             "expected_revision": accepted["working_revision"],
             "source": (
-                base_capture["arguments"]["source"]
+                create_capture["arguments"]["source"]
                 .replace("Drive gear", "Primary drive gear")
                 .replace("Module/GearLeft", "Module/UnknownOccurrence")
             ),
@@ -3050,7 +3067,7 @@ def _exercise_bom_lifecycle(root: Path, pack) -> dict:
         arguments={
             "program_id": prepared["program_id"],
             "expected_revision": failed_prepared["revision"],
-            "source": base_capture["arguments"]["source"].replace(
+            "source": create_capture["arguments"]["source"].replace(
                 "Drive gear",
                 "Primary drive gear",
             ),
@@ -3554,8 +3571,15 @@ def _exercise_portable_external_instances(root: Path, pack) -> dict:
     source_object.Shape = Part.makeBox(10, 20, 6)
     source_document.recompute()
     source_document.save()
+    automatically_marked = {
+        str(link.Name)
+        for link in links
+        if str(getattr(link, "VibeCADDerivedState", "") or "") == "stale"
+    }
     marked = mark_programs_stale_from_source(source_object, "Shape")
-    assert set(marked) >= {str(link.Name) for link in links}
+    assert automatically_marked | set(marked) >= {
+        str(link.Name) for link in links
+    }
     assert all(link.VibeCADDerivedState == "stale" for link in links)
 
     regenerate = _candidate_capture(

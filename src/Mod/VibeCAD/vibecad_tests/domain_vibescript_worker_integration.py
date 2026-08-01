@@ -510,7 +510,7 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
             assert "production-readiness gate" in unavailable.unavailable_reason
             continue
         document = App.newDocument(f"VibeScriptDomainMatrix{index}")
-        document.setUndoMode(1)
+        document.UndoMode = 1
         source = template_source
         input_schema = {
             "type": "object",
@@ -627,9 +627,9 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
         obj = document.getObject(object_name)
         assert obj is not None
         assert str(getattr(obj, "VibeCADVibeScriptOutputType", "")) == output_type
-        assert document.undo()
+        document.undo()
         assert document.getObject(object_name) is None
-        assert document.redo()
+        document.redo()
         obj = document.getObject(object_name)
         assert obj is not None
         assert str(getattr(obj, "VibeCADVibeScriptOutputType", "")) == output_type
@@ -660,9 +660,9 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
         )
         assert updated["live_outputs"]["Result"]["object_name"] == object_name
         assert document.getObject(object_name).Label == "Updated Label"
-        assert document.undo()
+        document.undo()
         assert document.getObject(object_name).Label == "Initial Label"
-        assert document.redo()
+        document.redo()
         assert document.getObject(object_name).Label == "Updated Label"
 
         path = root / f"matrix-{pack.domain}.FCStd"
@@ -676,7 +676,7 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
             str(getattr(reopened_output, PROP_PROGRAM_ID, ""))
             == update_prepared["program_id"]
         )
-        reopened.setUndoMode(1)
+        reopened.UndoMode = 1
         delete_captured = {
             **update_captured,
             "operation": "delete_program",
@@ -693,9 +693,9 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
         deletion = delete_live_program(service, prepared_delete)
         assert finish_delete(prepared_delete, deletion)["ok"] is True
         assert reopened.getObject(object_name) is None
-        assert reopened.undo()
+        reopened.undo()
         assert reopened.getObject(object_name) is not None
-        assert reopened.redo()
+        reopened.redo()
         assert reopened.getObject(object_name) is None
         App.closeDocument(reopened.Name)
 
@@ -704,7 +704,7 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
     import Materials
 
     document = App.newDocument("VibeScriptMaterialMatrix")
-    document.setUndoMode(1)
+    document.UndoMode = 1
     target = document.addObject("Part::Feature", "MaterialTarget")
     target.Shape = Part.makeBox(1, 1, 1)
     original_material_uuid = str(target.ShapeMaterial.UUID)
@@ -791,12 +791,12 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
     object_name = accepted["live_outputs"]["Result"]["object_name"]
     assert document.getObject(object_name).VibeCADTargetObject == target.Name
     assert str(target.ShapeMaterial.UUID) == str(material_card.UUID)
-    assert document.undo()
+    document.undo()
     assert document.getObject(object_name) is None
     assert str(document.getObject(target.Name).ShapeMaterial.UUID) == (
         original_material_uuid
     )
-    assert document.redo()
+    document.redo()
     target = document.getObject(target.Name)
     assert document.getObject(object_name) is not None
     assert str(target.ShapeMaterial.UUID) == str(material_card.UUID)
@@ -821,9 +821,9 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
     )
     assert updated["live_outputs"]["Result"]["object_name"] == object_name
     assert document.getObject(object_name).Label == "Updated Label"
-    assert document.undo()
+    document.undo()
     assert document.getObject(object_name).Label == "Initial Label"
-    assert document.redo()
+    document.redo()
     assert document.getObject(object_name).Label == "Updated Label"
     path = root / "matrix-material.FCStd"
     document.saveAs(str(path))
@@ -831,7 +831,7 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
     reopened = App.openDocument(str(path))
     assert reopened is not None
     assert reopened.getObject(object_name) is not None
-    reopened.setUndoMode(1)
+    reopened.UndoMode = 1
     delete_captured = {
         **update_captured,
         "operation": "delete_program",
@@ -852,12 +852,12 @@ def _exercise_remaining_domain_matrix(root: Path, captured: dict) -> None:
         str(reopened.getObject("MaterialTarget").ShapeMaterial.UUID)
         == original_material_uuid
     )
-    assert reopened.undo()
+    reopened.undo()
     assert reopened.getObject(object_name) is not None
     assert str(
         reopened.getObject("MaterialTarget").ShapeMaterial.UUID
     ) == str(material_card.UUID)
-    assert reopened.redo()
+    reopened.redo()
     assert reopened.getObject(object_name) is None
     assert (
         str(reopened.getObject("MaterialTarget").ShapeMaterial.UUID)
@@ -926,7 +926,7 @@ def main() -> int:
         import Part
 
         live_document = App.newDocument("VibeScriptAssemblyFixture")
-        live_document.setUndoMode(1)
+        live_document.UndoMode = 1
         source_a = live_document.addObject("Part::Feature", "SourceA")
         source_a.Label = "Source A"
         source_a.Shape = Part.makeBox(10, 10, 10)
@@ -1063,12 +1063,12 @@ def main() -> int:
         )
         assert accepted_diagnostics["solver_code"] == 0
         assert accepted_diagnostics["grounded_components"] == ["Base"]
-        assert live_document.undo()
+        live_document.undo()
         for object_name in live_names.values():
             assert live_document.getObject(object_name) is None
         assert live_document.getObject(source_a.Name) is source_a
         assert live_document.getObject(source_b.Name) is source_b
-        assert live_document.redo()
+        live_document.redo()
         for object_name in live_names.values():
             assert live_document.getObject(object_name) is not None
 
@@ -1103,11 +1103,11 @@ def main() -> int:
             for name, details in updated["live_outputs"].items()
         } == live_names
         assert live_document.getObject(live_names["Main"]).Label == "Updated Assembly"
-        assert live_document.undo()
+        live_document.undo()
         assert live_document.getObject(live_names["Main"]).Label == (
             "Fixture Assembly"
         )
-        assert live_document.redo()
+        live_document.redo()
         assert live_document.getObject(live_names["Main"]).Label == (
             "Updated Assembly"
         )
@@ -1159,7 +1159,7 @@ def main() -> int:
             assert (
                 str(getattr(obj, PROP_PROGRAM_ID, "")) == update_prepared["program_id"]
             )
-        reopened.setUndoMode(1)
+        reopened.UndoMode = 1
 
         delete_captured = {
             **update_captured,
@@ -1183,12 +1183,12 @@ def main() -> int:
             str(getattr(obj, PROP_PROGRAM_ID, "")) == update_prepared["program_id"]
             for obj in reopened.Objects
         )
-        assert reopened.undo()
+        reopened.undo()
         for object_name in live_names.values():
             assert reopened.getObject(object_name) is not None
         assert reopened.getObject("SourceA") is not None
         assert reopened.getObject("SourceB") is not None
-        assert reopened.redo()
+        reopened.redo()
         assert not any(
             str(getattr(obj, PROP_PROGRAM_ID, ""))
             == update_prepared["program_id"]

@@ -262,12 +262,22 @@ void QGSPage::matchSceneRectToTemplate()
 void QGSPage::setPageTemplate(TechDraw::DrawTemplate* templateFeat)
 {
     removeTemplate();
+    if (!templateFeat) {
+        return;
+    }
 
     if (templateFeat->isDerivedFrom<TechDraw::DrawParametricTemplate>()) {
         pageTemplate = new QGIDrawingTemplate(this);
     }
     else if (templateFeat->isDerivedFrom<TechDraw::DrawSVGTemplate>()) {
         pageTemplate = new QGISVGTemplate(this);
+    }
+    else {
+        // DrawTemplate is a valid path-free native sheet definition.  Render
+        // it with the generic drawing-template item instead of dereferencing
+        // a null graphics item.  This also gives future non-SVG subclasses a
+        // safe, editable Width/Height/EditableTexts presentation.
+        pageTemplate = new QGIDrawingTemplate(this);
     }
     pageTemplate->setTemplate(templateFeat);
     pageTemplate->updateView();

@@ -333,6 +333,11 @@ bool Document::isPerformingTransaction() const
     return d->undoing || d->rollback;
 }
 
+bool Document::isBreakingDependency() const noexcept
+{
+    return d->breakDependencyDepth != 0;
+}
+
 std::vector<std::string> Document::getAvailableUndoNames() const
 {
     std::vector<std::string> vList;
@@ -4163,6 +4168,22 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
 
 void Document::breakDependency(DocumentObject* pcObject, const bool clear)  // NOLINT
 {
+    struct BreakDependencyScope
+    {
+        explicit BreakDependencyScope(DocumentP& state)
+            : state(state)
+        {
+            ++state.breakDependencyDepth;
+        }
+
+        ~BreakDependencyScope()
+        {
+            --state.breakDependencyDepth;
+        }
+
+        DocumentP& state;
+    } breakDependencyScope(*d);
+
     // Nullify all dependent objects
     PropertyLinkBase::breakLinks(pcObject, d->objectArray, clear);
 }

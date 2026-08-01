@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import math
@@ -718,6 +718,138 @@ def resolve_material_appearance(
     return resolved
 
 
+def _catalog_record(canonical: Mapping[str, Any]) -> dict[str, Any]:
+    physical_values = {
+        name: _string(
+            canonical["physical_properties"][name],
+            limit=MAX_CATALOG_SELECTION_VALUE_CHARS,
+        )
+        for name in _PHYSICAL_SELECTION_PROPERTIES
+        if str(canonical["physical_properties"].get(name) or "").strip()
+    }
+    appearance_values = {
+        name: _string(
+            canonical["appearance_properties"][name],
+            limit=MAX_CATALOG_SELECTION_VALUE_CHARS,
+        )
+        for name in _APPEARANCE_SELECTION_PROPERTIES
+        if str(canonical["appearance_properties"].get(name) or "").strip()
+    }
+    return {
+        "uuid": canonical["uuid"],
+        "name": canonical["name"],
+        "library_name": canonical["library_name"],
+        "tags": canonical["tags"][:MAX_CATALOG_TAGS],
+        "tags_truncated": len(canonical["tags"]) > MAX_CATALOG_TAGS,
+        "physical_property_names": sorted(canonical["physical_properties"]),
+        "appearance_property_names": sorted(canonical["appearance_properties"]),
+        "selection_physical_values": physical_values,
+        "selection_physical_values_truncated": [
+            name
+            for name in physical_values
+            if len(str(canonical["physical_properties"][name]))
+            > MAX_CATALOG_SELECTION_VALUE_CHARS
+        ],
+        "selection_appearance_values": appearance_values,
+        "selection_appearance_values_truncated": [
+            name
+            for name in appearance_values
+            if len(str(canonical["appearance_properties"][name]))
+            > MAX_CATALOG_SELECTION_VALUE_CHARS
+        ],
+    }
+
+
+def _material_search_text(value: Any) -> str:
+    text = str(value or "").casefold().replace("aluminium", "aluminum")
+    return " ".join("".join(char if char.isalnum() else " " for char in text).split())
+
+
+def _catalog_required_properties(parameter: str, value: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"{parameter} must be an array of exact property names.")
+    if len(value) > 64:
+        raise ValueError(f"{parameter} may contain at most 64 property names.")
+    result = tuple(str(item or "").strip() for item in value)
+    if any(not item or len(item) > 128 for item in result):
+        raise ValueError(f"{parameter} contains an invalid property name.")
+    if len(result) != len(set(result)):
+        raise ValueError(f"{parameter} must not contain duplicates.")
+    return result
+
+
+def search_material_catalog(
+    query: str = "",
+    *,
+    require_physical_properties: Sequence[str] = (),
+    require_appearance_properties: Sequence[str] = (),
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Search every native material card and return copy-ready API arguments."""
+
+    if len(str(query or "")) > 256:
+        raise ValueError("query must contain at most 256 characters.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer from 1 through 100.")
+    physical = _catalog_required_properties(
+        "require_physical_properties", require_physical_properties
+    )
+    appearance = _catalog_required_properties(
+        "require_appearance_properties", require_appearance_properties
+    )
+    query_terms = _material_search_text(query).split()
+
+    import Materials
+
+    with MATERIAL_CATALOG_LOCK:
+        cards = list(dict(Materials.MaterialManager().Materials).values())
+        records: list[dict[str, Any]] = []
+        for card in cards:
+            canonical = _canonical_card(card)
+            physical_names = set(canonical["physical_properties"])
+            appearance_names = set(canonical["appearance_properties"])
+            if not set(physical) <= physical_names or not set(appearance) <= appearance_names:
+                continue
+            record = _catalog_record(canonical)
+            searchable = _material_search_text(
+                " ".join(
+                    (
+                        record["uuid"],
+                        record["name"],
+                        record["library_name"],
+                        *record["tags"],
+                        *record["physical_property_names"],
+                        *record["appearance_property_names"],
+                        *record["selection_physical_values"].values(),
+                        *record["selection_appearance_values"].values(),
+                    )
+                )
+            )
+            if any(term not in searchable for term in query_terms):
+                continue
+            record["constructor"] = {
+                "material_uuid": record["uuid"],
+                "require_physical_properties": list(physical),
+                "require_appearance_properties": list(appearance),
+            }
+            records.append(record)
+    records.sort(key=lambda item: (str(item["name"]).casefold(), str(item["uuid"])))
+    returned = records[:limit]
+    return {
+        "schema": "vibecad-material-catalog-search-v1",
+        "query": str(query or ""),
+        "required_physical_properties": list(physical),
+        "required_appearance_properties": list(appearance),
+        "match_count": len(records),
+        "returned_count": len(returned),
+        "truncated": len(records) > len(returned),
+        "materials": returned,
+        "next_action": (
+            "Pass one returned constructor to api.material without changing its UUID."
+        ),
+    }
+
+
 def material_catalog_index(*, limit: int = MAX_CATALOG_CARDS) -> dict[str, Any]:
     """Resolve a bounded provider-facing index without exposing catalog paths."""
 
@@ -733,54 +865,7 @@ def material_catalog_index(*, limit: int = MAX_CATALOG_CARDS) -> dict[str, Any]:
             )
         )
         safe_limit = max(1, min(int(limit), MAX_CATALOG_CARDS))
-        records = []
-        for card in cards[:safe_limit]:
-            canonical = _canonical_card(card)
-            physical_values = {
-                name: _string(
-                    canonical["physical_properties"][name],
-                    limit=MAX_CATALOG_SELECTION_VALUE_CHARS,
-                )
-                for name in _PHYSICAL_SELECTION_PROPERTIES
-                if str(canonical["physical_properties"].get(name) or "").strip()
-            }
-            physical_values_truncated = [
-                name
-                for name in physical_values
-                if len(str(canonical["physical_properties"][name]))
-                > MAX_CATALOG_SELECTION_VALUE_CHARS
-            ]
-            appearance_values = {
-                name: _string(
-                    canonical["appearance_properties"][name],
-                    limit=MAX_CATALOG_SELECTION_VALUE_CHARS,
-                )
-                for name in _APPEARANCE_SELECTION_PROPERTIES
-                if str(canonical["appearance_properties"].get(name) or "").strip()
-            }
-            appearance_values_truncated = [
-                name
-                for name in appearance_values
-                if len(str(canonical["appearance_properties"][name]))
-                > MAX_CATALOG_SELECTION_VALUE_CHARS
-            ]
-            records.append(
-                {
-                    "uuid": canonical["uuid"],
-                    "name": canonical["name"],
-                    "library_name": canonical["library_name"],
-                    "tags": canonical["tags"][:MAX_CATALOG_TAGS],
-                    "tags_truncated": len(canonical["tags"]) > MAX_CATALOG_TAGS,
-                    "physical_property_names": sorted(canonical["physical_properties"]),
-                    "appearance_property_names": sorted(canonical["appearance_properties"]),
-                    "selection_physical_values": physical_values,
-                    "selection_physical_values_truncated": physical_values_truncated,
-                    "selection_appearance_values": appearance_values,
-                    "selection_appearance_values_truncated": (
-                        appearance_values_truncated
-                    ),
-                }
-            )
+        records = [_catalog_record(_canonical_card(card)) for card in cards[:safe_limit]]
     return {
         "schema": CATALOG_INDEX_SCHEMA,
         "catalog_count": len(cards),

@@ -71,6 +71,7 @@ _ASSEMBLY_DEPENDENCY_SUFFIX = "__dependencies"
 _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE = "dependency_anchor"
 _ASSEMBLY_FASTENER_SOURCE_SUFFIX = "__fastener_source"
 _ASSEMBLY_FASTENER_SOURCE_OUTPUT_TYPE = "standard_fastener_source"
+_ASSEMBLY_RESOURCE_GRAPH_OUTPUT_TYPES = frozenset({"exploded_view", "bom"})
 
 _TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN = {
     "partdesign": "design_program_operation",
@@ -464,6 +465,29 @@ def _create_assembly_dependency_anchor(
         if hasattr(view, "ShowInTree"):
             view.ShowInTree = False
     return anchor
+
+
+def _configure_assembly_dependency_anchor(
+    anchor: Any,
+    prepared: Mapping[str, Any],
+    assembly_item: Mapping[str, Any],
+) -> None:
+    """Configure the one internal dependency resource owned by an Assembly."""
+
+    assembly_output = str(assembly_item["name"])
+    anchor.Label = "VibeScript Assembly dependencies"
+    view = getattr(anchor, "ViewObject", None)
+    if view is not None:
+        view.Visibility = False
+        if hasattr(view, "ShowInTree"):
+            view.ShowInTree = False
+    _set_metadata(
+        anchor,
+        prepared,
+        _assembly_dependency_output_name(assembly_output),
+        _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
+        _definition(assembly_item),
+    )
 
 
 def migrate_assembly_dependency_anchors(doc: Any) -> dict[str, Any]:
@@ -1007,7 +1031,14 @@ def mark_programs_stale_from_source(source: Any, property_name: str) -> list[str
     """Mark v2 outputs stale when a linked native snapshot source changes."""
 
     changed_property = str(property_name or "")
-    if not changed_property or changed_property.startswith("VibeCAD"):
+    if (
+        not changed_property
+        or changed_property.startswith("VibeCAD")
+        or changed_property == "_GroupTouched"
+    ):
+        # GroupExtension emits _GroupTouched every time it executes. Actual
+        # membership edits emit Group separately, so this derived recompute
+        # notification is never evidence that an accepted input changed.
         return []
     label_only = changed_property == "Label"
     marked: list[str] = []
@@ -3017,27 +3048,31 @@ def _configure_component(
     item: Mapping[str, Any],
     outputs: Mapping[str, Any],
     prepared: Mapping[str, Any],
+    assembly_fastener_sources: Mapping[str, Any] | None = None,
 ) -> list[Any]:
     properties = _definition_properties(item)
     definition = _definition(item)
     assembly_data = item.get("assembly_data")
     assembly_data = dict(assembly_data) if isinstance(assembly_data, dict) else {}
     if str(definition.get("operation") or "") == "fastener":
-        target = next(
-            (
-                source
-                for source in _program_objects(
-                    doc,
-                    str(prepared["program_id"]),
-                    prepared["pack"].domain,
-                )
-                if str(
-                    getattr(source, contracts.PROP_PROGRAM_OUTPUT, "") or ""
-                )
-                == _assembly_fastener_source_output(str(item["name"]))
-            ),
-            None,
-        )
+        if assembly_fastener_sources is not None:
+            target = assembly_fastener_sources.get(str(item["name"]))
+        else:
+            target = next(
+                (
+                    source
+                    for source in _program_objects(
+                        doc,
+                        str(prepared["program_id"]),
+                        prepared["pack"].domain,
+                    )
+                    if str(
+                        getattr(source, contracts.PROP_PROGRAM_OUTPUT, "") or ""
+                    )
+                    == _assembly_fastener_source_output(str(item["name"]))
+                ),
+                None,
+            )
         if target is None:
             raise RuntimeError(
                 f"Assembly fastener source for output {item['name']!r} disappeared "
@@ -8839,6 +8874,7 @@ def _configure_object(
     outputs: Mapping[str, Any],
     prepared: Mapping[str, Any],
     robot_trajectory_swaps: list[dict[str, Any]],
+    assembly_fastener_sources: Mapping[str, Any] | None = None,
 ) -> list[Any]:
     output_type = str(item["type"])
     owned_resources: list[Any] = []
@@ -8896,6 +8932,7 @@ def _configure_object(
             item,
             outputs,
             prepared,
+            assembly_fastener_sources,
         )
     elif output_type == "joint":
         _configure_joint(obj, item, outputs, prepared)
@@ -10293,21 +10330,26 @@ def _publish_cam_candidate(
                 setattr(bit, property_name, value)
             tool_bits[name] = bit
 
-        # Native document history follows dependency chronology, while the
-        # public VibeScript result retains its declared output order.  Create
-        # roots from exact validated relationships: Stock before its Tool and
-        # Operation consumers, then Toolpath, with the aggregate Job last.
-        root_creation_items = [
+        # A CAM Job is one exact History block containing its native setup
+        # resources.  Public machining operations are separate later blocks.
+        # Create the complete Job block first so native creation provenance is
+        # contiguous; each operation is created and published only after the
+        # Job block has consumed that prefix.
+        job_resource_root_items = [
             stock_item,
             *tool_items,
-            *operation_items,
             toolpath_item,
         ]
         if (
-            len(root_creation_items) + 1 != len(items)
+            len(job_resource_root_items) + len(operation_items) + 1
+            != len(items)
             or {
                 str(item["name"])
-                for item in [*root_creation_items, job_item]
+                for item in [
+                    *job_resource_root_items,
+                    *operation_items,
+                    job_item,
+                ]
             }
             != set(by_name)
         ):
@@ -10315,7 +10357,7 @@ def _publish_cam_candidate(
                 "CAM publication root chronology does not cover the exact "
                 "validated job graph."
             )
-        for item in root_creation_items:
+        for item in job_resource_root_items:
             name = str(item["name"])
             output_type = str(item["type"])
             data = _cam_data(item)
@@ -10430,54 +10472,21 @@ def _publish_cam_candidate(
             obj.LeadOutFeed = obj.HorizFeed
             obj.Tool = tool_bits[name]
 
-        for item in operation_items:
-            name = str(item["name"])
-            obj = roots[name]
-            data = _cam_data(item)
-            properties = dict(data["properties"])
-            _cam_clear_expressions(
-                obj,
-                {"StartDepth", "FinalDepth", "StepDown", "PeckDepth"},
-            )
-            obj.Label = str(data["label"])
-            obj.ToolController = roots[str(data["tool_output"])]
-            grouped: dict[tuple[str, str], list[str]] = {}
-            for descriptor in list(data["selections"]):
-                key = _cam_reference_key(dict(descriptor["source"]))
-                grouped.setdefault(key, []).append(str(descriptor["face"]))
-            obj.Base = [
-                (model_objects[key], faces) for key, faces in grouped.items()
-            ]
-            obj.StartDepth = f"{float(properties['start_depth_mm']):.17g} mm"
-            obj.FinalDepth = f"{float(properties['final_depth_mm']):.17g} mm"
-            obj.StepDown = f"{float(properties.get('step_down_mm', 0.0)):.17g} mm"
-            obj.StepOver = int(properties.get("step_over_percent", 0))
-            if "side" in properties:
-                obj.Side = str(properties["side"])
-            if "boundary" in properties:
-                obj.BoundaryShape = str(properties["boundary"])
-            obj.PeckEnabled = bool(properties.get("peck_enabled", False))
-            obj.PeckDepth = f"{float(properties.get('peck_depth_mm', 0.0)):.17g} mm"
-            obj.Strategy = str(data["strategy"]).title()
-            obj.CoolantMode = str(properties["coolant"])
-            obj.Path = item["detached_path"]
-
         toolpath.Label = str(_cam_data(toolpath_item)["label"])
         toolpath.Path = toolpath_item["detached_path"]
         operations_group.Label = "Operations"
-        operations_group.Group = [roots[str(item["name"])] for item in operation_items]
         model_group.Label = "Model"
         model_group.Group = list(model_objects.values())
         tools_group.Label = "Tools"
         tools_group.Group = [roots[str(item["name"])] for item in tool_items]
         setup_sheet.Label = "Setup Sheet"
 
-        all_objects = {**roots, **auxiliary}
         definition_by_root = {
             str(item["name"]): _definition(item) for item in items
         }
         type_by_root = {str(item["name"]): str(item["type"]) for item in items}
-        for key, obj in all_objects.items():
+
+        def set_publication_metadata(key: str, obj: Any) -> None:
             root = key.partition(".")[0]
             definition = definition_by_root[root]
             output_type = type_by_root[root] if key == root else "cam_auxiliary"
@@ -10499,21 +10508,12 @@ def _publish_cam_candidate(
                     allow_nan=False,
                 ),
             )
-            _cam_publication_checkpoint("before_freeze", key, obj)
-            _freeze_object(obj, "CAM")
 
-        public_operations = [
-            roots[str(item["name"])] for item in operation_items
-        ]
-        for operation in public_operations:
-            path_timeline.markTimelineOperation(operation)
-            if _is_created_timeline_object(doc, operation, created):
-                _publish_new_timeline_resource_block(
-                    doc,
-                    operation,
-                    [],
-                    context=f"CAM machining operation {operation.Name!r}",
-                )
+        # Metadata is part of the exact resource identity used by History and
+        # therefore precedes semantic publication.  Freezing remains the final
+        # step, after the Operations group receives its public members.
+        for key, obj in {**roots, **auxiliary}.items():
+            set_publication_metadata(key, obj)
 
         job_resources = [
             *list(model_objects.values()),
@@ -10556,8 +10556,6 @@ def _publish_cam_candidate(
                 or any(source is previous for previous in previously_replaced)
             ) and all(source is not existing_source for existing_source in replaced_sources):
                 replaced_sources.append(source)
-            if view is not None:
-                view.Visibility = False
         path_timeline.markTimelineReplacedInputs(job, replaced_sources)
 
         retired_job_resources: list[Any]
@@ -10586,6 +10584,88 @@ def _publish_cam_candidate(
                 context=f"CAM Job {job_name!r}",
             )
         )
+        # Publication verifies that pre-existing History state is unchanged
+        # while it consumes the new semantic block.  Apply the declared visual
+        # replacement only after that atomic check succeeds.
+        for source in replaced_sources:
+            view = getattr(source, "ViewObject", None)
+            if view is not None:
+                view.Visibility = False
+
+        # Each public machining operation is a later, independently editable
+        # History step.  Create, configure, and publish it before creating the
+        # next one so provisional creation generations cannot interleave.
+        for item in operation_items:
+            name = str(item["name"])
+            data = _cam_data(item)
+            obj = existing.get(name)
+            if obj is None:
+                obj = cam.create_root(
+                    doc,
+                    _internal_name(prepared, name),
+                    "operation",
+                    data,
+                )
+                created.append(obj)
+            elif str(getattr(obj, "TypeId", "") or "") != cam.root_type(
+                "operation"
+            ):
+                raise RuntimeError(
+                    f"Stable CAM output {name!r} cannot change native type."
+                )
+            _unfreeze_object(obj, "CAM")
+            if not cam.proxy_is_compatible(obj, "operation", data):
+                cam.attach_root_proxy(obj, "operation", data)
+            roots[name] = obj
+
+            properties = dict(data["properties"])
+            _cam_clear_expressions(
+                obj,
+                {"StartDepth", "FinalDepth", "StepDown", "PeckDepth"},
+            )
+            obj.Label = str(data["label"])
+            obj.ToolController = roots[str(data["tool_output"])]
+            grouped: dict[tuple[str, str], list[str]] = {}
+            for descriptor in list(data["selections"]):
+                key = _cam_reference_key(dict(descriptor["source"]))
+                grouped.setdefault(key, []).append(str(descriptor["face"]))
+            obj.Base = [
+                (model_objects[key], faces) for key, faces in grouped.items()
+            ]
+            obj.StartDepth = f"{float(properties['start_depth_mm']):.17g} mm"
+            obj.FinalDepth = f"{float(properties['final_depth_mm']):.17g} mm"
+            obj.StepDown = (
+                f"{float(properties.get('step_down_mm', 0.0)):.17g} mm"
+            )
+            obj.StepOver = int(properties.get("step_over_percent", 0))
+            if "side" in properties:
+                obj.Side = str(properties["side"])
+            if "boundary" in properties:
+                obj.BoundaryShape = str(properties["boundary"])
+            obj.PeckEnabled = bool(properties.get("peck_enabled", False))
+            obj.PeckDepth = (
+                f"{float(properties.get('peck_depth_mm', 0.0)):.17g} mm"
+            )
+            obj.Strategy = str(data["strategy"]).title()
+            obj.CoolantMode = str(properties["coolant"])
+            obj.Path = item["detached_path"]
+            set_publication_metadata(name, obj)
+            path_timeline.markTimelineOperation(obj)
+            if _is_created_timeline_object(doc, obj, created):
+                _publish_new_timeline_resource_block(
+                    doc,
+                    obj,
+                    [],
+                    context=f"CAM machining operation {obj.Name!r}",
+                )
+
+        operations_group.Group = [
+            roots[str(item["name"])] for item in operation_items
+        ]
+        all_objects = {**roots, **auxiliary}
+        for key, obj in all_objects.items():
+            _cam_publication_checkpoint("before_freeze", key, obj)
+            _freeze_object(obj, "CAM")
 
         downstream_refresh = _refresh_external_consumers(
             downstream_uses,
@@ -10986,11 +11066,15 @@ def _remove_techdraw_objects(doc: Any, objects: list[Any]) -> list[str]:
             or target_types[name] != "TechDraw::DrawProjGroupItem"
         ):
             continue
+        # DrawProjGroup.Views is the native ownership contract.  A projection
+        # item's generic InList is not authoritative after History has staged
+        # its resource block for deletion and may already omit the collection.
         parents = [
-            parent
-            for parent in list(getattr(child, "InList", []) or [])
-            if str(getattr(parent, "TypeId", "") or "")
+            candidate
+            for candidate in list(doc.Objects)
+            if str(getattr(candidate, "TypeId", "") or "")
             == "TechDraw::DrawProjGroup"
+            and child in list(candidate.Views or [])
         ]
         if len(parents) != 1:
             raise RuntimeError(
@@ -11035,17 +11119,15 @@ def _remove_techdraw_timeline_deletion(
 ) -> list[str]:
     """Consume one native deletion plan using TechDraw's required APIs."""
 
+    # Delete public owners before their internal resources.  Transaction undo
+    # then restores resources first, so Page.Template, projection-group Views,
+    # and dimension references can resolve their exact targets in one pass.
     removed = _remove_techdraw_objects(
         doc,
-        list(deletion["resource_objects"]),
-    )
-    removed.extend(
-        name
-        for name in _remove_techdraw_objects(
-            doc,
-            list(deletion["root_objects"]),
-        )
-        if name not in removed
+        [
+            *list(deletion["root_objects"]),
+            *list(deletion["resource_objects"]),
+        ],
     )
     _finish_timeline_deletion(doc, deletion)
     return removed
@@ -11232,37 +11314,31 @@ def _publish_techdraw_candidate(
             if doc.getObject(str(getattr(obj, "Name", "") or "")) is obj:
                 _unfreeze_object(obj, "TechDraw")
 
-        creation_order = {
-            "template": 0,
-            "page": 1,
-            "view": 2,
-            "projection": 3,
-            "annotation": 4,
-            "dimension": 5,
-        }
-        for item in sorted(
-            items, key=lambda value: creation_order[str(value["type"])]
-        ):
+        def ensure_output(item: Mapping[str, Any]) -> Any:
             name = str(item["name"])
-            obj = existing.get(name)
+            obj = outputs.get(name)
+            if obj is None:
+                obj = existing.get(name)
             if obj is None:
                 obj = _techdraw_create_output(
                     doc, prepared, name, str(item["type"])
                 )
                 created.append(obj)
             outputs[name] = obj
+            return obj
 
-        # A native page requires its template before any view can be added.
-        # Establish that prerequisite now; exact ordered membership is applied
-        # after every output and projection child has been configured.
+        # Each Page and its Template form one contiguous native History block.
+        # Publish that prerequisite before creating any page content; content
+        # is linked into the still-live Page after its own blocks are accepted.
         for item in items:
             if str(item["type"]) != "page":
                 continue
             data = _techdraw_data(item)
             page_name = str(item["name"])
             template_name = str(data["template_output"])
-            page = outputs[page_name]
-            template = outputs[template_name]
+            template_item = by_name[template_name]
+            template = ensure_output(template_item)
+            page = ensure_output(item)
             reconciliation = page_reconciliations.get(page_name)
             if reconciliation is not None:
                 _stage_timeline_resource_reconciliation(
@@ -11271,7 +11347,6 @@ def _publish_techdraw_candidate(
                     reconciliation,
                     context=f"TechDraw Page {page_name!r}",
                 )
-            template_item = by_name[template_name]
             template_data = _techdraw_data(template_item)
             template_properties = dict(
                 _definition(template_item)["properties"]
@@ -11300,8 +11375,6 @@ def _publish_techdraw_candidate(
             page.KeepUpdated = False
             for view in list(page.Views or []):
                 page.removeView(view)
-            for output_name in list(data["content_outputs"]):
-                page.addPrecomputedView(outputs[str(output_name)])
             _set_metadata(
                 page,
                 prepared,
@@ -11349,12 +11422,9 @@ def _publish_techdraw_candidate(
             if str(item["type"]) != "projection":
                 continue
             page = outputs[page_name]
-            group = outputs[projection_name]
+            group = ensure_output(item)
             if group not in list(page.Views or []):
-                raise RuntimeError(
-                    f"Projection group {projection_name!r} is missing from its "
-                    f"declared page {page_name!r}."
-                )
+                page.addPrecomputedView(group)
             reconciliation = projection_reconciliations.get(projection_name)
             if reconciliation is not None:
                 _stage_timeline_resource_reconciliation(
@@ -11371,7 +11441,12 @@ def _publish_techdraw_candidate(
                 for dimension_item in items:
                     if str(dimension_item["type"]) != "dimension":
                         continue
-                    dimension = outputs[str(dimension_item["name"])]
+                    dimension_name = str(dimension_item["name"])
+                    dimension = outputs.get(dimension_name)
+                    if dimension is None:
+                        dimension = existing.get(dimension_name)
+                    if dimension is None:
+                        continue
                     if any(
                         (
                             isinstance(reference, tuple)
@@ -11530,20 +11605,25 @@ def _publish_techdraw_candidate(
                     )
                 )
 
-        for item in items:
+        def configure_and_publish_simple_output(
+            item: Mapping[str, Any],
+        ) -> None:
             name = str(item["name"])
             output_type = str(item["type"])
+            if output_type not in {"view", "annotation", "dimension"}:
+                raise RuntimeError(
+                    f"TechDraw output {name!r} is not a simple page operation."
+                )
             definition = _definition(item)
             properties = dict(definition["properties"])
             data = _techdraw_data(item)
-            obj = outputs[name]
+            obj = ensure_output(item)
+            page = outputs[page_owner[name]]
+            if obj not in list(page.Views or []):
+                page.addPrecomputedView(obj)
+
             obj.Label = str(properties["label"])
-            if output_type == "template":
-                obj.Width = float(data["width_mm"])
-                obj.Height = float(data["height_mm"])
-                obj.Orientation = str(data["orientation"])
-                obj.EditableTexts = dict(data["editable_texts"])
-            elif output_type == "view":
+            if output_type == "view":
                 obj.Source = _techdraw_source_objects(
                     doc, definition, output_name=name
                 )
@@ -11554,6 +11634,86 @@ def _publish_techdraw_candidate(
                         f"TechDraw view {name!r} has no detached projection state."
                     )
                 obj.setPrecomputedProjection(snapshot)
+            elif output_type == "annotation":
+                obj.Text = list(data["text"])
+                obj.X = float(data["position_mm"][0])
+                obj.Y = float(data["position_mm"][1])
+                obj.TextSize = float(data["text_size_mm"])
+                obj.TextAlignment = str(data["alignment"]).title()
+            else:
+                source = outputs[str(data["source_output"])]
+                if str(data["projection_direction"]):
+                    source = desired_child_maps[str(data["source_output"])][
+                        str(data["projection_direction"])
+                    ]
+                obj.Type = {
+                    "distance": "Distance",
+                    "distance_x": "DistanceX",
+                    "distance_y": "DistanceY",
+                    "radius": "Radius",
+                    "diameter": "Diameter",
+                    "angle": "Angle",
+                    "angle_3_point": "Angle3Pt",
+                    "area": "Area",
+                }[str(data["kind"])]
+                obj.MeasureType = (
+                    "True" if data["measure"] == "true" else "Projected"
+                )
+                obj.References2D = [
+                    (source, str(reference))
+                    for reference in list(properties["references"])
+                ]
+                obj.X = float(data["position_mm"][0])
+                obj.Y = float(data["position_mm"][1])
+                obj.FormatSpec = str(data["format_spec"])
+                obj.OverTolerance = float(data["over_tolerance"])
+                obj.UnderTolerance = float(data["under_tolerance"])
+                obj.ShowUnits = bool(data["show_units"])
+                snapshot = item.get("detached_dimension")
+                if not isinstance(snapshot, dict):
+                    raise RuntimeError(
+                        f"TechDraw dimension {name!r} has no detached dimension state."
+                    )
+                obj.setPrecomputedDimension(snapshot)
+
+            _set_metadata(obj, prepared, name, output_type, definition)
+            _techdraw_set_validation(obj, item)
+            _techdraw_publication_checkpoint("after_apply", name, obj)
+            _mark_timeline_operation(
+                obj,
+                context=f"TechDraw output {name!r}",
+            )
+            if _is_created_timeline_object(doc, obj, created):
+                _publish_new_timeline_resource_block(
+                    doc,
+                    obj,
+                    [],
+                    context=f"TechDraw output {name!r}",
+                )
+
+        # Views and annotations have no page-content dependency.  Dimensions
+        # follow them so every exact projected reference exists before the
+        # dimension's own contiguous History block is created.
+        for output_type in ("view", "annotation", "dimension"):
+            for item in items:
+                if str(item["type"]) == output_type:
+                    configure_and_publish_simple_output(item)
+
+        for item in items:
+            name = str(item["name"])
+            output_type = str(item["type"])
+            if output_type in {"view", "annotation", "dimension"}:
+                continue
+            definition = _definition(item)
+            properties = dict(definition["properties"])
+            data = _techdraw_data(item)
+            obj = outputs[name]
+            obj.Label = str(properties["label"])
+            if output_type == "template":
+                obj.Width = float(data["width_mm"])
+                obj.Height = float(data["height_mm"])
+                obj.Orientation = str(data["orientation"])
+                obj.EditableTexts = dict(data["editable_texts"])
             elif output_type == "projection":
                 sources = _techdraw_source_objects(doc, definition, output_name=name)
                 obj.Source = sources
@@ -11609,67 +11769,25 @@ def _publish_techdraw_candidate(
                             allow_nan=False,
                         ),
                     )
-            elif output_type == "annotation":
-                obj.Text = list(data["text"])
-                obj.X = float(data["position_mm"][0])
-                obj.Y = float(data["position_mm"][1])
-                obj.TextSize = float(data["text_size_mm"])
-                obj.TextAlignment = str(data["alignment"]).title()
-            elif output_type == "dimension":
-                source = outputs[str(data["source_output"])]
-                if str(data["projection_direction"]):
-                    source = desired_child_maps[str(data["source_output"])][
-                        str(data["projection_direction"])
-                    ]
-                obj.Type = {
-                    "distance": "Distance",
-                    "distance_x": "DistanceX",
-                    "distance_y": "DistanceY",
-                    "radius": "Radius",
-                    "diameter": "Diameter",
-                    "angle": "Angle",
-                    "angle_3_point": "Angle3Pt",
-                    "area": "Area",
-                }[str(data["kind"])]
-                obj.MeasureType = (
-                    "True" if data["measure"] == "true" else "Projected"
+            elif output_type != "page":
+                raise RuntimeError(
+                    f"TechDraw output {name!r} has an unsupported publication type."
                 )
-                obj.References2D = [
-                    (source, str(reference))
-                    for reference in list(properties["references"])
-                ]
-                obj.X = float(data["position_mm"][0])
-                obj.Y = float(data["position_mm"][1])
-                obj.FormatSpec = str(data["format_spec"])
-                obj.OverTolerance = float(data["over_tolerance"])
-                obj.UnderTolerance = float(data["under_tolerance"])
-                obj.ShowUnits = bool(data["show_units"])
-                snapshot = item.get("detached_dimension")
-                if not isinstance(snapshot, dict):
-                    raise RuntimeError(
-                        f"TechDraw dimension {name!r} has no detached dimension state."
-                    )
-                obj.setPrecomputedDimension(snapshot)
             _set_metadata(obj, prepared, name, output_type, definition)
             _techdraw_set_validation(obj, item)
             _techdraw_publication_checkpoint("after_apply", name, obj)
 
+        # Native page membership is presentation order, not object-creation
+        # provenance.  Restore the source-declared order after every content
+        # operation exists and has published its own exact History block.
         for item in items:
-            if str(item["type"]) not in {"view", "dimension", "annotation"}:
+            if str(item["type"]) != "page":
                 continue
-            name = str(item["name"])
-            operation = outputs[name]
-            _mark_timeline_operation(
-                operation,
-                context=f"TechDraw output {name!r}",
-            )
-            if _is_created_timeline_object(doc, operation, created):
-                _publish_new_timeline_resource_block(
-                    doc,
-                    operation,
-                    [],
-                    context=f"TechDraw output {name!r}",
-                )
+            page = outputs[str(item["name"])]
+            for view in list(page.Views or []):
+                page.removeView(view)
+            for output_name in list(_techdraw_data(item)["content_outputs"]):
+                page.addPrecomputedView(outputs[str(output_name)])
 
         desired_objects = list(outputs.values())
         for child_map in desired_child_maps.values():
@@ -12619,6 +12737,20 @@ def _partdesign_history_reference(
                 f"Native Part Design history refers to missing object {name!r}."
             )
         return objects[name]
+    if scope == "external_reference":
+        document = getattr(body, "Document", None)
+        document_uid = str(reference.get("document_uid") or "")
+        if document is None or str(getattr(document, "Uid", "") or "") != document_uid:
+            raise RuntimeError(
+                "Native Part Design history external support belongs to another document."
+            )
+        object_name = str(reference.get("object_name") or "")
+        target = document.getObject(object_name)
+        if target is None or target is body or target in objects.values():
+            raise RuntimeError(
+                f"Native Part Design history cannot resolve external support {object_name!r}."
+            )
+        return target
     if scope == "origin_feature":
         features = list(getattr(body.Origin, "OriginFeatures", []) or [])
         index = int(reference.get("index") or 0)
@@ -14980,10 +15112,11 @@ def publish_candidate(
     created: list[Any] = []
     removed: list[str] = []
     assembly_dependency_anchor: Any | None = None
-    assembly_fastener_sources: Mapping[str, Any] | None = None
+    assembly_fastener_sources: dict[str, Any] = {}
     assembly_replaced_fastener_sources: list[Any] = []
     robot_trajectory_swaps: list[dict[str, Any]] = []
     retired_robot_trajectories: list[dict[str, Any]] = []
+    pending_output_publications: dict[int, tuple[Any, str]] = {}
     transaction_open = False
     try:
         if hasattr(doc, "openTransaction"):
@@ -14991,54 +15124,8 @@ def publish_candidate(
                 f"Publish {prepared['pack'].title} VibeScript: {prepared['program_name']}"
             )
             transaction_open = True
-        assembly_item = next(
-            (item for item in validated["outputs"] if item["type"] == "assembly"),
-            None,
-        )
-        if assembly_item is not None:
-            name = str(assembly_item["name"])
-            assembly = existing.get(name)
-            if assembly is None:
-                assembly = _create_object(
-                    doc, prepared, name, "assembly", _definition(assembly_item), None
-                )
-                created.append(assembly)
-            elif str(getattr(assembly, "TypeId", "")) != "Assembly::AssemblyObject":
-                raise RuntimeError("A stable assembly output changed native type.")
-            outputs[name] = assembly
-        assembly = next(
-            (
-                obj
-                for obj in outputs.values()
-                if obj.TypeId == "Assembly::AssemblyObject"
-            ),
-            None,
-        )
-        if prepared["pack"].domain == "assembly" and assembly_item is not None:
-            assembly_output = str(assembly_item["name"])
-            assembly_dependency_anchor = _find_assembly_dependency_anchor(
-                doc,
-                str(prepared["program_id"]),
-                assembly_output,
-            )
-            if assembly_dependency_anchor is None:
-                assembly_dependency_anchor = _create_assembly_dependency_anchor(
-                    doc,
-                    str(prepared["program_id"]),
-                    assembly_output,
-                )
-                created.append(assembly_dependency_anchor)
-            (
-                assembly_fastener_sources,
-                fastener_sources_created,
-                assembly_replaced_fastener_sources,
-            ) = _prepare_assembly_fastener_sources(
-                doc,
-                prepared,
-                list(validated["outputs"]),
-            )
-            created.extend(fastener_sources_created)
-        for item in validated["outputs"]:
+
+        def ensure_output_object(item: Mapping[str, Any], owner: Any | None) -> Any:
             output_name = str(item["name"])
             output_type = str(item["type"])
             obj = outputs.get(output_name) or existing.get(output_name)
@@ -15049,8 +15136,8 @@ def publish_candidate(
                     output_name,
                     output_type,
                     _definition(item),
-                    assembly,
-                    assembly_fastener_sources,
+                    owner,
+                    assembly_fastener_sources or None,
                 )
                 created.append(obj)
             expected_native = (
@@ -15074,6 +15161,31 @@ def publish_candidate(
                     f"{getattr(obj, 'TypeId', '')!r} to {expected_native!r}."
                 )
             outputs[output_name] = obj
+            return obj
+
+        assembly_item = next(
+            (item for item in validated["outputs"] if item["type"] == "assembly"),
+            None,
+        )
+        assembly = (
+            ensure_output_object(assembly_item, None)
+            if assembly_item is not None
+            else None
+        )
+        if prepared["pack"].domain == "assembly" and assembly_item is not None:
+            assembly_output = str(assembly_item["name"])
+            assembly_dependency_anchor = _find_assembly_dependency_anchor(
+                doc,
+                str(prepared["program_id"]),
+                assembly_output,
+            )
+            if assembly_dependency_anchor is None:
+                assembly_dependency_anchor = _create_assembly_dependency_anchor(
+                    doc,
+                    str(prepared["program_id"]),
+                    assembly_output,
+                )
+                created.append(assembly_dependency_anchor)
         configure_order = list(validated["outputs"])
         if prepared["pack"].domain == "assembly":
             priority = {
@@ -15121,7 +15233,54 @@ def publish_candidate(
         for item in configure_order:
             output_name = str(item["name"])
             output_type = str(item["type"])
-            obj = outputs[output_name]
+            occurrence_reconciliation: dict[str, Any] | None = None
+            occurrence_reconciliation_staged = False
+            if prepared["pack"].domain == "assembly":
+                if (
+                    output_type == "component_link"
+                    and str(_definition(item).get("operation") or "") == "fastener"
+                ):
+                    existing_occurrence = existing.get(output_name)
+                    if existing_occurrence is not None:
+                        occurrence_reconciliation = (
+                            _capture_timeline_resource_reconciliation(
+                                doc,
+                                existing_occurrence,
+                                key_for_resource=_assembly_timeline_resource_key,
+                                context=(
+                                    f"Assembly occurrence {output_name!r} "
+                                    "resource graph"
+                                ),
+                            )
+                        )
+                        _stage_timeline_resource_reconciliation(
+                            doc,
+                            existing_occurrence,
+                            occurrence_reconciliation,
+                            context=(
+                                f"Assembly occurrence {output_name!r} "
+                                "resource graph"
+                            ),
+                        )
+                        occurrence_reconciliation_staged = True
+                    (
+                        prepared_fastener_sources,
+                        fastener_sources_created,
+                        replaced_fastener_sources,
+                    ) = _prepare_assembly_fastener_sources(doc, prepared, [item])
+                    assembly_fastener_sources.update(prepared_fastener_sources)
+                    created.extend(fastener_sources_created)
+                    assembly_replaced_fastener_sources.extend(
+                        replaced_fastener_sources
+                    )
+                obj = ensure_output_object(item, assembly)
+            else:
+                # Create and configure each output in dependency order. Some
+                # native containers join History only when their members are
+                # installed, so pre-creating later dependants can put them
+                # before their owner even when the Python object list looks
+                # correctly sorted.
+                obj = ensure_output_object(item, assembly)
             inspection_feature = (
                 prepared["pack"].domain == "inspection"
                 and str(getattr(obj, "TypeId", "")) == "Inspection::Feature"
@@ -15151,7 +15310,11 @@ def publish_candidate(
                 )
                 if (
                     not assembly_operation_is_new
-                    and output_type not in {"assembly", "component_link"}
+                    and output_type != "component_link"
+                    and (
+                        output_type == "assembly"
+                        or output_type in _ASSEMBLY_RESOURCE_GRAPH_OUTPUT_TYPES
+                    )
                 ):
                     assembly_reconciliation = (
                         _capture_timeline_resource_reconciliation(
@@ -15179,6 +15342,7 @@ def publish_candidate(
                 outputs,
                 prepared,
                 robot_trajectory_swaps,
+                assembly_fastener_sources,
             )
             _set_metadata(
                 obj,
@@ -15200,25 +15364,85 @@ def publish_candidate(
                     context=f"{prepared['pack'].title} output {output_name!r}",
                 )
                 if _is_current_transaction_timeline_object(doc, obj):
-                    _publish_new_timeline_resource_block(
-                        doc,
+                    pending_output_publications[id(obj)] = (
                         obj,
-                        [],
-                        context=(
-                            f"{prepared['pack'].title} output {output_name!r}"
-                        ),
+                        f"{prepared['pack'].title} output {output_name!r}",
                     )
                 continue
 
             if output_type == "assembly":
-                # The Assembly root and its dependency anchor are one exact
-                # semantic block, finalized after every output is configured.
+                if assembly_dependency_anchor is None:
+                    raise RuntimeError(
+                        "Assembly output has no dependency resource anchor."
+                    )
+                _mark_timeline_operation(
+                    obj,
+                    context=f"Assembly output {output_name!r}",
+                )
+                _mark_timeline_resource(
+                    assembly_dependency_anchor,
+                    obj,
+                    context="Assembly dependency resource",
+                )
+                if assembly_operation_is_new:
+                    _publish_new_timeline_resource_block(
+                        doc,
+                        obj,
+                        [assembly_dependency_anchor],
+                        context="Assembly dependency resource graph",
+                    )
+                else:
+                    if assembly_reconciliation is None:
+                        raise RuntimeError(
+                            "Assembly output has no staged dependency resource "
+                            "reconciliation."
+                        )
+                    released = _finalize_timeline_resource_reconciliation(
+                        doc,
+                        obj,
+                        assembly_reconciliation,
+                        [assembly_dependency_anchor],
+                        context="Assembly dependency resource graph",
+                    )
+                    removed.extend(
+                        _remove_reconciled_timeline_resources(
+                            doc,
+                            released,
+                            context="Assembly dependency resource graph",
+                        )
+                    )
                 continue
 
             if output_type == "component_link":
                 import UtilsAssembly
 
-                if assembly_operation_is_new:
+                fastener_source = assembly_fastener_sources.get(output_name)
+                if fastener_source is not None and getattr(
+                    obj, "LinkedObject", None
+                ) is not fastener_source:
+                    raise RuntimeError(
+                        f"Assembly fastener output {output_name!r} has no exact "
+                        "catalog occurrence to own its hidden definition."
+                    )
+                if assembly_operation_is_new and fastener_source is not None:
+                    _mark_timeline_operation(
+                        obj,
+                        context=f"Assembly fastener occurrence {output_name!r}",
+                    )
+                    _mark_timeline_resource(
+                        fastener_source,
+                        obj,
+                        context=(
+                            f"Assembly fastener output {output_name!r} definition"
+                        ),
+                    )
+                    _publish_new_timeline_resource_block(
+                        doc,
+                        obj,
+                        [fastener_source],
+                        context=f"Assembly fastener occurrence {output_name!r}",
+                    )
+                elif assembly_operation_is_new:
                     UtilsAssembly.finalizeInsertedComponentTimeline(obj)
                 elif str(getattr(obj, "TypeId", "") or "") == (
                     "Assembly::AssemblyLink"
@@ -15241,16 +15465,17 @@ def publish_candidate(
                         "published as one independent History operation."
                     )
 
-                occurrence_reconciliation = (
-                    _capture_timeline_resource_reconciliation(
-                        doc,
-                        obj,
-                        key_for_resource=_assembly_timeline_resource_key,
-                        context=(
-                            f"Assembly occurrence {output_name!r} resource graph"
-                        ),
+                if occurrence_reconciliation is None:
+                    occurrence_reconciliation = (
+                        _capture_timeline_resource_reconciliation(
+                            doc,
+                            obj,
+                            key_for_resource=_assembly_timeline_resource_key,
+                            context=(
+                                f"Assembly occurrence {output_name!r} resource graph"
+                            ),
+                        )
                     )
-                )
                 final_occurrence_resources = [
                     resource
                     for resource in occurrence_reconciliation["resources"]
@@ -15262,16 +15487,7 @@ def publish_candidate(
                     )
                     is not None
                 ]
-                fastener_source = dict(
-                    assembly_fastener_sources or {}
-                ).get(output_name)
                 if fastener_source is not None:
-                    if getattr(obj, "LinkedObject", None) is not fastener_source:
-                        raise RuntimeError(
-                            f"Assembly fastener output {output_name!r} has no "
-                            "exact catalog occurrence to own its hidden "
-                            "definition."
-                        )
                     _mark_timeline_resource(
                         fastener_source,
                         obj,
@@ -15281,14 +15497,15 @@ def publish_candidate(
                     )
                     final_occurrence_resources.append(fastener_source)
 
-                _stage_timeline_resource_reconciliation(
-                    doc,
-                    obj,
-                    occurrence_reconciliation,
-                    context=(
-                        f"Assembly occurrence {output_name!r} resource graph"
-                    ),
-                )
+                if not occurrence_reconciliation_staged:
+                    _stage_timeline_resource_reconciliation(
+                        doc,
+                        obj,
+                        occurrence_reconciliation,
+                        context=(
+                            f"Assembly occurrence {output_name!r} resource graph"
+                        ),
+                    )
                 released = _finalize_timeline_resource_reconciliation(
                     doc,
                     obj,
@@ -15384,10 +15601,16 @@ def publish_candidate(
                 )
             else:
                 if assembly_reconciliation is None:
-                    raise RuntimeError(
-                        f"Assembly output {output_name!r} has no staged "
-                        "resource reconciliation."
-                    )
+                    if final_resources:
+                        raise RuntimeError(
+                            f"Assembly output {output_name!r} created an "
+                            "undeclared implementation resource graph."
+                        )
+                    # Joints, motions, diagnostics, simulations, and static
+                    # checks are standalone History operations. Their native
+                    # properties—including intentional suppression changes—
+                    # update normally and require no resource reconciliation.
+                    continue
                 released = _finalize_timeline_resource_reconciliation(
                     doc,
                     obj,
@@ -15402,88 +15625,57 @@ def publish_candidate(
                         context=f"Assembly output {output_name!r} resource graph",
                     )
                 )
-        if assembly_dependency_anchor is not None and assembly_item is not None:
-            assembly_output = str(assembly_item["name"])
-            if assembly is None:
-                raise RuntimeError(
-                    "Assembly dependency metadata has no Assembly operation owner."
-                )
-            assembly_is_new = _is_current_transaction_timeline_object(
-                doc,
-                assembly,
-            )
-            assembly_reconciliation = None
-            if not assembly_is_new:
-                assembly_reconciliation = (
-                    _capture_timeline_resource_reconciliation(
-                        doc,
-                        assembly,
-                        context="Assembly dependency resource graph",
-                    )
-                )
-                _stage_timeline_resource_reconciliation(
-                    doc,
-                    assembly,
-                    assembly_reconciliation,
-                    context="Assembly dependency resource graph",
-                )
-            assembly_dependency_anchor.Label = "VibeScript Assembly dependencies"
-            view = getattr(assembly_dependency_anchor, "ViewObject", None)
-            if view is not None:
-                view.Visibility = False
-                if hasattr(view, "ShowInTree"):
-                    view.ShowInTree = False
-            _set_metadata(
-                assembly_dependency_anchor,
-                prepared,
-                _assembly_dependency_output_name(assembly_output),
-                _ASSEMBLY_DEPENDENCY_OUTPUT_TYPE,
-                _definition(assembly_item),
-            )
-            _mark_timeline_operation(
-                assembly,
-                context=f"Assembly output {assembly_output!r}",
-            )
-            _mark_timeline_resource(
-                assembly_dependency_anchor,
-                assembly,
-                context="Assembly dependency resource",
-            )
-            if assembly_is_new:
+        if prepared["pack"].domain != "assembly":
+            # Configure the complete output graph before publishing any new
+            # operation.  Native proxies may update a dependency's
+            # presentation while links are installed (Draft arrays hide their
+            # Base, for example).  Publishing during configuration would turn
+            # that still-in-progress state into an accepted History boundary.
+            # Consume provisional outputs only after configuration, in their
+            # exact document-creation order.
+            published_output_ids: set[int] = set()
+            for created_object in created:
+                pending = pending_output_publications.get(id(created_object))
+                if pending is None:
+                    continue
+                operation, context = pending
                 _publish_new_timeline_resource_block(
                     doc,
-                    assembly,
-                    [assembly_dependency_anchor],
-                    context="Assembly dependency resource graph",
+                    operation,
+                    [],
+                    context=context,
                 )
-            else:
-                assert assembly_reconciliation is not None
-                released = _finalize_timeline_resource_reconciliation(
-                    doc,
-                    assembly,
-                    assembly_reconciliation,
-                    [assembly_dependency_anchor],
-                    context="Assembly dependency resource graph",
+                published_output_ids.add(id(operation))
+            missing_publications = [
+                operation
+                for object_id, (operation, _context) in (
+                    pending_output_publications.items()
                 )
-                removed.extend(
-                    _remove_reconciled_timeline_resources(
-                        doc,
-                        released,
-                        context="Assembly dependency resource graph",
-                    )
+                if object_id not in published_output_ids
+            ]
+            if missing_publications:
+                raise RuntimeError(
+                    "New VibeScript outputs were not present in exact document "
+                    "creation order: "
+                    + ", ".join(str(obj.Name) for obj in missing_publications)
                 )
-
+        if assembly_dependency_anchor is not None and assembly_item is not None:
+            # Publish the anchor with the Assembly root in creation order, but
+            # install its source links only after every occurrence has finished
+            # synchronizing.  AssemblyLink materialization can touch source
+            # groups; linking the invalidation anchor before that point would
+            # incorrectly mark the revision stale during its own publication.
+            _configure_assembly_dependency_anchor(
+                assembly_dependency_anchor,
+                prepared,
+                assembly_item,
+            )
         unreconciled_fastener_sources = [
             source
             for source in assembly_replaced_fastener_sources
-            if _resolve_timeline_identity(
-                doc,
-                _deletion_object_identity(
-                    source,
-                    context="A replaced Assembly fastener definition",
-                ),
-            )
-            is source
+            if getattr(source, "Document", None) is doc
+            and bool(str(getattr(source, "Name", "") or ""))
+            and doc.getObject(str(source.Name)) is source
         ]
         if unreconciled_fastener_sources:
             raise RuntimeError(

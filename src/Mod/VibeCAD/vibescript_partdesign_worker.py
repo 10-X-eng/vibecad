@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from vibescript_domain_api import DomainValue
+import vibescript_worker_progress as worker_progress
 from vibescript_material_api import MaterialDomainAPI
 from vibescript_part_worker import (
     PartOperationError,
@@ -21,6 +22,7 @@ from vibescript_part_worker import (
 )
 from vibescript_part_api import PartDomainAPI
 from vibescript_sketcher_worker import (
+    _configure_sketch_support,
     _resolve_worker_external_geometry,
     configure_sketcher_references,
     populate_sketch_without_solving,
@@ -448,7 +450,12 @@ def _as_sketcher_payload(value: Any) -> Any:
     return value
 
 
-def _sketch_validation(sketch: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+def _sketch_validation(
+    sketch: Any,
+    payload: Mapping[str, Any],
+    *,
+    support_validation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     properties = _properties(payload)
     try:
         solver_code = int(sketch.solve())
@@ -485,7 +492,12 @@ def _sketch_validation(sketch: Any, payload: Mapping[str, Any]) -> dict[str, Any
         "closed_wire_count": closed,
         "profile_ready": bool(wires and closed == len(wires)),
         "plane": str(properties.get("plane") or ""),
-        "z_offset_mm": float(properties.get("z_offset_mm") or 0.0),
+        "plane_offset_mm": float(
+            properties.get("plane_offset_mm", properties.get("z_offset_mm")) or 0.0
+        ),
+        "placement": properties.get("placement"),
+        "support": dict(support_validation) if support_validation is not None else None,
+        "map_mode": str(getattr(sketch, "MapMode", "") or ""),
     }
     if solver_code != 0 or conflicts or redundant or malformed:
         raise PartDesignCandidateError(
@@ -514,26 +526,53 @@ def _build_sketch(
     graph_id = _graph_id(payload, context="api.sketch")
     if graph_id in memo:
         return memo[graph_id]
+    worker_progress.graph_started("sketch", graph_id)
     properties = _properties(payload)
     name = _candidate_object_name(body, "Profile", graph_id)
     sketch = body.newObject("Sketcher::SketchObject", name)
     if sketch is None:
         raise PartDesignCandidateError("FreeCAD did not create the profile sketch.")
     _set_label(sketch, properties, f"Profile_{graph_id}")
-    plane = str(properties.get("plane") or "XY")
-    support = (_origin_feature(body, f"{plane}_Plane"), [""])
-    if hasattr(sketch, "AttachmentSupport"):
-        sketch.AttachmentSupport = [support]
-    else:
-        sketch.Support = [support]
-    sketch.MapMode = "FlatFace"
-    offset = float(properties.get("z_offset_mm") or 0.0)
-    if offset:
+    support_validation = None
+    explicit_placement = properties.get("placement")
+    if properties.get("support") is not None:
+        support_validation = _configure_sketch_support(
+            body.Document,
+            sketch,
+            properties,
+        )
+    elif isinstance(explicit_placement, Mapping):
         import FreeCAD as App
 
-        sketch.AttachmentOffset = App.Placement(
-            App.Vector(0.0, 0.0, offset), App.Rotation()
+        origin = App.Vector(*(float(value) for value in explicit_placement["origin"]))
+        normal = App.Vector(*(float(value) for value in explicit_placement["normal"]))
+        x_axis = App.Vector(
+            *(float(value) for value in explicit_placement["x_direction"])
         )
+        y_axis = normal.cross(x_axis)
+        matrix = App.Matrix()
+        matrix.A11, matrix.A21, matrix.A31 = x_axis.x, x_axis.y, x_axis.z
+        matrix.A12, matrix.A22, matrix.A32 = y_axis.x, y_axis.y, y_axis.z
+        matrix.A13, matrix.A23, matrix.A33 = normal.x, normal.y, normal.z
+        sketch.MapMode = "Deactivated"
+        sketch.Placement = App.Placement(origin, App.Rotation(matrix))
+    else:
+        plane = str(properties.get("plane") or "XY")
+        support = (_origin_feature(body, f"{plane}_Plane"), [""])
+        if hasattr(sketch, "AttachmentSupport"):
+            sketch.AttachmentSupport = [support]
+        else:
+            sketch.Support = [support]
+        sketch.MapMode = "FlatFace"
+        offset = float(
+            properties.get("plane_offset_mm", properties.get("z_offset_mm")) or 0.0
+        )
+        if offset:
+            import FreeCAD as App
+
+            sketch.AttachmentOffset = App.Placement(
+                App.Vector(0.0, 0.0, offset), App.Rotation()
+            )
     external_targets: dict[tuple[str, str], Any] = {}
 
     def resolve_external(definition: Mapping[str, Any]):
@@ -557,8 +596,15 @@ def _build_sketch(
     )
     body.Tip = sketch
     body.Document.recompute()
-    sketch_evidence.append(_sketch_validation(sketch, payload))
+    sketch_evidence.append(
+        _sketch_validation(
+            sketch,
+            payload,
+            support_validation=support_validation,
+        )
+    )
     memo[graph_id] = sketch
+    worker_progress.graph_completed("sketch", graph_id)
     return sketch
 
 
@@ -595,9 +641,9 @@ def _subshape_geometry(shape: Any, kind: str, index: int, subshape: Any) -> dict
             result["direction"] = [float(tangent.x), float(tangent.y), float(tangent.z)]
         except Exception:
             result["direction"] = None
-        radius = getattr(geometry, "Radius", None)
-        if radius is not None:
-            result["radius_mm"] = float(radius)
+    radius = getattr(geometry, "Radius", None)
+    if radius is not None:
+        result["radius_mm"] = float(radius)
     return result
 
 
@@ -1395,11 +1441,78 @@ def _build_feature(
     graph_id = _graph_id(payload, context=f"api.{operation}")
     if graph_id in memo:
         return memo[graph_id]
+    worker_progress.graph_started(operation, graph_id)
     properties = _properties(payload)
     name = _candidate_object_name(body, "Feature", graph_id)
     additive_base: Any | None = None
     subtractive_base: Any | None = None
-    if operation == "fastener":
+    if operation == "involute_gear":
+        import FreeCAD as App
+        import Part
+        from fcgear import fcgear, involute
+
+        builder = fcgear.FCWireBuilder()
+        internal = bool(properties.get("internal"))
+        generator = (
+            involute.CreateInternalGear
+            if internal
+            else involute.CreateExternalGear
+        )
+        try:
+            generator(
+                builder,
+                float(_argument(payload, 1, context="api.involute_gear")),
+                int(_argument(payload, 0, context="api.involute_gear")),
+                float(properties["pressure_angle_degrees"]),
+                split=bool(properties.get("high_precision")),
+                addCoeff=float(properties["addendum_coefficient"]),
+                dedCoeff=float(properties["dedendum_coefficient"]),
+                filletCoeff=float(properties["root_fillet_coefficient"]),
+                shiftCoeff=float(properties["profile_shift_coefficient"]),
+            )
+            profile = Part.Wire([edge.toShape() for edge in builder.wire])
+            if not profile.isClosed():
+                raise ValueError("the generated involute profile is open")
+            width = float(_argument(payload, 2, context="api.involute_gear"))
+            profile_solid = Part.Face(profile).extrude(App.Vector(0, 0, width))
+            if internal:
+                outer_radius = float(properties["outer_diameter_mm"]) * 0.5
+                profile_radius = max(
+                    abs(float(profile.BoundBox.XMin)),
+                    abs(float(profile.BoundBox.XMax)),
+                    abs(float(profile.BoundBox.YMin)),
+                    abs(float(profile.BoundBox.YMax)),
+                )
+                if outer_radius <= profile_radius + 1.0e-7:
+                    raise ValueError(
+                        "outer_diameter_mm must enclose the generated tooth-root profile"
+                    )
+                shape = Part.makeCylinder(outer_radius, width).cut(profile_solid)
+            else:
+                shape = profile_solid
+                bore_radius = float(properties.get("bore_diameter_mm") or 0.0) * 0.5
+                if bore_radius > 0.0:
+                    shape = shape.cut(Part.makeCylinder(bore_radius, width))
+            shape = shape.removeSplitter()
+            if shape.isNull() or not shape.isValid() or len(shape.Solids) != 1:
+                raise ValueError("the requested dimensions do not produce one valid gear solid")
+        except Exception as exc:
+            raise PartDesignCandidateError(
+                f"api.involute_gear could not generate a valid involute solid: {exc}",
+                details={
+                    "stage": "involute_gear_geometry",
+                    "operation": operation,
+                    "graph_id": graph_id,
+                    "correction": (
+                        "Use at least three teeth, a positive module and width, "
+                        "a bore inside the external root, or an internal outer "
+                        "diameter beyond the tooth-root profile."
+                    ),
+                },
+            ) from exc
+        feature = body.newObject("PartDesign::Feature", name)
+        feature.Shape = shape
+    elif operation == "fastener":
         try:
             from VibeCADFasteners import (
                 FastenerCatalogError,
@@ -1900,6 +2013,7 @@ def _build_feature(
                 },
             )
     memo[graph_id] = feature
+    worker_progress.graph_completed(operation, graph_id)
     return feature
 
 
@@ -1986,6 +2100,7 @@ def _evaluate_measurement_checks(
     raw_checks: Any,
     memo: dict[str, Any],
     sketch_evidence: list[dict[str, Any]],
+    material_resolver: PartDesignMaterialResolver,
 ) -> list[dict[str, Any]]:
     if not isinstance(raw_checks, list):
         raise PartDesignCandidateError("Publication checks must be an array.")
@@ -2003,6 +2118,7 @@ def _evaluate_measurement_checks(
         shape = _build_model_shape(body, shape_payload, memo, sketch_evidence)
         facts = part_shape_facts(shape, max_subelements=0)
         quantity = str(_argument(check, 1, context="api.measure") or "")
+        properties = _properties(check)
         values = {
             "length_mm": float(facts["length_mm"]),
             "area_mm2": float(facts["area_mm2"]),
@@ -2011,8 +2127,195 @@ def _evaluate_measurement_checks(
             "face_count": float(facts["faces"]),
             "edge_count": float(facts["edges"]),
         }
+        if quantity.startswith("bounds_"):
+            bounds = shape.BoundBox
+            values.update(
+                {
+                    "bounds_min_x_mm": float(bounds.XMin),
+                    "bounds_min_y_mm": float(bounds.YMin),
+                    "bounds_min_z_mm": float(bounds.ZMin),
+                    "bounds_max_x_mm": float(bounds.XMax),
+                    "bounds_max_y_mm": float(bounds.YMax),
+                    "bounds_max_z_mm": float(bounds.ZMax),
+                    "bounds_size_x_mm": float(bounds.XLength),
+                    "bounds_size_y_mm": float(bounds.YLength),
+                    "bounds_size_z_mm": float(bounds.ZLength),
+                }
+            )
+        elif quantity.startswith("center_of_mass_"):
+            solids = list(shape.Solids)
+            total_volume = sum(abs(float(solid.Volume)) for solid in solids)
+            if not solids or total_volume <= 1.0e-12:
+                raise PartDesignCandidateError(
+                    f"api.measure {quantity} requires solid geometry with non-zero volume.",
+                    details={
+                        "stage": "measurement_geometry",
+                        "quantity": quantity,
+                        "solid_count": len(solids),
+                        "volume_mm3": total_volume,
+                    },
+                )
+            center_components = [
+                sum(
+                    float(getattr(solid.CenterOfMass, axis))
+                    * abs(float(solid.Volume))
+                    for solid in solids
+                )
+                / total_volume
+                for axis in ("x", "y", "z")
+            ]
+            values.update(
+                {
+                    "center_of_mass_x_mm": center_components[0],
+                    "center_of_mass_y_mm": center_components[1],
+                    "center_of_mass_z_mm": center_components[2],
+                }
+            )
+        selection_evidence: dict[str, Any] = {}
+        if quantity in {"minimum_distance_mm", "interference_volume_mm3"}:
+            other_payload = _payload(
+                properties.get("other"),
+                context="api.measure.other",
+            )
+            other = _build_model_shape(
+                body,
+                other_payload,
+                memo,
+                sketch_evidence,
+            )
+            if quantity == "minimum_distance_mm":
+                values[quantity] = float(shape.distToShape(other)[0])
+            else:
+                intersection = shape.common(other)
+                if intersection is None or intersection.isNull():
+                    values[quantity] = 0.0
+                else:
+                    values[quantity] = abs(float(intersection.Volume))
+        elif quantity in {"radius_mm", "diameter_mm"}:
+            selection = properties.get("selection")
+            names, details = _query_subelements(shape, selection)
+            radius = details[0].get("radius_mm")
+            if radius is None:
+                raise PartDesignCandidateError(
+                    f"api.measure {quantity} selected geometry with no exact native radius.",
+                    details={
+                        "stage": "measurement_geometry",
+                        "quantity": quantity,
+                        "selection": selection,
+                        "matches": details,
+                        "correction": (
+                            "Select exactly one circular edge, cylindrical face, spherical "
+                            "face, or other analytic radius-bearing subelement."
+                        ),
+                    },
+                )
+            values[quantity] = float(radius) * (2.0 if quantity == "diameter_mm" else 1.0)
+            selection_evidence = {"selection_matches": names}
+        elif quantity == "minimum_wall_thickness_mm":
+            first_selection = properties.get("selection")
+            second_selection = properties.get("other_selection")
+            first_names, _first_details = _query_subelements(shape, first_selection)
+            second_names, _second_details = _query_subelements(shape, second_selection)
+            if first_names[0] == second_names[0]:
+                raise PartDesignCandidateError(
+                    "api.measure minimum_wall_thickness_mm selected the same face twice.",
+                    details={
+                        "stage": "measurement_geometry",
+                        "selection": first_selection,
+                        "other_selection": second_selection,
+                    },
+                )
+            first_face = shape.getElement(first_names[0])
+            second_face = shape.getElement(second_names[0])
+            wall_distance = float(first_face.distToShape(second_face)[0])
+            if wall_distance <= 0.0:
+                raise PartDesignCandidateError(
+                    "api.measure minimum_wall_thickness_mm requires two non-touching opposing faces.",
+                    details={
+                        "stage": "measurement_geometry",
+                        "selection_matches": first_names,
+                        "other_selection_matches": second_names,
+                        "observed_distance_mm": wall_distance,
+                        "correction": (
+                            "Select the exact inner and outer wall faces. Adjacent, touching, "
+                            "or intersecting faces do not define a wall thickness."
+                        ),
+                    },
+                )
+            values[quantity] = wall_distance
+            selection_evidence = {
+                "selection_matches": first_names,
+                "other_selection_matches": second_names,
+            }
+        elif quantity in {
+            "mass_kg",
+            "inertia_xx_kg_mm2",
+            "inertia_xy_kg_mm2",
+            "inertia_xz_kg_mm2",
+            "inertia_yy_kg_mm2",
+            "inertia_yz_kg_mm2",
+            "inertia_zz_kg_mm2",
+        }:
+            solids = list(shape.Solids)
+            if len(solids) != 1 or abs(float(solids[0].Volume)) <= 1.0e-12:
+                raise PartDesignCandidateError(
+                    f"api.measure {quantity} requires exactly one solid with non-zero volume.",
+                    details={
+                        "stage": "measurement_geometry",
+                        "quantity": quantity,
+                        "solid_count": len(solids),
+                        "volume_mm3": sum(
+                            abs(float(solid.Volume)) for solid in solids
+                        ),
+                    },
+                )
+            material_payload = _validated_material_card(
+                properties.get("material"),
+                context="api.measure.material",
+            )
+            native_material, material_record = material_resolver._resolve_card(
+                material_payload,
+                output_name=f"measurement {index + 1}",
+            )
+            try:
+                density_quantity = native_material.getPhysicalValue("Density")
+                density = float(density_quantity.getValueAs("kg/mm^3"))
+            except Exception as exc:
+                raise PartDesignCandidateError(
+                    "api.measure could not read native material Density.",
+                    details={
+                        "stage": "measurement_material",
+                        "material_uuid": material_record.get("uuid"),
+                        "native_error": f"{type(exc).__name__}: {exc}",
+                    },
+                ) from exc
+            if not math.isfinite(density) or density <= 0.0:
+                raise PartDesignCandidateError(
+                    "api.measure material Density must be positive and finite.",
+                    details={
+                        "stage": "measurement_material",
+                        "material_uuid": material_record.get("uuid"),
+                        "density_kg_per_mm3": density,
+                    },
+                )
+            solid = solids[0]
+            inertia = solid.MatrixOfInertia
+            values.update(
+                {
+                    "mass_kg": abs(float(solid.Volume)) * density,
+                    "inertia_xx_kg_mm2": float(inertia.A11) * density,
+                    "inertia_xy_kg_mm2": float(inertia.A12) * density,
+                    "inertia_xz_kg_mm2": float(inertia.A13) * density,
+                    "inertia_yy_kg_mm2": float(inertia.A22) * density,
+                    "inertia_yz_kg_mm2": float(inertia.A23) * density,
+                    "inertia_zz_kg_mm2": float(inertia.A33) * density,
+                }
+            )
+            selection_evidence = {
+                "material_uuid": material_record.get("uuid"),
+                "density_kg_per_mm3": density,
+            }
         actual = values[quantity]
-        properties = _properties(check)
         tolerance = float(properties.get("tolerance") or 0.0)
         expected = properties.get("expected")
         minimum = properties.get("minimum")
@@ -2034,6 +2337,7 @@ def _evaluate_measurement_checks(
             "maximum": maximum,
             "tolerance": tolerance,
             "accepted": accepted,
+            **selection_evidence,
         }
         if not accepted:
             raise PartDesignCandidateError(
@@ -2124,6 +2428,7 @@ def validate_and_build_partdesign(
     material_resolver = PartDesignMaterialResolver()
     for index, expected in enumerate(expected_outputs):
         name = str(expected["name"])
+        worker_progress.set_output(name)
         output_type = str(expected.get("type") or "")
         if output_type not in _PUBLISHABLE_TYPES:
             raise PartDesignCandidateError(
@@ -2226,6 +2531,7 @@ def validate_and_build_partdesign(
             properties.get("checks") or [],
             memo,
             sketch_evidence,
+            material_resolver,
         )
         relative = Path("outputs") / f"output-{index:03d}.brep"
         target = root / relative
@@ -2306,6 +2612,34 @@ def _native_history_target(
     name = str(getattr(target, "Name", "") or "")
     if name in child_names:
         return {"scope": "history", "name": name}
+    reference_document = str(
+        getattr(target, "VibeCADWorkerReferenceDocumentUid", "") or ""
+    )
+    reference_object = str(
+        getattr(target, "VibeCADWorkerReferenceObjectName", "") or ""
+    )
+    raw_selection = str(
+        getattr(target, "VibeCADWorkerReferenceSelection", "") or ""
+    )
+    if reference_document and reference_object and raw_selection:
+        try:
+            selection = json.loads(raw_selection)
+        except json.JSONDecodeError as exc:
+            raise PartDesignCandidateError(
+                "Part Design native history contains malformed external support metadata.",
+                details={"stage": "native_history", "target": name},
+            ) from exc
+        if not isinstance(selection, Mapping):
+            raise PartDesignCandidateError(
+                "Part Design native history external support selection is not an object.",
+                details={"stage": "native_history", "target": name},
+            )
+        return {
+            "scope": "external_reference",
+            "document_uid": reference_document,
+            "object_name": reference_object,
+            "selection": dict(selection),
+        }
     raise PartDesignCandidateError(
         "Part Design native history contains an unowned object reference.",
         details={

@@ -534,15 +534,16 @@ def main() -> int:
         asc_artifact, ply_artifact = _exercise_artifact_registry(root)
         surface = resolve_modeling_surface("PointsWorkbench", "vibescript")
         assert surface.available is True, surface.unavailable_reason
-        assert surface.cad_tool_names == tuple(
-            f"vibescript.points.{name}"
-            for name in (
-                "create_program",
-                "edit_source",
-                "set_inputs",
-                "reconfigure_program",
-                "delete_program",
-            )
+        assert surface.cad_tool_names == (
+            "vibescript.read_source",
+            "vibescript.read_api",
+            "vibescript.build_program",
+            "vibescript.edit_source",
+            "vibescript.points.create_program",
+            "vibescript.points.set_inputs",
+            "vibescript.points.reconfigure_program",
+            "vibescript.points.delete_program",
+            "points.list_clouds",
         )
 
         source_obj = document.addObject("Points::Feature", "HumanPointSource")
@@ -892,15 +893,14 @@ def main() -> int:
             },
         )
         prepared_delete = prepare_delete(delete_capture)
-        original_remove = publication_module._remove_owned_objects
+        original_remove = publication_module._remove_timeline_deletion
 
-        def fail_after_committed_removal(active_document, managed_objects):
-            first = next(iter(managed_objects))
-            active_document.removeObject(first.Name)
+        def fail_after_committed_removal(active_document, deletion):
+            original_remove(active_document, deletion)
             active_document.commitTransaction()
             raise RuntimeError("injected Points deletion failure")
 
-        publication_module._remove_owned_objects = fail_after_committed_removal
+        publication_module._remove_timeline_deletion = fail_after_committed_removal
         try:
             _expect_error(
                 "injected Points deletion failure",
@@ -908,7 +908,7 @@ def main() -> int:
             )
             restore_prepared_delete(prepared_delete)
         finally:
-            publication_module._remove_owned_objects = original_remove
+            publication_module._remove_timeline_deletion = original_remove
         obj = reopened.getObject(stable_name)
         assert obj is not None
         _assert_snapshot(obj, before_delete_fault)

@@ -53,6 +53,52 @@ _COMPATIBILITY_METHODS = frozenset({"pad", "pocket", "groove"})
 _COMPATIBILITY_FEATURES = frozenset(
     {*_COMPATIBILITY_METHODS, "loft_subtractive"}
 )
+_BASIC_MEASURE_QUANTITIES = frozenset(
+    {
+        "length_mm",
+        "area_mm2",
+        "volume_mm3",
+        "solid_count",
+        "face_count",
+        "edge_count",
+        "bounds_min_x_mm",
+        "bounds_min_y_mm",
+        "bounds_min_z_mm",
+        "bounds_max_x_mm",
+        "bounds_max_y_mm",
+        "bounds_max_z_mm",
+        "bounds_size_x_mm",
+        "bounds_size_y_mm",
+        "bounds_size_z_mm",
+        "center_of_mass_x_mm",
+        "center_of_mass_y_mm",
+        "center_of_mass_z_mm",
+    }
+)
+_PAIR_MEASURE_QUANTITIES = frozenset(
+    {"minimum_distance_mm", "interference_volume_mm3"}
+)
+_RADIAL_MEASURE_QUANTITIES = frozenset({"radius_mm", "diameter_mm"})
+_MASS_MEASURE_QUANTITIES = frozenset(
+    {
+        "mass_kg",
+        "inertia_xx_kg_mm2",
+        "inertia_xy_kg_mm2",
+        "inertia_xz_kg_mm2",
+        "inertia_yy_kg_mm2",
+        "inertia_yz_kg_mm2",
+        "inertia_zz_kg_mm2",
+    }
+)
+_MEASURE_QUANTITIES = frozenset(
+    {
+        *_BASIC_MEASURE_QUANTITIES,
+        *_PAIR_MEASURE_QUANTITIES,
+        *_RADIAL_MEASURE_QUANTITIES,
+        *_MASS_MEASURE_QUANTITIES,
+        "minimum_wall_thickness_mm",
+    }
+)
 _PART_API_EXPORTS = PartDomainAPI.exported_names.fget(None)
 _MATERIAL_API_EXPORTS = MaterialDomainAPI.exported_names
 
@@ -416,6 +462,50 @@ def _nonzero_vector(operation: str, parameter: str, value: Any) -> list[float]:
     return result
 
 
+def _sketch_placement(value: Any) -> dict[str, list[float]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {
+        "origin",
+        "normal",
+        "x_direction",
+    }:
+        raise _error(
+            "sketch",
+            "placement",
+            "must contain exactly origin, normal, and x_direction",
+            value,
+        )
+    origin = _vector("sketch", "placement.origin", value["origin"])
+    normal = _nonzero_vector("sketch", "placement.normal", value["normal"])
+    x_direction = _nonzero_vector(
+        "sketch", "placement.x_direction", value["x_direction"]
+    )
+    normal_length = math.sqrt(sum(component * component for component in normal))
+    unit_normal = [component / normal_length for component in normal]
+    dot = sum(
+        component * normal_component
+        for component, normal_component in zip(x_direction, unit_normal)
+    )
+    projected_x = [
+        component - dot * normal_component
+        for component, normal_component in zip(x_direction, unit_normal)
+    ]
+    projected_length = math.sqrt(sum(component * component for component in projected_x))
+    if projected_length <= 1.0e-12:
+        raise _error(
+            "sketch",
+            "placement.x_direction",
+            "must not be parallel to placement.normal",
+            value["x_direction"],
+        )
+    return {
+        "origin": origin,
+        "normal": unit_normal,
+        "x_direction": [component / projected_length for component in projected_x],
+    }
+
+
 def _selection(
     operation: str,
     value: Any,
@@ -601,6 +691,7 @@ class PartDesignDomainAPI:
         "thickness",
         "hole",
         "fastener_hole",
+        "involute_gear",
         "draft",
         # Distinct topology, repair, and transformation capabilities.
         "defeature",
@@ -723,6 +814,53 @@ class PartDesignDomainAPI:
         )
         return _retag(value, "partdesign")
 
+    def transform(
+        self,
+        shape: DomainValue,
+        *,
+        translation: Sequence[float] = (0.0, 0.0, 0.0),
+        rotation_axis: Sequence[float] = (0.0, 0.0, 1.0),
+        rotation_degrees: float = 0.0,
+        scale: float | Sequence[float] = 1.0,
+        pivot: Sequence[float] = (0.0, 0.0, 0.0),
+        label: str = "",
+    ) -> DomainValue:
+        """Copy and place topology or a Body feature.
+
+        Features such as api.fastener become solid topology without losing their
+        source graph. Scale, then rotate, then translate.
+        """
+
+        operation = "transform"
+        clean_shape = _modeled(operation, "shape", shape)
+        if isinstance(scale, (list, tuple)):
+            clean_scale = _vector(operation, "scale", scale)
+            if any(value <= 0.0 for value in clean_scale):
+                raise _error(
+                    operation,
+                    "scale",
+                    "all scale factors must be positive",
+                    scale,
+                )
+        else:
+            factor = _number(operation, "scale", scale, minimum=0.0, strict=True)
+            clean_scale = [factor, factor, factor]
+        return self._graph(
+            operation,
+            "solid" if clean_shape.output_type == "feature" else clean_shape.output_type,
+            clean_shape,
+            translation=_vector(operation, "translation", translation),
+            rotation_axis=_nonzero_vector(operation, "rotation_axis", rotation_axis),
+            rotation_degrees=_number(
+                operation,
+                "rotation_degrees",
+                rotation_degrees,
+            ),
+            scale=clean_scale,
+            pivot=_vector(operation, "pivot", pivot),
+            label=_label(operation, label),
+        )
+
     def fastener(
         self,
         standard: str,
@@ -780,6 +918,137 @@ class PartDesignDomainAPI:
             left_handed=left_handed,
             options=_fastener_options(options),
             label=_label("fastener", label),
+        )
+
+    def involute_gear(
+        self,
+        teeth: int,
+        module_mm: float,
+        width_mm: float,
+        *,
+        pressure_angle_degrees: float = 20.0,
+        bore_diameter_mm: float = 0.0,
+        internal: bool = False,
+        outer_diameter_mm: float | None = None,
+        high_precision: bool = True,
+        addendum_coefficient: float | None = None,
+        dedendum_coefficient: float = 1.25,
+        root_fillet_coefficient: float = 0.38,
+        profile_shift_coefficient: float = 0.0,
+        label: str = "",
+    ) -> DomainValue:
+        """Create an exact involute spur-gear feature.
+
+        Pitch diameter is teeth * module_mm. External gears accept a bore; internal
+        gears require outer_diameter_mm. Publish a named axis with api.body, then
+        use api.joint('gears') with pitch radii in Assembly. Never approximate teeth.
+        """
+
+        operation = "involute_gear"
+        if not isinstance(internal, bool):
+            raise _error(operation, "internal", "must be a boolean", internal)
+        if not isinstance(high_precision, bool):
+            raise _error(
+                operation,
+                "high_precision",
+                "must be a boolean",
+                high_precision,
+            )
+        clean_bore = _number(
+            operation,
+            "bore_diameter_mm",
+            bore_diameter_mm,
+            minimum=0.0,
+        )
+        if internal:
+            if clean_bore != 0.0:
+                raise _error(
+                    operation,
+                    "bore_diameter_mm",
+                    "must be zero for an internal gear",
+                    bore_diameter_mm,
+                )
+            if outer_diameter_mm is None:
+                raise _error(
+                    operation,
+                    "outer_diameter_mm",
+                    "is required for an internal gear",
+                )
+        elif outer_diameter_mm is not None:
+            raise _error(
+                operation,
+                "outer_diameter_mm",
+                "applies only to an internal gear",
+                outer_diameter_mm,
+            )
+        addendum = (
+            0.6
+            if addendum_coefficient is None and internal
+            else 1.0
+            if addendum_coefficient is None
+            else _number(
+                operation,
+                "addendum_coefficient",
+                addendum_coefficient,
+                minimum=0.0,
+                strict=True,
+            )
+        )
+        pressure_angle = _number(
+            operation,
+            "pressure_angle_degrees",
+            pressure_angle_degrees,
+            minimum=0.0,
+            strict=True,
+        )
+        if pressure_angle >= 90.0:
+            raise _error(
+                operation,
+                "pressure_angle_degrees",
+                "must be less than 90",
+                pressure_angle_degrees,
+            )
+        return self._graph(
+            operation,
+            "feature",
+            _integer(operation, "teeth", teeth, minimum=3),
+            _number(operation, "module_mm", module_mm, minimum=0.0, strict=True),
+            _number(operation, "width_mm", width_mm, minimum=0.0, strict=True),
+            pressure_angle_degrees=pressure_angle,
+            bore_diameter_mm=clean_bore,
+            internal=internal,
+            outer_diameter_mm=(
+                None
+                if outer_diameter_mm is None
+                else _number(
+                    operation,
+                    "outer_diameter_mm",
+                    outer_diameter_mm,
+                    minimum=0.0,
+                    strict=True,
+                )
+            ),
+            high_precision=high_precision,
+            addendum_coefficient=addendum,
+            dedendum_coefficient=_number(
+                operation,
+                "dedendum_coefficient",
+                dedendum_coefficient,
+                minimum=0.0,
+                strict=True,
+            ),
+            root_fillet_coefficient=_number(
+                operation,
+                "root_fillet_coefficient",
+                root_fillet_coefficient,
+                minimum=0.0,
+            ),
+            profile_shift_coefficient=_number(
+                operation,
+                "profile_shift_coefficient",
+                profile_shift_coefficient,
+            ),
+            label=_label(operation, label),
         )
 
     def point(self, position: Sequence[float], *, construction: bool = True, name: str = "") -> DomainValue:
@@ -921,9 +1190,15 @@ class PartDesignDomainAPI:
         *,
         value: float | None = None,
         name: str = "",
+        expression: str = "",
         driving: bool = True,
         active: bool = True,
         virtual: bool = False,
+        alignment: str = "",
+        internal_index: int = 0,
+        text: str = "",
+        font: str = "sans",
+        text_height: bool = True,
     ) -> DomainValue:
         """Create one Sketcher constraint for geometry used by the same api.sketch.
 
@@ -942,9 +1217,15 @@ class PartDesignDomainAPI:
                 sketcher_entities,
                 value=value,
                 name=name,
+                expression=expression,
                 driving=driving,
                 active=active,
                 virtual=virtual,
+                alignment=alignment,
+                internal_index=internal_index,
+                text=text,
+                font=font,
+                text_height=text_height,
             ),
         )
 
@@ -955,16 +1236,67 @@ class PartDesignDomainAPI:
         *,
         plane: str = "XY",
         z_offset_mm: float = 0.0,
+        plane_offset_mm: float | None = None,
+        placement: Mapping[str, Sequence[float]] | None = None,
+        support: Mapping[str, Any] | None = None,
+        map_mode: str | None = None,
+        attachment_offset: Mapping[str, Any] | None = None,
         require_fully_constrained: bool = False,
         require_closed_profile: bool = True,
         label: str = "",
     ) -> DomainValue:
         """Create one planar Sketcher profile from 2D geometry and constraints.
 
-        plane is XY, XZ, or YZ; z_offset_mm moves that plane parallel to itself.
-        The validation flags reject an open profile or remaining degrees of freedom
-        when set. Returns a profile for feature operations, not a solid.
+        plane is XY, XZ, or YZ. plane_offset_mm moves it along its own normal;
+        z_offset_mm remains an equivalent compatibility name. For any other plane,
+        pass placement with origin, normal, and x_direction. To follow existing
+        geometry, pass a stable support reference/selection plus a compatible map_mode.
+        The validation flags reject an open profile or remaining native Sketcher
+        degrees of freedom when set. Returns a profile, not a solid.
         """
+
+        clean_z_offset = _number("sketch", "z_offset_mm", z_offset_mm)
+        clean_plane_offset = (
+            clean_z_offset
+            if plane_offset_mm is None
+            else _number("sketch", "plane_offset_mm", plane_offset_mm)
+        )
+        if plane_offset_mm is not None and abs(clean_z_offset) > 1.0e-12:
+            raise _error(
+                "sketch",
+                "plane_offset_mm/z_offset_mm",
+                "specify one offset name, not both",
+            )
+        clean_placement = _sketch_placement(placement)
+        if clean_placement is not None and (
+            support is not None
+            or attachment_offset is not None
+            or abs(clean_plane_offset) > 1.0e-12
+        ):
+            raise _error(
+                "sketch",
+                "placement",
+                "cannot be combined with support, attachment_offset, or a plane offset",
+            )
+        if support is None and attachment_offset is not None:
+            raise _error(
+                "sketch",
+                "attachment_offset",
+                "requires support; use placement for an unattached arbitrary plane",
+            )
+        if support is not None and map_mode is None:
+            raise _error(
+                "sketch",
+                "map_mode",
+                "is required with support; use the exact native mode for that support",
+            )
+        if support is None and map_mode is not None:
+            raise _error(
+                "sketch",
+                "map_mode",
+                "requires support; omit it for a principal or explicitly placed plane",
+            )
+        clean_map_mode = str(map_mode or "Deactivated").strip()
 
         value = self._sketcher.sketch(
             self._to_sketcher(
@@ -977,6 +1309,9 @@ class PartDesignDomainAPI:
                 operation="sketch",
                 parameter="constraints",
             ),
+            support=support,
+            map_mode=clean_map_mode,
+            attachment_offset=attachment_offset,
             require_fully_constrained=require_fully_constrained,
             require_closed_profile=require_closed_profile,
             label=label,
@@ -991,7 +1326,9 @@ class PartDesignDomainAPI:
                 **dict(retagged.properties),
                 "graph_id": self._feature_id(),
                 "plane": _plane("sketch", plane),
-                "z_offset_mm": _number("sketch", "z_offset_mm", z_offset_mm),
+                "z_offset_mm": clean_plane_offset,
+                "plane_offset_mm": clean_plane_offset,
+                "placement": clean_placement,
             },
         )
 
@@ -2350,6 +2687,10 @@ class PartDesignDomainAPI:
         shape: DomainValue,
         quantity: str,
         *,
+        other: DomainValue | None = None,
+        selection: Mapping[str, Any] | None = None,
+        other_selection: Mapping[str, Any] | None = None,
+        material: DomainValue | None = None,
         expected: float | None = None,
         minimum: float | None = None,
         maximum: float | None = None,
@@ -2358,20 +2699,99 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Require regenerated geometry to satisfy a measurement bound.
 
-        quantity is length_mm, area_mm2, volume_mm3, solid_count, face_count, or
-        edge_count. Pass the returned check to api.body or api.publish.
+        Bounds and mass properties are derived from the actual BREP. Pair checks
+        use other for minimum_distance_mm or interference_volume_mm3. Radius and
+        diameter require one exact edge/face selection. Wall thickness requires
+        two exact opposing face selections on shape. Mass and inertia require
+        exactly one solid and an api.material card containing Density. Pass the
+        check to api.body or api.publish; helper geometry is never evidence.
         """
 
         clean_quantity = str(quantity or "").strip().lower()
-        if clean_quantity not in {
-            "length_mm",
-            "area_mm2",
-            "volume_mm3",
-            "solid_count",
-            "face_count",
-            "edge_count",
-        }:
-            raise _error("measure", "quantity", "is not a supported shape measurement")
+        if clean_quantity not in _MEASURE_QUANTITIES:
+            raise _error(
+                "measure",
+                "quantity",
+                f"must be one of {sorted(_MEASURE_QUANTITIES)}",
+                quantity,
+            )
+        clean_other = (
+            None
+            if other is None
+            else _modeled("measure", "other", other)
+        )
+        if (clean_quantity in _PAIR_MEASURE_QUANTITIES) != (clean_other is not None):
+            raise _error(
+                "measure",
+                "other",
+                (
+                    f"is required for {clean_quantity}"
+                    if clean_quantity in _PAIR_MEASURE_QUANTITIES
+                    else f"does not apply to {clean_quantity}"
+                ),
+            )
+        clean_selection = None
+        clean_other_selection = None
+        if clean_quantity in _RADIAL_MEASURE_QUANTITIES:
+            clean_selection = _selection("measure", selection)
+            if int(clean_selection["expected_count"]) != 1:
+                raise _error(
+                    "measure",
+                    "selection.expected_count",
+                    "must be 1 for a radius or diameter",
+                )
+        elif clean_quantity == "minimum_wall_thickness_mm":
+            clean_selection = _selection(
+                "measure",
+                selection,
+                element_type="face",
+            )
+            clean_other_selection = _selection(
+                "measure",
+                other_selection,
+                element_type="face",
+            )
+            if (
+                int(clean_selection["expected_count"]) != 1
+                or int(clean_other_selection["expected_count"]) != 1
+            ):
+                raise _error(
+                    "measure",
+                    "selection.expected_count",
+                    "must be 1 for both opposing wall faces",
+                )
+        elif selection is not None or other_selection is not None:
+            raise _error(
+                "measure",
+                "selection/other_selection",
+                f"does not apply to {clean_quantity}",
+            )
+        clean_material = _material_card(
+            "measure",
+            "material",
+            material,
+            optional=True,
+        )
+        if (clean_quantity in _MASS_MEASURE_QUANTITIES) != (
+            clean_material is not None
+        ):
+            raise _error(
+                "measure",
+                "material",
+                (
+                    f"is required for {clean_quantity} and must provide Density"
+                    if clean_quantity in _MASS_MEASURE_QUANTITIES
+                    else f"does not apply to {clean_quantity}"
+                ),
+            )
+        if clean_material is not None and "Density" not in set(
+            clean_material.properties.get("require_physical_properties") or ()
+        ):
+            raise _error(
+                "measure",
+                "material",
+                "must be created with require_physical_properties=['Density']",
+            )
         if expected is None and minimum is None and maximum is None:
             raise _error(
                 "measure", "expected/minimum/maximum", "must specify at least one bound"
@@ -2386,6 +2806,10 @@ class PartDesignDomainAPI:
             "check",
             _modeled("measure", "shape", shape),
             clean_quantity,
+            other=clean_other,
+            selection=clean_selection,
+            other_selection=clean_other_selection,
+            material=clean_material,
             expected=clean_expected,
             minimum=clean_minimum,
             maximum=clean_maximum,
@@ -2492,9 +2916,9 @@ class PartDesignDomainAPI:
     ) -> DomainValue:
         """Publish one connected solid as a stable parametric Design Body.
 
-        Pass the final feature from this source graph. Editing the VibeScript
-        regenerates that same Body identity. Attach checks, material,
-        appearance, and semantic interfaces here.
+        Pass the final feature; a standalone solid is accepted only when it can
+        become one native feature. Source edits retain the Body identity. Attach checks,
+        material, appearance, and named interfaces here.
         """
 
         return self._graph(

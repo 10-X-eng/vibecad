@@ -29,14 +29,18 @@ CORE_CONVERSATION_VIEW_TOOLS = frozenset(
 )
 FASTENER_CATALOG_TOOL = "fastener_catalog.search"
 COMPONENT_CATALOG_TOOL = "component_catalog.search"
+MATERIAL_CATALOG_TOOL = "material_catalog.search"
 SHARED_CONTEXT_TOOLS = frozenset(
-    {FASTENER_CATALOG_TOOL, COMPONENT_CATALOG_TOOL}
+    {FASTENER_CATALOG_TOOL, COMPONENT_CATALOG_TOOL, MATERIAL_CATALOG_TOOL}
 )
 FASTENER_WORKBENCHES = frozenset(
     {"PartDesignWorkbench", "AssemblyWorkbench"}
 )
 COMPONENT_CATALOG_WORKBENCHES = frozenset(
     {"AssemblyWorkbench"}
+)
+MATERIAL_CATALOG_WORKBENCHES = frozenset(
+    {"PartDesignWorkbench", "MaterialWorkbench"}
 )
 
 
@@ -46,6 +50,8 @@ def _core_tool_names(workbench: str | None) -> tuple[str, ...]:
         names.add(FASTENER_CATALOG_TOOL)
     if workbench in COMPONENT_CATALOG_WORKBENCHES:
         names.add(COMPONENT_CATALOG_TOOL)
+    if workbench in MATERIAL_CATALOG_WORKBENCHES:
+        names.add(MATERIAL_CATALOG_TOOL)
     return tuple(sorted(names))
 
 # Each model-facing focused read belongs to one exact workbench. Universal
@@ -207,7 +213,7 @@ def resolve_modeling_surface(
                 workbench=clean_workbench,
                 engine=clean_engine,
                 domain=vibescript_pack.domain,
-                generation="domain-v5-universal-source-tools",
+                generation="domain-v6-focused-source-tools",
             ),
             core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=_provider_cad_tool_names(
@@ -252,6 +258,7 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
         if len(parts) == 2 and parts[1] in {
             "read_source",
             "read_api",
+            "build_program",
             "edit_source",
         }:
             continue
@@ -294,7 +301,13 @@ def validate_surface_names(
         name
         for name in clean_names
         if name.partition(".")[0]
-        not in {"conversation", "core", "fastener_catalog", "component_catalog"}
+        not in {
+            "conversation",
+            "core",
+            "fastener_catalog",
+            "component_catalog",
+            "material_catalog",
+        }
     ]
     if engine == "vibescript":
         if scripted and scripted != {engine}:
@@ -316,6 +329,7 @@ def validate_surface_names(
                 "core",
                 "fastener_catalog",
                 "component_catalog",
+                "material_catalog",
                 "vibescript",
             }
             and name not in allowed_reads

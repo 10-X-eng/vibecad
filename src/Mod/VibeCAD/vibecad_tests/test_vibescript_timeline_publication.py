@@ -50,7 +50,10 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
         for spec in domain_publication.contracts.universal_tool_specs()
         if str(spec["safety"]) == "SAFE_WRITE"
     }
-    assert universal_writes == {"vibescript.edit_source"}
+    assert universal_writes == {
+        "vibescript.build_program",
+        "vibescript.edit_source",
+    }
 
     expected_operations = {
         "create_program",
@@ -60,6 +63,7 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
     }
     registered_writes: set[str] = set(universal_writes)
     contracts: dict[str, str] = {
+        "vibescript.build_program": "exact_regeneration",
         "vibescript.edit_source": "exact_regeneration",
     }
     for pack in packs:
@@ -87,8 +91,8 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
             "semantic_deletion"
         )
 
-    # One universal edit plus four domain-owned writes for every shipped pack.
-    assert len(registered_writes) == 1 + 4 * len(packs) == 69
+    # Two universal regenerations plus four domain-owned writes per shipped pack.
+    assert len(registered_writes) == 2 + 4 * len(packs) == 70
     assert set(contracts) == registered_writes
     assert set(contracts.values()) <= {
         *domain_publication._TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN.values(),

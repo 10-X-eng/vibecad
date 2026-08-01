@@ -174,6 +174,15 @@ def run_process(
         if cancelled or timed_out or memory_exceeded:
             _terminate(process)
         process.wait()
+        termination_reason = (
+            "host_cancellation_request"
+            if cancelled
+            else "wall_time_limit"
+            if timed_out
+            else "memory_limit"
+            if memory_exceeded
+            else "process_exit"
+        )
         return {
             "started": True,
             "returncode": process.returncode,
@@ -182,6 +191,17 @@ def run_process(
             "cancelled": cancelled,
             "timed_out": timed_out,
             "memory_exceeded": memory_exceeded,
+            "cancelled_by": "host" if cancelled else None,
+            "limit_reached": (
+                "wall_time_seconds"
+                if timed_out
+                else "memory_bytes"
+                if memory_exceeded
+                else None
+            ),
+            "termination_reason": termination_reason,
+            "timeout_seconds": float(timeout_seconds),
+            "memory_limit_bytes": int(memory_limit_bytes),
             "observed_memory_bytes": observed_memory,
             "elapsed_seconds": time.monotonic() - started,
         }

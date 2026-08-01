@@ -1098,6 +1098,7 @@ def _run_domain_vibescript_tool(
     document_thread_dispatch: DocumentThreadDispatch | None,
     cancellation_check: CancellationCheck | None,
     progress_callback: ProgressCallback | None,
+    allow_unchanged_revision: bool = False,
 ) -> dict[str, Any]:
     """Run one schema-v2 domain lifecycle without blocking the document thread."""
 
@@ -1175,6 +1176,8 @@ def _run_domain_vibescript_tool(
             document_thread_dispatch,
             lambda: capture_operation_state(service, tool_name, args),
         )
+        if allow_unchanged_revision:
+            captured["allow_unchanged_revision"] = True
         if operation == "delete_program":
             prepared_delete = prepare_delete(captured)
             try:
@@ -1301,7 +1304,94 @@ def _run_domain_vibescript_tool(
         )
 
 
-def _read_source_payload(inspected: Mapping[str, Any]) -> dict[str, Any]:
+_SOURCE_LOG_FIELDS = frozenset(
+    {
+        "log",
+        "logs",
+        "progress",
+        "raw_progress",
+        "stderr",
+        "stdout",
+        "traceback",
+    }
+)
+
+
+def _source_diagnostic_value(
+    value: Any,
+    *,
+    include_logs: bool,
+    log_tail_lines: int | None,
+) -> Any:
+    """Copy candidate state while optionally omitting or tailing raw logs."""
+
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        omitted_logs: list[str] = []
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if key == "artifact_directory" and not include_logs:
+                continue
+            if key == "worker_progress" and isinstance(item, Mapping) and not include_logs:
+                result[key] = {
+                    field: item[field]
+                    for field in (
+                        "schema",
+                        "domain",
+                        "phase",
+                        "current_output",
+                        "current_graph_node",
+                        "last_completed_graph_node",
+                        "elapsed_seconds",
+                        "completed",
+                        "failure",
+                    )
+                    if field in item
+                }
+                timings = item.get("graph_timings")
+                if isinstance(timings, list):
+                    result[key]["completed_graph_node_count"] = len(timings) + int(
+                        item.get("graph_timings_omitted") or 0
+                    )
+                continue
+            if key.casefold() in _SOURCE_LOG_FIELDS:
+                if not include_logs:
+                    omitted_logs.append(key)
+                    continue
+                if isinstance(item, str) and log_tail_lines is not None:
+                    lines = item.splitlines()
+                    result[key] = "\n".join(lines[-log_tail_lines:])
+                    if len(lines) > log_tail_lines:
+                        result[f"{key}_lines_omitted"] = len(lines) - log_tail_lines
+                    continue
+            result[key] = _source_diagnostic_value(
+                item,
+                include_logs=include_logs,
+                log_tail_lines=log_tail_lines,
+            )
+        if omitted_logs:
+            result["logs_omitted"] = sorted(omitted_logs)
+        return result
+    if isinstance(value, list):
+        return [
+            _source_diagnostic_value(
+                item,
+                include_logs=include_logs,
+                log_tail_lines=log_tail_lines,
+            )
+            for item in value
+        ]
+    return value
+
+
+def _read_source_payload(
+    inspected: Mapping[str, Any],
+    *,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    include_logs: bool = True,
+    log_tail_lines: int | None = None,
+) -> dict[str, Any]:
     if inspected.get("ok") is not True:
         return dict(inspected)
     program = inspected.get("program")
@@ -1315,6 +1405,31 @@ def _read_source_payload(inspected: Mapping[str, Any]) -> dict[str, Any]:
         )
     source_id = str(program.get("program_id") or "")
     revision = str(program.get("working_revision") or "")
+    complete_source = str(program.get("source") or "")
+    source_lines = complete_source.splitlines(keepends=True)
+    total_lines = len(source_lines)
+    ranged = line_start is not None or line_end is not None
+    start = int(line_start if line_start is not None else 1)
+    end = int(line_end if line_end is not None else total_lines)
+    if ranged and (
+        start < 1
+        or end < start
+        or (total_lines > 0 and start > total_lines)
+        or (total_lines == 0 and start != 1)
+    ):
+        return tool_failure(
+            "vibescript.read_source",
+            "SOURCE_RANGE_INVALID",
+            "schema",
+            "The requested source line range is outside this saved source.",
+            requested={"line_start": line_start, "line_end": line_end},
+            observed={"total_lines": total_lines},
+        )
+    if ranged:
+        end = min(end, total_lines)
+        returned_source = "".join(source_lines[start - 1 : end])
+    else:
+        returned_source = complete_source
     raw_outputs = program.get("live_outputs")
     affected_outputs = []
     live_state = program.get("live_state")
@@ -1342,7 +1457,13 @@ def _read_source_payload(inspected: Mapping[str, Any]) -> dict[str, Any]:
         "source_id": source_id,
         "program_id": source_id,
         "current_revision": revision,
-        "source": str(program.get("source") or ""),
+        "source": returned_source,
+        "source_range": {
+            "line_start": start,
+            "line_end": end,
+            "total_lines": total_lines,
+            "complete": not ranged,
+        },
         "domain": str(program.get("domain") or ""),
         "workbench": str(program.get("workbench") or ""),
         "label": str(program.get("label") or ""),
@@ -1357,9 +1478,19 @@ def _read_source_payload(inspected: Mapping[str, Any]) -> dict[str, Any]:
                 "source_id": source_id,
                 "expected_revision": revision,
             },
-            "source_argument": "Pass the complete updated source text.",
+            "source_argument": (
+                "Pass the complete updated source text. Read the complete source first; "
+                "a line-range response cannot be edited by itself."
+            ),
         },
-        "_vibecad_complete_source_result": True,
+        "build_program": {
+            "tool": "vibescript.build_program",
+            "arguments": {
+                "source_id": source_id,
+                "expected_revision": revision,
+            },
+        },
+        "_vibecad_complete_source_result": not ranged,
     }
     for key in (
         "latest_candidate",
@@ -1368,11 +1499,104 @@ def _read_source_payload(inspected: Mapping[str, Any]) -> dict[str, Any]:
         "migration_action",
     ):
         if program.get(key) not in (None, "", [], {}):
-            result[key] = program[key]
+            result[key] = _source_diagnostic_value(
+                program[key],
+                include_logs=include_logs,
+                log_tail_lines=log_tail_lines,
+            )
     model_state = inspected.get("model_state")
     if isinstance(model_state, Mapping):
-        result["model_state"] = dict(model_state)
+        result["model_state"] = _source_diagnostic_value(
+            model_state,
+            include_logs=include_logs,
+            log_tail_lines=log_tail_lines,
+        )
     return result
+
+
+def _filtered_api_payload(
+    tool_name: str,
+    description: Mapping[str, Any],
+    *,
+    names: list[str],
+    groups: list[str],
+) -> dict[str, Any]:
+    """Return either the complete API or a small exact callable selection."""
+
+    result = dict(description)
+    exports = [
+        dict(item)
+        for item in list(result.get("runtime_exports") or [])
+        if isinstance(item, Mapping)
+    ]
+    by_name = {str(item.get("name") or ""): item for item in exports}
+    api_groups = {
+        str(group): [str(name) for name in raw_names]
+        for group, raw_names in dict(result.get("api_groups") or {}).items()
+        if isinstance(raw_names, list)
+    }
+    unknown_names = sorted(set(names) - set(by_name))
+    unknown_groups = sorted(set(groups) - set(api_groups))
+    if unknown_names or unknown_groups:
+        return tool_failure(
+            tool_name,
+            "API_FILTER_UNKNOWN",
+            "schema",
+            "The requested API names or groups do not exist in the active workbench.",
+            requested={"names": names, "groups": groups},
+            observed={
+                "unknown_names": unknown_names,
+                "unknown_groups": unknown_groups,
+                "available_names": list(by_name),
+                "available_groups": list(api_groups),
+            },
+        )
+    if not names and not groups:
+        result["_vibecad_complete_api_result"] = True
+        return result
+    selected = set(names)
+    for group in groups:
+        selected.update(api_groups[group])
+    ordered_names = [name for name in by_name if name in selected]
+    focused = {
+        key: result[key]
+        for key in (
+            "ok",
+            "domain",
+            "workbench",
+            "program_schema",
+            "accepted_output_types",
+            "source_globals",
+            "result_contract",
+            "units",
+            "evaluation_model",
+            "model_operating_contract",
+            "source_value_contract",
+            "source_global_contracts",
+        )
+        if key in result
+    }
+    focused.update(
+        {
+            "runtime_exports": [by_name[name] for name in ordered_names],
+            "selected_names": ordered_names,
+            "selected_groups": groups,
+            "api_groups": api_groups,
+            "read_more": {
+                "tool": "vibescript.read_api",
+                "arguments": {"names": ["exact_callable_name"]},
+            },
+            "_vibecad_complete_api_result": False,
+        }
+    )
+    details = result.get("api_details")
+    if isinstance(details, Mapping):
+        selected_details = {
+            name: details[name] for name in ordered_names if name in details
+        }
+        if selected_details:
+            focused["api_details"] = selected_details
+    return focused
 
 
 def _run_universal_vibescript_tool(
@@ -1397,10 +1621,12 @@ def _run_universal_vibescript_tool(
     if tool_name == "vibescript.read_api":
         from VibeCADVibeScriptDomainRuntime import describe_api
 
-        result = dict(describe_api(pack))
-        if result.get("ok") is True:
-            result["_vibecad_complete_api_result"] = True
-        return result
+        return _filtered_api_payload(
+            tool_name,
+            describe_api(pack),
+            names=[str(value) for value in list(args.get("names") or [])],
+            groups=[str(value) for value in list(args.get("groups") or [])],
+        )
     if tool_name == "vibescript.read_source":
         from VibeCADVibeScriptDomainRuntime import (
             DomainRuntimeFailure,
@@ -1418,7 +1644,13 @@ def _run_universal_vibescript_tool(
                     source_id,
                 ),
             )
-            return _read_source_payload(complete_inspection(captured))
+            return _read_source_payload(
+                complete_inspection(captured),
+                line_start=args.get("line_start"),
+                line_end=args.get("line_end"),
+                include_logs=bool(args.get("include_logs", True)),
+                log_tail_lines=args.get("log_tail_lines"),
+            )
         except DomainRuntimeFailure as exc:
             return exc.payload
         except Exception as exc:
@@ -1426,6 +1658,83 @@ def _run_universal_vibescript_tool(
                 tool_name,
                 "SOURCE_READ_FAILED",
                 "precondition",
+                str(exc),
+                requested=args,
+                observed={"exception_type": exc.__class__.__name__},
+            )
+    if tool_name == "vibescript.build_program":
+        from VibeCADVibeScriptDomainRuntime import (
+            DomainRuntimeFailure,
+            capture_inspection_state,
+            complete_inspection,
+        )
+
+        source_id = str(args["source_id"])
+        expected_revision = str(args["expected_revision"])
+        try:
+            captured = _on_document_thread(
+                document_thread_dispatch,
+                lambda: capture_inspection_state(
+                    service,
+                    f"vibescript.{pack.domain}.inspect_program",
+                    source_id,
+                ),
+            )
+            inspected = complete_inspection(captured)
+            program = inspected.get("program")
+            if not isinstance(program, Mapping):
+                return tool_failure(
+                    tool_name,
+                    "SOURCE_READ_FAILED",
+                    "precondition",
+                    "The saved program could not be read before building.",
+                    requested=args,
+                )
+            current_revision = str(program.get("working_revision") or "")
+            if current_revision != expected_revision:
+                return tool_failure(
+                    tool_name,
+                    "STALE_PROGRAM_REVISION",
+                    "precondition",
+                    "The saved program changed after it was selected for building.",
+                    requested={"expected_revision": expected_revision},
+                    observed={"current_revision": current_revision},
+                    required_changes=[
+                        {
+                            "tool": "vibescript.read_source",
+                            "arguments": {
+                                "source_id": source_id,
+                                "include_logs": False,
+                            },
+                        }
+                    ],
+                )
+            result = _run_domain_vibescript_tool(
+                service,
+                f"vibescript.{pack.domain}.edit_source",
+                {
+                    "program_id": source_id,
+                    "expected_revision": expected_revision,
+                    "source": str(program.get("source") or ""),
+                },
+                document_thread_dispatch=document_thread_dispatch,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
+                allow_unchanged_revision=True,
+            )
+            if result.get("tool") == f"vibescript.{pack.domain}.edit_source":
+                result["tool"] = tool_name
+            if result.get("program_id"):
+                result["source_id"] = str(result["program_id"])
+            result["requested_action"] = "build_program"
+            return result
+        except DomainRuntimeFailure as exc:
+            return exc.payload
+        except Exception as exc:
+            return tool_failure(
+                tool_name,
+                "PROGRAM_BUILD_FAILED",
+                "external_process",
                 str(exc),
                 requested=args,
                 observed={"exception_type": exc.__class__.__name__},
@@ -2018,6 +2327,7 @@ def make_provider_tool_runner(
         if tool_name in {
             "vibescript.read_source",
             "vibescript.read_api",
+            "vibescript.build_program",
             "vibescript.edit_source",
         }:
             return finalize(

@@ -58,6 +58,22 @@ private:
 
 PROPERTY_SOURCE(App::TimelineSuppressibleTestObject, App::DocumentObject)
 
+class RepeatedRestoreLabelTestObject: public DocumentObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::RepeatedRestoreLabelTestObject);
+
+protected:
+    void onDocumentRestored() override
+    {
+        DocumentObject::onDocumentRestored();
+        // Python-backed document objects can emit this second notification
+        // while rebuilding their proxy state, even though Label is unchanged.
+        onChanged(&Label);
+    }
+};
+
+PROPERTY_SOURCE(App::RepeatedRestoreLabelTestObject, App::DocumentObject)
+
 }  // namespace App
 
 class FakeWriter: public Base::Writer
@@ -78,6 +94,7 @@ protected:
         tests::initApplication();
         App::TimelineThrowingSetupTestObject::init();
         App::TimelineSuppressibleTestObject::init();
+        App::RepeatedRestoreLabelTestObject::init();
     }
 
     void SetUp() override
@@ -1217,6 +1234,128 @@ TEST_F(DocumentTest, lockedDynamicPropertyCreationAbortsUndoesAndRedoesExactly)
     EXPECT_TRUE(restored->testStatus(App::Property::LockDynamic));
     EXPECT_FALSE(object->removeDynamicProperty("LockedMetadata"));
     EXPECT_EQ(object->getPropertyByName("LockedMetadata"), restored);
+}
+
+TEST_F(DocumentTest, frozenNewObjectRestoresLinksAcrossUndoAndRedo)
+{
+    doc()->setUndoMode(1);
+    doc()->openTransaction("Create frozen-object sources");
+    auto* primary = addTimelineTestFeature(doc(), "FrozenPrimarySource");
+    auto* secondary = addTimelineTestFeature(doc(), "FrozenSecondarySource");
+    doc()->commitTransaction();
+
+    doc()->openTransaction("Create frozen linked object");
+    auto* result = addTimelineTestFeature(doc(), "FrozenLinkedResult");
+    auto* source = static_cast<App::PropertyLink*>(
+        result->addDynamicProperty("App::PropertyLink", "Source"));
+    auto* references = static_cast<App::PropertyLinkList*>(
+        result->addDynamicProperty("App::PropertyLinkList", "References"));
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(references, nullptr);
+    source->setValue(primary);
+    references->setValues({primary, secondary});
+    result->freeze();
+    doc()->commitTransaction();
+
+    ASSERT_TRUE(result->isFreezed());
+    EXPECT_EQ(source->getValue(), primary);
+    EXPECT_THAT(references->getValues(), ::testing::ElementsAre(primary, secondary));
+
+    ASSERT_TRUE(doc()->undo());
+    EXPECT_EQ(doc()->getObject("FrozenLinkedResult"), nullptr);
+
+    ASSERT_TRUE(doc()->redo());
+    result = doc()->getObject("FrozenLinkedResult");
+    ASSERT_NE(result, nullptr);
+    ASSERT_TRUE(result->isFreezed());
+    source = static_cast<App::PropertyLink*>(result->getPropertyByName("Source"));
+    references = static_cast<App::PropertyLinkList*>(
+        result->getPropertyByName("References"));
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(references, nullptr);
+    EXPECT_EQ(source->getValue(), doc()->getObject("FrozenPrimarySource"));
+    EXPECT_THAT(
+        references->getValues(),
+        ::testing::ElementsAre(doc()->getObject("FrozenPrimarySource"),
+                               doc()->getObject("FrozenSecondarySource")));
+}
+
+TEST_F(DocumentTest, frozenOwnerRestoresLinksWhenTargetsAreDeletedFirst)
+{
+    doc()->setUndoMode(1);
+    doc()->openTransaction("Create frozen deletion graph");
+    auto* primary = addTimelineTestFeature(doc(), "FrozenDeletePrimary");
+    auto* secondary = addTimelineTestFeature(doc(), "FrozenDeleteSecondary");
+    auto* owner = addTimelineTestFeature(doc(), "FrozenDeleteOwner");
+    auto* source = static_cast<App::PropertyLink*>(
+        owner->addDynamicProperty("App::PropertyLink", "Source"));
+    auto* references = static_cast<App::PropertyLinkList*>(
+        owner->addDynamicProperty("App::PropertyLinkList", "References"));
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(references, nullptr);
+    source->setValue(primary);
+    references->setValues({primary, secondary});
+    owner->freeze();
+    doc()->commitTransaction();
+    doc()->clearUndos();
+
+    doc()->openTransaction("Delete frozen graph targets first");
+    doc()->removeObject(primary);
+    doc()->removeObject(secondary);
+    doc()->removeObject(owner);
+    doc()->commitTransaction();
+    EXPECT_EQ(doc()->getObject("FrozenDeletePrimary"), nullptr);
+    EXPECT_EQ(doc()->getObject("FrozenDeleteSecondary"), nullptr);
+    EXPECT_EQ(doc()->getObject("FrozenDeleteOwner"), nullptr);
+
+    ASSERT_TRUE(doc()->undo());
+    primary = doc()->getObject("FrozenDeletePrimary");
+    secondary = doc()->getObject("FrozenDeleteSecondary");
+    owner = doc()->getObject("FrozenDeleteOwner");
+    ASSERT_NE(primary, nullptr);
+    ASSERT_NE(secondary, nullptr);
+    ASSERT_NE(owner, nullptr);
+    ASSERT_TRUE(owner->isFreezed());
+    source = static_cast<App::PropertyLink*>(owner->getPropertyByName("Source"));
+    references = static_cast<App::PropertyLinkList*>(
+        owner->getPropertyByName("References"));
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(references, nullptr);
+    EXPECT_EQ(source->getValue(), primary);
+    EXPECT_THAT(references->getValues(), ::testing::ElementsAre(primary, secondary));
+
+    ASSERT_TRUE(doc()->redo());
+    EXPECT_EQ(doc()->getObject("FrozenDeletePrimary"), nullptr);
+    EXPECT_EQ(doc()->getObject("FrozenDeleteSecondary"), nullptr);
+    EXPECT_EQ(doc()->getObject("FrozenDeleteOwner"), nullptr);
+}
+
+TEST_F(DocumentTest, repeatedRestoreLabelNotificationDoesNotReserveLabelTwice)
+{
+    auto* original = doc()->addObject(
+        "App::RepeatedRestoreLabelTestObject",
+        "RepeatedRestoreLabel"
+    );
+    ASSERT_NE(original, nullptr);
+    original->Label.setValue("Restored Python result");
+
+    Base::FileInfo saved = timelineTestFile("repeated-restore-label");
+    ASSERT_TRUE(doc()->saveCopy(saved.filePath().c_str()));
+    auto* reopened = App::GetApplication().openDocument(saved.filePath().c_str());
+    ASSERT_NE(reopened, nullptr);
+    auto* restored = reopened->getObject("RepeatedRestoreLabel");
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->Label.getStrValue(), "Restored Python result");
+
+    reopened->removeObject(restored);
+    auto* replacement = addTimelineTestFeature(reopened, "ReplacementResult");
+    ASSERT_NE(replacement, nullptr);
+    replacement->Label.setValue("Restored Python result");
+    EXPECT_EQ(replacement->Label.getStrValue(), "Restored Python result");
+
+    const std::string reopenedName = reopened->getName();
+    EXPECT_TRUE(App::GetApplication().closeDocument(reopenedName.c_str()));
+    saved.deleteFile();
 }
 
 TEST_F(DocumentTest, stagedExistingResourceAdoptionRequiresExactSelectionAndRollsBack)

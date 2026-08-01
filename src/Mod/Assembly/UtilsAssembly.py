@@ -404,6 +404,15 @@ def finalizeInsertedComponentTimeline(occurrence, following_operation=None):
                 "complete exact initial resource graph"
             )
 
+    # An AssemblyLink clone can legitimately carry History metadata copied
+    # from its source document.  That metadata describes the source object's
+    # role in the source document; it cannot classify the new, occurrence-local
+    # clone.  Establish the complete local ownership graph explicitly before
+    # asking the native timeline to publish it atomically.
+    markTimelineOperation(occurrence)
+    for resource in structural_resources:
+        markTimelineResource(resource, occurrence)
+
     document.publishProvisionalTimelineOperationBlock(
         occurrence,
         structural_resources,

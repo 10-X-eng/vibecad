@@ -263,18 +263,20 @@ def _exercise_api(document_uid: str) -> dict[str, object]:
 def _exercise_native_worker() -> None:
     surface = resolve_modeling_surface("CAMWorkbench", "vibescript")
     assert surface.available, surface.unavailable_reason
-    assert len(surface.tool_names) == 10
-    assert tuple(
-        name for name in surface.tool_names if name.startswith("vibescript.")
-    ) == tuple(
-        f"vibescript.cam.{operation}"
-        for operation in (
-            "create_program",
-            "edit_source",
-            "set_inputs",
-            "reconfigure_program",
-            "delete_program",
-        )
+    assert surface.tool_names == (
+        "conversation.ask_user",
+        "conversation.review_design",
+        "core.capture_view_screenshot",
+        "core.set_view",
+        "vibescript.read_source",
+        "vibescript.read_api",
+        "vibescript.build_program",
+        "vibescript.edit_source",
+        "vibescript.cam.create_program",
+        "vibescript.cam.set_inputs",
+        "vibescript.cam.reconfigure_program",
+        "vibescript.cam.delete_program",
+        "cam.list_jobs",
     )
     assert not any(name.startswith("native.") for name in surface.tool_names)
     adapter = get_domain_adapter("cam")
@@ -917,6 +919,7 @@ def _prepare_execute(
         "vibescript_cam_api.py",
         "vibescript_cam_worker.py",
         "vibescript_part_worker.py",
+        "vibescript_worker_progress.py",
     }, sorted(staged_names)
     execution = execute_candidate(prepared, cancellation_check=None)
     return prepared, execution
@@ -1189,7 +1192,7 @@ def _exercise_isolated_lifecycle() -> None:
         root = FilesystemPath(raw_root).resolve()
         document = App.newDocument("CAMVibeScriptLifecycle")
         try:
-            document.setUndoMode(1)
+            document.UndoMode = 1
             source = document.addObject("Part::Feature", "SourceSolid")
             source.Label = "Human source solid"
             source.Shape = Part.makeBox(20, 16, 10)
@@ -1306,10 +1309,10 @@ def _exercise_isolated_lifecycle() -> None:
                 str(obj.Name)
                 for obj in _managed_objects(document, prepared["program_id"])
             }
-            assert document.undo()
+            document.undo()
             assert not _managed_objects(document, prepared["program_id"])
             assert document.getObject(source_name) is not None
-            assert document.redo()
+            document.redo()
             outputs = {
                 name: document.getObject(object_name)
                 for name, object_name in initial_names.items()
@@ -1469,7 +1472,7 @@ def _exercise_isolated_lifecycle() -> None:
             for name, obj in outputs.items():
                 assert obj.HumanCAMNote == f"preserve {name}"
                 assert obj.isFrozen()
-            assert document.undo()
+            document.undo()
             outputs = {
                 name: document.getObject(object_name)
                 for name, object_name in stable_names.items()
@@ -1482,7 +1485,7 @@ def _exercise_isolated_lifecycle() -> None:
                 document.getObject(source_name),
             )
             assert consumer.Sources == list(outputs.values())
-            assert document.redo()
+            document.redo()
             outputs = {
                 name: document.getObject(object_name)
                 for name, object_name in stable_names.items()
@@ -1590,7 +1593,7 @@ def _exercise_isolated_lifecycle() -> None:
             App.closeDocument(document_name)
             document = App.openDocument(str(save_path))
             App.setActiveDocument(document.Name)
-            document.setUndoMode(1)
+            document.UndoMode = 1
             document.recompute()
             reopened_snapshot = {
                 str(obj.Name): _object_snapshot(obj)
@@ -1658,7 +1661,7 @@ def _exercise_isolated_lifecycle() -> None:
             assert not FilesystemPath(prepared_delete["trash_directory"]).exists()
             assert not _managed_objects(document, prepared["program_id"])
             assert document.getObject(source_name) is not None
-            assert document.undo()
+            document.undo()
             reopened_outputs = {
                 name: document.getObject(object_name)
                 for name, object_name in stable_names.items()
@@ -1673,7 +1676,7 @@ def _exercise_isolated_lifecycle() -> None:
                 abs(float(reopened_outputs["Profile"].StepDown.Value) - 2.5)
                 <= 1.0e-9
             )
-            assert document.redo()
+            document.redo()
             assert not _managed_objects(document, prepared["program_id"])
             assert document.getObject(source_name) is not None
         finally:

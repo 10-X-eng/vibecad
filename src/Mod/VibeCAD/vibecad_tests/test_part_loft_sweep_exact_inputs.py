@@ -106,17 +106,20 @@ def test_loft_and_sweep_commit_replacement_and_macro_state_atomically() -> None:
     ):
         source = _source(name)
         accept = _function(source, f"bool {widget}Widget::accept()")
-        owner = accept.index("PartGui::inferModelingOperandOwner")
         attempt = accept.index(
             f'ModelingTaskAttempt attempt(*appDocument, "{widget}")'
         )
+        created = accept.index("attempt.trackCreatedObject")
+        definition = accept.index("attempt.markResultAsDesignDefinition")
         replacement = accept.index("attempt.trackReplacedInputs")
         record = accept.index(f"{recorder}(")
         hide = accept.index("Gui::cmdAppObjectHide(object)")
         commit = accept.index("attempt.commit()")
-        assert owner < attempt < replacement < record < hide < commit
-        assert "attempt.targetResultBody" in accept
-        assert "attempt.keepResultAtDocumentRoot" in accept
+        assert attempt < created < definition < replacement < record < hide < commit
+        assert "nullptr" in accept[record:hide]
+        assert "PartGui::inferModelingOperandOwner" not in accept
+        assert "attempt.targetResultBody" not in accept
+        assert "attempt.keepResultAtDocumentRoot" not in accept
 
         record_function = _function(source, f"void {recorder}(")
         assert "App::DocumentObject* parent" in record_function

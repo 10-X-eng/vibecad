@@ -924,7 +924,17 @@ App::Property* DocumentObject::addDynamicProperty(
 
 void DocumentObject::onBeforeChange(const Property* prop)
 {
-    if (isFreezed() && prop != &Visibility) {
+    // Frozen objects reject ordinary edits, but transaction replay and
+    // document-owned dependency teardown still have to capture the value
+    // being replaced. Without the dependency-teardown case, removing a link
+    // target clears a frozen owner's PropertyLink before the owner is removed,
+    // and undo can only restore the resulting null link. Keep the object
+    // frozen so execute and ordinary change callbacks remain disabled while
+    // allowing the transaction layer to record the exact inverse state.
+    if (isFreezed() && prop != &Visibility
+        && !(_pDoc
+             && (_pDoc->isPerformingTransaction()
+                 || _pDoc->isBreakingDependency()))) {
         return;
     }
 
@@ -1038,9 +1048,20 @@ void DocumentObject::onEarlyChange(const Property* prop)
 /// get called by the container when a Property was changed
 void DocumentObject::onChanged(const Property* prop)
 {
-    if (prop == &Label && _pDoc && _pDoc->containsObject(this) && oldLabel != Label.getStrValue()) {
+    const bool labelChanged = prop == &Label && _pDoc && oldLabel != Label.getStrValue();
+    if (labelChanged && _pDoc->containsObject(this)) {
         _pDoc->unregisterLabel(oldLabel);
         _pDoc->registerLabel(Label.getStrValue());
+    }
+
+    // Property-backed Python objects can re-apply their persisted Label from
+    // onDocumentRestored() without a matching onBeforeChange() callback when
+    // the value is unchanged. Keep the restore baseline synchronized after
+    // the first notification so that a repeated notification cannot register
+    // the same object's label twice. A separate object with the same label
+    // still has its own baseline and remains correctly counted.
+    if (labelChanged && _pDoc->testStatus(Document::Restoring)) {
+        oldLabel = Label.getStrValue();
     }
 
     if (isFreezed() && prop != &Visibility) {
@@ -1068,7 +1089,7 @@ void DocumentObject::onChanged(const Property* prop)
     // if (_pDoc)
     //     _pDoc->onChangedProperty(this,prop);
 
-    if (prop == &Label && _pDoc && oldLabel != Label.getStrValue()) {
+    if (labelChanged) {
         _pDoc->signalRelabelObject(*this);
     }
 

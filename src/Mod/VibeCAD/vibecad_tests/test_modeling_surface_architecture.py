@@ -17,6 +17,7 @@ from VibeCADModelingSurface import (
     COMPONENT_CATALOG_TOOL,
     CORE_CONVERSATION_VIEW_TOOLS,
     FASTENER_CATALOG_TOOL,
+    MATERIAL_CATALOG_TOOL,
     PROVIDER_READ_TOOL_OWNERS,
     resolve_modeling_surface,
     validate_surface_names,
@@ -65,6 +66,8 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             expected_core.add(FASTENER_CATALOG_TOOL)
         if workbench == "AssemblyWorkbench":
             expected_core.add(COMPONENT_CATALOG_TOOL)
+        if workbench in {"PartDesignWorkbench", "MaterialWorkbench"}:
+            expected_core.add(MATERIAL_CATALOG_TOOL)
         assert set(scripted.core_tool_names) == expected_core
         if domain_pack.production_ready:
             observed_ready.add(workbench)
@@ -79,7 +82,9 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
                 *domain_pack.tool_names,
                 *focused_reads,
             )
-            assert len(scripted.cad_tool_names) == 7 + len(focused_reads)
+            assert len(scripted.cad_tool_names) == len(domain_pack.tool_names) + len(
+                focused_reads
+            )
             assert len(scripted.tool_names) <= 15
             assert "core.inspect" not in scripted.tool_names
             unrelated_human_commands = set(
@@ -95,6 +100,7 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             assert {
                 "vibescript.read_source",
                 "vibescript.read_api",
+                "vibescript.build_program",
                 "vibescript.edit_source",
             } <= set(scripted.cad_tool_names)
         else:
@@ -170,8 +176,14 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
     assert set(universal) == {
         "vibescript.read_source",
         "vibescript.read_api",
+        "vibescript.build_program",
         "vibescript.edit_source",
     }
+    build = universal["vibescript.build_program"]
+    assert build["parameters"]["required"] == [
+        "source_id",
+        "expected_revision",
+    ]
     edit = universal["vibescript.edit_source"]
     assert edit["parameters"]["required"] == [
         "source_id",
@@ -228,6 +240,19 @@ def test_every_domain_description_is_copy_ready_for_the_operating_model() -> Non
         )
         assert description["accepted_output_types"] == list(pack.output_types)
         assert "exactly match expected_outputs" in description["result_contract"]
+        assert description["source_value_contract"]["type"] == "DomainValue"
+        assert description["source_global_contracts"]["doc"]["members"] == [
+            "doc.Name",
+            "doc.Objects",
+            "doc.getObject(exact_name)",
+            "object.Name",
+            "object.Label",
+            "object.TypeId",
+        ]
+        groups = description["api_groups"]
+        grouped_names = [name for names in groups.values() for name in names]
+        assert grouped_names == list(dict.fromkeys(grouped_names))
+        assert set(grouped_names) == set(pack.api_exports)
         assert "redundan" in json.dumps(description).lower()
         assert len(json.dumps(description, separators=(",", ":")).encode()) < 48_000
 
@@ -370,6 +395,123 @@ def test_universal_read_source_returns_complete_code_and_every_affected_output()
         "source_id": "a" * 32,
         "expected_revision": "b" * 64,
     }
+    assert payload["build_program"]["arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert payload["source_range"] == {
+        "line_start": 1,
+        "line_end": 2,
+        "total_lines": 2,
+        "complete": True,
+    }
+    assert payload["_vibecad_complete_source_result"] is True
+
+
+def test_universal_source_and_api_focused_reads_are_small_and_explicit() -> None:
+    import VibeCADSession as session
+
+    source = "first = 1\nsecond = 2\nthird = 3\n"
+    focused_source = session._read_source_payload(
+        {
+            "ok": True,
+            "program": {
+                "program_id": "a" * 32,
+                "domain": "partdesign",
+                "workbench": "PartDesignWorkbench",
+                "source": source,
+                "working_revision": "b" * 64,
+                "latest_candidate": {
+                    "status": "failed",
+                    "failure": {"stderr": "one\ntwo\nthree\n", "error": "bad"},
+                },
+            },
+        },
+        line_start=2,
+        line_end=2,
+        include_logs=False,
+    )
+    assert focused_source["source"] == "second = 2\n"
+    assert focused_source["source_range"] == {
+        "line_start": 2,
+        "line_end": 2,
+        "total_lines": 3,
+        "complete": False,
+    }
+    assert focused_source["_vibecad_complete_source_result"] is False
+    failure = focused_source["latest_candidate"]["failure"]
+    assert failure["error"] == "bad"
+    assert failure["logs_omitted"] == ["stderr"]
+
+    pack = domains.get_vibescript_pack("PartDesignWorkbench")
+    assert pack is not None
+    description = domains.get_domain_adapter(pack.domain).describe_api()
+    focused_api = session._filtered_api_payload(
+        "vibescript.read_api",
+        description,
+        names=["sketch"],
+        groups=["verification"],
+    )
+    selected = [item["name"] for item in focused_api["runtime_exports"]]
+    assert selected == ["sketch", "find_subelements", "measure"]
+    assert set(focused_api["api_details"]) == set(selected)
+    assert focused_api["_vibecad_complete_api_result"] is False
+
+
+def test_universal_build_program_replays_exact_saved_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    source_id = "a" * 32
+    revision = "b" * 64
+    monkeypatch.setattr(runtime, "capture_inspection_state", lambda *_args: {})
+    monkeypatch.setattr(
+        runtime,
+        "complete_inspection",
+        lambda _captured: {
+            "ok": True,
+            "program": {
+                "program_id": source_id,
+                "working_revision": revision,
+                "source": "result = {'Part': api.box(1, 2, 3)}",
+            },
+        },
+    )
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **kwargs):
+        observed.update(
+            tool_name=tool_name,
+            arguments=arguments,
+            allow_unchanged_revision=kwargs["allow_unchanged_revision"],
+        )
+        return {"ok": True, "tool": tool_name, "program_id": source_id}
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    result = session._run_universal_vibescript_tool(
+        object(),
+        "PartDesignWorkbench",
+        "vibescript.build_program",
+        {"source_id": source_id, "expected_revision": revision},
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": "vibescript.partdesign.edit_source",
+        "arguments": {
+            "program_id": source_id,
+            "expected_revision": revision,
+            "source": "result = {'Part': api.box(1, 2, 3)}",
+        },
+        "allow_unchanged_revision": True,
+    }
+    assert result["tool"] == "vibescript.build_program"
+    assert result["source_id"] == source_id
+    assert result["requested_action"] == "build_program"
 
 
 def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
@@ -503,7 +645,15 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
             "visible": False,
         }
     ]
-    assert hidden["read_arguments"] == {"source_id": "a" * 32}
+    assert hidden["read_arguments"] == {
+        "source_id": "a" * 32,
+        "include_logs": False,
+    }
+    assert hidden["build_tool"] == "vibescript.build_program"
+    assert hidden["build_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
     assert hidden["edit_target_arguments"] == {
         "source_id": "a" * 32,
         "expected_revision": "b" * 64,
@@ -1428,7 +1578,10 @@ def test_material_catalog_context_is_comparison_ready_but_path_free(
     import sys
     from types import SimpleNamespace
 
-    from vibescript_material_worker import material_catalog_index
+    from vibescript_material_worker import (
+        material_catalog_index,
+        search_material_catalog,
+    )
 
     card = SimpleNamespace(
         UUID="0051bddf-6f62-4406-b8c9-569322880564",
@@ -1475,6 +1628,64 @@ def test_material_catalog_context_is_comparison_ready_but_path_free(
     assert "CustomFatigueModel" in record["physical_property_names"]
     assert "TexturePath" in record["appearance_property_names"]
     assert "/private/catalog" not in json.dumps(catalog)
+
+    search = search_material_catalog(
+        "prod 2700 struct",
+        require_physical_properties=["Density"],
+        limit=5,
+    )
+    assert search["match_count"] == 1
+    assert search["materials"][0]["constructor"] == {
+        "material_uuid": "0051bddf-6f62-4406-b8c9-569322880564",
+        "require_physical_properties": ["Density"],
+        "require_appearance_properties": [],
+    }
+    assert "/private/catalog" not in json.dumps(search)
+
+    from tool_impl.service import material_catalog_search
+
+    tool_result = material_catalog_search.run(
+        None,
+        query="alloy",
+        require_physical_properties=["Density"],
+    )
+    assert tool_result["ok"] is True
+    assert tool_result["returned_count"] == 1
+
+
+def test_nickel_alloy_718_card_is_packaged_for_hot_section_design() -> None:
+    module_root = Path(__file__).resolve().parents[2]
+    card_path = (
+        module_root
+        / "Material"
+        / "Resources"
+        / "Materials"
+        / "Standard"
+        / "Metal"
+        / "Alloys"
+        / "Nickel-Alloy-718.FCMat"
+    )
+    card = card_path.read_text(encoding="utf-8")
+    assert 'UUID: "db767dc3-7a48-4fbe-a284-78181f5f05df"' in card
+    assert 'SourceURL: "https://www.specialmetals.com/' in card
+    assert '"UNS N07718"' in card
+    for property_name in (
+        "Density",
+        "YoungsModulus",
+        "PoissonRatio",
+        "SpecificHeat",
+        "ThermalConductivity",
+        "ThermalExpansionCoefficient",
+    ):
+        assert f"{property_name}:" in card
+
+    material_cmake = (module_root / "Material" / "CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+    relative_card = (
+        "Resources/Materials/Standard/Metal/Alloys/Nickel-Alloy-718.FCMat"
+    )
+    assert relative_card in material_cmake
 
 
 def test_material_worker_errors_always_provide_one_model_repair() -> None:
@@ -3195,11 +3406,27 @@ def test_generic_publication_accepts_non_assembly_and_cleans_failed_creations(
     import VibeCADVibeScriptDomainPublication as publication
 
     class Object:
+        next_id = 1
+
         def __init__(self, name: str, type_id: str):
             self.Name = name
             self.Label = name
             self.TypeId = type_id
             self.InList = []
+            self.PropertiesList = []
+            self.property_types = {}
+            self.ID = Object.next_id
+            Object.next_id += 1
+
+        def addProperty(self, property_type, name, _group, _description):
+            self.PropertiesList.append(str(name))
+            self.property_types[str(name)] = str(property_type)
+
+        def getTypeIdOfProperty(self, name):
+            return self.property_types.get(str(name), "")
+
+        def setPropertyStatus(self, _name, _status):
+            pass
 
     class Document:
         Name = "PublicationDocument"
@@ -3231,6 +3458,9 @@ def test_generic_publication_accepts_non_assembly_and_cleans_failed_creations(
 
         def abortTransaction(self):
             self.aborts += 1
+
+        def isProvisionallyEnrolledInTimelineByCurrentTransaction(self, _obj):
+            return False
 
     class Service:
         def __init__(self, document):
@@ -4185,7 +4415,12 @@ def test_worker_staging_contains_only_the_active_domain_bundle(
         staging,
         domain,
     )
-    expected = {"worker.py", "vibescript_domain_api.py", *domain_files}
+    expected = {
+        "worker.py",
+        "vibescript_domain_api.py",
+        "vibescript_worker_progress.py",
+        *domain_files,
+    }
     assert set(copied) == expected
     assert {path.name for path in staging.iterdir()} == expected
     assert not any(
@@ -4194,6 +4429,24 @@ def test_worker_staging_contains_only_the_active_domain_bundle(
         and path.name not in expected
         for path in staging.iterdir()
     )
+
+
+def test_every_isolated_worker_dependency_is_packaged() -> None:
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    module_root = Path(runtime.__file__).resolve().parent
+    cmake = (module_root / "CMakeLists.txt").read_text(encoding="utf-8")
+    required = {
+        "vibescript_domain_api.py",
+        "vibescript_domain_worker.py",
+        "vibescript_worker_progress.py",
+    }
+    for domain_files in runtime._DOMAIN_WORKER_BUNDLES.values():
+        required.update(domain_files)
+
+    for filename in sorted(required):
+        assert (module_root / filename).is_file(), filename
+        assert f"    {filename}\n" in cmake, filename
 
 
 def test_worker_staging_rejects_an_undeclared_domain(tmp_path: Path) -> None:
@@ -4515,6 +4768,17 @@ def test_gui_document_observer_marks_vibescript_dependencies_stale(monkeypatch) 
     gui._VibeCADDocumentObserver().slotChangedObject(source, "Shape")
     assert observed == [(source, "Shape")]
     assert refreshed == [True]
+
+
+def test_dependency_invalidation_ignores_group_recompute_notification() -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Source:
+        @property
+        def InList(self):
+            raise AssertionError("A derived group recompute must not inspect dependents")
+
+    assert publication.mark_programs_stale_from_source(Source(), "_GroupTouched") == []
 
 
 def test_gui_document_observer_ignores_properties_restored_from_file(

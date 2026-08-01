@@ -34,6 +34,7 @@ SET(MaterialLib_Files
     Resources/Materials/Standard/Glass/Glass-Generic.FCMat
     Resources/Materials/Standard/Glass/Glass-S2-GlassFibre.FCMat
     Resources/Materials/Standard/Metal/Alloys/Invar-Generic.FCMat
+    Resources/Materials/Standard/Metal/Alloys/Nickel-Alloy-718.FCMat
     Resources/Materials/Standard/Metal/Aluminum/AlMg3F24.FCMat
     Resources/Materials/Standard/Metal/Aluminum/AlMgSi1F31.FCMat
     Resources/Materials/Standard/Metal/Aluminum/Aluminum-6061-T6.FCMat

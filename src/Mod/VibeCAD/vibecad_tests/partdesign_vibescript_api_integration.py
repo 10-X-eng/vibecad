@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -27,8 +28,10 @@ from VibeCADScriptedPublication import (  # noqa: E402
 from VibeCADVibeScriptDomainRuntime import (  # noqa: E402
     _live_programs,
     accept_candidate,
+    capture_reference_inputs,
     complete_inspection,
     execute_candidate,
+    finalize_candidate,
     finish_delete,
     prepare_candidate,
     prepare_delete,
@@ -119,10 +122,19 @@ def _capture(base: dict, *, operation: str, arguments: dict) -> dict:
 
 def _run_candidate(captured: dict, service: _Service):
     prepared = prepare_candidate(captured)
+    if prepared["reference_requirements"]:
+        prepared = finalize_candidate(
+            prepared,
+            capture_reference_inputs(service, prepared),
+        )
     assert prepared["finalized"] is True
-    assert prepared["reference_requirements"] == []
     execution = execute_candidate(prepared, cancellation_check=None)
     assert execution.get("ok") is True, execution
+    progress = execution.get("worker_progress")
+    assert isinstance(progress, dict), execution
+    assert progress.get("completed") is True, progress
+    assert progress.get("phase") == "completed", progress
+    assert progress.get("current_graph_node") is None, progress
     validated = validate_candidate(prepared, execution)
     retain_candidate(prepared, status="validated")
     publication = publish_candidate(service, prepared, validated)
@@ -460,6 +472,14 @@ def _feature_case(api, case: str):
             model_thread=case == "fastener",
             label="ISO 4762 M6 x 20",
         )
+    if case == "involute_gear":
+        return api.involute_gear(
+            24,
+            2.0,
+            8.0,
+            bore_diameter_mm=10.0,
+            label="24 tooth involute gear",
+        )
     if case.startswith("fastener_hole_"):
         base = api.extrude(
             api.sketch([api.circle([0, 0], 12)]),
@@ -533,6 +553,7 @@ def _exercise_feature_families(root: Path, pack) -> dict[str, dict]:
         "hole_counterbore": "PartDesign::Hole",
         "fastener": "PartDesign::FeaturePython",
         "fastener_simple": "PartDesign::FeaturePython",
+        "involute_gear": "PartDesign::Feature",
         "fastener_hole_clearance": "PartDesign::Hole",
         "fastener_hole_tapped": "PartDesign::Hole",
         "fastener_hole_counterbore": "PartDesign::Hole",
@@ -578,6 +599,7 @@ def _exercise_feature_families(root: Path, pack) -> dict[str, dict]:
         finally:
             App.closeDocument(document.Name)
     assert evidence["fastener"]["edges"] > evidence["fastener_simple"]["edges"]
+    assert evidence["involute_gear"]["edges"] > 100
     return evidence
 
 
@@ -693,6 +715,23 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
         sweep_path = api.wire([[0, 0, 0], [0, 0, 4]])
         projection_target = api.plane(20, 20, origin=[-10, -10, 0])
         union = api.boolean([box, overlapping], operation="union")
+        placed_fastener = api.transform(
+            api.fastener(
+                "ISO4762",
+                "M6",
+                length_mm=20,
+                model_thread=True,
+            ),
+            translation=[12, 4, 3],
+            rotation_axis=[0, 1, 0],
+            rotation_degrees=90,
+        )
+        deep_transform = api.box(1, 1, 1)
+        for _index in range(24):
+            deep_transform = api.transform(
+                deep_transform,
+                translation=[0.25, 0, 0],
+            )
         external = api.external_geometry(
             {
                 "document_uid": "partdesign-api-fixture",
@@ -738,6 +777,8 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
             ("boolean_union", union, "solid", {"boolean"}, ()),
             ("boolean_subtract", api.boolean([box, api.cylinder(1, 6, origin=[2, 2, 0])], operation="subtract"), "solid", {"boolean"}, ()),
             ("boolean_intersect", api.boolean([box, overlapping], operation="intersect"), "solid", {"boolean"}, ()),
+            ("fastener_transform", placed_fastener, "solid", {"fastener", "transform"}, ()),
+            ("deep_transform", deep_transform, "solid", {"box", "transform"}, ()),
             ("section", api.section(box, overlapping), "compound", {"section"}, ()),
             ("general_fuse", api.general_fuse([box, overlapping]), "compound", {"general_fuse"}, ()),
             ("slice", api.slice(box, [0, 0, 1], [2, 4]), "compound", {"slice"}, ()),
@@ -787,6 +828,7 @@ def _exercise_unified_standalone_surface(root: Path, pack) -> dict[str, dict]:
         "hole",
         "fastener",
         "fastener_hole",
+        "involute_gear",
         "draft",
         "body",
         "publish",
@@ -882,6 +924,285 @@ def _exercise_material_guardrails(root: Path, pack) -> dict:
             assert error.details["removed_material_mm3"] <= 1.0e-7
             return dict(error.details)
         raise AssertionError("A no-effect additive feature passed material validation.")
+    finally:
+        App.closeDocument(document.Name)
+
+
+def _exercise_geometry_verification(root: Path, pack) -> dict:
+    """Verify checks against regenerated BREP rather than helper arithmetic."""
+
+    import FreeCAD as App
+
+    case_root = root / "geometry-verification"
+    (case_root / "outputs").mkdir(parents=True)
+    document = App.newDocument("PartDesignGeometryVerification")
+    try:
+        api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+        block = api.box(10, 10, 10)
+        separated = api.box(2, 2, 2, origin=[12, 0, 0])
+        overlapping = api.box(3, 10, 10, origin=[9, 0, 0])
+        cylinder = api.cylinder(2, 8)
+        angled_profile = api.sketch(
+            [api.circle([0, 0], 2)],
+            placement={
+                "origin": [20, 0, 0],
+                "normal": [0, 1, 0],
+                "x_direction": [1, 0, 0],
+            },
+        )
+        angled = api.extrude(
+            angled_profile,
+            4,
+            operation="new_solid",
+        )
+        positive_x = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="Plane",
+            normal=[1, 0, 0],
+        )
+        negative_x = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="Plane",
+            normal=[-1, 0, 0],
+        )
+        cylinder_side = api.find_subelements(
+            element_type="face",
+            expected_count=1,
+            geometry_type="Cylinder",
+            radius_mm=2,
+        )
+        steel = api.material(
+            "90bbd8ef-8623-4d78-b3bf-e0bdb9b74dd3",
+            require_physical_properties=["Density"],
+        )
+        checks = [
+            api.measure(block, "bounds_size_x_mm", expected=10),
+            api.measure(block, "center_of_mass_x_mm", expected=5),
+            api.measure(
+                block,
+                "minimum_distance_mm",
+                other=separated,
+                expected=2,
+            ),
+            api.measure(
+                block,
+                "interference_volume_mm3",
+                other=overlapping,
+                expected=100,
+            ),
+            api.measure(
+                block,
+                "minimum_wall_thickness_mm",
+                selection=positive_x,
+                other_selection=negative_x,
+                expected=10,
+            ),
+            api.measure(
+                cylinder,
+                "diameter_mm",
+                selection=cylinder_side,
+                expected=4,
+            ),
+            api.measure(block, "mass_kg", material=steel, minimum=1.0e-12),
+            api.measure(
+                block,
+                "inertia_xx_kg_mm2",
+                material=steel,
+                minimum=1.0e-12,
+            ),
+        ]
+        outputs, validation = validate_and_build_partdesign(
+            document,
+            {
+                "Verified": api.body(block, checks=checks, material=steel),
+                "Angled": api.body(
+                    angled,
+                    checks=[api.measure(angled, "bounds_size_y_mm", expected=4)],
+                ),
+            },
+            [
+                {"name": "Verified", "type": "solid"},
+                {"name": "Angled", "type": "solid"},
+            ],
+            case_root,
+            max_shape_subelements=64,
+        )
+        evidence = outputs[0]["partdesign_data"]["checks"]
+        assert len(evidence) == len(checks)
+        assert all(item["accepted"] for item in evidence)
+        by_quantity = {item["quantity"]: item for item in evidence}
+        assert math.isclose(
+            by_quantity["minimum_distance_mm"]["actual"], 2.0, abs_tol=1.0e-9
+        )
+        assert math.isclose(
+            by_quantity["interference_volume_mm3"]["actual"],
+            100.0,
+            abs_tol=1.0e-9,
+        )
+        assert math.isclose(
+            by_quantity["minimum_wall_thickness_mm"]["actual"],
+            10.0,
+            abs_tol=1.0e-9,
+        )
+        assert math.isclose(
+            by_quantity["diameter_mm"]["actual"], 4.0, abs_tol=1.0e-9
+        )
+        assert by_quantity["mass_kg"]["actual"] > 0.0
+        assert validation["outputs"][0]["name"] == "Verified"
+        angled_checks = outputs[1]["partdesign_data"]["checks"]
+        assert angled_checks[0]["quantity"] == "bounds_size_y_mm"
+        assert angled_checks[0]["accepted"] is True
+        return {
+            name: by_quantity[name]["actual"]
+            for name in (
+                "minimum_distance_mm",
+                "interference_volume_mm3",
+                "minimum_wall_thickness_mm",
+                "diameter_mm",
+                "mass_kg",
+            )
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
+def _exercise_attached_sketch_history(root: Path, pack) -> dict:
+    """Keep a stable native support through isolation and history publication."""
+
+    import FreeCAD as App
+    import Part
+    from pathlib import Path as LocalPath
+
+    document = App.newDocument("PartDesignAttachedSketchHistory")
+    service = _Service(document, root)
+    support = document.addObject("Part::Feature", "MasterSupport")
+    support.Label = "Master support"
+    support.Shape = Part.makeBox(20, 20, 2)
+    document.recompute()
+    capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": service.provider_document_revision(),
+        "document_objects": [
+            {
+                "name": str(support.Name),
+                "label": str(support.Label),
+                "type_id": str(support.TypeId),
+            }
+        ],
+        "surface": resolve_modeling_surface(
+            "PartDesignWorkbench", "vibescript"
+        ).summary(),
+        "freecad_home": str(LocalPath(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    source = """\
+profile = api.sketch(
+    [api.circle([10, 10], 2)],
+    support={
+        'reference': inputs['support'],
+        'selection': {'type': 'subelements', 'subelements': ['Face6']},
+    },
+    map_mode='FlatFace',
+    require_closed_profile=True,
+    label='Attached profile',
+)
+feature = api.extrude(profile, 5, operation='add_material', label='Supported boss')
+result = {'SupportedBoss': api.body(feature, label='Supported boss body')}
+"""
+    try:
+        prepared, publication, accepted = _run_candidate(
+            _capture(
+                capture,
+                operation="create_program",
+                arguments={
+                    "program_name": "Attached sketch",
+                    "source": source,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "support": {
+                                "type": "object",
+                                "x-vibecad-reference": True,
+                                "properties": {
+                                    "document_uid": {"type": "string"},
+                                    "object_name": {"type": "string"},
+                                },
+                                "required": ["document_uid", "object_name"],
+                                "additionalProperties": False,
+                            }
+                        },
+                        "required": ["support"],
+                        "additionalProperties": False,
+                    },
+                    "inputs": {
+                        "support": {
+                            "document_uid": str(document.Uid),
+                            "object_name": str(support.Name),
+                        }
+                    },
+                    "expected_outputs": [
+                        {"name": "SupportedBoss", "type": "solid"}
+                    ],
+                },
+            ),
+            service,
+        )
+        assert len(prepared["reference_requirements"]) == 1
+        body_name = publication["native_history"]["body_objects"]["SupportedBoss"]
+        body = document.getObject(body_name)
+        assert body is not None
+        assert body.Tip is not None
+        assert body.Tip.TypeId == "PartDesign::DesignBodyPublication"
+        sketch_evidence = publication["live_outputs"]["SupportedBoss"][
+            "partdesign_data"
+        ]["sketches"]
+        assert len(sketch_evidence) == 1
+        resolved_support = sketch_evidence[0]["support"]
+        assert resolved_support["reference"] == {
+            "document_uid": str(document.Uid),
+            "object_name": str(support.Name),
+        }
+        assert resolved_support["resolved_subelements"] == ["Face6"]
+        assert resolved_support["map_mode"] == "FlatFace"
+        program_id = str(prepared["program_id"])
+        roots = [
+            obj
+            for obj in document.Objects
+            if role_of(obj) == ROLE_MODEL
+            and str(getattr(obj, "VibeCADScriptedModelId", "") or "")
+            == program_id
+        ]
+        assert len(roots) == 1, [
+            (
+                str(obj.Name),
+                role_of(obj),
+                str(getattr(obj, "VibeCADScriptedModelId", "") or ""),
+            )
+            for obj in document.Objects
+        ]
+        portable = decode_document_program_contract(
+            str(getattr(roots[0], PROP_PROGRAM_CONTRACT, "") or ""),
+            pack,
+            expected_program_id=program_id,
+            expected_revision=str(prepared["revision"]),
+        )
+        assert portable["inputs"]["support"] == {
+            "document_uid": str(document.Uid),
+            "object_name": str(support.Name),
+        }
+        assert accepted["live_outputs"]["SupportedBoss"]["object_name"]
+        return {
+            "body": str(body.Name),
+            "support": str(support.Name),
+            "map_mode": str(resolved_support["map_mode"]),
+            "source_retained": portable["source"] == source,
+        }
     finally:
         App.closeDocument(document.Name)
 
@@ -2296,6 +2617,8 @@ def main() -> int:
         feature_families = _exercise_feature_families(root, pack)
         unified_surface = _exercise_unified_standalone_surface(root, pack)
         material_guardrails = _exercise_material_guardrails(root, pack)
+        geometry_verification = _exercise_geometry_verification(root, pack)
+        attached_sketch_history = _exercise_attached_sketch_history(root, pack)
         native_sketch_history = _exercise_native_sketch_history(root, pack)
         topology_publication = _exercise_topology_publication(root, pack)
         physical_material = _exercise_physical_material_publication(root, pack)
@@ -2313,6 +2636,8 @@ def main() -> int:
                     "feature_families": feature_families,
                     "unified_surface": unified_surface,
                     "material_guardrails": material_guardrails,
+                    "geometry_verification": geometry_verification,
+                    "attached_sketch_history": attached_sketch_history,
                     "native_sketch_history": native_sketch_history,
                     "topology_publication": topology_publication,
                     "physical_material": physical_material,

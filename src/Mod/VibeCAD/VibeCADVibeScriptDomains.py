@@ -93,8 +93,154 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
 UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_source",
     "read_api",
+    "build_program",
     "edit_source",
 )
+
+# These are discovery groups, not separate APIs.  They let an agent request the
+# small, relevant part of a workbench API without guessing names or consuming a
+# complete description.  Every exported callable is assigned exactly once by
+# ``api_groups`` below; newly added exports fall into ``other`` until named.
+_API_GROUPS_BY_DOMAIN: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "partdesign": (
+        ("references_and_hardware", ("from_object", "fastener", "involute_gear")),
+        (
+            "primitives",
+            ("box", "wedge", "plane", "prism", "cylinder", "cone", "sphere", "torus"),
+        ),
+        (
+            "sketches",
+            (
+                "point", "line", "arc", "circle", "ellipse", "bspline",
+                "external_geometry", "constraint", "sketch",
+            ),
+        ),
+        (
+            "spatial_geometry",
+            (
+                "line_3d", "arc_3d", "circle_3d", "ellipse_3d", "bezier_3d",
+                "bspline_3d", "nurbs_curve", "helix_curve", "wire", "face",
+                "shell", "solid", "compound", "subshape",
+            ),
+        ),
+        (
+            "features",
+            (
+                "extrude", "revolve", "loft", "sweep", "helix", "boolean",
+                "section", "general_fuse", "slice", "ruled_surface", "filled_surface",
+            ),
+        ),
+        (
+            "patterns_and_transforms",
+            ("polar_pattern", "linear_pattern", "multi_transform", "mirror", "transform"),
+        ),
+        (
+            "dressups_and_holes",
+            ("fillet", "chamfer", "thickness", "hole", "fastener_hole", "draft"),
+        ),
+        (
+            "repair",
+            (
+                "defeature", "to_nurbs", "reverse", "sew", "repair", "offset",
+                "offset2d", "project", "refine",
+            ),
+        ),
+        ("verification", ("find_subelements", "measure")),
+        ("materials_and_publication", ("material", "appearance", "body", "publish")),
+    ),
+    "assembly": (
+        ("components", ("component", "instances", "fastener")),
+        ("structure_and_joints", ("connector", "joint", "assembly", "solve")),
+        ("verification_and_motion", ("mechanism_check", "motion", "simulation")),
+        ("deliverables", ("exploded_view", "bill_of_materials")),
+    ),
+    "sketcher": (
+        (
+            "geometry",
+            (
+                "point", "line", "arc", "circle", "ellipse", "elliptic_arc",
+                "hyperbolic_arc", "parabolic_arc", "bspline", "external_geometry",
+            ),
+        ),
+        ("constraints", ("constraint",)),
+        ("publication", ("sketch",)),
+    ),
+    "material": (
+        ("catalog", ("material",)),
+        ("assignment", ("assign", "appearance")),
+    ),
+    "mesh": (
+        ("creation", ("mesh", "from_object", "mesh_from_shape", "shape_from_mesh")),
+        ("editing", ("transform", "union", "difference", "intersection", "repair")),
+        ("verification", ("diagnostics",)),
+    ),
+    "meshpart": (("conversion", ("mesh_from_shape", "shape_from_mesh")),),
+    "draft": (
+        ("geometry", ("wire", "circle", "rectangle", "bspline", "text")),
+        ("patterns", ("array",)),
+    ),
+    "surface": (
+        ("curves", ("line", "circle", "bezier", "bspline", "wire", "from_object")),
+        (
+            "surfaces",
+            (
+                "face", "surface", "boundary", "curve_constraint", "face_constraint",
+                "point_constraint", "fill", "blend", "extend", "loft", "thicken", "shell",
+            ),
+        ),
+    ),
+    "spreadsheet": (("sheets", ("sheet", "cell", "range_style")),),
+    "points": (("point_clouds", ("point_cloud",)),),
+    "reverse_engineering": (
+        ("fitting", ("fit_curve", "fit_surface", "reconstruct", "segment")),
+        ("verification", ("fit_metrics",)),
+    ),
+    "inspection": (
+        ("inspection", ("comparison", "group", "measurement")),
+        ("reporting", ("report",)),
+    ),
+    "robot": (
+        ("programming", ("robot", "waypoint", "trajectory", "dressup")),
+        ("verification", ("simulate",)),
+    ),
+    "fem": (
+        ("setup", ("analysis", "solver", "material", "constraint", "load_case", "mesh")),
+        ("solve", ("solve",)),
+    ),
+    "cam": (
+        ("setup", ("job", "stock", "tool", "operation")),
+        ("output", ("generate_toolpath", "postprocess")),
+    ),
+    "techdraw": (
+        ("page", ("page", "template")),
+        ("views", ("view", "projection")),
+        ("documentation", ("dimension", "annotation")),
+    ),
+    "part": (),
+}
+
+
+def api_groups(pack: "VibeScriptWorkbenchPack") -> dict[str, list[str]]:
+    """Return deterministic, exhaustive discovery groups for one domain API."""
+
+    exported = tuple(pack.api_exports)
+    exported_set = set(exported)
+    result: dict[str, list[str]] = {}
+    assigned: set[str] = set()
+    for group_name, raw_names in _API_GROUPS_BY_DOMAIN.get(pack.domain, ()):
+        names = [name for name in raw_names if name in exported_set]
+        overlap = assigned.intersection(names)
+        if overlap:
+            raise RuntimeError(
+                f"VibeScript API group {group_name!r} duplicates {sorted(overlap)!r}."
+            )
+        if names:
+            result[group_name] = names
+            assigned.update(names)
+    remaining = [name for name in exported if name not in assigned]
+    if remaining:
+        result["other"] = remaining
+    return result
 
 PROVIDER_DOMAIN_OPERATIONS: tuple[str, ...] = (
     "create_program",
@@ -208,8 +354,8 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "partdesign",
         "Part Design",
         ("solid", "shell", "face", "wire", "compound"),
-        "Create source-parametric Design Bodies; the VibeScript source is their "
-        "editable definition. Use "
+        "Create editable native Body history from source-parametric features; the "
+        "VibeScript source is its definition. Use "
         "api.sketch for planar feature profiles. Use api.extrude with "
         "operation='add_material' or 'remove_material' for straight additions and cuts "
         "whose cross-section stays constant. Use api.loft only when the intended "
@@ -273,6 +419,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
             "thickness",
             "hole",
             "fastener_hole",
+            "involute_gear",
             "draft",
             "defeature",
             "to_nurbs",
@@ -918,6 +1065,15 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
 
     completed = complete_domain_program_index(snapshot)
     domain = str(completed.get("domain") or "")
+    pack = next(
+        (
+            candidate
+            for candidate in VIBESCRIPT_WORKBENCH_PACKS.values()
+            if candidate.domain == domain
+        ),
+        None,
+    )
+    grouped_api = api_groups(pack) if pack is not None else {}
     sources = []
     for program in list(completed.get("programs") or []):
         if not isinstance(program, Mapping):
@@ -941,13 +1097,18 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             "status": _editable_source_status(program),
             "affected_outputs": _editable_source_outputs(program),
             "read_tool": "vibescript.read_source",
-            "read_arguments": {"source_id": source_id},
+            "read_arguments": {"source_id": source_id, "include_logs": False},
+            "build_tool": "vibescript.build_program",
             "edit_tool": "vibescript.edit_source",
         }
         accepted_revision = str(program.get("accepted_revision") or "")[:128]
         if accepted_revision:
             source["accepted_revision"] = accepted_revision
         if re.fullmatch(r"[0-9a-f]{64}", revision):
+            source["build_arguments"] = {
+                "source_id": source_id,
+                "expected_revision": revision,
+            }
             source["edit_target_arguments"] = {
                 "source_id": source_id,
                 "expected_revision": revision,
@@ -968,9 +1129,16 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
         ),
         "sources_truncated": bool(completed.get("programs_truncated")),
         "sources_omitted": int(completed.get("programs_omitted") or 0),
+        "api_groups": grouped_api,
         "tools": {
             "read_source": "vibescript.read_source",
             "read_api": "vibescript.read_api",
+            "read_api_arguments": {
+                "names": ["exact_callable_name"],
+            },
+            "read_api_group_arguments": {"groups": ["one_available_group"]},
+            "available_api_groups": list(grouped_api),
+            "build_program": "vibescript.build_program",
             "edit_source": "vibescript.edit_source",
             "edit_source_arguments": [
                 "source_id",
@@ -5347,14 +5515,38 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_source",
             "description": (
-                "Read one complete saved editable source in the active workbench, "
-                "including a failed or not-yet-built source with no live outputs. "
-                "Returns its source_id, current revision, complete source text, inputs, "
-                "declared outputs, build state, and every affected live output."
+                "Read one saved editable source in the active workbench, including a "
+                "failed or not-yet-built source with no live outputs. Omit line_start "
+                "and line_end for the complete editable source; use a line range only "
+                "for a focused reread. Set include_logs=false for concise build state."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"source_id": source_id},
+                "properties": {
+                    "source_id": source_id,
+                    "line_start": _property_schema(
+                        "Optional 1-based first source line to return.",
+                        type="integer",
+                        minimum=1,
+                    ),
+                    "line_end": _property_schema(
+                        "Optional inclusive 1-based last source line to return.",
+                        type="integer",
+                        minimum=1,
+                    ),
+                    "include_logs": _property_schema(
+                        "Include raw candidate stdout, stderr, traceback, and progress logs. "
+                        "Omit or set true for the compatibility-complete response; set false "
+                        "when only the failure summary and recovery action are needed.",
+                        type="boolean",
+                    ),
+                    "log_tail_lines": _property_schema(
+                        "When raw logs are included, keep only this many final lines per log.",
+                        type="integer",
+                        minimum=1,
+                        maximum=1000,
+                    ),
+                },
                 "required": ["source_id"],
                 "additionalProperties": False,
             },
@@ -5366,13 +5558,28 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_api",
             "description": (
-                "Read the complete VibeScript API for the active workbench: callable "
-                "names, exact signatures, behavior, accepted output types, and source "
-                "rules. The active workbench selects the API automatically."
+                "Read the VibeScript API for the active workbench. Pass exact callable "
+                "names or discoverable group names for a focused response with signatures, "
+                "behavior, and detailed contracts; omit both filters for the complete API."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "names": _property_schema(
+                        "Exact api callable names to read, such as sketch, constraint, or extrude.",
+                        type="array",
+                        maxItems=128,
+                        uniqueItems=True,
+                        items={"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                    ),
+                    "groups": _property_schema(
+                        "Exact group names returned in api_groups, such as sketches or verification.",
+                        type="array",
+                        maxItems=32,
+                        uniqueItems=True,
+                        items={"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+                    ),
+                },
                 "required": [],
                 "additionalProperties": False,
             },
@@ -5380,6 +5587,26 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "contextual": True,
             "requires_document": False,
             "edit_modes": ["none", "sketch"],
+        },
+        {
+            "name": "vibescript.build_program",
+            "description": (
+                "Build and publish the saved source unchanged. Use after a failed, "
+                "cancelled, or validated-unpublished attempt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_id": source_id,
+                    "expected_revision": revision,
+                },
+                "required": ["source_id", "expected_revision"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
         },
         {
             "name": "vibescript.edit_source",

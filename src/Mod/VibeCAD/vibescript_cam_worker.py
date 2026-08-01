@@ -1132,7 +1132,18 @@ def _shape_artifact(
         ) from exc
     path = output_directory / f"cam_{index:03d}_{role}.brep"
     try:
-        shape.exportBrep(str(path))
+        # Bound boxes may use a cached display triangulation whose deflection
+        # is intentionally absent after BREP import. Remove that non-geometric
+        # cache before both export and comparison so artifact validation
+        # measures the exact OCCT shape rather than viewport tessellation.
+        artifact_shape = shape.cleaned()
+        if (
+            artifact_shape.isNull()
+            or not artifact_shape.isValid()
+            or len(list(artifact_shape.Solids)) != 1
+        ):
+            raise RuntimeError("cleaning did not preserve one valid solid")
+        artifact_shape.exportBrep(str(path))
     except Exception as exc:
         raise _fail(
             f"Native CAM {role} BREP export failed: {exc}",
@@ -1172,7 +1183,7 @@ def _shape_artifact(
             role=role,
             exception_type=type(exc).__name__,
         ) from exc
-    before = part_shape_facts(shape, max_subelements=64)
+    before = part_shape_facts(artifact_shape, max_subelements=64)
     after = part_shape_facts(restored, max_subelements=64)
     # ``Part.Shape`` imported from BREP does not expose CenterOfMass through
     # every generic wrapper even though its volume, bounds, topology, and all

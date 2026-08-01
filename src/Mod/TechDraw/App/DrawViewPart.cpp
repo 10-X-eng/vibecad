@@ -407,6 +407,7 @@ std::string DrawViewPart::sourceStateSignature(
     const std::vector<App::DocumentObject*>& sources) const
 {
     std::ostringstream state;
+    state << "v2;";
     std::vector<const App::Document*> documents;
     auto addDocument = [&documents](const App::Document* document) {
         if (document
@@ -425,8 +426,8 @@ std::string DrawViewPart::sourceStateSignature(
             return;
         }
         const auto* document = object->getDocument();
-        appendText(document ? std::string(document->getName()) : std::string());
-        state << '#' << object->getID() << ':';
+        appendText(document ? document->Uid.getValueStr() : std::string());
+        state << ':';
         appendText(
             object->getNameInDocument()
                 ? std::string(object->getNameInDocument())
@@ -451,29 +452,35 @@ std::string DrawViewPart::sourceStateSignature(
         documents.begin(),
         documents.end(),
         [](const auto* left, const auto* right) {
-            const std::string leftName(left->getName());
-            const std::string rightName(right->getName());
-            if (leftName != rightName) {
-                return leftName < rightName;
+            const std::string leftUid(left->Uid.getValueStr());
+            const std::string rightUid(right->Uid.getValueStr());
+            if (leftUid != rightUid) {
+                return leftUid < rightUid;
             }
-            return std::less<const App::Document*>{}(left, right);
+            return std::string(left->getName()) < std::string(right->getName());
         }
     );
     state << "documents=" << documents.size() << ';';
     for (const auto* document : documents) {
-        appendText(document->getName());
+        appendText(document->Uid.getValueStr());
         const auto* timeline = App::DocumentTimeline::get(document);
         if (!timeline) {
             state << ":no-timeline;";
             continue;
         }
 
-        state << ":timeline=" << timeline->getID()
-              << ":schema=" << timeline->SchemaVersion.getValue()
+        state << ":timeline=";
+        appendText(timeline->getNameInDocument());
+        state << ":schema=" << timeline->SchemaVersion.getValue()
               << ":position=" << timeline->Position.getValue()
               << ":operations=" << timeline->Operations.getSize() << ':';
         for (const auto* operation : timeline->Operations.getValues()) {
-            state << (operation ? operation->getID() : 0) << ',';
+            appendText(
+                operation && operation->getNameInDocument()
+                    ? std::string(operation->getNameInDocument())
+                    : std::string()
+            );
+            state << ',';
         }
         const auto& suppression = timeline->SuppressionAtEnd.getValues();
         state << ":suppression=" << suppression.size() << ':';

@@ -149,7 +149,14 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
     assert isinstance(api, PartDesignDomainAPI)
     assert api.exported_names == pack.api_exports
-    assert {"extrude", "revolve", "loft", "material", "appearance"} <= set(
+    assert {
+        "extrude",
+        "revolve",
+        "loft",
+        "involute_gear",
+        "material",
+        "appearance",
+    } <= set(
         api.exported_names
     )
     assert {"pad", "pocket", "groove"}.isdisjoint(api.exported_names)
@@ -176,6 +183,13 @@ def test_partdesign_runtime_api_is_explicit_and_matches_describe_api() -> None:
     ]
     assert "api.material" in description["operation_selection"]["physical_material"]
     assert "0-255" in description["operation_selection"]["visible_appearance"]
+    assert "component_catalog.search" in description["workbench_handoffs"]["assembly"]
+    gear_description = next(
+        item["description"]
+        for item in description["runtime_exports"]
+        if item["name"] == "involute_gear"
+    )
+    assert "api.joint('gears')" in gear_description
     priority = description["authoring_priority"]
     assert "api.sketch plus native feature operations" in priority["default"]
     assert "Every planar feature profile" in priority["planar_profile_rule"]
@@ -259,6 +273,97 @@ def test_partdesign_publication_material_and_appearance_are_explicit_and_immutab
     assert presentation["appearance"]["properties"]["transparency"] == 7
     with pytest.raises(TypeError):
         white.properties["shape_color"] = (0.0, 0.0, 0.0)
+
+
+def test_partdesign_sketch_placement_and_geometry_checks_are_explicit() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    profile = api.sketch(
+        [api.circle([0, 0], 2)],
+        placement={
+            "origin": [4, 5, 6],
+            "normal": [0, 2, 0],
+            "x_direction": [3, 0, 0],
+        },
+    )
+    assert profile.properties["placement"] == {
+        "origin": (4.0, 5.0, 6.0),
+        "normal": (0.0, 1.0, 0.0),
+        "x_direction": (1.0, 0.0, 0.0),
+    }
+    assert profile.properties["plane_offset_mm"] == 0.0
+    with pytest.raises(ValueError, match="map_mode is required with support"):
+        api.sketch(
+            [api.circle([0, 0], 2)],
+            support={
+                "reference": {
+                    "document_uid": "document",
+                    "object_name": "Support",
+                },
+                "selection": {
+                    "type": "subelements",
+                    "subelements": ["Face1"],
+                },
+            },
+        )
+    with pytest.raises(ValueError, match="map_mode requires support"):
+        api.sketch([api.circle([0, 0], 2)], map_mode="FlatFace")
+
+    first = api.box(10, 10, 10)
+    second = api.box(2, 2, 2, origin=[12, 0, 0])
+    positive_x = api.find_subelements(
+        element_type="face",
+        expected_count=1,
+        geometry_type="Plane",
+        normal=[1, 0, 0],
+    )
+    negative_x = api.find_subelements(
+        element_type="face",
+        expected_count=1,
+        geometry_type="Plane",
+        normal=[-1, 0, 0],
+    )
+    distance = api.measure(
+        first,
+        "minimum_distance_mm",
+        other=second,
+        expected=2,
+    )
+    thickness = api.measure(
+        first,
+        "minimum_wall_thickness_mm",
+        selection=positive_x,
+        other_selection=negative_x,
+        expected=10,
+    )
+    assert distance.properties["other"] is second
+    assert thickness.properties["selection"]["expected_count"] == 1
+    assert thickness.properties["other_selection"]["expected_count"] == 1
+
+    steel = api.material(
+        "0051bddf-6f62-4406-b8c9-569322880564",
+        require_physical_properties=["Density"],
+    )
+    mass = api.measure(first, "mass_kg", material=steel, minimum=0)
+    assert mass.properties["material"] is steel
+    with pytest.raises(ValueError, match="material is required"):
+        api.measure(first, "mass_kg", minimum=0)
+    with pytest.raises(ValueError, match="opposing wall faces"):
+        api.measure(
+            first,
+            "minimum_wall_thickness_mm",
+            selection={**positive_x, "expected_count": 2},
+            other_selection=negative_x,
+            minimum=1,
+        )
+
+    description = domains.get_domain_adapter("partdesign").describe_api()
+    details = description["api_details"]
+    assert set(details["constraint"]["forms"]) == set(
+        details["constraint"]["kinds"]
+    )
+    assert "arbitrary_placement" in details["sketch"]
+    assert "minimum_distance_mm" in details["measure"]["pair_quantities"]
+    assert details["material"]["catalog_tool"] == "material_catalog.search"
 
 
 @pytest.mark.parametrize(
@@ -405,6 +510,48 @@ def test_body_and_standalone_options_are_never_silently_reinterpreted() -> None:
             2,
             pull_direction="N",
         )
+
+
+def test_transform_places_exact_parametric_features_as_solid_topology() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+    fastener = api.fastener("ISO4762", "M6", length_mm=20)
+
+    placed = api.transform(
+        fastener,
+        translation=[10, 20, 30],
+        rotation_axis=[0, 1, 0],
+        rotation_degrees=90,
+    )
+
+    assert (fastener.operation, fastener.output_type) == ("fastener", "feature")
+    assert (placed.operation, placed.output_type) == ("transform", "solid")
+    assert placed.arguments == (fastener,)
+    properties = placed.to_payload()["properties"]
+    assert properties["translation"] == [10.0, 20.0, 30.0]
+    assert properties["rotation_axis"] == [0.0, 1.0, 0.0]
+
+
+def test_involute_gear_has_one_explicit_functional_contract() -> None:
+    api = PartDesignDomainAPI(PartDesignDomainAPI.exported_names, OUTPUT_TYPES)
+
+    gear = api.involute_gear(
+        24,
+        2.0,
+        8.0,
+        bore_diameter_mm=10.0,
+        profile_shift_coefficient=0.1,
+    )
+    properties = gear.to_payload()["properties"]
+
+    assert (gear.operation, gear.output_type) == ("involute_gear", "feature")
+    assert gear.to_payload()["arguments"] == [24, 2.0, 8.0]
+    assert properties["pressure_angle_degrees"] == 20.0
+    assert properties["addendum_coefficient"] == 1.0
+    assert properties["profile_shift_coefficient"] == 0.1
+    with pytest.raises(ValueError, match="required for an internal gear"):
+        api.involute_gear(48, 2.0, 8.0, internal=True)
+    with pytest.raises(ValueError, match="must be less than 90"):
+        api.involute_gear(24, 2.0, 8.0, pressure_angle_degrees=90)
 
 
 def test_hole_validates_cut_geometry_before_native_execution() -> None:

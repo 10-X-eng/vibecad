@@ -417,6 +417,7 @@ def _prepare_execute_validate(captured: dict[str, object]):
         "vibescript_domain_api.py",
         "vibescript_robot_api.py",
         "vibescript_robot_worker.py",
+        "vibescript_worker_progress.py",
     }, sorted(staged_names)
     assert prepared["reference_requirements"] == []
     execution = execute_candidate(prepared, cancellation_check=None)
@@ -627,15 +628,16 @@ def _exercise_lifecycle() -> dict[str, object]:
             assert pack is not None and pack.production_ready
             surface = resolve_modeling_surface("RobotWorkbench", "vibescript")
             assert surface.available is True, surface.unavailable_reason
-            assert surface.cad_tool_names == tuple(
-                f"vibescript.robot.{name}"
-                for name in (
-                    "create_program",
-                    "edit_source",
-                    "set_inputs",
-                    "reconfigure_program",
-                    "delete_program",
-                )
+            assert surface.cad_tool_names == (
+                "vibescript.read_source",
+                "vibescript.read_api",
+                "vibescript.build_program",
+                "vibescript.edit_source",
+                "vibescript.robot.create_program",
+                "vibescript.robot.set_inputs",
+                "vibescript.robot.reconfigure_program",
+                "vibescript.robot.delete_program",
+                "robot.list_setup",
             )
             initial_inputs = {
                 "axis_1": 0.0,
@@ -899,14 +901,14 @@ def _exercise_lifecycle() -> dict[str, object]:
                 },
             )
             prepared_delete = prepare_delete(delete_capture)
-            original_remove = publication_module._remove_owned_objects
+            original_remove = publication_module._remove_timeline_deletion
 
-            def fail_after_committed_removal(active_document, managed_objects):
-                original_remove(active_document, managed_objects)
+            def fail_after_committed_removal(active_document, deletion):
+                original_remove(active_document, deletion)
                 active_document.commitTransaction()
                 raise RuntimeError("injected Robot deletion failure")
 
-            publication_module._remove_owned_objects = fail_after_committed_removal
+            publication_module._remove_timeline_deletion = fail_after_committed_removal
             try:
                 try:
                     delete_live_program(service, prepared_delete)
@@ -917,7 +919,7 @@ def _exercise_lifecycle() -> dict[str, object]:
                     raise AssertionError("Expected injected Robot deletion failure.")
                 restore_prepared_delete(prepared_delete)
             finally:
-                publication_module._remove_owned_objects = original_remove
+                publication_module._remove_timeline_deletion = original_remove
             outputs = {
                 name: reopened.getObject(object_name)
                 for name, object_name in stable_names.items()
