@@ -945,6 +945,18 @@ struct Gui::VibeCADRibbon::Private
         return entry.action;
     }
 
+    ActionGroup* commandActionGroup(const QString& commandName) const
+    {
+        Command* command = Application::Instance->commandManager().getCommandByName(
+            commandName.toUtf8().constData()
+        );
+        if (!command) {
+            return nullptr;
+        }
+        command->initAction();
+        return dynamic_cast<ActionGroup*>(command->getAction());
+    }
+
     CommandEntries resolveEntries(const std::vector<QString>& commands) const
     {
         CommandEntries entries;
@@ -1130,7 +1142,12 @@ struct Gui::VibeCADRibbon::Private
         updateThemeButton();
     }
 
-    QToolButton* addCommandButton(QHBoxLayout* layout, const QString& command, const QString& objectName) const
+    QToolButton* addCommandButton(
+        QHBoxLayout* layout,
+        const QString& command,
+        const QString& objectName,
+        const QString& menuCommand = {}
+    ) const
     {
         auto* button = new QToolButton(root);
         bool ownedAction = false;
@@ -1156,6 +1173,19 @@ struct Gui::VibeCADRibbon::Private
         else {
             button->setEnabled(false);
             button->setText(command);
+        }
+        if (!menuCommand.isEmpty()) {
+            ActionGroup* menuActionGroup = commandActionGroup(menuCommand);
+            const QList<QAction*> menuActions
+                = menuActionGroup ? menuActionGroup->actions() : QList<QAction*>();
+            if (!menuActions.isEmpty()) {
+                auto* menu = new QMenu(button);
+                menu->addActions(menuActions);
+                connectActionGroupMenu(menu, menuActionGroup);
+                button->setMenu(menu);
+                button->setPopupMode(QToolButton::MenuButtonPopup);
+                button->setProperty("VibeCADMenuCommandId", menuCommand);
+            }
         }
         button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         layout->addWidget(button);
@@ -1190,7 +1220,12 @@ struct Gui::VibeCADRibbon::Private
         QObject::connect(appMenu, &QMenu::aboutToShow, q, [this]() { populateAppMenu(); });
         leadingLayout->addWidget(appButton);
 
-        addCommandButton(leadingLayout, QStringLiteral("Std_Open"), QStringLiteral("VibeCADRibbonOpen"));
+        addCommandButton(
+            leadingLayout,
+            QStringLiteral("Std_Open"),
+            QStringLiteral("VibeCADRibbonOpen"),
+            QStringLiteral("Std_RecentFiles")
+        );
         addCommandButton(leadingLayout, QStringLiteral("Std_Save"), QStringLiteral("VibeCADRibbonSave"));
 
         auto* fileSeparator = new QFrame(strip);

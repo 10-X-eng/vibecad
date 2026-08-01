@@ -814,6 +814,18 @@ def _assert_application_strip_actions(main_window):
     assert actual_commands == expected_commands
     assert len(command_ids) == len(set(command_ids)), command_ids
 
+    open_button = strip.findChild(QtWidgets.QToolButton, "VibeCADRibbonOpen")
+    assert open_button is not None
+    assert open_button.defaultAction() is not None
+    assert str(open_button.property("VibeCADCommandId")) == "Std_Open"
+    assert str(open_button.property("VibeCADMenuCommandId")) == "Std_RecentFiles"
+    assert open_button.popupMode() == QtWidgets.QToolButton.MenuButtonPopup
+    assert open_button.menu() is not None
+    assert any(
+        action.isSeparator() or str(action.text() or "").strip()
+        for action in open_button.menu().actions()
+    )
+
     for object_name in ("VibeCADRibbonUndo", "VibeCADRibbonRedo"):
         button = strip.findChild(QtWidgets.QToolButton, object_name)
         assert button is not None and button.defaultAction() is not None
