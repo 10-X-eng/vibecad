@@ -645,7 +645,9 @@ public:
      * App::DocumentObject.
      */
 #define runDocumentObjectCommand(_type, _document, _expression, ...) \
-    _runDocumentObjectCommand(__FILE__, __LINE__, _type, _document, _expression, ##__VA_ARGS__)
+    _runDocumentObjectCommand(                                                            \
+        __FILE__, __LINE__, _type, _document, _expression __VA_OPT__(, ) __VA_ARGS__       \
+    )
     static App::DocumentObject* _runDocumentObjectCommand(
         const char* file,
         int line,

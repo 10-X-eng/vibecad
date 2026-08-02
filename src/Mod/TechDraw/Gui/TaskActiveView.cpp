@@ -57,7 +57,6 @@ constexpr int SXGAHeight{1024};
 // ctor for creation
 TaskActiveView::TaskActiveView(TechDraw::DrawPage* pageFeat)
     : ui(new Ui_TaskActiveView)
-    , m_pageFeat(pageFeat)
     , m_imageFeat(nullptr)
     , m_previewImageFeat(nullptr)
     , m_pageIdentity(pageFeat)

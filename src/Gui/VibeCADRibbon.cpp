@@ -1085,7 +1085,7 @@ struct Gui::VibeCADRibbon::Private
                 return entries;
             };
 
-        const auto addInspectionGroup = [this, &groups, &inspectionAdded, &resolveUniqueEntries]() {
+        const auto addInspectionGroup = [&groups, &inspectionAdded, &resolveUniqueEntries]() {
             if (inspectionAdded) {
                 return;
             }

@@ -82,7 +82,6 @@ private:
     ViewProviderDimension* resolveViewProvider() const;
 
     std::unique_ptr<Ui_TaskDimension> ui;
-    QGIViewDimension *m_parent;
     Gui::WeakPtrT<ViewProviderDimension> m_dimensionVP;
     TaskInternal::DocumentIdentity m_documentIdentity;
     TaskInternal::ObjectIdentity<TechDraw::DrawViewDimension>

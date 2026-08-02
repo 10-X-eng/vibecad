@@ -112,8 +112,19 @@ EOF
         echo "VibeCAD command-line smoke test failed; the Linux bundle cannot start."
         exit 1
     fi
-    if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib.util, anthropic, keyring, jsonschema, secretstorage; import keyring.backends.SecretService; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies and OS keyring backend import ok')"; then
-        echo "VibeCAD Python dependency/keyring smoke test failed; the Linux bundle is incomplete."
+    for dependency in \
+        anthropic \
+        keyring \
+        jsonschema \
+        secretstorage \
+        keyring.backends.SecretService; do
+        if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib; importlib.import_module('${dependency}'); print('${dependency} import ok')"; then
+            echo "VibeCAD Python dependency '${dependency}' failed to import; the Linux bundle is incomplete."
+            exit 1
+        fi
+    done
+    if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib.util; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('Retired direct OpenAI modules are absent')"; then
+        echo "A retired direct OpenAI module remains in the Linux bundle."
         exit 1
     fi
     if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(); print('VibeCAD provider subprocess smoke ok')"; then

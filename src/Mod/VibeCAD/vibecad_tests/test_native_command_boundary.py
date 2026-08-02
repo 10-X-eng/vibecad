@@ -137,6 +137,7 @@ def test_recorded_python_factories_return_one_exact_document_object() -> None:
     )
 
     assert "runDocumentObjectCommand(_type, _document, _expression" in header
+    assert "_expression __VA_OPT__(, ) __VA_ARGS__" in header
     factory = _function(
         implementation,
         "App::DocumentObject* Command::_runDocumentObjectCommand(",

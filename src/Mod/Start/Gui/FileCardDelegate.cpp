@@ -80,7 +80,7 @@ void FileCardDelegate::paint(
     painter->setRenderHint(QPainter::Antialiasing);
 
     constexpr qreal cardRadius = 8.0;
-    const QRectF cardRect = option.rect.adjusted(0.5, 0.5, -0.5, -0.5);
+    const QRectF cardRect = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5);
     QPainterPath cardPath;
     cardPath.addRoundedRect(cardRect, cardRadius, cardRadius);
 

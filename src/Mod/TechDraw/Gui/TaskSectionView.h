@@ -124,7 +124,6 @@ private:
     std::string m_sectionName;
     App::Document* m_doc;
 
-    bool m_createMode;
     bool m_saved;
 
     int m_applyDeferred;

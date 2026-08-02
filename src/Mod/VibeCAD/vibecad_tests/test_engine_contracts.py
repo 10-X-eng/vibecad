@@ -44,6 +44,25 @@ def test_release_paths_purge_retired_authoring_artifacts() -> None:
     assert 'rm -rf -- "AppDir"' in linux_bundle
 
 
+def test_linux_bundle_smokes_python_dependencies_independently() -> None:
+    linux_bundle = (
+        ROOT / "package/rattler-build/linux/create_bundle.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "for dependency in" in linux_bundle
+    for dependency in (
+        "anthropic",
+        "keyring",
+        "jsonschema",
+        "secretstorage",
+        "keyring.backends.SecretService",
+    ):
+        assert dependency in linux_bundle
+    assert "importlib.import_module('${dependency}')" in linux_bundle
+    assert "importlib.util.find_spec('openai') is None" in linux_bundle
+    assert "importlib.util.find_spec('agents') is None" in linux_bundle
+
+
 class TestStageAwareFailureRendering:
     @staticmethod
     def _gui():

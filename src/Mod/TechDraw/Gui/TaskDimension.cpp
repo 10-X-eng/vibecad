@@ -49,7 +49,6 @@ using namespace TechDrawGui;
 
 TaskDimension::TaskDimension(QGIViewDimension *parent, ViewProviderDimension *dimensionVP) :
     ui(new Ui_TaskDimension),
-    m_parent(parent),
     m_dimensionVP(dimensionVP)
 {
     auto* dimension = parent ? parent->getDimFeat() : nullptr;

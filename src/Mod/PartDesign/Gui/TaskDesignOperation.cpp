@@ -379,7 +379,7 @@ TaskDesignOperationTargets::TaskDesignOperationTargets(App::DocumentObject* oper
     patternPrimaryValue->setSingleStep(1.0);
 
     const auto setupVectorEditor =
-        [this](QWidget* editor, const char* role, std::vector<QDoubleSpinBox*>& values) {
+        [](QWidget* editor, const char* role, std::vector<QDoubleSpinBox*>& values) {
             auto* vectorLayout = new QHBoxLayout(editor);
             vectorLayout->setContentsMargins(0, 0, 0, 0);
             static constexpr const char* names[] = {"X", "Y", "Z"};

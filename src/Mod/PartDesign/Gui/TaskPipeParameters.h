@@ -116,11 +116,6 @@ private:
     void exitSelectionMode();
     void setVisibilityOfSpineAndProfile();
 
-    bool spineShow = false;
-    bool profileShow = false;
-    bool auxSpineShow = false;
-
-private:
     QWidget* proxy;
     std::unique_ptr<Ui_TaskPipeParameters> ui;
     StateHandlerTaskPipe* stateHandler;

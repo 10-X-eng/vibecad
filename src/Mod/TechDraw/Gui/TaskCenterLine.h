@@ -95,7 +95,6 @@ private:
     std::unique_ptr<Ui_TaskCenterLine> ui;
 
     TechDraw::DrawViewPart* m_partFeat;
-    TechDraw::DrawPage* m_basePage;
     TaskInternal::ObjectIdentity<TechDraw::DrawViewPart> m_partIdentity;
     TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
     bool m_createMode;

@@ -80,7 +80,6 @@ private Q_SLOTS:
 private:
     std::unique_ptr<Ui_TaskActiveView> ui;
 
-    TechDraw::DrawPage*       m_pageFeat;
     TechDraw::DrawViewImage*  m_imageFeat;
     TechDraw::DrawViewImage* m_previewImageFeat;
     TaskInternal::ObjectIdentity<TechDraw::DrawPage> m_pageIdentity;
