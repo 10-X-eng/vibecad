@@ -96,6 +96,7 @@ UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "edit_source",
     "set_inputs",
     "reconfigure_program",
+    "delete_output",
     "delete_program",
 )
 
@@ -1187,6 +1188,8 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             "read_arguments": {"source_id": source_id, "include_logs": False},
             "build_tool": "vibescript.build_program",
             "edit_tool": "vibescript.edit_source",
+            "delete_output_tool": "vibescript.delete_output",
+            "delete_program_tool": "vibescript.delete_program",
         }
         accepted_revision = str(program.get("accepted_revision") or "")[:128]
         if accepted_revision:
@@ -1197,6 +1200,10 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "expected_revision": revision,
             }
             source["edit_target_arguments"] = {
+                "source_id": source_id,
+                "expected_revision": revision,
+            }
+            source["delete_target_arguments"] = {
                 "source_id": source_id,
                 "expected_revision": revision,
             }
@@ -1230,6 +1237,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
             "edit_source": "vibescript.edit_source",
             "set_inputs": "vibescript.set_inputs",
             "reconfigure_program": "vibescript.reconfigure_program",
+            "delete_output": "vibescript.delete_output",
             "delete_program": "vibescript.delete_program",
             "edit_source_arguments": [
                 "source_id",
@@ -5839,6 +5847,47 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "input_schema",
                     "inputs",
                     "expected_outputs",
+                ],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.delete_output",
+            "description": (
+                "Delete one exact output from a saved source while keeping its other "
+                "outputs. Read the source first and send the complete revised source "
+                "without the deleted result key. The guarded rebuild removes the live "
+                "Body or other output and its owned publication and History state. Use "
+                "delete_program when the source has only one output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_id": source_id,
+                    "expected_revision": revision,
+                    "output_name": _property_schema(
+                        "Exact output name from read_source expected_outputs.",
+                        type="string",
+                        pattern=_IDENTIFIER.pattern,
+                    ),
+                    "source": source,
+                    "reason": _property_schema(
+                        "Why this output should be removed.",
+                        type="string",
+                        minLength=1,
+                        maxLength=500,
+                    ),
+                },
+                "required": [
+                    "source_id",
+                    "expected_revision",
+                    "output_name",
+                    "source",
+                    "reason",
                 ],
                 "additionalProperties": False,
             },

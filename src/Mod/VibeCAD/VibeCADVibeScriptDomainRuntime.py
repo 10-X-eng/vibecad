@@ -6832,10 +6832,10 @@ def _validate_assembly_exploded_views(
         definition_moves = properties["moves"]
         if (
             not isinstance(definition_moves, list)
-            or not 1 <= len(definition_moves) <= 64
+            or not 1 <= len(definition_moves) <= 4096
         ):
             raise ValueError(
-                f"Exploded-view output {view_name!r} must contain 1-64 moves."
+                f"Exploded-view output {view_name!r} must contain 1-4096 moves."
             )
         data = view_item.get("assembly_data")
         required_data_fields = {
@@ -6956,9 +6956,9 @@ def _validate_assembly_exploded_views(
             ):
                 raise ValueError(f"{context} changed its index or kind.")
             reference_count += len(component_outputs)
-            if reference_count > 256:
+            if reference_count > 16384:
                 raise ValueError(
-                    f"Exploded-view output {view_name!r} exceeds 256 component references."
+                    f"Exploded-view output {view_name!r} exceeds 16384 component references."
                 )
             movement = None
             radial_distance = None
@@ -9008,11 +9008,12 @@ def _validate_assembly_execution(
             "frames_per_second",
             "estimated_frame_limit",
         }
+        optional_simulation_properties = {"label", "motion_names"}
         if (
             not isinstance(simulation_properties, dict)
             or not required_simulation_properties <= set(simulation_properties)
             or set(simulation_properties) - required_simulation_properties
-            not in (set(), {"label"})
+            - optional_simulation_properties
         ):
             raise ValueError(
                 f"Simulation output {simulation_name!r} has malformed properties."
@@ -9020,6 +9021,14 @@ def _validate_assembly_execution(
         graph_motion_names = [
             str(item) for item in list(assembly_data.get("motion_outputs") or [])
         ]
+        declared_motion_names = simulation_properties.get("motion_names")
+        if declared_motion_names is not None and list(declared_motion_names) != (
+            graph_motion_names
+        ):
+            raise ValueError(
+                f"Simulation output {simulation_name!r} changed its stable motion "
+                "member identities."
+            )
         motion_definitions = simulation_properties.get("motions")
         if not isinstance(motion_definitions, list) or motion_definitions != [
             by_name[name].get("definition") for name in graph_motion_names
@@ -9478,6 +9487,9 @@ def _validate_assembly_execution(
         "component_placements": component_placements,
         "component_occurrence_counts": expected_occurrence_counts,
         "joint_dependency_issues": expected_dependency_issues,
+        "internal_member_outputs": [
+            str(item["name"]) for item in outputs if item.get("internal") is True
+        ],
     }
     if simulation_summary is not None:
         expected_validation["simulation"] = simulation_summary
@@ -15803,6 +15815,7 @@ def validate_candidate(
     partdesign_validation = None
     partdesign_native_history = None
     assembly_validation = None
+    assembly_members: list[dict[str, Any]] = []
     sketch_validation = None
     draft_validation = None
     surface_validation = None
@@ -15833,10 +15846,85 @@ def validate_candidate(
             execution,
         )
     elif pack.domain == "assembly":
+        raw_members = execution.get("assembly_members", [])
+        if not isinstance(raw_members, list) or len(raw_members) > 8192:
+            raise ValueError("The Assembly worker returned malformed owned members.")
+        public_names = {str(item["name"]) for item in validated}
+        member_names: set[str] = set()
+        allowed_member_types = {"component_link", "joint", "motion"}
+        allowed_fields = {
+            "component_link": {
+                "name",
+                "type",
+                "definition",
+                "internal",
+                "assembly_data",
+                "solved_placement_matrix",
+            },
+            "joint": {
+                "name",
+                "type",
+                "definition",
+                "internal",
+                "assembly_data",
+                "connector_frames",
+            },
+            "motion": {
+                "name",
+                "type",
+                "definition",
+                "internal",
+                "assembly_data",
+            },
+        }
+        for index, raw_member in enumerate(raw_members):
+            if not isinstance(raw_member, dict):
+                raise ValueError(f"Assembly-owned member {index} is malformed.")
+            member = dict(raw_member)
+            name = str(member.get("name") or "")
+            output_type = str(member.get("type") or "")
+            if (
+                not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name)
+                or name in public_names
+                or name in member_names
+                or output_type not in allowed_member_types
+                or member.get("internal") is not True
+                or set(member) != allowed_fields[output_type]
+            ):
+                raise ValueError(
+                    f"Assembly-owned member {index} has an invalid identity or shape."
+                )
+            definition = member.get("definition")
+            _validate_definition_value(
+                definition,
+                prepared,
+                f"assembly_members.{name}.definition",
+            )
+            if (
+                not isinstance(definition, dict)
+                or definition.get("domain") != "assembly"
+                or definition.get("output_type") != output_type
+            ):
+                raise ValueError(
+                    f"Assembly-owned member {name!r} has the wrong definition type."
+                )
+            encoded = json.dumps(
+                definition,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
+                raise ValueError(
+                    f"Assembly-owned member {name!r} definition is too large."
+                )
+            member_names.add(name)
+            assembly_members.append(member)
         assembly_validation = _validate_assembly_execution(
             prepared,
             execution,
-            validated,
+            [*validated, *assembly_members],
         )
     elif pack.domain == "sketcher":
         sketch_validation = _validate_sketcher_execution(
@@ -15958,6 +16046,8 @@ def validate_candidate(
         result["partdesign_native_history"] = partdesign_native_history
     if assembly_validation is not None:
         result["assembly_validation"] = assembly_validation
+    if assembly_members:
+        result["assembly_members"] = assembly_members
     if sketch_validation is not None:
         result["sketch_validation"] = sketch_validation
     if draft_validation is not None:
@@ -22425,11 +22515,13 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "components. Include every joint and component in api.assembly."
                     ),
                     "result": (
-                        "Return exactly one assembly and one solver_diagnostics value. Return "
-                        "every component and joint in that graph exactly once under its stable "
-                        "output name; do not recreate equivalent values. If motion is requested, "
-                        "also return every api.motion value exactly once and exactly one "
-                        "api.simulation value that consumes the returned assembly. If an "
+                        "Pass components and joints to api.assembly as mappings keyed by their "
+                        "stable member names; those native members belong to the assembly and "
+                        "do not go in result. Return exactly one assembly and one "
+                        "solver_diagnostics value. If motion is requested, pass motions to "
+                        "api.simulation as a stable-key mapping and return only the simulation. "
+                        "The legacy sequence form remains readable but requires every sequence "
+                        "member as a separate result output. If an "
                         "exploded presentation is requested, return each api.exploded_view "
                         "value exactly once. If a bill of materials is requested, return each "
                         "api.bill_of_materials value exactly once. Return each "
@@ -22546,8 +22638,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "action": "author_graph",
                         "instruction": (
                             "Create each component once, ground at least one component, reuse "
-                            "the same variables in connectors and joints, then return every "
-                            "component and joint plus exactly one assembly and diagnostics output."
+                            "the same variables in connectors and joints, and put them in stable-key "
+                            "mappings passed to api.assembly. Return the assembly and diagnostics, "
+                            "not its owned members."
                         ),
                     },
                     {
@@ -22565,7 +22658,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "instruction": (
                             "Only after defining a clean solvable mechanism, create one "
                             "api.motion per driven degree of freedom and one api.simulation. "
-                            "Return those same variables. Angular formulas are radians, linear "
+                            "Pass motions as a stable-key mapping and return the simulation only. "
+                            "Angular formulas are radians, linear "
                             "formulas are millimetres, and time is seconds."
                         ),
                     },
@@ -22574,7 +22668,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "action": "present",
                         "instruction": (
                             "After a clean solve, use one api.exploded_view call per named "
-                            "presentation. Express its ordered moves with returned component "
+                            "presentation. Express its ordered moves with the component "
                             "variables, using exactly one transform or radial_distance_mm per "
                             "move. Return the view variable under its stable output name."
                         ),
@@ -22585,8 +22679,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "instruction": (
                             "Use one api.bill_of_materials call for each requested named table. "
                             "Choose built-in, native-property, and custom columns in that call; "
-                            "do not build rows manually. A top-level row path is its returned "
-                            "component output name. A nested row path is that output name plus "
+                            "do not build rows manually. A top-level row path is its stable "
+                            "api.assembly component-map key. A nested row path is that key plus "
                             "'/' plus an exact component_candidates assembly_hierarchy "
                             "occurrence_paths[].path. Copy accepted or failure-reported paths "
                             "verbatim into row_overrides."
@@ -22710,9 +22804,9 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         ),
                     },
                     "occurrence_paths": (
-                        "For a returned component named Module and source hierarchy path "
+                        "For a component mapped as Module and source hierarchy path "
                         "Gearbox/GearLeft, use Module/Gearbox/GearLeft. Top-level component "
-                        "rows use only the returned output name. Paths contain stable source "
+                        "rows use only the stable member key. Paths contain stable source "
                         "FreeCAD object names, never generated AssemblyLink child names."
                     ),
                     "quantity_aggregation": (
@@ -23020,9 +23114,11 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "workbench_handoffs": {
                     "rule": (
-                        "The active workbench determines the available API. Complete and inspect "
-                        "the Assembly graph here, then describe follow-on work without calling "
-                        "another workbench's tools."
+                        "The active workbench determines the available API for authoring the "
+                        "current graph. Universal source tools can still read and edit the exact "
+                        "Part Design programs listed in this Assembly context. Correct a component "
+                        "source without making the user switch workbenches; rebuild it, then rebuild "
+                        "this Assembly graph."
                     ),
                     "handoff_examples": {
                         "Part Design/Part": (
@@ -23051,9 +23147,10 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         ),
                     },
                     "boundary": (
-                        "Assembly owns occurrences, connectors, joints, solve evidence, motion, "
-                        "exploded views, and BOMs. It does not author component solids, material "
-                        "cards, robot trajectories, FEM loads, CAM paths, or drawing projections."
+                        "Assembly VibeScript owns occurrences, connectors, joints, solve evidence, "
+                        "motion, exploded views, and BOMs. Component solids remain owned by their "
+                        "Part Design sources, which may be edited through the universal source "
+                        "tools without changing the visible workbench."
                     ),
                 },
                 "recommended_patterns": [
@@ -23065,16 +23162,13 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "hinge = api.joint('revolute', api.connector(base, 'Face6'), "
                             "api.connector(arm, 'Face1'), angle_limits_degrees=[-90,90], "
                             "label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Robot Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Robot Arm')\n"
                             "diagnostics = api.solve(model)\n"
-                            "result = {'Model': model, 'Base': base, 'Arm': arm, "
-                            "'Hinge': hinge, 'Diagnostics': diagnostics}"
+                            "result = {'Model': model, 'Diagnostics': diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
                     },
@@ -23085,20 +23179,17 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "arm = api.component(inputs['arm'], label='Arm')\n"
                             "hinge = api.joint('revolute', api.connector(base), "
                             "api.connector(arm), label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Robot Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Robot Arm')\n"
                             "diagnostics = api.solve(model)\n"
                             "exploded = api.exploded_view(model, "
                             "[{'components':[arm], 'transform':[0,0,40]}], "
                             "label='Service View')\n"
-                            "result = {'Model':model, 'Base':base, 'Arm':arm, "
-                            "'Hinge':hinge, 'Exploded':exploded, "
+                            "result = {'Model':model, 'Exploded':exploded, "
                             "'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
                             {"name": "Exploded", "type": "exploded_view"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
@@ -23111,17 +23202,14 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "mount = api.joint('revolute', api.connector(base), "
                             "api.connector(drive, occurrence_path='CoreOccurrence/GearOccurrence'), "
                             "angle_limits_degrees=[-120,120], label='Drive Mount')\n"
-                            "model = api.assembly([base, drive], [mount], "
+                            "model = api.assembly({'Base':base, 'Drive':drive}, "
+                            "{'Mount':mount}, "
                             "label='Flexible Mechanism')\n"
                             "diagnostics = api.solve(model)\n"
-                            "result = {'Model':model,'Base':base,'Drive':drive,"
-                            "'Mount':mount,'Diagnostics':diagnostics}"
+                            "result = {'Model':model,'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Drive", "type": "component_link"},
-                            {"name": "Mount", "type": "joint"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
                     },
@@ -23132,21 +23220,18 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "arm = api.component(inputs['arm'], label='Arm')\n"
                             "hinge = api.joint('revolute', api.connector(base), "
                             "api.connector(arm), label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Robot Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Robot Arm')\n"
                             "diagnostics = api.solve(model)\n"
                             "bill = api.bill_of_materials(model, columns=['index','name',"
                             "'quantity',{'property':'PartNumber','heading':'Part Number'},"
                             "{'heading':'Description'}], row_overrides=["
                             "{'occurrence_path':'Arm','values':{'Description':'Moving link'}}], "
                             "label='Service BOM')\n"
-                            "result = {'Model':model,'Base':base,'Arm':arm,'Hinge':hinge,"
-                            "'Bill':bill,'Diagnostics':diagnostics}"
+                            "result = {'Model':model,'Bill':bill,'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
                             {"name": "Bill", "type": "bom"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
@@ -23158,22 +23243,18 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                             "arm = api.component(inputs['arm'], label='Arm')\n"
                             "hinge = api.joint('revolute', api.connector(base), "
                             "api.connector(arm), label='Hinge')\n"
-                            "model = api.assembly([base, arm], [hinge], label='Driven Arm')\n"
+                            "model = api.assembly({'Base':base, 'Arm':arm}, "
+                            "{'Hinge':hinge}, label='Driven Arm')\n"
                             "diagnostics = api.solve(model)\n"
                             "drive = api.motion(hinge, 'initialValue + pi/2*time', "
                             "label='Hinge Drive')\n"
-                            "simulation = api.simulation(model, [drive], end_time_s=1, "
+                            "simulation = api.simulation(model, {'HingeDrive':drive}, end_time_s=1, "
                             "time_step_s=0.05, label='One Second')\n"
-                            "result = {'Model':model, 'Base':base, 'Arm':arm, "
-                            "'Hinge':hinge, 'Drive':drive, 'Simulation':simulation, "
+                            "result = {'Model':model, 'Simulation':simulation, "
                             "'Diagnostics':diagnostics}"
                         ),
                         "expected_outputs": [
                             {"name": "Model", "type": "assembly"},
-                            {"name": "Base", "type": "component_link"},
-                            {"name": "Arm", "type": "component_link"},
-                            {"name": "Hinge", "type": "joint"},
-                            {"name": "Drive", "type": "motion"},
                             {"name": "Simulation", "type": "simulation"},
                             {"name": "Diagnostics", "type": "solver_diagnostics"},
                         ],
@@ -23185,7 +23266,7 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "including irrelevant joint parameters and invalid graph membership."
                     ),
                     "connector": (
-                        "Selection failures include component output, requested subelement or "
+                        "Selection failures include component member, requested subelement or "
                         "interface, available range/names, and resolved geometry types. Nested "
                         "occurrence failures include requested_path, failed_segment_index, exact "
                         "available_segments, and a copy-ready correction."

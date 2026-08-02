@@ -1208,6 +1208,12 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
                 outputs,
                 root,
             )
+            response["assembly_members"] = [
+                item for item in outputs if item.get("internal") is True
+            ]
+            response["outputs"] = [
+                item for item in outputs if item.get("internal") is not True
+            ]
         elif domain == "sketcher":
             from vibescript_sketcher_worker import validate_and_solve_sketch
 

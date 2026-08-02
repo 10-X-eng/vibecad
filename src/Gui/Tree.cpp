@@ -5951,6 +5951,11 @@ void DocumentItem::rebuildModelBrowser()
         const auto children = takeBucket(
             findBucket(entriesByGroup, groupEntry.object)
         );
+        const bool assemblyStructureGroup = groupEntry.object
+            && (std::string_view(groupEntry.object->getTypeId().getName()).starts_with("Assembly::")
+                || (groupEntry.component
+                    && groupEntry.component->getTypeId().getName()
+                        == std::string_view("Assembly::AssemblyObject")));
         for (const auto* child : children) {
             if (child->role == Role::Group) {
                 renderGroup(*child, groupItem, groupItem);
@@ -5960,9 +5965,9 @@ void DocumentItem::rebuildModelBrowser()
             // already collected by type. A plain group keeps only otherwise
             // unclassified children, so it stays useful without duplicating
             // primary model objects.
-            if (child->role == Role::Other
-                && !child->publishedImplementation
-                && !child->bodyRepresentation) {
+            if ((child->role == Role::Other
+                 || (assemblyStructureGroup && child->role == Role::AssemblyOperation))
+                && !child->publishedImplementation && !child->bodyRepresentation) {
                 renderObject(*child, groupItem, groupItem);
             }
         }
@@ -6074,11 +6079,33 @@ void DocumentItem::rebuildModelBrowser()
             return;
         }
 
-        const auto nestedComponents =
-            componentRoleEntries(componentEntry.object, Role::Component);
+        const auto nestedComponents = componentRoleEntries(componentEntry.object, Role::Component);
         for (const auto* nested : nestedComponents) {
             renderComponent(*nested, componentItem, componentItem);
         }
+
+        const auto assemblyOccurrences
+            = componentRoleEntries(componentEntry.object, Role::AssemblyOccurrence);
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "components",
+            TreeWidget::tr("Components"),
+            "Geoassembly",
+            assemblyOccurrences
+        );
+
+        const auto assemblyMotions = componentRoleEntries(componentEntry.object, Role::AssemblyMotion);
+        renderCategory(
+            componentItem,
+            componentItem,
+            componentEntry.object,
+            "motions",
+            TreeWidget::tr("Motions"),
+            "Assembly_CreateSimulation",
+            assemblyMotions
+        );
 
         const auto parameters =
             componentRoleEntries(componentEntry.object, Role::Parameter);
@@ -6159,7 +6186,10 @@ void DocumentItem::rebuildModelBrowser()
                 return !entry.group;
             }
         );
-        if (!groups.empty()) {
+        const bool assemblyComponent = componentEntry.object
+            && componentEntry.object->getTypeId().getName()
+                == std::string_view("Assembly::AssemblyObject");
+        if (!groups.empty() && !assemblyComponent) {
             auto* folder = makeFolder(
                 componentItem,
                 componentItem,
@@ -6170,6 +6200,11 @@ void DocumentItem::rebuildModelBrowser()
             );
             for (const auto* group : groups) {
                 renderGroup(*group, folder, componentItem);
+            }
+        }
+        else if (assemblyComponent) {
+            for (const auto* group : groups) {
+                renderGroup(*group, componentItem, componentItem);
             }
         }
 

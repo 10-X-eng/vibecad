@@ -1769,34 +1769,81 @@ def _graph_contract(
     joints = list(assembly_properties.get("joints") or [])
     if not components:
         raise AssemblyCandidateError("api.assembly must contain at least one component.")
-    component_outputs = {
+    returned_component_outputs = {
         id(value): name
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "component_link"
     }
-    joint_outputs = {
+    returned_joint_outputs = {
         id(value): name
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "joint"
     }
-    if {id(value) for value in components} != set(component_outputs):
-        raise AssemblyCandidateError(
-            "Every component listed in api.assembly must be returned exactly once, "
-            "and no unlisted component_link output is allowed.",
-            details={
-                "returned_components": list(component_outputs.values()),
-                "assembly_component_count": len(components),
-            },
-        )
-    if {id(value) for value in joints} != set(joint_outputs):
-        raise AssemblyCandidateError(
-            "Every joint listed in api.assembly must be returned exactly once, "
-            "and no unlisted joint output is allowed.",
-            details={
-                "returned_joints": list(joint_outputs.values()),
-                "assembly_joint_count": len(joints),
-            },
-        )
+    component_names = assembly_properties.get("component_names")
+    joint_names = assembly_properties.get("joint_names")
+    mapped_graph = component_names is not None
+    if mapped_graph:
+        if not isinstance(component_names, (list, tuple)) or len(component_names) != len(
+            components
+        ):
+            raise AssemblyCandidateError(
+                "api.assembly has malformed stable component member identities."
+            )
+        if joint_names is None:
+            joint_names = []
+        if not isinstance(joint_names, (list, tuple)) or len(joint_names) != len(joints):
+            raise AssemblyCandidateError(
+                "api.assembly has malformed stable joint member identities."
+            )
+        member_names = [str(name) for name in [*component_names, *joint_names]]
+        if (
+            len(member_names) != len(set(member_names))
+            or any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in member_names)
+        ):
+            raise AssemblyCandidateError(
+                "api.assembly stable member identities are duplicated or invalid."
+            )
+        collisions = set(member_names).intersection(raw_result)
+        if collisions or returned_component_outputs or returned_joint_outputs:
+            raise AssemblyCandidateError(
+                "Mapped Assembly members are owned by api.assembly and must not also "
+                "be returned as public result outputs.",
+                details={
+                    "colliding_outputs": sorted(collisions),
+                    "returned_components": list(returned_component_outputs.values()),
+                    "returned_joints": list(returned_joint_outputs.values()),
+                },
+            )
+        component_outputs = {
+            id(value): str(name)
+            for value, name in zip(components, component_names, strict=True)
+        }
+        joint_outputs = {
+            id(value): str(name)
+            for value, name in zip(joints, joint_names, strict=True)
+        }
+    else:
+        component_outputs = returned_component_outputs
+        joint_outputs = returned_joint_outputs
+        if {id(value) for value in components} != set(component_outputs):
+            raise AssemblyCandidateError(
+                "Every component listed in the sequence form of api.assembly must "
+                "be returned exactly once, and no unlisted component_link output "
+                "is allowed.",
+                details={
+                    "returned_components": list(component_outputs.values()),
+                    "assembly_component_count": len(components),
+                },
+            )
+        if {id(value) for value in joints} != set(joint_outputs):
+            raise AssemblyCandidateError(
+                "Every joint listed in the sequence form of api.assembly must be "
+                "returned exactly once, and no unlisted joint output is allowed.",
+                details={
+                    "returned_joints": list(joint_outputs.values()),
+                    "assembly_joint_count": len(joints),
+                },
+            )
     if not diagnostics_value.arguments or diagnostics_value.arguments[0] is not assembly_value:
         raise AssemblyCandidateError(
             "api.solve must receive the exact api.assembly variable returned in result."
@@ -1822,12 +1869,12 @@ def _simulation_contract(
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "simulation"
     ]
-    motion_outputs = {
+    returned_motion_outputs = {
         id(value): name
         for name, value in raw_result.items()
         if isinstance(value, DomainValue) and value.output_type == "motion"
     }
-    if not simulations and not motion_outputs:
+    if not simulations and not returned_motion_outputs:
         return None
     if len(simulations) != 1:
         raise AssemblyCandidateError(
@@ -1835,7 +1882,7 @@ def _simulation_contract(
             details={
                 "stage": "simulation_graph",
                 "simulation_outputs": [name for name, _value in simulations],
-                "motion_outputs": list(motion_outputs.values()),
+                "motion_outputs": list(returned_motion_outputs.values()),
             },
         )
     simulation_output, simulation_value = simulations[0]
@@ -1855,16 +1902,38 @@ def _simulation_contract(
             f"Simulation output {simulation_output!r} must contain at least one "
             "api.motion value."
         )
-    if {id(value) for value in motions} != set(motion_outputs):
-        raise AssemblyCandidateError(
-            "Every api.motion value used by api.simulation must be returned exactly "
-            "once, and no unlisted motion output is allowed.",
-            details={
-                "stage": "simulation_graph",
-                "returned_motions": list(motion_outputs.values()),
-                "simulation_motion_count": len(motions),
-            },
-        )
+    motion_names = properties.get("motion_names")
+    if motion_names is not None:
+        if not isinstance(motion_names, (list, tuple)) or len(motion_names) != len(motions):
+            raise AssemblyCandidateError(
+                "api.simulation has malformed stable motion member identities."
+            )
+        clean_names = [str(name) for name in motion_names]
+        if (
+            len(clean_names) != len(set(clean_names))
+            or any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in clean_names)
+            or set(clean_names).intersection(raw_result)
+            or returned_motion_outputs
+        ):
+            raise AssemblyCandidateError(
+                "Mapped simulation motions must have unique stable identities and "
+                "must not also be returned as public result outputs."
+            )
+        motion_outputs = {
+            id(value): name for value, name in zip(motions, clean_names, strict=True)
+        }
+    else:
+        motion_outputs = returned_motion_outputs
+        if {id(value) for value in motions} != set(motion_outputs):
+            raise AssemblyCandidateError(
+                "Every api.motion value used by the sequence form of api.simulation "
+                "must be returned exactly once, and no unlisted motion output is allowed.",
+                details={
+                    "stage": "simulation_graph",
+                    "returned_motions": list(motion_outputs.values()),
+                    "simulation_motion_count": len(motions),
+                },
+            )
     drives: set[tuple[int, str]] = set()
     for index, motion in enumerate(motions):
         if (
@@ -1921,9 +1990,9 @@ def _exploded_view_contract(
             )
         properties = _properties(value, "exploded_view")
         moves = list(properties.get("moves") or [])
-        if not 1 <= len(moves) <= 64:
+        if not 1 <= len(moves) <= 4096:
             raise AssemblyCandidateError(
-                f"Exploded-view output {output_name!r} must contain 1-64 moves.",
+                f"Exploded-view output {output_name!r} must contain 1-4096 moves.",
                 details={"stage": "exploded_view_graph"},
             )
         reference_count = 0
@@ -1946,9 +2015,9 @@ def _exploded_view_contract(
                             "component_index": component_index,
                         },
                     )
-        if reference_count > 256:
+        if reference_count > 16384:
             raise AssemblyCandidateError(
-                f"Exploded-view output {output_name!r} exceeds 256 component references."
+                f"Exploded-view output {output_name!r} exceeds 16384 component references."
             )
     return views
 
@@ -2160,7 +2229,8 @@ def _static_mechanism_geometry(
 
     geometry_components: dict[str, dict[str, Any]] = {}
     geometry_interfaces: dict[str, dict[str, list[str]]] = {}
-    for component_name, component in components.items():
+    for component_name in sorted(requested_components):
+        component = components[component_name]
         source = getattr(component, "LinkedObject", None)
         shape = getattr(source, "Shape", None)
         if (
@@ -3949,6 +4019,54 @@ def validate_and_solve_assembly(
         assembly_value=assembly_value,
         joint_outputs=joint_outputs,
     )
+    public_names = {str(name) for name in raw_result}
+    internal_items: list[dict[str, Any]] = []
+    assembly_properties = _properties(assembly_value, "assembly")
+    for value in list(assembly_properties.get("components") or []):
+        name = component_outputs[id(value)]
+        if name not in public_names:
+            internal_items.append(
+                {
+                    "name": name,
+                    "type": "component_link",
+                    "definition": value.to_payload(),
+                    "internal": True,
+                }
+            )
+    for value in list(assembly_properties.get("joints") or []):
+        name = joint_outputs[id(value)]
+        if name not in public_names:
+            internal_items.append(
+                {
+                    "name": name,
+                    "type": "joint",
+                    "definition": value.to_payload(),
+                    "internal": True,
+                }
+            )
+    if simulation_contract is not None:
+        _simulation_output, simulation_value, motion_outputs = simulation_contract
+        for value in list(_properties(simulation_value, "simulation").get("motions") or []):
+            name = motion_outputs[id(value)]
+            if name not in public_names:
+                internal_items.append(
+                    {
+                        "name": name,
+                        "type": "motion",
+                        "definition": value.to_payload(),
+                        "internal": True,
+                    }
+                )
+    existing_output_names = {str(item.get("name") or "") for item in outputs}
+    internal_names = [str(item["name"]) for item in internal_items]
+    if (
+        len(internal_names) != len(set(internal_names))
+        or existing_output_names.intersection(internal_names)
+    ):
+        raise AssemblyCandidateError(
+            "Assembly-owned member identities collide with public outputs."
+        )
+    outputs.extend(internal_items)
     exploded_view_contract = _exploded_view_contract(
         raw_result,
         assembly_value=assembly_value,
@@ -3970,7 +4088,6 @@ def validate_and_solve_assembly(
         component_outputs=component_outputs,
         mechanism_scenario=mechanism_scenario,
     )
-    assembly_properties = _properties(assembly_value, "assembly")
     component_values = list(assembly_properties.get("components") or [])
     component_values_by_output = {
         component_outputs[id(value)]: value for value in component_values
@@ -4715,6 +4832,7 @@ def validate_and_solve_assembly(
             name: len(items) for name, items in component_occurrence_states.items()
         },
         "joint_dependency_issues": solve_report["joint_dependency_issues"],
+        "internal_member_outputs": internal_names,
     }
     if simulation_summary is not None:
         result["simulation"] = simulation_summary

@@ -16,7 +16,7 @@
 
 Name:           vibecad
 Epoch:          1
-Version:        26.3.1~RC2
+Version:        26.3.1~RC3
 Release:        1%{?dist}
 
 Summary:        A general purpose 3D CAD modeler

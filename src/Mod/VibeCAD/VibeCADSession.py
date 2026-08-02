@@ -102,10 +102,9 @@ MAX_RECENT_CONVERSATION_TURNS = 16
 MAX_RECENT_CONVERSATION_JSON_BYTES = 48 * 1024
 MAX_RECENT_CONVERSATION_TURN_CHARACTERS = 6000
 MAX_PROVIDER_TOOL_SCHEMAS_JSON_BYTES = 128 * 1024
-# Assembly exposes two explicit cross-workbench controls (native-interface
-# publication and simulation playback).  Keep the exact schemas intact rather
-# than hiding constraints from the model behind an undersized tactical cap.
-MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 20 * 1024
+# Keep exact schemas intact rather than hiding constraints from the model behind
+# an undersized tactical cap. This remains well below the provider wire limit.
+MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 22 * 1024
 
 
 @dataclass(frozen=True)
@@ -2100,6 +2099,103 @@ def _run_universal_vibescript_tool(
                 requested=args,
                 observed={"exception_type": exc.__class__.__name__},
             )
+    if tool_name == "vibescript.delete_output":
+        from VibeCADVibeScriptDomainRuntime import (
+            DomainRuntimeFailure,
+            capture_inspection_state,
+            complete_inspection,
+        )
+
+        requested_output = str(args["output_name"])
+        try:
+            captured = _on_document_thread(
+                document_thread_dispatch,
+                lambda: capture_inspection_state(
+                    domain_service,
+                    f"vibescript.{pack.domain}.inspect_program",
+                    str(args["source_id"]),
+                ),
+            )
+            inspected = complete_inspection(captured)
+            if inspected.get("ok") is not True:
+                return inspected
+            program = inspected.get("program")
+            if not isinstance(program, Mapping):
+                raise RuntimeError("The saved source has no readable program contract.")
+            current_revision = str(program.get("working_revision") or "")
+            expected_revision = str(args["expected_revision"])
+            if expected_revision != current_revision:
+                return tool_failure(
+                    tool_name,
+                    "STALE_PROGRAM_REVISION",
+                    "precondition",
+                    "The source changed after it was read.",
+                    requested={"expected_revision": expected_revision},
+                    observed={"current_revision": current_revision},
+                )
+            expected_outputs = [
+                dict(item) for item in list(program.get("expected_outputs") or [])
+            ]
+            output_names = [str(item.get("name") or "") for item in expected_outputs]
+            if requested_output not in output_names:
+                return tool_failure(
+                    tool_name,
+                    "OUTPUT_NOT_FOUND",
+                    "precondition",
+                    "The exact output is not declared by this source.",
+                    requested={"output_name": requested_output},
+                    observed={"available_outputs": output_names},
+                )
+            if len(expected_outputs) == 1:
+                return tool_failure(
+                    tool_name,
+                    "LAST_OUTPUT_REQUIRES_PROGRAM_DELETE",
+                    "precondition",
+                    "This is the source's only output; use vibescript.delete_program.",
+                    requested={"output_name": requested_output},
+                    observed={"available_outputs": output_names},
+                )
+            remaining_outputs = [
+                item
+                for item in expected_outputs
+                if str(item.get("name") or "") != requested_output
+            ]
+            domain_args = {
+                "program_id": str(args["source_id"]),
+                "expected_revision": expected_revision,
+                "source": str(args["source"]),
+                "input_schema": dict(program.get("input_schema") or {}),
+                "inputs": dict(program.get("inputs") or {}),
+                "expected_outputs": remaining_outputs,
+            }
+            qualified_name = f"vibescript.{pack.domain}.reconfigure_program"
+            result = _run_domain_vibescript_tool(
+                domain_service,
+                qualified_name,
+                domain_args,
+                document_thread_dispatch=document_thread_dispatch,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
+            )
+            if result.get("tool") == qualified_name:
+                result["tool"] = tool_name
+            if result.get("program_id"):
+                result["source_id"] = str(result["program_id"])
+            if result.get("ok") is True:
+                result["deleted_output"] = requested_output
+                result["reason"] = str(args["reason"])
+            return finish_source_write(result)
+        except DomainRuntimeFailure as exc:
+            return exc.payload
+        except Exception as exc:
+            return tool_failure(
+                tool_name,
+                "OUTPUT_DELETE_FAILED",
+                "precondition",
+                str(exc),
+                requested=args,
+                observed={"exception_type": exc.__class__.__name__},
+            )
     universal_domain_operations = {
         "vibescript.create_program": "create_program",
         "vibescript.set_inputs": "set_inputs",
@@ -2821,6 +2917,7 @@ def make_provider_tool_runner(
             "vibescript.edit_source",
             "vibescript.set_inputs",
             "vibescript.reconfigure_program",
+            "vibescript.delete_output",
             "vibescript.delete_program",
         }:
             return finalize(

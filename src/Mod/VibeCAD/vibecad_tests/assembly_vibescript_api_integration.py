@@ -2384,6 +2384,122 @@ def _exercise_lifecycle(root: Path, pack) -> dict:
     }
 
 
+def _exercise_scoped_member_graph(root: Path, pack) -> dict:
+    """Publish more than 64 native members through three public outputs."""
+
+    import FreeCAD as App
+    import Part
+
+    document = App.newDocument("VibeScriptAssemblyScopedMembers")
+    source = document.addObject("Part::Feature", "ScopedMemberSource")
+    source.Shape = Part.makeBox(2, 2, 2)
+    document.recompute()
+    reference = {
+        "document_uid": str(document.Uid),
+        "object_name": str(source.Name),
+    }
+    input_schema = {
+        "type": "object",
+        "properties": {"source": _reference_schema()},
+        "required": ["source"],
+        "additionalProperties": False,
+    }
+    member_count = 70
+    declarations = [
+        (
+            f"part_{index} = api.component(inputs['source'], "
+            f"placement=[{index * 3},0,0], grounded={index == 0!r}, "
+            f"label='Part {index + 1}')"
+        )
+        for index in range(member_count)
+    ]
+    member_mapping = ",".join(
+        f"'Part{index + 1:03d}':part_{index}" for index in range(member_count)
+    )
+    source_text = "\n".join(
+        [
+            *declarations,
+            "hinge = api.joint('revolute', api.connector(part_0), "
+            "api.connector(part_1), label='Primary Hinge')",
+            f"model = api.assembly({{{member_mapping}}}, "
+            "{'PrimaryHinge':hinge}, label='Scoped Members')",
+            "diagnostics = api.solve(model)",
+            "drive = api.motion(hinge, 'initialValue + time', label='Hinge Drive')",
+            "simulation = api.simulation(model, {'HingeDrive':drive}, "
+            "end_time_s=0.1, time_step_s=0.1, label='Scoped Motion')",
+            "result = {'Model':model, 'Simulation':simulation, "
+            "'Diagnostics':diagnostics}",
+        ]
+    )
+    expected_outputs = [
+        {"name": "Model", "type": "assembly"},
+        {"name": "Simulation", "type": "simulation"},
+        {"name": "Diagnostics", "type": "solver_diagnostics"},
+    ]
+    base_capture = {
+        "pack": pack,
+        "project_root": str(root),
+        "document_name": str(document.Name),
+        "document_uid": str(document.Uid),
+        "document_revision": "assembly-production-revision",
+        "document_objects": _document_objects(document),
+        "surface": resolve_modeling_surface("AssemblyWorkbench", "vibescript").summary(),
+        "freecad_home": str(Path(App.getHomePath()).resolve()),
+        "timeout_seconds": 60.0,
+        "memory_limit_bytes": 2 * 1024 * 1024 * 1024,
+    }
+    capture = _candidate_capture(
+        base_capture,
+        operation="create_program",
+        tool_name="vibescript.assembly.create_program",
+        arguments={
+            "program_name": "Scoped Assembly Members",
+            "source": source_text,
+            "input_schema": input_schema,
+            "inputs": {"source": reference},
+            "expected_outputs": expected_outputs,
+        },
+    )
+    service = _Service(document, root)
+    prepared, execution, publication, accepted = _run_candidate(capture, service)
+    assert [item["name"] for item in execution["outputs"]] == [
+        "Model",
+        "Simulation",
+        "Diagnostics",
+    ]
+    assert len(execution["assembly_members"]) == member_count + 2
+    assert execution["assembly_validation"]["component_count"] == member_count
+    assert len(publication["outputs"]) == 3
+    assert set(accepted["live_outputs"]) == {
+        "Model",
+        "Simulation",
+        "Diagnostics",
+    }
+    members = {
+        str(getattr(obj, PROP_PROGRAM_OUTPUT, "") or ""): obj
+        for obj in document.Objects
+        if str(getattr(obj, PROP_PROGRAM_ID, "") or "") == prepared["program_id"]
+    }
+    assert all(f"Part{index + 1:03d}" in members for index in range(member_count))
+    assert all(
+        members[f"Part{index + 1:03d}"].TypeId == "App::Link"
+        for index in range(member_count)
+    )
+    assert members["PrimaryHinge"].VibeCADVibeScriptOutputType == "joint"
+    assert members["HingeDrive"].VibeCADVibeScriptOutputType == "motion"
+    model = document.getObject(accepted["live_outputs"]["Model"]["object_name"])
+    assert model is not None and model.TypeId == "Assembly::AssemblyObject"
+    assert len(
+        [child for child in model.Group if str(child.TypeId) == "App::Link"]
+    ) == member_count
+    App.closeDocument(document.Name)
+    return {
+        "public_output_count": 3,
+        "native_member_count": member_count + 2,
+        "stable_member_identity": True,
+    }
+
+
 def _exercise_flexible_subassembly_lifecycle(root: Path, pack) -> dict:
     """Prove stable model-authored paths through nested flexible AssemblyLinks."""
 
@@ -4223,6 +4339,7 @@ def main() -> int:
         static_mechanism_verification = (
             _exercise_static_mechanism_verification_lifecycle(root, pack)
         )
+        scoped_member_graph = _exercise_scoped_member_graph(root, pack)
         lifecycle = _exercise_lifecycle(root, pack)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -4244,6 +4361,7 @@ def main() -> int:
                 "portable_external_instances": portable_external_instances,
                 "static_geometry_evidence": static_geometry_evidence,
                 "static_mechanism_verification": static_mechanism_verification,
+                "scoped_member_graph": scoped_member_graph,
                 **lifecycle,
             },
             sort_keys=True,

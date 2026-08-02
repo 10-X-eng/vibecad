@@ -21,8 +21,6 @@ from VibeCADModelingSurface import resolve_modeling_surface  # noqa: E402
 from VibeCADComponentCatalog import open_component_candidates  # noqa: E402
 from VibeCADReferenceContracts import resolve_interface  # noqa: E402
 from VibeCADScriptedPublication import (  # noqa: E402
-    PROP_MODEL_ID as PROP_SCRIPTED_MODEL_ID,
-    PROP_OUTPUT_KEY as PROP_SCRIPTED_OUTPUT_KEY,
     PROP_REVISION as PROP_PUBLISHED_REVISION,
     ROLE_IMPLEMENTATION,
     ROLE_MODEL,
@@ -2327,6 +2325,7 @@ def _exercise_output_local_interfaces_and_ownership_repair(root: Path, pack) -> 
             ]
 
         stale = document.addObject("PartDesign::Body", "StaleScriptBody")
+        stale_name = str(stale.Name)
         tag_object(
             stale,
             role=ROLE_IMPLEMENTATION,
@@ -2348,20 +2347,18 @@ def _exercise_output_local_interfaces_and_ownership_repair(root: Path, pack) -> 
         repairs = updated_publication["native_history"]["ownership_repairs"]
         assert repairs == [
             {
-                "object_name": stale.Name,
+                "object_name": stale_name,
                 "claimed_output": "Left",
                 "authoritative_object": updated_publication["native_history"][
                     "body_objects"
                 ]["Left"],
             }
         ]
-        assert role_of(stale) == ""
-        assert str(getattr(stale, PROP_SCRIPTED_MODEL_ID, "") or "") == ""
-        assert str(getattr(stale, PROP_SCRIPTED_OUTPUT_KEY, "") or "") == ""
+        assert document.getObject(stale_name) is None
         return {
             "outputs": ["Left", "Right"],
             "shared_local_interface": "RotationAxis",
-            "repaired_body": str(stale.Name),
+            "repaired_body": stale_name,
         }
     finally:
         App.closeDocument(document.Name)

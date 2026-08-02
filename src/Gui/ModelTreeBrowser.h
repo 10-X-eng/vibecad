@@ -49,6 +49,13 @@ public:
         // Body states, publications, and other owned implementation objects
         // have no independent browser representation.
         Internal,
+        // Native Assembly structure remains visible in the model browser as
+        // present-state structure while the same objects retain their ordered
+        // creation/edit entries in History. Appending these values preserves
+        // every established Role numeric value for out-of-tree consumers.
+        AssemblyOccurrence,
+        AssemblyMotion,
+        AssemblyOperation,
     };
 
     struct Entry

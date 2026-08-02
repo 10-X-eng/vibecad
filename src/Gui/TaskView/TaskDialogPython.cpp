@@ -895,6 +895,22 @@ void TaskDialogPython::clicked(int i)
     }
 }
 
+void TaskDialogPython::closed()
+{
+    Base::PyGILStateLocker lock;
+    try {
+        if (dlg.hasAttr(std::string("closed"))) {
+            Py::Callable method(dlg.getAttr(std::string("closed")));
+            Py::Tuple args;
+            method.apply(args);
+        }
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;
+        e.reportException();
+    }
+}
+
 bool TaskDialogPython::accept()
 {
     Base::PyGILStateLocker lock;

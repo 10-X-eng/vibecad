@@ -99,6 +99,11 @@ std::string timelineRole(const App::DocumentObject* object)
     return stringProperty(object, App::DocumentTimeline::RolePropertyName);
 }
 
+std::string vibeScriptOutputType(const App::DocumentObject* object)
+{
+    return stringProperty(object, "VibeCADVibeScriptOutputType");
+}
+
 std::string scriptedOutputIdentity(
     const App::DocumentObject* object,
     std::string_view role
@@ -454,6 +459,22 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
     }
     if (isReferenceGeometry(object)) {
         return Role::Reference;
+    }
+    if (isDerivedFrom(ownership.component, "Assembly::AssemblyObject")
+        || isDerivedFrom(ownership.component, "Assembly::AssemblyLink")) {
+        const std::string outputType = vibeScriptOutputType(object);
+        if (outputType == "component_link" || isDerivedFrom(object, "Assembly::AssemblyLink")
+            || isLink(object)) {
+            return Role::AssemblyOccurrence;
+        }
+        if (outputType == "motion") {
+            return Role::AssemblyMotion;
+        }
+        if (outputType == "joint" || outputType == "simulation"
+            || outputType == "mechanism_verification" || outputType == "exploded_view"
+            || outputType == "bom") {
+            return Role::AssemblyOperation;
+        }
     }
     if (isReference(object)) {
         return Role::Reference;

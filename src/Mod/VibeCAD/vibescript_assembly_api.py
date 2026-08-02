@@ -646,6 +646,69 @@ def _values(
     return result
 
 
+def _named_values(
+    operation: str,
+    parameter: str,
+    value: Any,
+    *,
+    output_type: str,
+    minimum: int,
+) -> tuple[list[DomainValue], list[str] | None]:
+    """Accept the established sequence form or a stable keyed member graph."""
+
+    if not isinstance(value, Mapping):
+        return (
+            _values(
+                operation,
+                parameter,
+                value,
+                output_type=output_type,
+                minimum=minimum,
+            ),
+            None,
+        )
+    if len(value) < minimum:
+        raise _error(
+            operation,
+            parameter,
+            f"requires at least {minimum} value(s)",
+            value,
+        )
+    if len(value) > 4096:
+        raise _error(
+            operation,
+            parameter,
+            "may contain at most 4096 named members",
+        )
+    names: list[str] = []
+    values: list[DomainValue] = []
+    for raw_name, item in value.items():
+        name = str(raw_name or "")
+        if not _INTERFACE_NAME.fullmatch(name):
+            raise _error(
+                operation,
+                parameter,
+                "member keys must be identifiers containing at most 64 characters",
+                raw_name,
+            )
+        names.append(name)
+        values.append(
+            _domain_value(
+                operation,
+                f"{parameter}[{name!r}]",
+                item,
+                output_type=output_type,
+            )
+        )
+    if len({id(item) for item in values}) != len(values):
+        raise _error(
+            operation,
+            parameter,
+            "contains the same graph value under more than one member key",
+        )
+    return values, names
+
+
 def _mechanism_pair(
     operation: str,
     parameter: str,
@@ -1523,33 +1586,56 @@ class AssemblyDomainAPI:
 
     def assembly(
         self,
-        components: Sequence[DomainValue],
-        joints: Sequence[DomainValue] = (),
+        components: Sequence[DomainValue] | Mapping[str, DomainValue],
+        joints: Sequence[DomainValue] | Mapping[str, DomainValue] = (),
         *,
         label: str = "",
     ) -> DomainValue:
-        """Build one assembly graph from returned component and joint variables.
+        """Build one assembly graph from component and joint variables.
 
-        Every listed component and joint must also be returned exactly once as
-        its own declared output.  At least one component must be grounded before
-        the graph is solved.
+        Prefer mappings whose keys are stable native member identities, for
+        example ``api.assembly({'Housing': housing}, {'ShaftJoint': joint})``.
+        Mapped members are owned by the Assembly and do not consume public
+        ``result`` outputs. The established sequence form remains supported and
+        requires each member to be returned exactly once. At least one component
+        must be grounded before the graph is solved.
         """
 
         operation = "assembly"
-        component_values = _values(
+        component_values, component_names = _named_values(
             operation,
             "components",
             components,
             output_type="component_link",
             minimum=1,
         )
-        joint_values = _values(
+        joint_values, joint_names = _named_values(
             operation,
             "joints",
             joints,
             output_type="joint",
             minimum=0,
         )
+        if component_names is not None and joint_names is None and joint_values:
+            raise _error(
+                operation,
+                "joints",
+                "use a stable-key mapping when components use a mapping",
+            )
+        if component_names is None and joint_names is not None:
+            raise _error(
+                operation,
+                "components",
+                "use a stable-key mapping when joints use a mapping",
+            )
+        if component_names is not None and joint_names is not None:
+            duplicates = set(component_names).intersection(joint_names)
+            if duplicates:
+                raise _error(
+                    operation,
+                    "components/joints",
+                    f"member keys must be unique across the graph: {sorted(duplicates)}",
+                )
         component_ids = {id(item) for item in component_values}
         for index, joint_value in enumerate(joint_values):
             for connector_index, connector in enumerate(joint_value.arguments):
@@ -1560,11 +1646,16 @@ class AssemblyDomainAPI:
                         f"joints[{index}].connector[{connector_index}]",
                         "references a component that is not listed in components",
                     )
+        member_identities: dict[str, Any] = {}
+        if component_names is not None:
+            member_identities["component_names"] = component_names
+            member_identities["joint_names"] = joint_names or []
         return self._value(
             operation,
             "assembly",
             components=component_values,
             joints=joint_values,
+            **member_identities,
             label=label,
         )
 
@@ -1704,7 +1795,7 @@ class AssemblyDomainAPI:
     def simulation(
         self,
         assembly: DomainValue,
-        motions: Sequence[DomainValue],
+        motions: Sequence[DomainValue] | Mapping[str, DomainValue],
         *,
         start_time_s: float = 0.0,
         end_time_s: float = 1.0,
@@ -1715,8 +1806,10 @@ class AssemblyDomainAPI:
     ) -> DomainValue:
         """Run native Assembly kinematics in the worker and retain its trace.
 
-        Every motion must also be returned as a stable ``motion`` output. The
-        worker records an initial frame plus native time-series frames and
+        Prefer a stable-key mapping; mapped motions are owned by the simulation
+        and do not consume public ``result`` outputs. The established sequence
+        form remains supported and requires each motion as a top-level output.
+        The worker records an initial frame plus native time-series frames and
         rejects simulations exceeding 100000 component-pose samples.
         ``time_step_s`` controls trace density; ``frames_per_second`` is retained
         only as the live playback rate and does not add solver samples.
@@ -1724,7 +1817,7 @@ class AssemblyDomainAPI:
 
         operation = "simulation"
         model = _domain_value(operation, "assembly", assembly, output_type="assembly")
-        motion_values = _values(
+        motion_values, motion_names = _named_values(
             operation,
             "motions",
             motions,
@@ -1798,11 +1891,15 @@ class AssemblyDomainAPI:
                 "would exceed 10000 native frames or 100000 component-pose samples; "
                 "increase time_step_s or shorten the time range",
             )
+        motion_identities: dict[str, Any] = {}
+        if motion_names is not None:
+            motion_identities["motion_names"] = motion_names
         return self._value(
             operation,
             "simulation",
             model,
             motions=motion_values,
+            **motion_identities,
             start_time_s=start,
             end_time_s=end,
             time_step_s=step,
@@ -1833,11 +1930,11 @@ class AssemblyDomainAPI:
 
         operation = "exploded_view"
         model = _domain_value(operation, "assembly", assembly, output_type="assembly")
-        if not isinstance(moves, (list, tuple)) or not 1 <= len(moves) <= 64:
+        if not isinstance(moves, (list, tuple)) or not 1 <= len(moves) <= 4096:
             raise _error(
                 operation,
                 "moves",
-                "expected an array containing 1 through 64 ordered move objects",
+                "expected an array containing 1 through 4096 ordered move objects",
                 moves,
             )
         graph_components = {
@@ -1877,11 +1974,11 @@ class AssemblyDomainAPI:
                         "is not listed in this assembly",
                     )
             reference_count += len(components)
-            if reference_count > 256:
+            if reference_count > 16384:
                 raise _error(
                     operation,
                     "moves",
-                    "may contain at most 256 component references across all moves",
+                    "may contain at most 16384 component references across all moves",
                 )
             if has_transform:
                 transform = _placement(operation, f"{path}.transform", raw["transform"])

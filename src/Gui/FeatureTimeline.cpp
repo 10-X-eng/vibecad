@@ -370,6 +370,10 @@ bool isVisibleTimelineOperation(
             return true;
         case Role::Internal:
             return false;
+        case Role::AssemblyOccurrence:
+        case Role::AssemblyMotion:
+        case Role::AssemblyOperation:
+            return true;
         case Role::Other:
             // A native object with no ViewProvider is application bookkeeping,
             // not a user operation. Other view-backed document objects (for

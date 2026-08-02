@@ -645,6 +645,143 @@ class TestModelTreeBrowser(unittest.TestCase):
             if item.type() == BROWSER_FOLDER_TYPE:
                 self.assertFalse(item.icon(0).isNull(), item.text(0))
 
+    def test_assembly_structure_is_visible_without_history_duplication_folders(self):
+        assembly = self.document.addObject(
+            "Assembly::AssemblyObject",
+            "BrowserAssembly",
+        )
+        assembly.Type = "Assembly"
+        assembly.Label = "Drive Assembly"
+        joints = assembly.newObject("Assembly::JointGroup", "BrowserJoints")
+        joints.Label = "Joints"
+        occurrence = assembly.newObject("App::Link", "BrowserOccurrence")
+        occurrence.Label = "Rotor"
+        occurrence.LinkedObject = self.loose_geometry
+        joint = joints.newObject("App::FeaturePython", "BrowserJoint")
+        joint.Label = "Rotor Bearing"
+        motion = assembly.newObject("App::FeaturePython", "BrowserMotion")
+        motion.Label = "Rotor Drive"
+        simulations = assembly.newObject(
+            "Assembly::SimulationGroup",
+            "BrowserSimulations",
+        )
+        simulations.Label = "Simulations"
+        simulation = simulations.newObject(
+            "App::FeaturePython",
+            "BrowserSimulation",
+        )
+        simulation.Label = "Run Cycle"
+        exploded_views = assembly.newObject(
+            "Assembly::ViewGroup",
+            "BrowserExplodedViews",
+        )
+        exploded_views.Label = "Exploded Views"
+        exploded_view = exploded_views.newObject(
+            "App::FeaturePython",
+            "BrowserExplodedView",
+        )
+        exploded_view.Label = "Service View"
+        bom_group = assembly.newObject(
+            "Assembly::BomGroup",
+            "BrowserBoms",
+        )
+        bom_group.Label = "Bills of Materials"
+        bom = bom_group.newObject("App::FeaturePython", "BrowserBom")
+        bom.Label = "Production BOM"
+        for obj, output_type in (
+            (occurrence, "component_link"),
+            (joint, "joint"),
+            (motion, "motion"),
+            (simulation, "simulation"),
+            (exploded_view, "exploded_view"),
+            (bom, "bom"),
+        ):
+            obj.addProperty(
+                "App::PropertyString",
+                "VibeCADVibeScriptOutputType",
+                "VibeCAD Publication",
+            )
+            obj.VibeCADVibeScriptOutputType = output_type
+            obj.addProperty(
+                "App::PropertyString",
+                "VibeCADTimelineRole",
+                "VibeCAD History",
+            )
+            obj.VibeCADTimelineRole = "operation"
+        self.document.recompute()
+
+        def assembly_items():
+            snapshot = self._snapshot()
+            item = _snapshot_child(snapshot, "Drive Assembly")
+            components = _snapshot_child(item, "Components", BROWSER_FOLDER_TYPE)
+            motions = _snapshot_child(item, "Motions", BROWSER_FOLDER_TYPE)
+            joint_group = _snapshot_child(item, "Joints")
+            simulation_group = _snapshot_child(item, "Simulations")
+            exploded_group = _snapshot_child(item, "Exploded Views")
+            bills_group = _snapshot_child(item, "Bills of Materials")
+            rotor = _snapshot_child(components, "Rotor")
+            drive = _snapshot_child(motions, "Rotor Drive")
+            bearing = _snapshot_child(joint_group, "Rotor Bearing")
+            cycle = _snapshot_child(simulation_group, "Run Cycle")
+            service_view = _snapshot_child(exploded_group, "Service View")
+            production_bom = _snapshot_child(bills_group, "Production BOM")
+            values = (
+                snapshot,
+                item,
+                components,
+                motions,
+                joint_group,
+                simulation_group,
+                exploded_group,
+                bills_group,
+                rotor,
+                drive,
+                bearing,
+                cycle,
+                service_view,
+                production_bom,
+            )
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(assembly_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        (
+            _snapshot_value,
+            item,
+            components,
+            motions,
+            joint_group,
+            simulation_group,
+            exploded_group,
+            bills_group,
+            rotor,
+            drive,
+            bearing,
+            cycle,
+            service_view,
+            production_bom,
+        ) = observed
+        self.assertIsNone(_snapshot_child(item, "Groups", BROWSER_FOLDER_TYPE))
+        self.assertTrue(
+            all(
+                value is not None
+                for value in (
+                    components,
+                    motions,
+                    joint_group,
+                    simulation_group,
+                    exploded_group,
+                    bills_group,
+                    rotor,
+                    drive,
+                    bearing,
+                    cycle,
+                    service_view,
+                    production_bom,
+                )
+            )
+        )
+
     def test_ordinary_and_incomplete_root_links_are_not_publications(self):
         linked_objects = (
             (

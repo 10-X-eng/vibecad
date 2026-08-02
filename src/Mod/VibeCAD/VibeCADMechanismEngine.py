@@ -54,11 +54,11 @@ _STATIC_REQUIREMENT_TYPES = frozenset({"collision_free", "minimum_clearance"})
 _CONTACT_POLICIES = frozenset(
     {"prohibited", "clearance", "allowed", "required", "ignored"}
 )
-_MAX_CONTRACT_BYTES = 2 * 1024 * 1024
+_MAX_CONTRACT_BYTES = 64 * 1024 * 1024
 _MAX_CONTRACT_DEPTH = 20
-_MAX_COMPONENTS = 64
-_MAX_JOINTS = 64
-_MAX_MOTIONS = 64
+_MAX_COMPONENTS = 4096
+_MAX_JOINTS = 4096
+_MAX_MOTIONS = 4096
 _MAX_OCCURRENCES = 4096
 
 

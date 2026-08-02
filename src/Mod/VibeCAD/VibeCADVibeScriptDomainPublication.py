@@ -3920,7 +3920,7 @@ def _configure_assembly_exploded_view(
             f"{assembly_name!r} is unavailable."
         )
     moves = data.get("moves")
-    if not isinstance(moves, list) or not 1 <= len(moves) <= 64:
+    if not isinstance(moves, list) or not 1 <= len(moves) <= 4096:
         raise RuntimeError(
             f"Assembly exploded view {item['name']!r} has no bounded move graph."
         )
@@ -14301,9 +14301,10 @@ def _repair_partdesign_implementation_body_claims(
     program_id: str,
     authoritative: Mapping[str, Any],
 ) -> list[dict[str, str]]:
-    """Remove advisory ownership tags not backed by the native operation."""
+    """Remove managed Bodies no longer backed by the native operation."""
 
     repairs: list[dict[str, str]] = []
+    obsolete: list[Any] = []
     for obj in list(getattr(doc, "Objects", []) or []):
         if (
             str(getattr(obj, "TypeId", "") or "") != "PartDesign::Body"
@@ -14325,6 +14326,7 @@ def _repair_partdesign_implementation_body_claims(
         expected = authoritative.get(key)
         if expected is obj:
             continue
+        obsolete.append(obj)
         repairs.append(
             {
                 "object_name": str(obj.Name),
@@ -14334,14 +14336,49 @@ def _repair_partdesign_implementation_body_claims(
                 ),
             }
         )
-        scripted_publication.tag_object(
-            obj,
-            role="",
-            engine="",
-            model_id="",
-            output_key="",
-            revision="",
+    if not obsolete:
+        return repairs
+
+    deletion_candidates: list[Any] = []
+    candidate_ids: set[int] = set()
+    for body in obsolete:
+        owned = [body]
+        pending = list(getattr(body, "Group", []) or [])
+        while pending:
+            candidate = pending.pop()
+            if candidate in owned:
+                continue
+            owned.append(candidate)
+            pending.extend(list(getattr(candidate, "Group", []) or []))
+        for candidate in owned:
+            if id(candidate) in candidate_ids:
+                continue
+            deletion_candidates.append(candidate)
+            candidate_ids.add(id(candidate))
+    deletion = _prepare_timeline_deletion(doc, deletion_candidates)
+    deletion_targets = list(deletion["delete_objects"])
+    program_internal = [
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(
+            getattr(obj, contracts.PROP_PROGRAM_ID, "")
+            or getattr(obj, scripted_publication.PROP_MODEL_ID, "")
+            or ""
         )
+        == program_id
+    ]
+    external = _external_uses(
+        doc,
+        deletion_targets,
+        [*program_internal, *deletion_targets],
+    )
+    if external:
+        raise _reference_error(
+            "Cannot retire obsolete managed Part Design Bodies while foreign "
+            "document objects still reference them",
+            external,
+        )
+    _remove_timeline_deletion(doc, deletion)
     return repairs
 
 
@@ -15289,6 +15326,15 @@ def publish_candidate(
         return _publish_cam_candidate(service, prepared, validated, doc)
     if domain == "techdraw":
         return _publish_techdraw_candidate(service, prepared, validated, doc)
+    public_output_names = [str(item["name"]) for item in validated["outputs"]]
+    if domain == "assembly" and validated.get("assembly_members"):
+        validated = {
+            **validated,
+            "outputs": [
+                *list(validated["outputs"]),
+                *list(validated["assembly_members"]),
+            ],
+        }
     existing = _objects_by_output(doc, prepared)
     desired_output_names = {str(item["name"]) for item in validated["outputs"]}
     retired = _retired_program_objects(doc, prepared, desired_output_names)
@@ -16184,6 +16230,8 @@ def publish_candidate(
     published_outputs = []
     for item in validated["outputs"]:
         name = str(item["name"])
+        if name not in public_output_names:
+            continue
         summary = {"name": name, **live_outputs[name]}
         if isinstance(item.get("diagnostics"), dict):
             summary["diagnostics"] = dict(item["diagnostics"])
@@ -16213,7 +16261,10 @@ def publish_candidate(
     return {
         "ok": True,
         "outputs": published_outputs,
-        "live_outputs": live_outputs,
+        "live_outputs": {
+            name: live_outputs[name]
+            for name in public_output_names
+        },
         "created_objects": [str(obj.Name) for obj in created],
         "retired_objects": removed,
         "downstream_references": {

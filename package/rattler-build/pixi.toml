@@ -8,7 +8,7 @@ preview = ["pixi-build"]
 
 [package]
 name = "vibecad"
-version = "26.3.1RC2"
+version = "26.3.1RC3"
 homepage = "https://freecad.org"
 repository = "https://github.com/FreeCAD/FreeCAD"
 description = "VibeCAD"

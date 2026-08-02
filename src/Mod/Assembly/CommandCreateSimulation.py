@@ -298,7 +298,10 @@ class ViewProviderSimulation:
             if Gui.Control.activeTaskDialog() is not None:
                 return False
 
-        if UtilsAssembly.activeAssembly() != assembly:
+        playback_only = bool(
+            str(getattr(operation, "VibeCADVibeScriptProgramId", "") or "")
+        )
+        if not playback_only and UtilsAssembly.activeAssembly() != assembly:
             gui_document = Gui.getDocument(assembly.Document.Name)
             if gui_document is None:
                 return False
@@ -310,12 +313,7 @@ class ViewProviderSimulation:
             operation,
             document_name=assembly.Document.Name,
             existing_transaction_id=assembly.Document.getBookedTransactionID(),
-            playback_only=bool(
-                str(
-                    getattr(operation, "VibeCADVibeScriptProgramId", "")
-                    or ""
-                )
-            ),
+            playback_only=playback_only,
         )
         dialog = Gui.Control.showDialog(panel, panel.gui_doc)
         if dialog is not None:
@@ -965,6 +963,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         existing_transaction_id=0,
         assembly_name=None,
         playback_only=False,
+        presentation=None,
+        hidden_components=(),
+        camera="",
+        restore_camera=None,
     ):
         super().__init__()
         self.playback_only = bool(playback_only)
@@ -1034,20 +1036,128 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.gui_doc = Gui.getDocument(self.doc.Name)
         if self.gui_doc is None:
             raise RuntimeError("The simulation task has no GUI document")
+        self.document_was_modified = bool(self.gui_doc.Modified)
+        self._observing_document = False
+        self._save_playback_state = None
 
         self.view = self.gui_doc.activeView()
 
         if self.view is None:
             raise RuntimeError("The simulation task has no active 3D view")
 
-        self.transaction = UtilsAssembly._TaskTransactionOwner(
-            self.doc,
+        self.presentation = presentation
+        self.presentation_applied_placements = []
+        self.presentation_step_visibility = []
+        if self.presentation is not None:
+            presentation_document = getattr(self.presentation, "Document", None)
+            presentation_proxy = getattr(self.presentation, "Proxy", None)
+            if (
+                presentation_document is not self.doc
+                or self.doc.getObject(self.presentation.Name) is not self.presentation
+                or not UtilsAssembly.isTimelineOperationActive(self.presentation)
+                or not callable(getattr(presentation_proxy, "applyMoves", None))
+                or not callable(
+                    getattr(presentation_proxy, "_prepareApplicationBaseline", None)
+                )
+                or not callable(getattr(presentation_proxy, "getAssembly", None))
+                or not isinstance(
+                    getattr(presentation_proxy, "_last_applied_placements", None),
+                    list,
+                )
+                or presentation_proxy.getAssembly(self.presentation) is not self.assembly
+            ):
+                raise RuntimeError(
+                    "The playback presentation is not an active exploded view of this Assembly"
+                )
+            self.presentation_applied_placements = list(
+                presentation_proxy._last_applied_placements
+            )
+            self.presentation_step_visibility = [
+                (
+                    move,
+                    str(move.Name),
+                    int(move.ID),
+                    bool(move.ViewObject.Visibility),
+                )
+                for move in self.presentation.Group
+                if getattr(move, "ViewObject", None) is not None
+            ]
+        self.hidden_components = tuple(hidden_components or ())
+        if len({id(component) for component in self.hidden_components}) != len(
+            self.hidden_components
+        ):
+            raise RuntimeError("Hidden playback components must be unique")
+        for component in self.hidden_components:
+            if (
+                getattr(component, "Document", None) is not self.doc
+                or self.doc.getObject(component.Name) is not component
+                or getattr(component, "ViewObject", None) is None
+                or (
+                    str(
+                        getattr(
+                            component,
+                            "VibeCADVibeScriptOutputType",
+                            "",
+                        )
+                        or ""
+                    )
+                    != "component_link"
+                    and not component.isDerivedFrom("App::Link")
+                    and not component.isDerivedFrom("Assembly::AssemblyLink")
+                )
+                or UtilsAssembly.findOwningAssembly(
+                    component,
+                    include_inactive=True,
+                )
+                is not self.assembly
+            ):
+                raise RuntimeError(
+                    "Every hidden playback component must belong to this exact Assembly"
+                )
+        self.presentation_visibility = [
             (
-                "Edit " + simFeaturePy.Label + " Simulation"
-                if simFeaturePy
-                else "Create Simulation"
-            ),
-            existing_transaction_id,
+                component,
+                str(component.Name),
+                int(component.ID),
+                bool(component.ViewObject.Visibility),
+            )
+            for component in self.hidden_components
+            if getattr(component, "ViewObject", None) is not None
+        ]
+        self.presentation_camera = (
+            str(self.view.getCamera())
+            if restore_camera is None
+            else str(restore_camera)
+        )
+        self.requested_camera = str(camera or "").strip().lower()
+        camera_methods = {
+            "": None,
+            "front": "viewFront",
+            "rear": "viewRear",
+            "left": "viewLeft",
+            "right": "viewRight",
+            "top": "viewTop",
+            "bottom": "viewBottom",
+            "isometric": "viewAxonometric",
+        }
+        if self.requested_camera not in camera_methods:
+            raise RuntimeError(
+                f"Unsupported playback camera {self.requested_camera!r}"
+            )
+        self.requested_camera_method = camera_methods[self.requested_camera]
+
+        self.transaction = (
+            None
+            if self.playback_only
+            else UtilsAssembly._TaskTransactionOwner(
+                self.doc,
+                (
+                    "Edit " + simFeaturePy.Label + " Simulation"
+                    if simFeaturePy
+                    else "Create Simulation"
+                ),
+                existing_transaction_id,
+            )
         )
 
         self.runKinematicsTimer = QtCore.QTimer()
@@ -1057,6 +1167,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.animationTimer = QtCore.QTimer()
         self.animationTimer.setInterval(50)  # ms
         self.animationTimer.timeout.connect(self.playAnimation)
+
+        self.cameraRestoreTimer = QtCore.QTimer(self)
+        self.cameraRestoreTimer.setSingleShot(True)
+        self.cameraRestoreTimer.timeout.connect(self._restorePlaybackCamera)
 
         self.form = Gui.PySideUic.loadUi(":/panels/TaskAssemblyCreateSimulation.ui")
         self.form.motionList.installEventFilter(self)
@@ -1129,6 +1243,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.startTime = time.time()
         self.index = 0
 
+        if self.playback_only:
+            App.addDocumentObserver(self)
+            self._observing_document = True
+
     def _ownsLiveTaskContext(self):
         assembly_name, assembly_id, exact_assembly = (
             self.assembly_identity
@@ -1138,7 +1256,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         )
         try:
             return (
-                self.transaction.owns_current()
+                (self.transaction is None or self.transaction.owns_current())
                 and UtilsAssembly._document_is_open(self.doc)
                 and str(getattr(self.doc, "Uid", "") or "")
                 == self.document_uid
@@ -1195,6 +1313,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
                 self.assembly,
                 self.initialPlcs,
             )
+            self._restorePlaybackPresentation()
             if self.creating_timeline_operation:
                 self.doc.finalizeProvisionalTimelineOperationBlock(
                     self.simFeaturePy,
@@ -1217,15 +1336,110 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         return True
 
     def reject(self):
+        if self._ownsLiveTaskContext():
+            try:
+                UtilsAssembly._restoreExactAssemblyPartPlacements(
+                    self.assembly,
+                    self.initialPlcs,
+                    require_complete=False,
+                )
+                self._restorePlaybackPresentation()
+            except Exception as error:
+                App.Console.PrintError(
+                    "Could not restore the simulation presentation: "
+                    f"{error}\n"
+                )
         self.deactivate()
         return True
 
+    def _restorePlaybackPresentation(self):
+        if self.presentation is not None:
+            self.presentation.Proxy._last_applied_placements = list(
+                self.presentation_applied_placements
+            )
+            for move, name, object_id, visible in self.presentation_step_visibility:
+                if (
+                    self.doc.getObject(name) is move
+                    and int(move.ID) == object_id
+                    and getattr(move, "ViewObject", None) is not None
+                ):
+                    move.ViewObject.Visibility = visible
+        for component, name, object_id, visible in self.presentation_visibility:
+            if (
+                UtilsAssembly._document_is_open(self.doc)
+                and self.doc.getObject(name) is component
+                and int(component.ID) == object_id
+            ):
+                component.ViewObject.Visibility = visible
+        self._restorePlaybackCamera()
+
+    def _restorePlaybackCamera(self):
+        try:
+            if (
+                not self.presentation_camera
+                or not UtilsAssembly._document_is_open(self.doc)
+            ):
+                return
+            gui_document = Gui.getDocument(self.doc.Name)
+            view = gui_document.activeView() if gui_document is not None else None
+            if view is not None:
+                view.setCamera(self.presentation_camera)
+        except (AttributeError, ReferenceError, RuntimeError):
+            # A zero-delay camera restoration may run immediately after the
+            # task's document has completed deletion.
+            return
+
+    def _activatePlaybackPresentation(self):
+        for component, _name, _object_id, _visible in self.presentation_visibility:
+            component.ViewObject.Visibility = False
+        if self.requested_camera_method:
+            getattr(self.view, self.requested_camera_method)()
+            self.view.fitAll()
+
+    def _applyPlaybackPresentation(self):
+        if self.presentation is None:
+            return
+        self.presentation.Proxy.applyMoves(self.presentation)
+        for move in self.presentation.Group:
+            if (
+                UtilsAssembly.isTimelineOperationActive(move)
+                and getattr(move, "ViewObject", None) is not None
+            ):
+                move.ViewObject.Visibility = True
+
     def autoClosedOnDeletedDocument(self):
         self.animationTimer.stop()
-        self.transaction.document_deleted()
+        if self.transaction is not None:
+            self.transaction.document_deleted()
+        self._removeDocumentObserver()
+
+    def closed(self):
+        """Restore transient playback state after every task close path."""
+
+        try:
+            if UtilsAssembly._document_is_open(self.doc):
+                UtilsAssembly._restoreExactAssemblyPartPlacements(
+                    self.assembly,
+                    self.initialPlcs,
+                    require_complete=False,
+                )
+                self._restorePlaybackPresentation()
+            if self.transaction is not None and self.transaction.owns_current():
+                self.transaction.abort()
+        except Exception as error:
+            App.Console.PrintError(
+                "Could not restore the closed simulation task: "
+                f"{error}\n"
+            )
+        # Common TaskView teardown restores selection and active objects after
+        # closed(). Reapply only the captured camera once that exact native
+        # finalization frame has completed.
+        self.cameraRestoreTimer.start(0)
+        self.deactivate()
 
     def deactivate(self):
         self.animationTimer.stop()
+        self._removeDocumentObserver()
         simulation_name, simulation_id, exact_simulation = (
             self.simulation_identity
         )
@@ -1238,6 +1452,60 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             and int(exact_simulation.ID) == simulation_id
         ):
             exact_simulation.Proxy.setMotionsChangedCallback(None)
+
+    def _removeDocumentObserver(self):
+        if not self._observing_document:
+            return
+        self._observing_document = False
+        try:
+            App.removeDocumentObserver(self)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def slotStartSaveDocument(self, document, _path):
+        """Keep transient playback placements out of the saved FCStd file."""
+
+        if (
+            not self.playback_only
+            or document is not self.doc
+            or self._save_playback_state is not None
+            or not self._ownsLiveTaskContext()
+        ):
+            return
+        self._save_playback_state = (
+            int(self.form.frameSlider.value()),
+            bool(self.animationTimer.isActive()),
+            int(self.direction),
+        )
+        self.animationTimer.stop()
+        UtilsAssembly._restoreExactAssemblyPartPlacements(
+            self.assembly,
+            self.initialPlcs,
+            require_complete=False,
+        )
+        self._restorePlaybackPresentation()
+        self.gui_doc.Modified = self.document_was_modified
+
+    def slotFinishSaveDocument(self, document, _path):
+        """Resume the exact transient frame after the baseline is saved."""
+
+        if document is not self.doc or self._save_playback_state is None:
+            return
+        frame, was_playing, direction = self._save_playback_state
+        self._save_playback_state = None
+        if not self._ownsLiveTaskContext():
+            return
+        self._activatePlaybackPresentation()
+        if 0 <= frame < self.assembly.numberOfFrames():
+            self.assembly.updateForFrame(frame)
+            self._applyPlaybackPresentation()
+            self.form.frameSlider.setValue(frame)
+        self.gui_doc.Modified = False
+        if was_playing:
+            if direction < 0:
+                self.animationTimerStartBackward()
+            else:
+                self.animationTimerStartForward()
 
     def onTimeStartChanged(self, quantity):
         if self.playback_only or not self._ownsLiveTaskContext():
@@ -1280,7 +1548,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             self.onMotionsChanged()
             return
         motion.ViewObject.Proxy.openEditDialog(
-            self.transaction.transaction_id,
+            self.transaction.transaction_id if self.transaction is not None else 0,
         )
         self.onMotionsChanged()
 
@@ -1332,8 +1600,18 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
     def runKinematics(self):
         if not self._ownsLiveTaskContext():
             return
-        self.assembly.generateSimulation(self.simFeaturePy)
+        if self.presentation is not None:
+            self.presentation.Proxy._prepareApplicationBaseline(self.assembly)
+        status = int(self.assembly.generateSimulation(self.simFeaturePy))
+        if status != 0:
+            message = str(getattr(self.assembly, "LastSolverMessage", "") or "")
+            detail = f": {message}" if message else ""
+            raise RuntimeError(
+                f"Assembly simulation generation failed with status {status}{detail}"
+            )
         nFrms = self.assembly.numberOfFrames()
+        if nFrms < 2:
+            raise RuntimeError("Assembly simulation generated fewer than two frames")
         self.form.frameSlider.setMaximum(nFrms - 1)
         self.setFrameValue(nFrms - 1)
         self.form.groupBox_player.show()
@@ -1343,6 +1621,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         if not self._ownsLiveTaskContext():
             return
         self.assembly.updateForFrame(val)
+        self._applyPlaybackPresentation()
         self.form.FrameLabel.setText(translate("Assembly", "Frame" + " " + str(val)))
         time = float(val * self.simFeaturePy.cTimeStepOutput)
         self.form.FrameTimeLabel.setText(f"{time:.2f} s")
@@ -1635,12 +1914,21 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         return True
 
 
-def openSimulation(simulation, *, autoplay=False):
+def openSimulation(
+    simulation,
+    *,
+    autoplay=False,
+    presentation=None,
+    hidden_components=(),
+    camera="",
+):
     """Open one exact saved simulation in the native task player.
 
     This is the programmatic counterpart of double-clicking the History item.
     It never closes another active task and returns the live panel so callers can
     start playback without duplicating the native kinematics implementation.
+    An exploded presentation, temporary hidden components, and a standard camera
+    may be composed for playback; every transient state is restored on close.
     """
 
     if not App.GuiUp:
@@ -1656,32 +1944,40 @@ def openSimulation(simulation, *, autoplay=False):
     assembly = getter(simulation)
     if assembly is None or not UtilsAssembly.isTimelineOperationActive(assembly):
         raise RuntimeError("The simulation's owning Assembly is not active in History")
-    if UtilsAssembly.activeAssembly() != assembly:
-        gui_document = Gui.getDocument(assembly.Document.Name)
-        if gui_document is None:
-            raise RuntimeError("The simulation document has no GUI document")
-        gui_document.setEdit(assembly)
-        if UtilsAssembly.activeAssembly() is not assembly:
-            raise RuntimeError("The owning Assembly could not be activated")
+    gui_document = Gui.getDocument(assembly.Document.Name)
+    if gui_document is None:
+        raise RuntimeError("The simulation document has no GUI document")
+    launch_view = gui_document.activeView()
+    if launch_view is None:
+        raise RuntimeError("The simulation document has no active 3D view")
+    launch_camera = str(launch_view.getCamera())
     panel = TaskAssemblyCreateSimulation(
         simulation,
         document_name=assembly.Document.Name,
         existing_transaction_id=assembly.Document.getBookedTransactionID(),
         playback_only=True,
+        presentation=presentation,
+        hidden_components=hidden_components,
+        camera=camera,
+        restore_camera=launch_camera,
     )
     dialog = Gui.Control.showDialog(panel, panel.gui_doc)
     if dialog is not None:
         dialog.setAutoCloseOnDeletedDocument(True)
         dialog.setDocumentName(assembly.Document.Name)
-    if autoplay:
-        try:
+    try:
+        # Apply transient presentation only after TaskView captures the launch
+        # state that its common Cancel boundary restores.
+        panel._activatePlaybackPresentation()
+        if autoplay:
             panel.runKinematics()
             if assembly.numberOfFrames() < 2:
                 raise RuntimeError("The simulation generated fewer than two frames")
             panel.animationTimerStartForward()
-        except Exception:
-            Gui.Control.closeDialog()
-            raise
+    except Exception:
+        if dialog is not None:
+            dialog.reject()
+        raise
     return panel
 
 

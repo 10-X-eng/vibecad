@@ -94,7 +94,7 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             # Assembly adds exact cross-workbench source/interface playback controls;
             # every other focused surface retains the original tighter ceiling.
             assert len(scripted.tool_names) <= (
-                17 if workbench == "AssemblyWorkbench" else 15
+                18 if workbench == "AssemblyWorkbench" else 16
             )
             assert "core.inspect" not in scripted.tool_names
             unrelated_human_commands = set(
@@ -184,6 +184,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
+        "vibescript.delete_output",
         "vibescript.delete_program",
     }
     build = universal["vibescript.build_program"]
@@ -198,10 +199,19 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "source",
     ]
     assert "replacements" not in edit["parameters"]["properties"]
+    delete_output = universal["vibescript.delete_output"]
+    assert delete_output["parameters"]["required"] == [
+        "source_id",
+        "expected_revision",
+        "output_name",
+        "source",
+        "reason",
+    ]
     for write_name in (
         "vibescript.create_program",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
+        "vibescript.delete_output",
         "vibescript.delete_program",
     ):
         assert universal[write_name]["safety"] == "SAFE_WRITE"
@@ -599,6 +609,101 @@ def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
         },
     }
     assert result["source_id"] == "a" * 32
+
+
+def test_universal_delete_output_reconfigures_the_remaining_exact_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    source_id = "a" * 32
+    revision = "b" * 64
+    revised_source = "result = {'Kept': api.box(4, 5, 6)}"
+    monkeypatch.setattr(runtime, "capture_inspection_state", lambda *_args: {})
+    monkeypatch.setattr(
+        runtime,
+        "complete_inspection",
+        lambda _captured: {
+            "ok": True,
+            "program": {
+                "program_id": source_id,
+                "working_revision": revision,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "inputs": {},
+                "expected_outputs": [
+                    {"name": "Obsolete", "type": "solid"},
+                    {"name": "Kept", "type": "solid"},
+                ],
+            },
+        },
+    )
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **_kwargs):
+        observed.update(tool_name=tool_name, arguments=arguments)
+        return {
+            "ok": True,
+            "tool": tool_name,
+            "program_id": source_id,
+            "working_revision": "c" * 64,
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "PartDesignWorkbench",
+        "vibescript.delete_output",
+        {
+            "source_id": source_id,
+            "expected_revision": revision,
+            "output_name": "Obsolete",
+            "source": revised_source,
+            "reason": "Superseded by the retained body.",
+        },
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": source_id,
+                    "domain": "partdesign",
+                    "current_revision": revision,
+                    "affected_outputs": ["Obsolete", "Kept"],
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": "vibescript.partdesign.reconfigure_program",
+        "arguments": {
+            "program_id": source_id,
+            "expected_revision": revision,
+            "source": revised_source,
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            "inputs": {},
+            "expected_outputs": [{"name": "Kept", "type": "solid"}],
+        },
+    }
+    assert result["tool"] == "vibescript.delete_output"
+    assert result["source_id"] == source_id
+    assert result["deleted_output"] == "Obsolete"
 
 
 @pytest.mark.parametrize(
@@ -1110,6 +1215,7 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
     assert index["tools"]["edit_source"] == "vibescript.edit_source"
     assert index["tools"]["set_inputs"] == "vibescript.set_inputs"
     assert index["tools"]["reconfigure_program"] == ("vibescript.reconfigure_program")
+    assert index["tools"]["delete_output"] == "vibescript.delete_output"
     assert index["tools"]["delete_program"] == "vibescript.delete_program"
     assert index["workbench"] == "PartDesignWorkbench"
     assert index["domain"] == "partdesign"
@@ -2994,6 +3100,16 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
     fixed = api.joint("fixed", api.connector(first), api.connector(second))
     cylindrical = api.joint("cylindrical", api.connector(first), api.connector(second))
     mechanism = api.assembly([first, second], [revolute])
+    scoped_mechanism = api.assembly(
+        {"Base": first, "Arm": second},
+        {"Hinge": revolute},
+    )
+    assert scoped_mechanism.properties["component_names"] == ("Base", "Arm")
+    assert scoped_mechanism.properties["joint_names"] == ("Hinge",)
+    with pytest.raises(ValueError, match=r"api\.assembly.*stable-key mapping"):
+        api.assembly({"Base": first, "Arm": second}, [revolute])
+    with pytest.raises(ValueError, match=r"api\.assembly.*unique across the graph"):
+        api.assembly({"Member": first, "Arm": second}, {"Member": revolute})
     drive = api.motion(revolute, "initialValue + pi/2*time")
     assert drive.properties["formula"] == "initialValue + pi/2*time"
     assert (
@@ -3016,11 +3132,13 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
             api.motion(revolute, formula)
     with pytest.raises(ValueError, match=r"api\.simulation.*same graph value"):
         api.simulation(mechanism, [drive, drive])
+    scoped_simulation = api.simulation(scoped_mechanism, {"HingeDrive": drive})
+    assert scoped_simulation.properties["motion_names"] == ("HingeDrive",)
     with pytest.raises(ValueError, match=r"api\.simulation.*greater than"):
         api.simulation(mechanism, [drive], start_time_s=1, end_time_s=1)
     with pytest.raises(ValueError, match=r"api\.simulation.*10000 native frames"):
         api.simulation(mechanism, [drive], end_time_s=100, time_step_s=0.001)
-    with pytest.raises(ValueError, match=r"api\.exploded_view.*1 through 64"):
+    with pytest.raises(ValueError, match=r"api\.exploded_view.*1 through 4096"):
         api.exploded_view(mechanism, [])
     with pytest.raises(ValueError, match=r"api\.exploded_view.*exactly one"):
         api.exploded_view(mechanism, [{"components": [first]}])

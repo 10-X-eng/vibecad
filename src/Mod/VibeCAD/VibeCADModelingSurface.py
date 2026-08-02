@@ -278,6 +278,7 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
             "edit_source",
             "set_inputs",
             "reconfigure_program",
+            "delete_output",
             "delete_program",
         }:
             continue

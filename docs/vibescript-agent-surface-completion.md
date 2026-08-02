@@ -61,6 +61,15 @@ model.
 - [x] Retained VibeScript simulations use FreeCAD's native Assembly player.
   Agent playback opens and starts that player, while source-owned motions and
   timing remain read-only and unchanged when the task closes.
+- [x] Assembly components, joints, and motions accept stable keyed member maps.
+  Native members remain editable timeline objects without consuming the 64
+  public program-output slots; the established sequence form remains supported.
+- [x] Simulation playback can compose one saved exploded presentation, temporary
+  component visibility, and a standard camera in one call, then restore exact
+  placements, prior presentation state, visibility, camera, and transaction state.
+- [x] The Model tree exposes Assembly Components, Joints, Motions, Simulations,
+  Exploded Views, Verification, and Bills of Materials as native structure while
+  History retains the same operations chronologically.
 - [x] Focused tests, worker integration tests, and the release build pass.
 
 ## Implementation order
@@ -87,4 +96,5 @@ Verification is refreshed whenever this ledger changes. The current gate covers
 focused Python contracts, full native Part Design and Assembly lifecycles,
 explicit native coordinate-system publication and save/reopen, source routing,
 connector-contract parity between worker and host, native simulation playback,
+scoped Assembly graphs above 64 native members, typed Assembly tree structure,
 and the release build.

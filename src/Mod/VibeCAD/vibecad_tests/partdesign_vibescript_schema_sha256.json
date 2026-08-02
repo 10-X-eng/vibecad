@@ -5,6 +5,7 @@
   "vibescript.partdesign.set_inputs": "5c1079bfdffa5a1a01e9f9ad06b1d31c67f2f5f555a09f3f4da2e25ba8e4f6e8",
   "vibescript.build_program": "e181e34a6e8af1418be401f638e5b579d6a956f8f8a286bd87777fa4f489035b",
   "vibescript.create_program": "134a49af8762a60fde8a393c8b6251bf0e2213ba901f42a4847547ede72d2b3c",
+  "vibescript.delete_output": "345ce075096d3553f04cf76a66e46020b0282c7d7a0d2acbbe07a14c0b2c4998",
   "vibescript.delete_program": "36018b862201ae1cb21351a1bfa869311f760d4066758532f40191829b7396c9",
   "vibescript.edit_source": "e20ed28546a07e36a8762bbb8325a2710b6984d0730025a592144756d8f6be33",
   "vibescript.read_api": "87b298da066082838127c297a947c5d40f4103e9acc249a047b920e479675142",

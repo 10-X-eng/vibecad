@@ -570,6 +570,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
+        "vibescript.delete_output",
         "vibescript.delete_program",
     )
     surface = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
@@ -670,6 +671,7 @@ def test_vibescript_uses_one_universal_lifecycle_and_retains_qualified_aliases(
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
+        "vibescript.delete_output",
         "vibescript.delete_program",
     } <= set(specs)
     removed_suffixes = {
